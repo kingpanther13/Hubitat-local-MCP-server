@@ -16,13 +16,13 @@ class HandleGatewaySpec extends ToolSpecBase {
 
     def "catalog mode returns gateway's tool schemas when no toolName is supplied"() {
         when:
-        def result = script.handleGateway('manage_rooms', null, null)
+        def result = script.handleGateway('hub_manage_rooms', null, null)
 
         then:
-        result.gateway == 'manage_rooms'
+        result.gateway == 'hub_manage_rooms'
         result.mode == 'catalog'
         result.tools instanceof List
-        result.tools*.name == ['list_rooms', 'get_room', 'create_room', 'delete_room', 'rename_room']
+        result.tools*.name == ['hub_list_rooms', 'hub_get_room', 'hub_create_room', 'hub_delete_room', 'hub_update_room']
         result.tools.every { it.description && it.inputSchema }
     }
 
@@ -37,14 +37,14 @@ class HandleGatewaySpec extends ToolSpecBase {
 
     def "throws IllegalArgumentException for a tool that is not in the called gateway"() {
         when:
-        // list_files belongs to manage_files, not manage_rooms
-        script.handleGateway('manage_rooms', 'list_files', [:])
+        // hub_list_files belongs to hub_manage_files, not hub_manage_rooms
+        script.handleGateway('hub_manage_rooms', 'hub_list_files', [:])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.startsWith("Unknown tool 'list_files' in manage_rooms")
+        ex.message.startsWith("Unknown tool 'hub_list_files' in hub_manage_rooms")
         ex.message.contains('Available:')
-        ex.message.contains('list_rooms')
+        ex.message.contains('hub_list_rooms')
     }
 
     def "using a gateway name as a tool fails"() {
@@ -55,23 +55,23 @@ class HandleGatewaySpec extends ToolSpecBase {
         // This test pins the effective behaviour: attempting to invoke a
         // gateway by name as a tool is rejected.
         when:
-        script.handleGateway('manage_rooms', 'manage_rooms', [:])
+        script.handleGateway('hub_manage_rooms', 'hub_manage_rooms', [:])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.startsWith("Unknown tool 'manage_rooms' in manage_rooms")
+        ex.message.startsWith("Unknown tool 'hub_manage_rooms' in hub_manage_rooms")
         ex.message.contains('Available:')
     }
 
     def "missing required parameters returns isError response (does NOT throw)"() {
         when:
-        // get_room requires `room`; omit it.
-        def result = script.handleGateway('manage_rooms', 'get_room', [:])
+        // hub_get_room requires `room`; omit it.
+        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
 
         then: 'Option D behaviour: soft error response, not an exception'
         notThrown(IllegalArgumentException)
         result.isError == true
-        result.tool == 'get_room'
+        result.tool == 'hub_get_room'
         // Pin the singular form (W-missingRequired-singular): a regression that drops
         // the count-aware ternary at L1337 would emit "parameters" for 1 missing arg.
         result.error.contains('Missing required parameter:')
@@ -83,13 +83,13 @@ class HandleGatewaySpec extends ToolSpecBase {
     // Both-ways pending (orchestrator).
     def "missing two required parameters reports 'parameters' plural (count-aware)"() {
         when:
-        // create_room requires both `name` and `confirm`; omit both.
-        def result = script.handleGateway('manage_rooms', 'create_room', [:])
+        // hub_create_room requires both `name` and `confirm`; omit both.
+        def result = script.handleGateway('hub_manage_rooms', 'hub_create_room', [:])
 
         then: 'plural form fired by the count-aware ternary at L1337'
         notThrown(IllegalArgumentException)
         result.isError == true
-        result.tool == 'create_room'
+        result.tool == 'hub_create_room'
         result.error.contains('Missing required parameters:')
         !result.error.contains('Missing required parameter:')
         result.error.contains('name')
@@ -97,7 +97,7 @@ class HandleGatewaySpec extends ToolSpecBase {
     }
 
     def "valid dispatch delegates to executeTool"() {
-        given: 'list_rooms calls getRooms() on the Hubitat SDK — stub it on the script'
+        given: 'hub_list_rooms calls getRooms() on the Hubitat SDK — stub it on the script'
         script.metaClass.getRooms = { ->
             [
                 [id: 1, name: 'Kitchen', deviceIds: []],
@@ -106,7 +106,7 @@ class HandleGatewaySpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.handleGateway('manage_rooms', 'list_rooms', [:])
+        def result = script.handleGateway('hub_manage_rooms', 'hub_list_rooms', [:])
 
         then: 'the sub-tool ran and its return shape came through'
         !result.isError
@@ -124,13 +124,13 @@ class HandleGatewaySpec extends ToolSpecBase {
     // deep in the dispatch chain, producing an opaque Groovy stack trace.
 
     def "JSON-encoded string args containing a valid object is parsed and dispatch proceeds"() {
-        given: 'list_rooms needs getRooms() stubbed'
+        given: 'hub_list_rooms needs getRooms() stubbed'
         script.metaClass.getRooms = { ->
             [[id: 1, name: 'Kitchen', deviceIds: []]]
         }
 
         when: 'args is a JSON string encoding an empty object -- simulates Sonnet subagent serialization'
-        def result = script.handleGateway('manage_rooms', 'list_rooms', '{}')
+        def result = script.handleGateway('hub_manage_rooms', 'hub_list_rooms', '{}')
 
         then: 'the string was transparently parsed; dispatch ran; result is the normal tool response'
         !result.isError
@@ -139,13 +139,13 @@ class HandleGatewaySpec extends ToolSpecBase {
     }
 
     def "JSON-encoded string args containing fields is parsed and fields are accessible to the tool"() {
-        given: 'get_room calls getRooms() -- stub it with a known room'
+        given: 'hub_get_room calls getRooms() -- stub it with a known room'
         script.metaClass.getRooms = { ->
             [[id: 42, name: 'Office', deviceIds: []]]
         }
 
         when: 'args is a JSON string encoding {"room":"Office"}'
-        def result = script.handleGateway('manage_rooms', 'get_room', '{"room":"Office"}')
+        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', '{"room":"Office"}')
 
         then: 'string was parsed; the room parameter reached the tool; correct room returned'
         !result.isError
@@ -154,7 +154,7 @@ class HandleGatewaySpec extends ToolSpecBase {
 
     def "JSON-encoded string args containing invalid JSON throws IllegalArgumentException"() {
         when: 'args is a malformed JSON string'
-        script.handleGateway('manage_rooms', 'list_rooms', 'not valid json')
+        script.handleGateway('hub_manage_rooms', 'hub_list_rooms', 'not valid json')
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -167,7 +167,7 @@ class HandleGatewaySpec extends ToolSpecBase {
         // The type check after parsing rejects it with a clear error rather than letting
         // a List propagate into tool implementations as a Map.
         when:
-        script.handleGateway('manage_rooms', 'list_rooms', '[1,2,3]')
+        script.handleGateway('hub_manage_rooms', 'hub_list_rooms', '[1,2,3]')
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -182,7 +182,7 @@ class HandleGatewaySpec extends ToolSpecBase {
         }
 
         when: 'args is a plain Map -- the normal case'
-        def result = script.handleGateway('manage_rooms', 'list_rooms', [:])
+        def result = script.handleGateway('hub_manage_rooms', 'hub_list_rooms', [:])
 
         then: 'no change in behaviour -- Map args passes through as before'
         !result.isError
@@ -197,7 +197,7 @@ class HandleGatewaySpec extends ToolSpecBase {
         }
 
         when: 'args is null -- also a normal case for parameter-less tools'
-        def result = script.handleGateway('manage_rooms', 'list_rooms', null)
+        def result = script.handleGateway('hub_manage_rooms', 'hub_list_rooms', null)
 
         then: 'safeArgs defaults to [:] and dispatch proceeds normally'
         !result.isError

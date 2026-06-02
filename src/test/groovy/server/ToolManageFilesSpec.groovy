@@ -4,22 +4,22 @@ import groovy.json.JsonOutput
 import support.ToolSpecBase
 
 /**
- * Spec for the manage_files gateway tools (hubitat-mcp-server.groovy):
+ * Spec for the hub_manage_files gateway tools (hubitat-mcp-server.groovy):
  *
- * - toolListFiles  -> list_files
- * - toolReadFile   -> read_file
- * - toolWriteFile  -> write_file   (Hub Admin Write + confirm)
- * - toolDeleteFile -> delete_file  (Hub Admin Write + confirm)
+ * - toolListFiles  -> hub_list_files
+ * - toolReadFile   -> hub_read_file
+ * - toolWriteFile  -> hub_write_file   (Hub Admin Write + confirm)
+ * - toolDeleteFile -> hub_delete_file  (Hub Admin Write + confirm)
  *
  * Mocking strategy (see docs/testing.md):
  *   - hubInternalGet                        -> HarnessSpec's hubGet.register(path)
  *   - downloadHubFile / uploadHubFile /
  *     deleteHubFile                         -> stubbed per-test on script.metaClass
  *
- * write_file + delete_file are gated by requireHubAdminWrite(args.confirm), which
+ * hub_write_file + hub_delete_file are gated by requireHubAdminWrite(args.confirm), which
  * requires enableHubAdminWrite=true, confirm=true, AND a lastBackupTimestamp
  * within 24h — see ToolDestructiveHubOpsSpec for the same gate's dedicated tests
- * on reboot_hub / shutdown_hub / delete_device. The Hub-Admin-Write safety gate
+ * on hub_reboot / hub_shutdown / hub_delete_device. The Hub-Admin-Write safety gate
  * tests here are explicit rather than shared so each tool's gate regression is
  * discoverable from its own spec.
  */
@@ -32,7 +32,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     // -------- toolListFiles --------
 
-    def "list_files returns the parsed JSON file list from /hub/fileManager/json"() {
+    def "hub_list_files returns the parsed JSON file list from /hub/fileManager/json"() {
         given:
         hubGet.register('/hub/fileManager/json') { params ->
             JsonOutput.toJson([
@@ -54,7 +54,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_files via dispatch returns sorted file list (useGateways=#useGateways)"() {
+    def "hub_list_files via dispatch returns sorted file list (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         hubGet.register('/hub/fileManager/json') { params ->
@@ -65,7 +65,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_files', [:])
+        def response = mcpDriver.callTool('hub_list_files', [:])
 
         then:
         response.error == null
@@ -79,7 +79,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "list_files falls back to /hub/fileManager when /json fails"() {
+    def "hub_list_files falls back to /hub/fileManager when /json fails"() {
         given:
         hubGet.register('/hub/fileManager/json') { params ->
             throw new RuntimeException('endpoint 404')
@@ -96,7 +96,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.files[0].name == 'only.txt'
     }
 
-    def "list_files returns 'API not available' message when no endpoint responds"() {
+    def "hub_list_files returns 'API not available' message when no endpoint responds"() {
         given:
         hubGet.register('/hub/fileManager/json') { params -> null }
         hubGet.register('/hub/fileManager') { params -> null }
@@ -111,7 +111,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.manualAccess.contains('Settings > File Manager')
     }
 
-    def "list_files returns 'API not available' when both endpoints throw (hub network failure)"() {
+    def "hub_list_files returns 'API not available' when both endpoints throw (hub network failure)"() {
         given:
         hubGet.register('/hub/fileManager/json') { params -> throw new RuntimeException('Connection refused') }
         hubGet.register('/hub/fileManager')      { params -> throw new RuntimeException('Connection refused') }
@@ -125,7 +125,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.message.contains('File Manager API not available')
     }
 
-    def "list_files extracts file names from an HTML fallback response"() {
+    def "hub_list_files extracts file names from an HTML fallback response"() {
         given:
         hubGet.register('/hub/fileManager/json') { params ->
             '''<html><body>
@@ -145,7 +145,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     // -------- toolReadFile --------
 
-    def "read_file throws when fileName is missing"() {
+    def "hub_read_file throws when fileName is missing"() {
         when:
         script.toolReadFile([:])
 
@@ -155,12 +155,12 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "read_file via dispatch maps missing-fileName IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_read_file via dispatch maps missing-fileName IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('read_file', [:])
+        def response = mcpDriver.callTool('hub_read_file', [:])
 
         then:
         response.error != null
@@ -171,7 +171,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "read_file returns full content when it fits in one chunk"() {
+    def "hub_read_file returns full content when it fits in one chunk"() {
         given:
         script.metaClass.downloadHubFile = { String name ->
             name == 'notes.txt' ? 'Hello, world!'.getBytes('UTF-8') : null
@@ -192,7 +192,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "read_file via dispatch returns full content envelope when it fits in one chunk (useGateways=#useGateways)"() {
+    def "hub_read_file via dispatch returns full content envelope when it fits in one chunk (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         script.metaClass.downloadHubFile = { String name ->
@@ -200,7 +200,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('read_file', [fileName: 'notes.txt'])
+        def response = mcpDriver.callTool('hub_read_file', [fileName: 'notes.txt'])
 
         then:
         response.error == null
@@ -216,7 +216,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "read_file returns a chunk + nextOffset hint when content exceeds max chunk"() {
+    def "hub_read_file returns a chunk + nextOffset hint when content exceeds max chunk"() {
         given:
         def big = 'x' * 70000  // exceeds the 60000 max chunk
         script.metaClass.downloadHubFile = { String name -> big.getBytes('UTF-8') }
@@ -233,7 +233,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.hint.contains('offset: 60000')
     }
 
-    def "read_file honours an explicit offset + length"() {
+    def "hub_read_file honours an explicit offset + length"() {
         given:
         script.metaClass.downloadHubFile = { String name -> '0123456789'.getBytes('UTF-8') }
 
@@ -248,7 +248,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.nextOffset == 6
     }
 
-    def "read_file returns an error map when the file is missing"() {
+    def "hub_read_file returns an error map when the file is missing"() {
         given:
         script.metaClass.downloadHubFile = { String name -> null }
 
@@ -263,7 +263,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     // -------- toolWriteFile (DESTRUCTIVE: confirm + Hub Admin Write gate) --------
 
-    def "write_file throws when confirm is not provided"() {
+    def "hub_write_file throws when confirm is not provided"() {
         given:
         enableHubAdminWrite()
 
@@ -276,7 +276,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('confirm=true')
     }
 
-    def "write_file throws when Hub Admin Write is disabled"() {
+    def "hub_write_file throws when Hub Admin Write is disabled"() {
         when:
         script.toolWriteFile([fileName: 'x.txt', content: 'hi', confirm: true])
 
@@ -285,7 +285,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('Hub Admin Write')
     }
 
-    def "write_file throws when no recent backup exists"() {
+    def "hub_write_file throws when no recent backup exists"() {
         given:
         settingsMap.enableHubAdminWrite = true
         // stateMap.lastBackupTimestamp is unset
@@ -298,7 +298,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('BACKUP REQUIRED')
     }
 
-    def "write_file throws when fileName is missing"() {
+    def "hub_write_file throws when fileName is missing"() {
         given:
         enableHubAdminWrite()
 
@@ -310,7 +310,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('fileName is required')
     }
 
-    def "write_file throws when content is missing"() {
+    def "hub_write_file throws when content is missing"() {
         given:
         enableHubAdminWrite()
 
@@ -322,7 +322,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('content is required')
     }
 
-    def "write_file rejects invalid file names"() {
+    def "hub_write_file rejects invalid file names"() {
         given:
         enableHubAdminWrite()
 
@@ -344,7 +344,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         'café.txt'      | _   // non-ASCII rejected — ASCII-only allowlist
     }
 
-    def "write_file creates a new file when none exists"() {
+    def "hub_write_file creates a new file when none exists"() {
         given:
         enableHubAdminWrite()
         def uploads = []
@@ -368,7 +368,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "write_file via dispatch creates a new file (useGateways=#useGateways)"() {
+    def "hub_write_file via dispatch creates a new file (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -379,7 +379,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('write_file', [fileName: 'new.txt', content: 'hello', confirm: true])
+        def response = mcpDriver.callTool('hub_write_file', [fileName: 'new.txt', content: 'hello', confirm: true])
 
         then:
         response.error == null
@@ -399,13 +399,13 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "write_file via dispatch maps confirm-missing IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_write_file via dispatch maps confirm-missing IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('write_file', [fileName: 'x.txt', content: 'hi'])
+        def response = mcpDriver.callTool('hub_write_file', [fileName: 'x.txt', content: 'hi'])
 
         then:
         response.error != null
@@ -417,7 +417,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "write_file backs up an existing file before overwriting"() {
+    def "hub_write_file backs up an existing file before overwriting"() {
         given:
         enableHubAdminWrite()
         def uploads = []
@@ -446,7 +446,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.message.contains('updated')
     }
 
-    def "write_file treats a download-throws exception as 'no existing file' and skips the backup step"() {
+    def "hub_write_file treats a download-throws exception as 'no existing file' and skips the backup step"() {
         // Pins the current server behaviour: the backup attempt is wrapped in
         // a try/catch that swallows ANY download throw and proceeds as if
         // there was no prior file (hubitat-mcp-server.groovy:4512-4515). Note
@@ -473,7 +473,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.backupFile == null
     }
 
-    def "write_file reports failure without throwing when uploadHubFile errors"() {
+    def "hub_write_file reports failure without throwing when uploadHubFile errors"() {
         given: 'no existing file — so the only upload attempt is the new-file write itself'
         enableHubAdminWrite()
         def uploadCalls = []
@@ -494,7 +494,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     // -------- toolDeleteFile (DESTRUCTIVE: confirm + Hub Admin Write gate) --------
 
-    def "delete_file throws when confirm is not provided"() {
+    def "hub_delete_file throws when confirm is not provided"() {
         given:
         enableHubAdminWrite()
 
@@ -507,7 +507,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('confirm=true')
     }
 
-    def "delete_file throws when Hub Admin Write is disabled"() {
+    def "hub_delete_file throws when Hub Admin Write is disabled"() {
         when:
         script.toolDeleteFile([fileName: 'x.txt', confirm: true])
 
@@ -516,7 +516,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('Hub Admin Write')
     }
 
-    def "delete_file throws when fileName is missing"() {
+    def "hub_delete_file throws when fileName is missing"() {
         given:
         enableHubAdminWrite()
 
@@ -528,7 +528,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('fileName is required')
     }
 
-    def "delete_file backs up then deletes a normal file"() {
+    def "hub_delete_file backs up then deletes a normal file"() {
         given:
         enableHubAdminWrite()
         def uploads = []
@@ -557,11 +557,11 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.fileName == 'notes.txt'
         result.backupFile.startsWith('notes_backup_')
         result.backupDownload.contains('/local/notes_backup_')
-        result.undoHint.contains('read_file')
+        result.undoHint.contains('hub_read_file')
     }
 
     @spock.lang.Unroll
-    def "delete_file via dispatch backs up then deletes (useGateways=#useGateways)"() {
+    def "hub_delete_file via dispatch backs up then deletes (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -574,7 +574,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         script.metaClass.deleteHubFile = { String name -> deleted << name }
 
         when:
-        def response = mcpDriver.callTool('delete_file', [fileName: 'notes.txt', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_file', [fileName: 'notes.txt', confirm: true])
 
         then:
         response.error == null
@@ -592,12 +592,12 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_file via dispatch maps Hub-Admin-Write-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_delete_file via dispatch maps Hub-Admin-Write-disabled IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('delete_file', [fileName: 'x.txt', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_file', [fileName: 'x.txt', confirm: true])
 
         then:
         response.error != null
@@ -608,7 +608,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "delete_file skips auto-backup on files that are already backups (#fileName)"() {
+    def "hub_delete_file skips auto-backup on files that are already backups (#fileName)"() {
         given: 'isBackupFile trips on any of three markers (source ~line 4555): _backup_ substring, mcp-backup- prefix, mcp-prerestore- prefix'
         enableHubAdminWrite()
         def uploads = []
@@ -634,7 +634,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         'mcp-prerestore-driver-9.groovy'      | _   // prefix mcp-prerestore-
     }
 
-    def "delete_file reports failure without throwing when deleteHubFile errors"() {
+    def "hub_delete_file reports failure without throwing when deleteHubFile errors"() {
         given:
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String name -> 'bytes'.getBytes('UTF-8') }
@@ -649,6 +649,6 @@ class ToolManageFilesSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error.contains('permission denied')
-        result.suggestion.contains('list_files')
+        result.suggestion.contains('hub_list_files')
     }
 }

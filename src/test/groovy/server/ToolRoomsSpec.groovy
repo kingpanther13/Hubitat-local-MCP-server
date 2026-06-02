@@ -7,13 +7,13 @@ import support.TestDevice
 import support.ToolSpecBase
 
 /**
- * Spec for the manage_rooms gateway tools in hubitat-mcp-server.groovy:
+ * Spec for the hub_manage_rooms gateway tools in hubitat-mcp-server.groovy:
  *
- * - toolListRooms   -> list_rooms
- * - toolGetRoom     -> get_room
- * - toolCreateRoom  -> create_room   (destructive — Hub Admin Write + confirm)
- * - toolDeleteRoom  -> delete_room   (destructive — Hub Admin Write + confirm)
- * - toolRenameRoom  -> rename_room   (destructive — Hub Admin Write + confirm)
+ * - toolListRooms   -> hub_list_rooms
+ * - toolGetRoom     -> hub_get_room
+ * - toolCreateRoom  -> hub_create_room   (destructive — Hub Admin Write + confirm)
+ * - toolDeleteRoom  -> hub_delete_room   (destructive — Hub Admin Write + confirm)
+ * - toolRenameRoom  -> hub_update_room   (destructive — Hub Admin Write + confirm)
  *
  * Mocking strategy: see docs/testing.md "Which interception point to use".
  * This spec is the canonical example of the setupSpec-dispatcher pattern
@@ -33,7 +33,7 @@ import support.ToolSpecBase
  * mapping → response wrapping) is covered alongside the unit-level
  * tool internals. Dispatch features are @Unroll'd across useGateways
  * true/false; when useGateways=true the JSON-RPC dispatch still routes
- * sub-tool names (list_rooms etc.) directly through the executeTool
+ * sub-tool names (hub_list_rooms etc.) directly through the executeTool
  * switch — they remain callable by name, the gateway only affects which
  * names tools/list advertises.
  */
@@ -86,7 +86,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     // -------- toolListRooms --------
 
-    def "list_rooms returns an empty result when no rooms are configured"() {
+    def "hub_list_rooms returns an empty result when no rooms are configured"() {
         given:
         script.metaClass.getRooms = { -> null }
 
@@ -100,13 +100,13 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_rooms via dispatch returns empty result (useGateways=#useGateways)"() {
+    def "hub_list_rooms via dispatch returns empty result (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         script.metaClass.getRooms = { -> null }
 
         when:
-        def response = mcpDriver.callTool('list_rooms', [:])
+        def response = mcpDriver.callTool('hub_list_rooms', [:])
 
         then:
         response.error == null
@@ -120,7 +120,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "list_rooms returns sorted rooms with device counts"() {
+    def "hub_list_rooms returns sorted rooms with device counts"() {
         given:
         installGetRoomsStub([
             [id: 2, name: 'Kitchen', deviceIds: [100, 101, 102]],
@@ -141,7 +141,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_rooms via dispatch returns sorted rooms with device counts (useGateways=#useGateways)"() {
+    def "hub_list_rooms via dispatch returns sorted rooms with device counts (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         installGetRoomsStub([
@@ -151,7 +151,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         ])
 
         when:
-        def response = mcpDriver.callTool('list_rooms', [:])
+        def response = mcpDriver.callTool('hub_list_rooms', [:])
 
         then:
         response.error == null
@@ -168,7 +168,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "list_rooms handles rooms that omit deviceIds entirely"() {
+    def "hub_list_rooms handles rooms that omit deviceIds entirely"() {
         given: 'a room with no deviceIds field — the defensive ?: [] branches must not NPE'
         installGetRoomsStub([
             [id: 9, name: 'Garage']  // no deviceIds key
@@ -184,7 +184,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_rooms via dispatch handles rooms that omit deviceIds entirely (useGateways=#useGateways)"() {
+    def "hub_list_rooms via dispatch handles rooms that omit deviceIds entirely (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         installGetRoomsStub([
@@ -192,7 +192,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         ])
 
         when:
-        def response = mcpDriver.callTool('list_rooms', [:])
+        def response = mcpDriver.callTool('hub_list_rooms', [:])
 
         then:
         response.error == null
@@ -206,12 +206,12 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "list_rooms cursor pagination opt-in (#174)"() {
+    def "hub_list_rooms cursor pagination opt-in (#174)"() {
         // Representative spec for the cursor-helper rollout: every tool that wires
         // _paginateList behaves identically -- no cursor returns the full list, cursor=''
         // emits a bounded page with total + nextCursor, last page omits nextCursor,
         // non-numeric/out-of-range cursors throw IllegalArgumentException so dispatch
-        // surfaces -32602. The per-tool spec is exercised exhaustively for list_rooms
+        // surfaces -32602. The per-tool spec is exercised exhaustively for hub_list_rooms
         // here; the other paginated tools rely on the shared _paginateList contract
         // pinned by ToolListInstalledAppsSpec.
         given: '150 rooms -> 2 pages of 100 + 50'
@@ -247,12 +247,12 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('cursor')
-        ex.message.contains('list_rooms')
+        ex.message.contains('hub_list_rooms')
     }
 
     // -------- toolGetRoom --------
 
-    def "get_room returns room details when located by name (case-insensitive)"() {
+    def "hub_get_room returns room details when located by name (case-insensitive)"() {
         given:
         installGetRoomsStub([
             [id: 1, name: 'Kitchen', deviceIds: []]
@@ -269,7 +269,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_room via dispatch returns room details when located by name (useGateways=#useGateways)"() {
+    def "hub_get_room via dispatch returns room details when located by name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         installGetRoomsStub([
@@ -277,7 +277,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         ])
 
         when:
-        def response = mcpDriver.callTool('get_room', [room: 'kitchen'])
+        def response = mcpDriver.callTool('hub_get_room', [room: 'kitchen'])
 
         then:
         response.error == null
@@ -292,7 +292,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_room returns room details when located by id"() {
+    def "hub_get_room returns room details when located by id"() {
         given:
         installGetRoomsStub([
             [id: 42, name: 'Office', deviceIds: []]
@@ -307,7 +307,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_room via dispatch returns room details when located by id (useGateways=#useGateways)"() {
+    def "hub_get_room via dispatch returns room details when located by id (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         installGetRoomsStub([
@@ -315,7 +315,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         ])
 
         when:
-        def response = mcpDriver.callTool('get_room', [room: '42'])
+        def response = mcpDriver.callTool('hub_get_room', [room: '42'])
 
         then:
         response.error == null
@@ -328,7 +328,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_room throws with available-rooms list when the identifier is unknown"() {
+    def "hub_get_room throws with available-rooms list when the identifier is unknown"() {
         given:
         installGetRoomsStub([
             [id: 1, name: 'Kitchen', deviceIds: []],
@@ -346,7 +346,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_room via dispatch returns -32602 envelope with available rooms when unknown (useGateways=#useGateways)"() {
+    def "hub_get_room via dispatch returns -32602 envelope with available rooms when unknown (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         installGetRoomsStub([
@@ -355,7 +355,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         ])
 
         when:
-        def response = mcpDriver.callTool('get_room', [room: 'Basement'])
+        def response = mcpDriver.callTool('hub_get_room', [room: 'Basement'])
 
         then:
         response.error.code == -32602
@@ -367,7 +367,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_room throws when room identifier is empty"() {
+    def "hub_get_room throws when room identifier is empty"() {
         when:
         script.toolGetRoom('')
 
@@ -377,12 +377,12 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_room via dispatch returns -32602 envelope when identifier is empty (useGateways=#useGateways)"() {
+    def "hub_get_room via dispatch returns -32602 envelope when identifier is empty (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('get_room', [room: ''])
+        def response = mcpDriver.callTool('hub_get_room', [room: ''])
 
         then:
         response.error.code == -32602
@@ -392,7 +392,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_room expands deviceIds into device details and flags unresolvable ids as not-accessible"() {
+    def "hub_get_room expands deviceIds into device details and flags unresolvable ids as not-accessible"() {
         given: 'a room referencing a resolvable child device and an unresolvable id'
         installGetRoomsStub([
             [id: 7, name: 'Den', deviceIds: [100, 999]]
@@ -421,7 +421,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_room via dispatch expands deviceIds and flags unresolvable ids (useGateways=#useGateways)"() {
+    def "hub_get_room via dispatch expands deviceIds and flags unresolvable ids (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         installGetRoomsStub([
@@ -434,7 +434,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         )
 
         when:
-        def response = mcpDriver.callTool('get_room', [room: '7'])
+        def response = mcpDriver.callTool('hub_get_room', [room: '7'])
 
         then:
         response.error == null
@@ -457,7 +457,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     // -------- toolCreateRoom --------
 
-    def "create_room throws when confirm is not provided"() {
+    def "hub_create_room throws when confirm is not provided"() {
         given:
         enableHubAdminWrite()
 
@@ -471,13 +471,13 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "create_room via dispatch returns -32602 envelope when confirm missing (useGateways=#useGateways)"() {
+    def "hub_create_room via dispatch returns -32602 envelope when confirm missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('create_room', [name: 'Garage'])
+        def response = mcpDriver.callTool('hub_create_room', [name: 'Garage'])
 
         then:
         response.error.code == -32602
@@ -488,7 +488,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "create_room throws when Hub Admin Write is disabled"() {
+    def "hub_create_room throws when Hub Admin Write is disabled"() {
         when:
         script.toolCreateRoom([name: 'Garage', confirm: true])
 
@@ -498,12 +498,12 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "create_room via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_create_room via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('create_room', [name: 'Garage', confirm: true])
+        def response = mcpDriver.callTool('hub_create_room', [name: 'Garage', confirm: true])
 
         then:
         response.error.code == -32602
@@ -513,7 +513,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "create_room throws when required name is blank"() {
+    def "hub_create_room throws when required name is blank"() {
         given:
         enableHubAdminWrite()
         installGetRoomsStub([])
@@ -527,14 +527,14 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "create_room via dispatch returns -32602 envelope when name is blank (useGateways=#useGateways)"() {
+    def "hub_create_room via dispatch returns -32602 envelope when name is blank (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
         installGetRoomsStub([])
 
         when:
-        def response = mcpDriver.callTool('create_room', [name: '  ', confirm: true])
+        def response = mcpDriver.callTool('hub_create_room', [name: '  ', confirm: true])
 
         then:
         response.error.code == -32602
@@ -544,7 +544,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "create_room posts to /room/save and reports success"() {
+    def "hub_create_room posts to /room/save and reports success"() {
         given:
         enableHubAdminWrite()
         def rooms = []
@@ -575,7 +575,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "create_room via dispatch posts to /room/save and reports success (useGateways=#useGateways)"() {
+    def "hub_create_room via dispatch posts to /room/save and reports success (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -594,7 +594,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('create_room', [name: 'Garage', deviceIds: [500, 501], confirm: true])
+        def response = mcpDriver.callTool('hub_create_room', [name: 'Garage', deviceIds: [500, 501], confirm: true])
 
         then:
         capturedBody.name == 'Garage'
@@ -612,7 +612,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "create_room rejects duplicate room names (case-insensitive)"() {
+    def "hub_create_room rejects duplicate room names (case-insensitive)"() {
         given:
         enableHubAdminWrite()
         installGetRoomsStub([
@@ -628,7 +628,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "create_room via dispatch returns -32602 envelope on duplicate name (useGateways=#useGateways)"() {
+    def "hub_create_room via dispatch returns -32602 envelope on duplicate name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -637,7 +637,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         ])
 
         when:
-        def response = mcpDriver.callTool('create_room', [name: 'GARAGE', confirm: true])
+        def response = mcpDriver.callTool('hub_create_room', [name: 'GARAGE', confirm: true])
 
         then:
         response.error.code == -32602
@@ -649,7 +649,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     // -------- toolDeleteRoom --------
 
-    def "delete_room throws when room identifier is missing"() {
+    def "hub_delete_room throws when room identifier is missing"() {
         given:
         enableHubAdminWrite()
 
@@ -662,13 +662,13 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_room via dispatch returns -32602 envelope when identifier missing (useGateways=#useGateways)"() {
+    def "hub_delete_room via dispatch returns -32602 envelope when identifier missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('delete_room', [confirm: true])
+        def response = mcpDriver.callTool('hub_delete_room', [confirm: true])
 
         then:
         response.error.code == -32602
@@ -678,7 +678,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "delete_room posts to /room/delete/<id> and reports devices unassigned"() {
+    def "hub_delete_room posts to /room/delete/<id> and reports devices unassigned"() {
         given:
         enableHubAdminWrite()
         def rooms = [
@@ -711,7 +711,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         rooms == []
     }
 
-    def "delete_room with exactly one device renders 'device is' singular"() {
+    def "hub_delete_room with exactly one device renders 'device is' singular"() {
         // W-spec-deleteRoom-text (singular side): exercises the count-aware ternary
         // at L12702-12703 for the deviceCount==1 branch.
         // Both-ways pending (orchestrator).
@@ -742,7 +742,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_room via dispatch posts to /room/delete and reports devices unassigned (useGateways=#useGateways)"() {
+    def "hub_delete_room via dispatch posts to /room/delete and reports devices unassigned (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -761,7 +761,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('delete_room', [room: '5', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_room', [room: '5', confirm: true])
 
         then:
         response.error == null
@@ -777,7 +777,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "delete_room falls back to GET /room/delete/<id> when POST fails"() {
+    def "hub_delete_room falls back to GET /room/delete/<id> when POST fails"() {
         given:
         enableHubAdminWrite()
         def rooms = [
@@ -807,7 +807,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_room via dispatch falls back to GET when POST fails (useGateways=#useGateways)"() {
+    def "hub_delete_room via dispatch falls back to GET when POST fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -829,7 +829,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('delete_room', [room: '12', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_room', [room: '12', confirm: true])
 
         then:
         response.error == null
@@ -843,7 +843,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "delete_room throws when the target room does not exist"() {
+    def "hub_delete_room throws when the target room does not exist"() {
         given:
         enableHubAdminWrite()
         installGetRoomsStub([
@@ -860,7 +860,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_room via dispatch returns -32602 envelope when target room does not exist (useGateways=#useGateways)"() {
+    def "hub_delete_room via dispatch returns -32602 envelope when target room does not exist (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -869,7 +869,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         ])
 
         when:
-        def response = mcpDriver.callTool('delete_room', [room: 'Garage', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_room', [room: 'Garage', confirm: true])
 
         then:
         response.error.code == -32602
@@ -882,7 +882,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     // -------- toolRenameRoom --------
 
-    def "rename_room posts to /room/save with the existing id and reports success"() {
+    def "hub_update_room posts to /room/save with the existing id and reports success"() {
         given:
         enableHubAdminWrite()
         def rooms = [
@@ -913,7 +913,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "rename_room via dispatch posts to /room/save with existing id and reports success (useGateways=#useGateways)"() {
+    def "hub_update_room via dispatch posts to /room/save with existing id and reports success (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -935,7 +935,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('rename_room', [room: '8', newName: 'Home Office', confirm: true])
+        def response = mcpDriver.callTool('hub_update_room', [room: '8', newName: 'Home Office', confirm: true])
 
         then:
         capturedBody.roomId == 8
@@ -950,7 +950,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "rename_room locates the target room by case-insensitive name"() {
+    def "hub_update_room locates the target room by case-insensitive name"() {
         given:
         enableHubAdminWrite()
         def rooms = [
@@ -979,7 +979,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "rename_room via dispatch locates the target room by case-insensitive name (useGateways=#useGateways)"() {
+    def "hub_update_room via dispatch locates the target room by case-insensitive name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -999,7 +999,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('rename_room', [room: 'playroom', newName: 'Kids Room', confirm: true])
+        def response = mcpDriver.callTool('hub_update_room', [room: 'playroom', newName: 'Kids Room', confirm: true])
 
         then:
         capturedBody.roomId == 15
@@ -1014,7 +1014,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "rename_room throws when newName is missing"() {
+    def "hub_update_room throws when newName is missing"() {
         given:
         enableHubAdminWrite()
         installGetRoomsStub([
@@ -1030,7 +1030,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "rename_room via dispatch returns -32602 envelope when newName is missing (useGateways=#useGateways)"() {
+    def "hub_update_room via dispatch returns -32602 envelope when newName is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1039,7 +1039,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         ])
 
         when:
-        def response = mcpDriver.callTool('rename_room', [room: '8', confirm: true])
+        def response = mcpDriver.callTool('hub_update_room', [room: '8', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1049,7 +1049,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "rename_room rejects a name that would collide with a different room"() {
+    def "hub_update_room rejects a name that would collide with a different room"() {
         given:
         enableHubAdminWrite()
         installGetRoomsStub([
@@ -1066,7 +1066,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "rename_room via dispatch returns -32602 envelope on colliding name (useGateways=#useGateways)"() {
+    def "hub_update_room via dispatch returns -32602 envelope on colliding name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1076,7 +1076,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         ])
 
         when:
-        def response = mcpDriver.callTool('rename_room', [room: '1', newName: 'BEDROOM', confirm: true])
+        def response = mcpDriver.callTool('hub_update_room', [room: '1', newName: 'BEDROOM', confirm: true])
 
         then:
         response.error.code == -32602

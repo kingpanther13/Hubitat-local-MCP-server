@@ -5,12 +5,12 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 103 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, HPM package state introspection, and Developer Mode self-administration. The tools are organized as **23 core tools** (always visible) plus **13 domain-named gateways** that proxy 80 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 89 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, HPM package state introspection, and Developer Mode self-administration. The tools are organized as **20 core tools** (always visible) plus **13 domain-named gateways** that proxy 69 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
 
 ## Core Principles
 
 1. **Safety first** - Never control a device without confirming the correct match. Critical systems (locks, HVAC, garage doors) require extra care.
-2. **Progressive disclosure** - Start with lightweight queries (`list_devices` with `detailed=false`), then drill down as needed.
+2. **Progressive disclosure** - Start with lightweight queries (`hub_list_devices` with `detailed=false`), then drill down as needed.
 3. **Inform before acting** - Tell the user what you plan to do before executing write operations.
 4. **Respect access gates** - Hub Admin Read/Write tools are gated for a reason. Follow pre-flight checklists.
 
@@ -27,7 +27,7 @@ All tools in this server follow these conventions. Use the conventions to predic
 
 ### Finding Devices
 
-Start with `list_devices(detailed=false)` to get names and IDs. Use `get_device` for full details on a specific device.
+Start with `hub_list_devices(detailed=false)` to get names and IDs. Use `hub_get_device` for full details on a specific device.
 
 ### Device Authorization (CRITICAL)
 
@@ -39,30 +39,30 @@ Start with `list_devices(detailed=false)` to get names and IDs. Use `get_device`
 
 ### Sending Commands
 
-Use `send_command` with the device ID and command name. Common commands:
+Use `hub_call_device_command` with the device ID and command name. Common commands:
 - Switches: `on`, `off`
 - Dimmers: `setLevel` (params: `[level]` or `[level, duration]`)
 - Color lights: `setColor` (params: `[hue, saturation, level]`), `setColorTemperature`
 - Locks: `lock`, `unlock`
 - Thermostats: `setHeatingSetpoint`, `setCoolingSetpoint`, `setThermostatMode`
 
-Always check the device's `supportedCommands` (from `get_device`) before sending commands.
+Always check the device's `supportedCommands` (from `hub_get_device`) before sending commands.
 
-After sending a command, use `poll_until_attribute` to verify the state change took effect rather than sleeping and calling `get_attribute`. Example: after `send_command(on)` poll `attribute=switch, expectedValue="on", timeoutMs=5000`. Note: `timeoutMs` is in MILLISECONDS (5000 = 5 seconds, max 60000ms). At least one of `expectedValue` or `expectedValues` is required. This tool BLOCKS the MCP request for up to `timeoutMs`; use sparingly and prefer event-driven flows when available. Avoid running it in parallel with other MCP calls.
+After sending a command, use `hub_get_device_attribute` with an `expectedValue` to block-poll until the state change takes effect rather than sleeping. Example: after `hub_call_device_command(on)` call `hub_get_device_attribute(attribute=switch, expectedValue="on", timeoutMs=5000)`. Note: `timeoutMs` is in MILLISECONDS (5000 = 5 seconds, max 60000ms). At least one of `expectedValue` or `expectedValues` is required to enable polling. Polling BLOCKS the MCP request for up to `timeoutMs`; use sparingly and prefer event-driven flows when available. Avoid running it in parallel with other MCP calls.
 
 ### Virtual Devices
 
-MCP can create and delete virtual devices (switches, sensors, buttons, dimmers, etc.) via `manage_virtual_device` (a core tool, always visible) using `action="create"` or `action="delete"`. These are automatically accessible without manual selection. Use `list_virtual_devices` to see MCP-managed virtual devices. Do not use `delete_device` for MCP-managed virtual devices. Both virtual device tools are core tools on `tools/list`.
+MCP can create and delete virtual devices (switches, sensors, buttons, dimmers, etc.) via `hub_manage_virtual_device` (a core tool, always visible) using `action="create"` or `action="delete"`. These are automatically accessible without manual selection. Use `hub_list_devices` with `filter='virtual'` to see MCP-managed virtual devices. Do not use `hub_delete_device` for MCP-managed virtual devices.
 
 For `action="create"`, provide exactly ONE of (mutually exclusive; supplying both -- including a blank/whitespace `deviceType` alongside `customDriver` -- is an error):
-- `deviceType` -- one of the 15 built-in virtual driver names (see `get_tool_guide` for the full list). Not-found surfaces as an isError platform error (firmware gap).
-- `customDriver={namespace, name}` -- a user-installed driver (HPM or pasted); use `manage_apps_drivers(tool="list_hub_drivers")` to find installed namespace + name values. Not-found surfaces as an input error (-32602) with a `list_hub_drivers` hint.
+- `deviceType` -- one of the 15 built-in virtual driver names (see `hub_get_tool_guide` for the full list). Not-found surfaces as an isError platform error (firmware gap).
+- `customDriver={namespace, name}` -- a user-installed driver (HPM or pasted); use `hub_manage_code_read(tool="hub_list_drivers")` to find installed namespace + name values. Not-found surfaces as an input error (-32602) with a `hub_list_drivers` hint.
 
 Create response: `{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, attributes}}`. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code.
 
 Delete response: `{success, deviceId, deviceNetworkId, deviceLabel, message}`.
 
-`list_virtual_devices` response: `{devices: [...], count, message}`. Per-device includes `driverNamespace` (authoritative for devices created by this tool -- the namespace is persisted at create time; for devices created before this version or by other means it falls back to a best-effort derivation that may report `"hubitat"`), `driverType`, and `typeName` (deprecated alias; prefer `driverType`). `currentStates` is a map of attribute-name to current-value.
+`hub_list_devices(filter='virtual')` response: `{devices: [...], count, message}`. Per-device includes `driverNamespace` (authoritative for devices created by this tool -- the namespace is persisted at create time; for devices created before this version or by other means it falls back to a best-effort derivation that may report `"hubitat"`), `driverType`, and `typeName` (deprecated alias; prefer `driverType`). `currentStates` is a map of attribute-name to current-value.
 
 ## Automation Rules
 
@@ -70,7 +70,7 @@ Rules are the core automation primitive. Each rule has **triggers** (what starts
 
 ### Creating Rules
 
-Use `custom_create_rule` with a JSON structure. For the complete rule structure reference including all trigger types, condition types, action types, and JSON syntax examples, see [rule-patterns.md](rule-patterns.md).
+Use `hub_create_custom_rule` with a JSON structure. For the complete rule structure reference including all trigger types, condition types, action types, and JSON syntax examples, see [rule-patterns.md](rule-patterns.md).
 
 ### Key Rule Patterns
 
@@ -121,45 +121,45 @@ Use `custom_create_rule` with a JSON structure. For the complete rule structure 
 ### Rule Management
 
 Core tools (always visible):
-- `custom_list_rules` / `custom_get_rule` - View rules and their configuration
-- `custom_update_rule` - Modify triggers, conditions, or actions; also handles enable/disable via `enabled=true/false`
+- `hub_get_custom_rule` - View rule configuration; omit `ruleId` to list all rules, or pass `detailed=true` for comprehensive diagnostics on a specific rule
+- `hub_update_custom_rule` - Modify triggers, conditions, or actions; also handles enable/disable via `enabled=true/false`
 
-Via `manage_rules_admin` gateway:
-- `custom_test_rule` - Dry-run to see what would happen without executing
-- `custom_export_rule` / `custom_import_rule` / `custom_clone_rule` - Portability operations
-- `custom_delete_rule` - Removes a rule (auto-backs up to File Manager first)
+Via `hub_manage_rules` gateway:
+- `hub_test_custom_rule` - Dry-run to see what would happen without executing
+- `hub_export_custom_rule` / `hub_import_custom_rule` / `hub_clone_custom_rule` - Portability operations
+- `hub_delete_custom_rule` - Removes a rule (auto-backs up to File Manager first)
 
 Mark test/throwaway rules with `testRule: true` to skip backup on deletion.
 
 ## Room Management
 
-5 tools via `manage_rooms` gateway: `list_rooms`, `get_room`, `create_room`, `delete_room`, `rename_room`. Room creation/deletion/renaming requires Hub Admin Write.
+5 tools via `hub_manage_rooms` gateway: `hub_list_rooms`, `hub_get_room`, `hub_create_room`, `hub_delete_room`, `hub_update_room`. Room creation/deletion/renaming requires Hub Admin Write.
 
 ## Hub Administration
 
-Core hub admin tools (always visible): `create_hub_backup`, `check_for_update`, `generate_bug_report`
+Core hub admin tools (always visible): `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`
 
 Additional hub admin tools are accessed via gateways:
 
-### Via `manage_destructive_hub_ops` gateway (3 tools)
+### Via `hub_manage_destructive_ops` gateway (3 tools)
 
-Destructive write operations (require Hub Admin Write): `reboot_hub`, `shutdown_hub`, `delete_device`
+Destructive write operations (require Hub Admin Write): `hub_reboot`, `hub_shutdown`, `hub_delete_device`
 
-### Via `manage_apps_drivers` gateway (7 tools — read-only)
+### Via `hub_manage_code_read` gateway (5 tools — read-only)
 
-`list_hub_apps`, `list_hub_drivers`, `get_app_source`, `get_driver_source`, `get_library_source`, `list_item_backups`, `get_item_backup`
+`hub_list_apps`, `hub_list_drivers`, `hub_get_source` (`type`: "app"/"driver"/"library"; `id`; chunked `offset`/`length`), `hub_list_backups`, `hub_get_backup`
 
-### Via `manage_app_driver_code` gateway (10 tools — write operations)
+### Via `hub_manage_code_write` gateway (8 tools — write operations)
 
-`install_app`, `install_driver`, `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver`, `restore_item_backup`, `install_library`, `update_library_code`, `delete_library`
+`hub_create_app`, `hub_create_driver`, `hub_update_app`, `hub_update_driver`, `hub_delete_item` (`type`: "app"/"driver"/"library"), `hub_restore_backup`, `hub_create_library`, `hub_update_library`
 
-- `install_app` / `install_driver` accept `source` (inline) OR `sourceFile` (File Manager filename). Token-economy tip: upload source via local CLI first, then pass filename. Includes post-install verification -- returns `success: false` if the Groovy failed to compile, even when the hub returned a redirect.
-- `install_driver` supports bulk mode via an `installs` array of `{source|sourceFile}` objects. Continue-on-error; top-level `success: true` only if all items pass. Cannot combine with single-driver fields. Returns per-item `driverId`. Practical limit ~10-20 drivers/call. (`install_app` is single-item only -- apps are typically one-of-a-kind installs.)
-- `update_driver_code` supports bulk mode via an `updates` array of `{driverId, sourceFile}` objects. Continue-on-error; top-level `success: true` only if all items pass. Cannot combine with single-driver fields.
+- `hub_create_app` / `hub_create_driver` accept `source` (inline) OR `sourceFile` (File Manager filename). Token-economy tip: upload source via local CLI first, then pass filename. Includes post-install verification -- returns `success: false` if the Groovy failed to compile, even when the hub returned a redirect.
+- `hub_create_driver` supports bulk mode via an `installs` array of `{source|sourceFile}` objects. Continue-on-error; top-level `success: true` only if all items pass. Cannot combine with single-driver fields. Returns per-item `driverId`. Practical limit ~10-20 drivers/call. (`hub_create_app` is single-item only -- apps are typically one-of-a-kind installs.)
+- `hub_update_driver` supports bulk mode via an `updates` array of `{driverId, sourceFile}` objects. Continue-on-error; top-level `success: true` only if all items pass. Cannot combine with single-driver fields.
 
 ### Pre-flight checklist for ALL write operations
 
-1. A hub backup must exist within the last 24 hours (`create_hub_backup`)
+1. A hub backup must exist within the last 24 hours (`hub_create_backup`)
 2. Tell the user what you are about to do
 3. Get explicit confirmation
 4. Pass `confirm=true` to the tool
@@ -168,71 +168,69 @@ For complete safety protocols and tool-specific requirements, see [safety-guide.
 
 ### Dangerous Operations
 
-- `reboot_hub` - 1-3 min downtime, automations stop
-- `shutdown_hub` - Powers off completely, needs manual restart
-- `delete_device` - No undo, intended for ghost/orphaned devices only
-- `delete_app` / `delete_driver` (via `manage_app_driver_code`) - Auto-backs up source first
+- `hub_reboot` - 1-3 min downtime, automations stop
+- `hub_shutdown` - Powers off completely, needs manual restart
+- `hub_delete_device` - No undo, intended for ghost/orphaned devices only
+- `hub_delete_item` (via `hub_manage_code_write`, `type`: "app"/"driver"/"library") - Auto-backs up source first
 
 ## Diagnostics and Monitoring
 
-Core tool: `get_device_events` (always visible)
+Core tool: `hub_list_device_events` (always visible) - recent events for a device; add `hoursBack` for up to 7 days of device or location event history (omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events)
 
-Via `manage_logs` gateway (8 tools):
-- `get_hub_logs` - Hub log entries, most recent first; filter by level/source/pattern (regex) or multi-pattern AND/OR (`patternMode`); time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`, max 30d -- throws if exceeded; use ISO-8601 for longer ranges); or scope server-side to a single `deviceId` / `appId` (mutually exclusive). `pattern` matches the message field only (not source/name). Pathological regex like `(.*)*` may hang the matcher; prefer simple alternation.
-- `get_device_history` - Device event history (up to 7 days)
-- `get_performance_stats` - Device/app performance stats (count, % busy, total ms, state size, events). Sortable by pct/count/stateSize/totalMs/name
-- `get_hub_jobs` - Scheduled jobs, running jobs, and hub actions
-- `get_debug_logs` / `clear_debug_logs` - MCP-specific debug logs
-- `set_log_level` - Set MCP log level
-- `get_logging_status` - View logging system statistics
+Via `hub_manage_logs` gateway (6 tools):
+- `hub_get_logs` - Hub log entries, most recent first; filter by level/source/pattern (regex) or multi-pattern AND/OR (`patternMode`); time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`, max 30d -- throws if exceeded; use ISO-8601 for longer ranges); or scope server-side to a single `deviceId` / `appId` (mutually exclusive). `pattern` matches the message field only (not source/name). Pathological regex like `(.*)*` may hang the matcher; prefer simple alternation.
+- `hub_get_performance_stats` - Device/app performance stats (count, % busy, total ms, state size, events). Sortable by pct/count/stateSize/totalMs/name
+- `hub_get_jobs` - Scheduled jobs, running jobs, and hub actions
+- `hub_get_debug_logs` / `hub_delete_debug_logs` - MCP-specific debug logs; pass `mode='status'` to `hub_get_debug_logs` to view logging system statistics
+- `hub_set_log_level` - Set MCP log level
 
-Via `manage_diagnostics` gateway (11 tools):
-- `get_set_hub_metrics` - Record/retrieve hub metrics with CSV trend history
-- `get_memory_history` - Free OS memory and CPU load history with summary stats (Hub Admin Read)
-- `force_garbage_collection` - Force JVM GC; returns before/after free memory (Hub Admin Read)
-- `device_health_check` - Find stale/offline devices; optional ICMP ping for arbitrary IPs
-- `custom_get_rule_diagnostics` - Comprehensive diagnostics for a specific rule
-- `get_zwave_details` / `get_zigbee_details` - Radio info (Z-Wave and Zigbee)
-- `zwave_repair` - Start Z-Wave network repair (5-30 min)
-- `list_captured_states` / `delete_captured_state` / `clear_captured_states` - State snapshots
+Via `hub_manage_diagnostics` gateway (8 tools):
+- `hub_get_metrics` - Record/retrieve hub metrics with CSV trend history
+- `hub_get_memory_history` - Free OS memory and CPU load history with summary stats (Hub Admin Read)
+- `hub_call_gc` - Force JVM GC; returns before/after free memory (Hub Admin Read)
+- `hub_get_device_health` - Find stale/offline devices; optional ICMP ping for arbitrary IPs
+- `hub_get_radio_details` - Radio info; `radio`: "zwave" or "zigbee" (omit for both)
+- `hub_call_zwave_repair` - Start Z-Wave network repair (5-30 min)
+- `hub_list_captured_states` / `hub_delete_captured_state` - State snapshots (omit `stateId` on delete to clear all)
+
+(For per-rule diagnostics, use `hub_get_custom_rule` with `detailed=true`.)
 
 ## File Manager
 
-Via `manage_files` gateway: `list_files`, `read_file`, `write_file`, `delete_file`. Write/delete require Hub Admin Write. Files live at `http://<HUB_IP>/local/<filename>`.
+Via `hub_manage_files` gateway: `hub_list_files`, `hub_read_file`, `hub_write_file`, `hub_delete_file`. Write/delete require Hub Admin Write. Files live at `http://<HUB_IP>/local/<filename>`.
 
 ## Item Backup System
 
-Source code is automatically backed up before modify/delete operations. Use `list_item_backups`, `get_item_backup` (via `manage_apps_drivers` gateway) to view backups, and `restore_item_backup` (via `manage_app_driver_code` gateway) to restore apps and drivers. For libraries, restore via `update_library_code` with the backup file.
+Source code is automatically backed up before modify/delete operations. Use `hub_list_backups`, `hub_get_backup` (via `hub_manage_code_read` gateway) to view backups, and `hub_restore_backup` (via `hub_manage_code_write` gateway) to restore apps and drivers. For libraries, restore via `hub_update_library` with the backup file.
 
 ## System Tools
 
 Core tools (always visible):
-- `get_hub_info` - Comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip) requires Hub Admin Read
-- `get_modes` / `set_mode` - Location modes (Home, Away, Night, etc.)
-- `get_hsm_status` / `set_hsm` - Home Security Monitor
+- `hub_get_info` - Comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip) requires Hub Admin Read
+- `hub_list_modes` / `hub_set_mode` - Location modes (Home, Away, Night, etc.)
+- `hub_get_hsm_status` / `hub_set_hsm` - Home Security Monitor
 
-Via `manage_hub_variables` gateway:
-- `list_variables` / `get_variable` / `set_variable` - Hub variables
+Via `hub_manage_variables` gateway:
+- `hub_list_variables` / `hub_get_variable` / `hub_set_variable` - Hub variables
 
 ## HPM Package Introspection
 
-Via `manage_hpm` gateway (2 tools, Hub Admin Read required):
-- `list_hpm_packages` - List all HPM-tracked packages with full component inventory. Data-quality issues (non-scalar heID, empty heID, whitespace-padded heID) emit inline `_warning` on each component **because** consumers enumerate components per-package and need the warning co-located.
-- `get_hpm_drift` - Cross-reference HPM state against the hub; surfaces `missing-required`, `orphan-app`, `orphan-driver` signals. Data-quality issues land in a separate `dataQualityWarnings[]` aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count.
+Via `hub_manage_hpm` gateway (1 tool, Hub Admin Read required):
+- `hub_list_hpm_packages` - List all HPM-tracked packages with full component inventory. Data-quality issues (non-scalar heID, empty heID, whitespace-padded heID) emit inline `_warning` on each component **because** consumers enumerate components per-package and need the warning co-located. Pass `includeDrift=true` to also cross-reference HPM state against the hub (results nest under a `drift` key); surfaces `missing-required`, `orphan-app`, `orphan-driver` signals, with data-quality issues kept in a separate `dataQualityWarnings[]` aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count.
 
 ## Performance Tips
 
-- Use `list_devices(detailed=false)` first, then paginate `detailed=true` in batches of 20-30
+- Use `hub_list_devices(detailed=false)` first, then paginate `detailed=true` in batches of 20-30
 - Use `labelFilter` (substring) and `capabilityFilter` (exact capability name) for server-side narrowing -- far cheaper than fetching all devices and filtering client-side
 - `format='ids'` returns a flat integer array (cheapest shape); `fields=[...]` projects only named fields to reduce payload and skip hub reads
-- `get_device_events` default limit 10, max recommended 50
-- `get_hub_logs` default 100, max 500 - use filters to narrow
+- `hub_list_device_events` default limit 10, max recommended 50
+- `hub_get_logs` default 100, max 500 - use filters to narrow
 - Make tool calls sequentially, not in parallel (hub is single-threaded)
 - For Hubitat Cloud connections, responses are limited to 128KB - use `labelFilter`, `capabilityFilter`, `fields`, or pagination to stay under the limit
 
 ## On-Demand Reference
 
-Call `get_tool_guide` to retrieve the full tool reference directly from the MCP server. This is the most authoritative and up-to-date tool documentation.
+Call `hub_get_tool_guide` to retrieve the full tool reference directly from the MCP server. This is the most authoritative and up-to-date tool documentation.
 
 For additional reference material:
 - [rule-patterns.md](rule-patterns.md) - Complete rule structure with all trigger, condition, and action types

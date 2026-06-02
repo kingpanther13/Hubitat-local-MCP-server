@@ -116,7 +116,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: get_device returns device summary shape for an existing device (useGateways=#useGateways)"() {
+    def "via dispatch: hub_get_device returns device summary shape for an existing device (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def device = new TestDevice(
@@ -132,7 +132,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         childDevicesList << device
 
         when:
-        def response = mcpDriver.callTool('get_device', [deviceId: '10'])
+        def response = mcpDriver.callTool('hub_get_device', [deviceId: '10'])
 
         then:
         response.error == null
@@ -164,14 +164,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: get_device returns -32602 when device is not found (useGateways=#useGateways)"() {
+    def "via dispatch: hub_get_device returns -32602 when device is not found (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         childDevicesList.clear()
         settingsMap.selectedDevices = []
 
         when:
-        def response = mcpDriver.callTool('get_device', [deviceId: '999'])
+        def response = mcpDriver.callTool('hub_get_device', [deviceId: '999'])
 
         then:
         response.error.code == -32602
@@ -206,7 +206,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: send_command dispatches command to device and returns success (useGateways=#useGateways)"() {
+    def "via dispatch: hub_call_device_command dispatches command to device and returns success (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def device = Spy(TestDevice) {
@@ -218,7 +218,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         childDevicesList << device
 
         when:
-        def response = mcpDriver.callTool('send_command', [deviceId: '10', command: 'on', parameters: []])
+        def response = mcpDriver.callTool('hub_call_device_command', [deviceId: '10', command: 'on', parameters: []])
 
         then: 'the device method was invoked exactly once'
         1 * device.on()
@@ -248,13 +248,13 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: send_command returns -32602 when device is not found (useGateways=#useGateways)"() {
+    def "via dispatch: hub_call_device_command returns -32602 when device is not found (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         childDevicesList.clear()
 
         when:
-        def response = mcpDriver.callTool('send_command', [deviceId: '999', command: 'on', parameters: []])
+        def response = mcpDriver.callTool('hub_call_device_command', [deviceId: '999', command: 'on', parameters: []])
 
         then:
         response.error.code == -32602

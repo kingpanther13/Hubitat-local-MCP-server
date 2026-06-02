@@ -163,9 +163,9 @@ class ToolImportUrlSpec extends ToolSpecBase {
         ex.message.contains('empty body')
     }
 
-    // -------- importUrl integration: update_app_code --------
+    // -------- importUrl integration: hub_update_app --------
 
-    def "update_app_code with importUrl fetches via httpGet and POSTs the fetched source"() {
+    def "hub_update_app with importUrl fetches via httpGet and POSTs the fetched source"() {
         given:
         enableHubAdminWrite()
         stubHttpGet(200, 'fetched-source-here')
@@ -198,9 +198,9 @@ class ToolImportUrlSpec extends ToolSpecBase {
         captured.body.source == 'fetched-source-here'
     }
 
-    // -------- importUrl integration: install_app --------
+    // -------- importUrl integration: hub_create_app --------
 
-    def "install_app with importUrl fetches via httpGet and POSTs to /app/save"() {
+    def "hub_create_app with importUrl fetches via httpGet and POSTs to /app/save"() {
         given:
         enableHubAdminWrite()
         stubHttpGet(200, 'definition(name: "FromUrl")')
@@ -229,9 +229,9 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.note?.contains('hub-side fetch')  // pins the "no agent transcript" semantic, not just the substring
     }
 
-    // -------- importUrl integration: install_library --------
+    // -------- importUrl integration: hub_create_library --------
 
-    def "install_library with importUrl fetches the URL and posts to library/saveOrUpdateJson"() {
+    def "hub_create_library with importUrl fetches the URL and posts to library/saveOrUpdateJson"() {
         given:
         enableHubAdminWrite()
         stubHttpGet(200, 'library(name: "Lib")')
@@ -260,7 +260,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     // All install/update tools enforce: exactly one of source / sourceFile /
     // importUrl / resave (resave is install-irrelevant). modesSet count > 1 throws.
 
-    def "install_app rejects multiple source modes together"() {
+    def "hub_create_app rejects multiple source modes together"() {
         given:
         enableHubAdminWrite()
 
@@ -276,7 +276,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         ex.message.contains('exactly one')
     }
 
-    def "install_library rejects multiple source modes together"() {
+    def "hub_create_library rejects multiple source modes together"() {
         given:
         enableHubAdminWrite()
 
@@ -294,7 +294,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- installAsUserApp --------
 
-    def "install_app with installAsUserApp creates instance via /installedapp/create/<codeId> and parses Location"() {
+    def "hub_create_app with installAsUserApp creates instance via /installedapp/create/<codeId> and parses Location"() {
         given:
         enableHubAdminWrite()
         def capturedPath = null
@@ -318,7 +318,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.instanceAppId == 9999
     }
 
-    def "install_app with installAsUserApp returns success=false when hub returns non-302"() {
+    def "hub_create_app with installAsUserApp returns success=false when hub returns non-302"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
@@ -336,7 +336,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app installAsUserApp returns status-aware error for status #status"() {
+    def "hub_create_app installAsUserApp returns status-aware error for status #status"() {
         // Pins the status-aware error hints so a 401 auth-expired case doesn't get
         // misread as "codeAppId wrong" the way a generic non-302 message would.
         given:
@@ -361,7 +361,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         200    | 'without redirect'
     }
 
-    def "install_app rejects installAsUserApp combined with importUrl"() {
+    def "hub_create_app rejects installAsUserApp combined with importUrl"() {
         given:
         enableHubAdminWrite()
 
@@ -380,7 +380,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- triggerUpdated --------
 
-    def "update_app_code with triggerUpdated fires updated() POST after save and reports updatedFired=true"() {
+    def "hub_update_app with triggerUpdated fires updated() POST after save and reports updatedFired=true"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -411,7 +411,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         posts[1].path == '/installedapp/configure/194/mainPage'
     }
 
-    def "update_app_code with triggerUpdated reports updatedFired=false + repairHints when lifecycle POST throws"() {
+    def "hub_update_app with triggerUpdated reports updatedFired=false + repairHints when lifecycle POST throws"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -447,7 +447,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         postCount == 2
     }
 
-    def "update_app_code without triggerUpdated does NOT fire updated() (negative pin matches UI behavior)"() {
+    def "hub_update_app without triggerUpdated does NOT fire updated() (negative pin matches UI behavior)"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -475,7 +475,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         posts[0].path == '/app/ajax/update'  // only the code-save POST, no lifecycle POST
     }
 
-    def "update_app_code with triggerUpdated lifecycle failure also sets partial:true"() {
+    def "hub_update_app with triggerUpdated lifecycle failure also sets partial:true"() {
         // Pins the half-failure flag added so callers checking result.partial see
         // the lifecycle-fire failure without drilling into updatedFired.
         given:
@@ -505,7 +505,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- mutual exclusion on update paths (mirrors install paths) --------
 
-    def "update_app_code rejects multiple source modes together"() {
+    def "hub_update_app rejects multiple source modes together"() {
         given:
         enableHubAdminWrite()
 
@@ -522,7 +522,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         ex.message.contains('exactly one')
     }
 
-    def "update_library_code rejects multiple source modes together"() {
+    def "hub_update_library rejects multiple source modes together"() {
         given:
         enableHubAdminWrite()
 
@@ -541,7 +541,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- self-update guard + importUrl (no SSRF via importUrl) --------
 
-    def "update_app_code self-update guard blocks importUrl mode (no outbound fetch happens)"() {
+    def "hub_update_app self-update guard blocks importUrl mode (no outbound fetch happens)"() {
         // If a refactor reorders mode resolution above the self-update guard, the hub
         // could be tricked into fetching attacker-controlled URLs (SSRF probe) even
         // though the guard would later block the write. Pins guard-before-fetch ordering.
@@ -562,7 +562,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     // -------- installAsUserApp validation edge cases --------
 
     @spock.lang.Unroll
-    def "install_app installAsUserApp rejects invalid value (#value)"() {
+    def "hub_create_app installAsUserApp rejects invalid value (#value)"() {
         given:
         enableHubAdminWrite()
 
@@ -577,7 +577,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         value << [0, -5, 'not-a-number']
     }
 
-    def "install_app installAsUserApp coerces stringified integer"() {
+    def "hub_create_app installAsUserApp coerces stringified integer"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
@@ -596,7 +596,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     // -------- triggerUpdated validation edge cases --------
 
     @spock.lang.Unroll
-    def "update_app_code triggerUpdated #value returns success+updatedFired:false+repairHints (code save still committed)"() {
+    def "hub_update_app triggerUpdated #value returns success+updatedFired:false+repairHints (code save still committed)"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
@@ -625,9 +625,9 @@ class ToolImportUrlSpec extends ToolSpecBase {
         value << [0, -1, 'abc']
     }
 
-    // -------- per-tool importUrl smoke (install_driver / update_driver_code / update_library_code) --------
+    // -------- per-tool importUrl smoke (hub_create_driver / hub_update_driver / hub_update_library) --------
 
-    def "install_driver with importUrl fetches via httpGet and POSTs to /driver/save"() {
+    def "hub_create_driver with importUrl fetches via httpGet and POSTs to /driver/save"() {
         given:
         enableHubAdminWrite()
         stubHttpGet(200, 'metadata { definition (name: "FromUrl") {} }')
@@ -647,7 +647,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         captured.path == '/driver/save'
     }
 
-    def "update_driver_code with importUrl POSTs the fetched source to /driver/ajax/update"() {
+    def "hub_update_driver with importUrl POSTs the fetched source to /driver/ajax/update"() {
         given:
         enableHubAdminWrite()
         stubHttpGet(200, 'updated-driver-source')
@@ -669,7 +669,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         captured.body.source == 'updated-driver-source'
     }
 
-    def "update_library_code with importUrl posts to /library/saveOrUpdateJson"() {
+    def "hub_update_library with importUrl posts to /library/saveOrUpdateJson"() {
         given:
         enableHubAdminWrite()
         stubHttpGet(200, 'library(name: "Updated")')
@@ -694,7 +694,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- bulk-mode importUrl per-item forwarding --------
 
-    def "install_driver bulk: per-item importUrl is forwarded and fetched"() {
+    def "hub_create_driver bulk: per-item importUrl is forwarded and fetched"() {
         given:
         enableHubAdminWrite()
         stubHttpGet(200, 'driver-from-url')
@@ -720,7 +720,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         postPaths.contains('/driver/save')
     }
 
-    def "update_driver_code bulk: per-item importUrl is forwarded and fetched"() {
+    def "hub_update_driver bulk: per-item importUrl is forwarded and fetched"() {
         given:
         enableHubAdminWrite()
         stubHttpGet(200, 'updated-bulk-driver')
@@ -750,7 +750,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     // -------- JSON-RPC dispatch envelope (-32602 on mutex, success on happy path) --------
 
     @spock.lang.Unroll
-    def "install_app installAsUserApp via dispatch returns success envelope (useGateways=#useGateways)"() {
+    def "hub_create_app installAsUserApp via dispatch returns success envelope (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -759,7 +759,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_app', [installAsUserApp: 310, confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [installAsUserApp: 310, confirm: true])
 
         then:
         response.error == null
@@ -773,13 +773,13 @@ class ToolImportUrlSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app installAsUserApp + importUrl via dispatch returns -32602 (useGateways=#useGateways)"() {
+    def "hub_create_app installAsUserApp + importUrl via dispatch returns -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_app', [
+        def response = mcpDriver.callTool('hub_create_app', [
             installAsUserApp: 310,
             importUrl: 'https://example.com/x.groovy',
             confirm: true
@@ -794,7 +794,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_app_code with importUrl via dispatch returns success envelope (useGateways=#useGateways)"() {
+    def "hub_update_app with importUrl via dispatch returns success envelope (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -806,7 +806,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 9, fileName: 'b.json'] }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [
+        def response = mcpDriver.callTool('hub_update_app', [
             appId: '42',
             importUrl: 'https://example.com/app.groovy',
             confirm: true

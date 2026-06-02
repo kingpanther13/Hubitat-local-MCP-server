@@ -10,19 +10,18 @@ import support.TestLocation
 import support.ToolSpecBase
 
 /**
- * Spec for the manage_diagnostics gateway tools (hubitat-mcp-server.groovy):
+ * Spec for the hub_manage_diagnostics gateway tools (hubitat-mcp-server.groovy):
  *
- * - toolGetHubPerformance   -> get_set_hub_metrics
- * - toolGetMemoryHistory    -> get_memory_history
- * - toolForceGarbageCollection -> force_garbage_collection
- * - toolDeviceHealthCheck   -> device_health_check
- * - toolGetRuleDiagnostics  -> get_rule_diagnostics
- * - toolGetZwaveDetails     -> get_zwave_details
- * - toolGetZigbeeDetails    -> get_zigbee_details
- * - toolZwaveRepair         -> zwave_repair        (Hub Admin Write + confirm)
- * - toolListCapturedStates  -> list_captured_states
- * - toolDeleteCapturedState -> delete_captured_state
- * - toolClearCapturedStates -> clear_captured_states
+ * - toolGetHubPerformance   -> hub_get_metrics
+ * - toolGetMemoryHistory    -> hub_get_memory_history
+ * - toolForceGarbageCollection -> hub_call_gc
+ * - toolDeviceHealthCheck   -> hub_get_device_health
+ * - toolGetRuleDiagnostics  -> hub_get_custom_rule (detailed=true)
+ * - toolGetZwaveDetails     -> hub_get_radio_details (radio=zwave)
+ * - toolGetZigbeeDetails    -> hub_get_radio_details (radio=zigbee)
+ * - toolZwaveRepair         -> hub_call_zwave_repair        (Hub Admin Write + confirm)
+ * - toolListCapturedStates  -> hub_list_captured_states
+ * - toolDeleteCapturedState -> hub_delete_captured_state (stateId omitted = delete ALL)
  *
  * Mocking strategy (see docs/testing.md):
  *   - hubInternalGet      -> HarnessSpec's hubGet.register(path) closures
@@ -37,12 +36,13 @@ import support.ToolSpecBase
  *                            Location.getHub()'s declared return type is Hub —
  *                            Groovy's override check rejects `def hub`.
  *
- * NOTE on clear_captured_states / delete_captured_state: the current server
- * source (hubitat-mcp-server.groovy) does not gate these on confirm=true —
- * issue #74 lists them as "test confirm gating" but the dispatch is direct
- * through clearAllCapturedStates() / deleteCapturedState(stateId). Tests
- * here pin the existing no-confirm behaviour; adding a confirm gate would
- * be a separate design change.
+ * NOTE on hub_delete_captured_state: the current server source
+ * (hubitat-mcp-server.groovy) does not gate this on confirm=true — issue #74
+ * lists it as "test confirm gating" but the dispatch is direct through
+ * deleteCapturedState(stateId) when a stateId is supplied and
+ * clearAllCapturedStates() when it is omitted (no-ID = delete all, per the
+ * verb vocabulary). Tests here pin the existing no-confirm behaviour; adding
+ * a confirm gate would be a separate design change.
  */
 class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
@@ -61,9 +61,9 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
     }
 
-    // -------- toolGetHubPerformance (get_set_hub_metrics) --------
+    // -------- toolGetHubPerformance (hub_get_metrics) --------
 
-    def "get_set_hub_metrics throws when Hub Admin Read is disabled"() {
+    def "hub_get_metrics throws when Hub Admin Read is disabled"() {
         when:
         script.toolGetHubPerformance([:])
 
@@ -72,7 +72,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ex.message.contains('Hub Admin Read')
     }
 
-    def "get_set_hub_metrics snapshots memory/temp/db and records a CSV row"() {
+    def "hub_get_metrics snapshots memory/temp/db and records a CSV row"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(uptime: 172800G)  // 2 days
@@ -107,7 +107,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_set_hub_metrics via dispatch snapshots memory/temp/db (useGateways=#useGateways)"() {
+    def "hub_get_metrics via dispatch snapshots memory/temp/db (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -119,7 +119,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
 
         when:
-        def response = mcpDriver.callTool('get_set_hub_metrics', [:])
+        def response = mcpDriver.callTool('hub_get_metrics', [:])
 
         then:
         response.error == null
@@ -134,12 +134,12 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_set_hub_metrics via dispatch maps Hub-Admin-Read-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_metrics via dispatch maps Hub-Admin-Read-disabled IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('get_set_hub_metrics', [:])
+        def response = mcpDriver.callTool('hub_get_metrics', [:])
 
         then:
         response.error != null
@@ -150,7 +150,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_set_hub_metrics warns on high temperature"() {
+    def "hub_get_metrics warns on high temperature"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(uptime: 3600G)
@@ -168,7 +168,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.current.temperatureWarning.contains('75')
     }
 
-    def "get_set_hub_metrics warns on large database"() {
+    def "hub_get_metrics warns on large database"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(uptime: 3600G)
@@ -185,7 +185,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.current.databaseWarning.contains('LARGE DATABASE')
     }
 
-    def "get_set_hub_metrics warns on low memory"() {
+    def "hub_get_metrics warns on low memory"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(uptime: 3600G)
@@ -203,7 +203,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.current.memoryWarning.contains('40000')
     }
 
-    def "get_set_hub_metrics respects recordSnapshot=false (no CSV write)"() {
+    def "hub_get_metrics respects recordSnapshot=false (no CSV write)"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(uptime: 0G)
@@ -226,7 +226,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     // -------- toolGetMemoryHistory --------
 
-    def "get_memory_history throws when Hub Admin Read is disabled"() {
+    def "hub_get_memory_history throws when Hub Admin Read is disabled"() {
         when:
         script.toolGetMemoryHistory([:])
 
@@ -235,7 +235,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ex.message.contains('Hub Admin Read')
     }
 
-    def "get_memory_history parses CSV rows and computes summary"() {
+    def "hub_get_memory_history parses CSV rows and computes summary"() {
         given:
         settingsMap.enableHubAdminRead = true
         def csv = [
@@ -264,7 +264,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_memory_history via dispatch parses CSV + summary (useGateways=#useGateways)"() {
+    def "hub_get_memory_history via dispatch parses CSV + summary (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -276,7 +276,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         hubGet.register('/hub/advanced/freeOSMemoryHistory') { params -> csv }
 
         when:
-        def response = mcpDriver.callTool('get_memory_history', [:])
+        def response = mcpDriver.callTool('hub_get_memory_history', [:])
 
         then:
         response.error == null
@@ -290,7 +290,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_memory_history emits low-memory warning when current is below 50000"() {
+    def "hub_get_memory_history emits low-memory warning when current is below 50000"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub/advanced/freeOSMemoryHistory') { params ->
@@ -305,7 +305,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.summary.memoryWarning.contains('30000')
     }
 
-    def "get_memory_history applies limit to entries but keeps summary on full set"() {
+    def "hub_get_memory_history applies limit to entries but keeps summary on full set"() {
         given:
         settingsMap.enableHubAdminRead = true
         def rows = (1..10).collect { i -> "2026-04-19 10:0${i},${100000 + i * 1000},0.${i}".toString() }
@@ -323,7 +323,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.summary.showing.contains('3 of 10')
     }
 
-    def "get_memory_history handles empty response"() {
+    def "hub_get_memory_history handles empty response"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub/advanced/freeOSMemoryHistory') { params -> null }
@@ -338,7 +338,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     // -------- toolForceGarbageCollection --------
 
-    def "force_garbage_collection throws when Hub Admin Read is disabled"() {
+    def "hub_call_gc throws when Hub Admin Read is disabled"() {
         when:
         script.toolForceGarbageCollection([:])
 
@@ -347,7 +347,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ex.message.contains('Hub Admin Read')
     }
 
-    def "force_garbage_collection triggers GC and reports before/after"() {
+    def "hub_call_gc triggers GC and reports before/after"() {
         given: 'two freeOSMemory reads pre + post, one forceGC between. pauseExecution is a no-op on the AppExecutor mock.'
         settingsMap.enableHubAdminRead = true
         def beforeAfter = ['90000', '120000']
@@ -371,7 +371,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "force_garbage_collection via dispatch triggers GC and reports before/after (useGateways=#useGateways)"() {
+    def "hub_call_gc via dispatch triggers GC and reports before/after (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -381,7 +381,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         hubGet.register('/hub/forceGC') { params -> '' }
 
         when:
-        def response = mcpDriver.callTool('force_garbage_collection', [:])
+        def response = mcpDriver.callTool('hub_call_gc', [:])
 
         then:
         response.error == null
@@ -397,7 +397,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "force_garbage_collection reports 'could not read' summary when memory probes fail"() {
+    def "hub_call_gc reports 'could not read' summary when memory probes fail"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub/advanced/freeOSMemory') { params -> 'not a number' }
@@ -414,7 +414,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     // -------- toolDeviceHealthCheck --------
 
-    def "device_health_check returns empty summary when no devices are selected"() {
+    def "hub_get_device_health returns empty summary when no devices are selected"() {
         when:
         def result = script.toolDeviceHealthCheck([:])
 
@@ -423,7 +423,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.summary.totalDevices == 0
     }
 
-    def "device_health_check classifies devices as healthy, stale, and unknown"() {
+    def "hub_get_device_health classifies devices as healthy, stale, and unknown"() {
         given:
         def nowMs = 1234567890000L
         def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
@@ -448,7 +448,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "device_health_check via dispatch classifies devices (useGateways=#useGateways)"() {
+    def "hub_get_device_health via dispatch classifies devices (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def nowMs = 1234567890000L
@@ -459,7 +459,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [fresh, stale]
 
         when:
-        def response = mcpDriver.callTool('device_health_check', [staleHours: 24])
+        def response = mcpDriver.callTool('hub_get_device_health', [staleHours: 24])
 
         then:
         response.error == null
@@ -473,7 +473,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "device_health_check includeHealthy=true attaches healthyDevices list"() {
+    def "hub_get_device_health includeHealthy=true attaches healthyDevices list"() {
         given:
         def nowMs = 1234567890000L
         def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
@@ -488,7 +488,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.healthyDevices[0].name == 'Fresh Sensor'
     }
 
-    def "device_health_check cursor paginates staleDevices and emits nextCursor (#174)"() {
+    def "hub_get_device_health cursor paginates staleDevices and emits nextCursor (#174)"() {
         given: '150 stale devices -> 2 pages of 100 + 50'
         def nowMs = 1234567890000L
         def staleDevs = (0..<150).collect { i ->
@@ -506,7 +506,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         page1.staleDevices.size() == 100
         page1.nextCursor == '100'
 
-        and: 'top-level total mirrors list_installed_apps so paginating clients read the same shape across tools'
+        and: 'top-level total mirrors hub_list_installed_apps so paginating clients read the same shape across tools'
         page1.total == 150
 
         when: 'second page (cursor=100)'
@@ -518,7 +518,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         !page2.containsKey('nextCursor')
     }
 
-    def "device_health_check without cursor returns the full staleDevices list (backward compatible)"() {
+    def "hub_get_device_health without cursor returns the full staleDevices list (backward compatible)"() {
         given:
         def nowMs = 1234567890000L
         def stale = new TestDevice(id: 1, name: 'S', label: 'Stale')
@@ -533,7 +533,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.containsKey('nextCursor') == false
     }
 
-    def "device_health_check cursor='0' on an empty stale list returns an empty page (no IOOBE)"() {
+    def "hub_get_device_health cursor='0' on an empty stale list returns an empty page (no IOOBE)"() {
         // Selected device exists (so we don't take the "No devices selected" early-return)
         // but it's healthy -- stale list is therefore empty when cursor is supplied.
         given:
@@ -551,7 +551,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         !result.containsKey('nextCursor')
     }
 
-    def "device_health_check cursor='5' on an empty stale list throws IllegalArgumentException with the friendly out-of-range message"() {
+    def "hub_get_device_health cursor='5' on an empty stale list throws IllegalArgumentException with the friendly out-of-range message"() {
         // Regression guard for the empty-list edge case -- without the offset>0 clause in
         // _parseListCursor, subList(5, 0) would throw a JVM gibberish IAE that the dispatch
         // layer surfaces as "Invalid params: fromIndex(5) > toIndex(0)" with no actionable
@@ -572,7 +572,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         !ex.message.contains('fromIndex')
     }
 
-    def "device_health_check cursor rejects non-numeric values"() {
+    def "hub_get_device_health cursor rejects non-numeric values"() {
         given:
         def nowMs = 1234567890000L
         def stale = new TestDevice(id: 1, name: 'S', label: 'Stale')
@@ -585,10 +585,10 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('cursor')
-        ex.message.contains('device_health_check')
+        ex.message.contains('hub_get_device_health')
     }
 
-    def "device_health_check pingHosts: happy + failure paths populate pingResults"() {
+    def "hub_get_device_health pingHosts: happy + failure paths populate pingResults"() {
         given:
         def network = new NetworkUtilsMock()
         network.pingResponses['192.168.1.1'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0, rttAvg: 1.2, rttMin: 1.0, rttMax: 1.5]
@@ -613,7 +613,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.uninstall()
     }
 
-    def "device_health_check pingHosts: invalid IPv4 strings short-circuit without calling NetworkUtils"() {
+    def "hub_get_device_health pingHosts: invalid IPv4 strings short-circuit without calling NetworkUtils"() {
         given:
         def network = new NetworkUtilsMock()
         network.install()
@@ -631,7 +631,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.uninstall()
     }
 
-    def "device_health_check pingHosts: trims whitespace before validation and echo"() {
+    def "hub_get_device_health pingHosts: trims whitespace before validation and echo"() {
         given:
         def network = new NetworkUtilsMock()
         network.pingResponses['10.0.0.1'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0]
@@ -648,7 +648,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.uninstall()
     }
 
-    def "device_health_check pingHosts: null and non-string entries report a distinct error"() {
+    def "hub_get_device_health pingHosts: null and non-string entries report a distinct error"() {
         given:
         def network = new NetworkUtilsMock()
         network.install()
@@ -665,7 +665,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.uninstall()
     }
 
-    def "device_health_check pingHosts: pingCount is forwarded to NetworkUtils"() {
+    def "hub_get_device_health pingHosts: pingCount is forwarded to NetworkUtils"() {
         given:
         def network = new NetworkUtilsMock()
         network.install()
@@ -680,7 +680,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.uninstall()
     }
 
-    def "device_health_check pingHosts: NetworkUtils exception is captured in pingResults"() {
+    def "hub_get_device_health pingHosts: NetworkUtils exception is captured in pingResults"() {
         given:
         def network = new NetworkUtilsMock()
         network.pingResponses['10.0.0.1'] = new RuntimeException('boom')
@@ -699,7 +699,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.uninstall()
     }
 
-    def "device_health_check pingHosts: errorType discriminates UnknownHostException, SocketException, SecurityException"() {
+    def "hub_get_device_health pingHosts: errorType discriminates UnknownHostException, SocketException, SecurityException"() {
         given:
         def network = new NetworkUtilsMock()
         network.pingResponses['10.0.0.1'] = new java.net.UnknownHostException('no dns')
@@ -718,7 +718,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.uninstall()
     }
 
-    def "device_health_check pingHosts: omitted pingCount forwards 3 to NetworkUtils"() {
+    def "hub_get_device_health pingHosts: omitted pingCount forwards 3 to NetworkUtils"() {
         given:
         def network = new NetworkUtilsMock()
         network.install()
@@ -733,7 +733,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.uninstall()
     }
 
-    def "device_health_check pingHosts: mixed valid and invalid hosts preserve input order"() {
+    def "hub_get_device_health pingHosts: mixed valid and invalid hosts preserve input order"() {
         given:
         def network = new NetworkUtilsMock()
         network.pingResponses['10.0.0.1'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0, rttAvg: 1.0, rttMin: 1.0, rttMax: 1.0]
@@ -755,7 +755,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.uninstall()
     }
 
-    def "device_health_check pingHosts: null PingData is treated as unreachable with transmitted defaulted to count"() {
+    def "hub_get_device_health pingHosts: null PingData is treated as unreachable with transmitted defaulted to count"() {
         given:
         def network = new NetworkUtilsMock()
         network.pingResponses['10.0.0.1'] = { ip, n -> null }
@@ -774,7 +774,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.uninstall()
     }
 
-    def "device_health_check pingHosts: zero packetsTransmitted from platform is preserved (not coerced to count)"() {
+    def "hub_get_device_health pingHosts: zero packetsTransmitted from platform is preserved (not coerced to count)"() {
         given:
         def network = new NetworkUtilsMock()
         network.pingResponses['10.0.0.1'] = [packetsTransmitted: 0, packetsReceived: 0, packetLoss: 100]
@@ -791,7 +791,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.uninstall()
     }
 
-    def "device_health_check pingHosts: rejects more than 5 hosts and pingCount out of range"() {
+    def "hub_get_device_health pingHosts: rejects more than 5 hosts and pingCount out of range"() {
         when:
         script.toolDeviceHealthCheck([pingHosts: ['1.1.1.1','2.2.2.2','3.3.3.3','4.4.4.4','5.5.5.5','6.6.6.6']])
 
@@ -817,9 +817,9 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         high.message.contains('between 1 and 5')
     }
 
-    // -------- device_health_check identifyHub --------
+    // -------- hub_get_device_health identifyHub --------
 
-    def "device_health_check identifyHub=true fires /hub/advanced/blinkLED and surfaces identifyHubTriggered=true"() {
+    def "hub_get_device_health identifyHub=true fires /hub/advanced/blinkLED and surfaces identifyHubTriggered=true"() {
         given:
         def nowMs = 1234567890000L
         def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
@@ -836,7 +836,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
     }
 
-    def "device_health_check identifyHub=true with no devices selected still triggers blink and reports it"() {
+    def "hub_get_device_health identifyHub=true with no devices selected still triggers blink and reports it"() {
         given:
         // settingsMap.selectedDevices intentionally absent — triggers the early-return path
         hubGet.register('/hub/advanced/blinkLED') { params -> 'true' }
@@ -851,7 +851,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
     }
 
-    def "device_health_check without identifyHub does not hit the blinkLED endpoint or emit the field"() {
+    def "hub_get_device_health without identifyHub does not hit the blinkLED endpoint or emit the field"() {
         given:
         def nowMs = 1234567890000L
         def fresh = new TestDevice(id: 1, name: 'Fresh', label: 'Fresh Sensor')
@@ -867,7 +867,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path == '/hub/advanced/blinkLED' }
     }
 
-    def "device_health_check identifyHub=true with endpoint failure surfaces identifyHubTriggered=false plus identifyHubError"() {
+    def "hub_get_device_health identifyHub=true with endpoint failure surfaces identifyHubTriggered=false plus identifyHubError"() {
         given:
         hubGet.register('/hub/advanced/blinkLED') { params -> throw new RuntimeException('LED unavailable') }
 
@@ -879,7 +879,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.identifyHubError == 'LED unavailable'
     }
 
-    def "device_health_check identifyHub=true with null-message exception falls back to e.toString()"() {
+    def "hub_get_device_health identifyHub=true with null-message exception falls back to e.toString()"() {
         given:
         hubGet.register('/hub/advanced/blinkLED') { params -> throw new IOException() }
 
@@ -892,7 +892,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.identifyHubError.toLowerCase().contains('ioexception')
     }
 
-    def "device_health_check identifyHub=true and pingHosts together both surface in one response"() {
+    def "hub_get_device_health identifyHub=true and pingHosts together both surface in one response"() {
         given:
         def network = new NetworkUtilsMock()
         network.pingResponses['10.0.0.1'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0, rttAvg: 1.0, rttMin: 1.0, rttMax: 1.0]
@@ -912,7 +912,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.uninstall()
     }
 
-    def "device_health_check pingHosts: non-numeric pingCount surfaces friendly IllegalArgumentException"() {
+    def "hub_get_device_health pingHosts: non-numeric pingCount surfaces friendly IllegalArgumentException"() {
         when:
         script.toolDeviceHealthCheck([pingHosts: ['1.1.1.1'], pingCount: 'three'])
 
@@ -922,7 +922,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ex.message.contains('three')
     }
 
-    def "device_health_check pingHosts work even when no devices are selected"() {
+    def "hub_get_device_health pingHosts work even when no devices are selected"() {
         given:
         def network = new NetworkUtilsMock()
         network.pingResponses['192.168.1.1'] = [packetsTransmitted: 3, packetsReceived: 3, packetLoss: 0, rttAvg: 1.0, rttMin: 1.0, rttMax: 1.0]
@@ -940,9 +940,9 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         network.uninstall()
     }
 
-    // -------- toolGetRuleDiagnostics --------
+    // -------- toolGetRuleDiagnostics (hub_get_custom_rule detailed=true) --------
 
-    def "get_rule_diagnostics throws when the ruleId is not found"() {
+    def "hub_get_custom_rule detailed throws when the ruleId is not found"() {
         when:
         script.toolGetRuleDiagnostics([ruleId: 'nope'])
 
@@ -952,17 +952,18 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_rule_diagnostics via dispatch maps ruleId-not-found IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_custom_rule detailed via dispatch maps ruleId-not-found IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        // The tool name in executeTool dispatch is custom_get_rule_diagnostics; the
-        // custom_* engine gate at the top of executeTool requires enableCustomRuleEngine=true
-        // (or enableBuiltinApp=true for readonly tools like this one) before the dispatch
-        // reaches the tool body and its own validation.
+        // The tool name in executeTool dispatch is hub_get_custom_rule (detailed=true routes
+        // to toolGetRuleDiagnostics). The executeTool custom_* engine gate only fires for
+        // names that startWith("custom_"), so the renamed hub_get_custom_rule reaches the
+        // tool body unconditionally; enableCustomRuleEngine is set here defensively but is
+        // no longer required for the dispatch to land in the tool's own validation.
         settingsMap.enableCustomRuleEngine = true
 
         when:
-        def response = mcpDriver.callTool('custom_get_rule_diagnostics', [ruleId: 'nope'])
+        def response = mcpDriver.callTool('hub_get_custom_rule', [ruleId: 'nope', detailed: true])
 
         then:
         response.error != null
@@ -973,7 +974,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_rule_diagnostics returns rule structure + recent logs + errors"() {
+    def "hub_get_custom_rule detailed returns rule structure + recent logs + errors"() {
         given: 'a MCP rule child app with 2 triggers / 1 condition / 3 actions'
         def rule = new TestChildApp(id: 42L, label: 'My Rule')
         rule.ruleData = [
@@ -1015,10 +1016,11 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_rule_diagnostics via dispatch returns rule structure + recent logs + errors (useGateways=#useGateways)"() {
+    def "hub_get_custom_rule detailed via dispatch returns rule structure + recent logs + errors (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        // custom_* gate
+        // hub_get_custom_rule no longer trips the custom_* dispatch gate (name doesn't
+        // startWith "custom_"); set defensively only.
         settingsMap.enableCustomRuleEngine = true
         def rule = new TestChildApp(id: 42L, label: 'My Rule')
         rule.ruleData = [
@@ -1041,7 +1043,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('custom_get_rule_diagnostics', [ruleId: '42'])
+        def response = mcpDriver.callTool('hub_get_custom_rule', [ruleId: '42', detailed: true])
 
         then:
         response.error == null
@@ -1058,9 +1060,9 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // -------- toolGetZwaveDetails --------
+    // -------- toolGetZwaveDetails (hub_get_radio_details radio=zwave) --------
 
-    def "get_zwave_details throws when Hub Admin Read is disabled"() {
+    def "hub_get_radio_details zwave throws when Hub Admin Read is disabled"() {
         when:
         script.toolGetZwaveDetails([:])
 
@@ -1069,7 +1071,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ex.message.contains('Hub Admin Read')
     }
 
-    def "get_zwave_details combines hub-SDK zwaveVersion with parsed /hub/zwaveDetails/json"() {
+    def "hub_get_radio_details zwave combines hub-SDK zwaveVersion with parsed /hub/zwaveDetails/json"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(zwaveVersion: '7.17.1')
@@ -1089,7 +1091,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_zwave_details via dispatch returns combined zwaveVersion + zwaveData (useGateways=#useGateways)"() {
+    def "hub_get_radio_details zwave via dispatch returns combined zwaveVersion + zwaveData (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -1099,7 +1101,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_zwave_details', [:])
+        def response = mcpDriver.callTool('hub_get_radio_details', [radio: 'zwave'])
 
         then:
         response.error == null
@@ -1113,7 +1115,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_zwave_details falls back to sdk_only when all zwave endpoints fail"() {
+    def "hub_get_radio_details zwave falls back to sdk_only when all zwave endpoints fail"() {
         given: 'both zwave endpoints throw realistic hub errors (404 on older firmware)'
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(zwaveVersion: '7.0.0')
@@ -1129,7 +1131,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.zwaveVersion == '7.0.0'
     }
 
-    def "get_zwave_details captures raw response when endpoint returns non-JSON"() {
+    def "hub_get_radio_details zwave captures raw response when endpoint returns non-JSON"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(zwaveVersion: '7.0.0')
@@ -1144,9 +1146,9 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.note.contains('not JSON')
     }
 
-    // -------- toolGetZigbeeDetails --------
+    // -------- toolGetZigbeeDetails (hub_get_radio_details radio=zigbee) --------
 
-    def "get_zigbee_details throws when Hub Admin Read is disabled"() {
+    def "hub_get_radio_details zigbee throws when Hub Admin Read is disabled"() {
         when:
         script.toolGetZigbeeDetails([:])
 
@@ -1155,7 +1157,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ex.message.contains('Hub Admin Read')
     }
 
-    def "get_zigbee_details returns channel + zigbeeId + parsed details"() {
+    def "hub_get_radio_details zigbee returns channel + zigbeeId + parsed details"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(zigbeeChannel: 25, zigbeeId: '0x1234')
@@ -1175,7 +1177,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_zigbee_details via dispatch returns channel + zigbeeId + parsed details (useGateways=#useGateways)"() {
+    def "hub_get_radio_details zigbee via dispatch returns channel + zigbeeId + parsed details (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -1185,7 +1187,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_zigbee_details', [:])
+        def response = mcpDriver.callTool('hub_get_radio_details', [radio: 'zigbee'])
 
         then:
         response.error == null
@@ -1200,7 +1202,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_zigbee_details falls back to sdk_only when all endpoints fail"() {
+    def "hub_get_radio_details zigbee falls back to sdk_only when all endpoints fail"() {
         given: 'both zigbee endpoints throw realistic hub errors'
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(zigbeeChannel: 20, zigbeeId: '0xAAAA')
@@ -1215,7 +1217,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.zigbeeChannel == 20
     }
 
-    def "get_zigbee_details captures raw response when endpoint returns non-JSON"() {
+    def "hub_get_radio_details zigbee captures raw response when endpoint returns non-JSON"() {
         given:
         settingsMap.enableHubAdminRead = true
         sharedLocation.hub = new TestHub(zigbeeChannel: 25, zigbeeId: '0x1234')
@@ -1232,7 +1234,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     // -------- toolZwaveRepair (DESTRUCTIVE: confirm + Hub Admin Write gate) --------
 
-    def "zwave_repair throws when confirm is not provided"() {
+    def "hub_call_zwave_repair throws when confirm is not provided"() {
         given:
         enableHubAdminWrite()
 
@@ -1245,7 +1247,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ex.message.contains('confirm=true')
     }
 
-    def "zwave_repair throws when Hub Admin Write is disabled"() {
+    def "hub_call_zwave_repair throws when Hub Admin Write is disabled"() {
         when:
         script.toolZwaveRepair([confirm: true])
 
@@ -1254,7 +1256,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ex.message.contains('Hub Admin Write')
     }
 
-    def "zwave_repair throws when no recent backup exists"() {
+    def "hub_call_zwave_repair throws when no recent backup exists"() {
         given:
         settingsMap.enableHubAdminWrite = true
         // No stateMap.lastBackupTimestamp
@@ -1267,7 +1269,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ex.message.contains('BACKUP REQUIRED')
     }
 
-    def "zwave_repair posts to /hub/zwaveRepair and reports success with warning"() {
+    def "hub_call_zwave_repair posts to /hub/zwaveRepair and reports success with warning"() {
         given:
         enableHubAdminWrite()
         def postedPath = null
@@ -1289,7 +1291,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "zwave_repair via dispatch posts and reports success (useGateways=#useGateways)"() {
+    def "hub_call_zwave_repair via dispatch posts and reports success (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1300,7 +1302,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('zwave_repair', [confirm: true])
+        def response = mcpDriver.callTool('hub_call_zwave_repair', [confirm: true])
 
         then:
         response.error == null
@@ -1315,13 +1317,13 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "zwave_repair via dispatch maps confirm-missing IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_call_zwave_repair via dispatch maps confirm-missing IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('zwave_repair', [:])
+        def response = mcpDriver.callTool('hub_call_zwave_repair', [:])
 
         then:
         response.error != null
@@ -1333,7 +1335,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "zwave_repair reports failure without throwing when POST throws"() {
+    def "hub_call_zwave_repair reports failure without throwing when POST throws"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPost = { String path, Map body = null ->
@@ -1352,7 +1354,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     // -------- toolListCapturedStates --------
 
-    def "list_captured_states returns an empty list with count when state is empty"() {
+    def "hub_list_captured_states returns an empty list with count when state is empty"() {
         when: 'no confirm arg — pins the current no-gate behaviour; a future confirm gate would flip this'
         def result = script.toolListCapturedStates()
 
@@ -1362,7 +1364,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.maxLimit != null
     }
 
-    def "list_captured_states returns entries sorted newest-first"() {
+    def "hub_list_captured_states returns entries sorted newest-first"() {
         given:
         stateMap.capturedDeviceStates = [
             older: [devices: [[id: '1', name: 'D1']], timestamp: 1000L, deviceCount: 1],
@@ -1380,7 +1382,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_captured_states via dispatch returns entries sorted newest-first (useGateways=#useGateways)"() {
+    def "hub_list_captured_states via dispatch returns entries sorted newest-first (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         stateMap.capturedDeviceStates = [
@@ -1389,7 +1391,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('list_captured_states', [:])
+        def response = mcpDriver.callTool('hub_list_captured_states', [:])
 
         then:
         response.error == null
@@ -1403,7 +1405,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "list_captured_states surfaces an at-capacity warning"() {
+    def "hub_list_captured_states surfaces an at-capacity warning"() {
         given: 'override the cap to 5 so filling capacity only takes 5 seed entries'
         settingsMap.maxCapturedStates = 5
         stateMap.capturedDeviceStates = (1..5).collectEntries { i ->
@@ -1418,7 +1420,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.warning.contains('maximum capacity')
     }
 
-    def "list_captured_states surfaces the approaching-limit warning at max-4 slots"() {
+    def "hub_list_captured_states surfaces the approaching-limit warning at max-4 slots"() {
         given: 'max=10, 7 entries → count >= max-4 branch (source hubitat-mcp-server.groovy:3174)'
         settingsMap.maxCapturedStates = 10
         stateMap.capturedDeviceStates = (1..7).collectEntries { i ->
@@ -1436,16 +1438,23 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     // -------- toolDeleteCapturedState --------
 
-    def "delete_captured_state throws when stateId is missing"() {
-        when:
-        script.toolDeleteCapturedState(null)
+    def "hub_delete_captured_state with no stateId clears ALL captured states (no-ID = delete all)"() {
+        given:
+        stateMap.capturedDeviceStates = [
+            a: [devices: [], timestamp: 1000L, deviceCount: 0],
+            b: [devices: [], timestamp: 2000L, deviceCount: 0]
+        ]
+
+        when: 'stateId omitted routes through clearAllCapturedStates() per the merged verb vocabulary'
+        def result = script.toolDeleteCapturedState([:])
 
         then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('stateId is required')
+        result.success == true
+        result.cleared == 2
+        stateMap.capturedDeviceStates == [:]
     }
 
-    def "delete_captured_state removes the specified entry"() {
+    def "hub_delete_captured_state removes the specified entry"() {
         given:
         stateMap.capturedDeviceStates = [
             keep: [devices: [], timestamp: 1000L, deviceCount: 0],
@@ -1463,7 +1472,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_captured_state via dispatch removes the specified entry (useGateways=#useGateways)"() {
+    def "hub_delete_captured_state via dispatch removes the specified entry (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         stateMap.capturedDeviceStates = [
@@ -1472,7 +1481,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('delete_captured_state', [stateId: 'gone'])
+        def response = mcpDriver.callTool('hub_delete_captured_state', [stateId: 'gone'])
 
         then:
         response.error == null
@@ -1487,7 +1496,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "delete_captured_state reports not-found without throwing"() {
+    def "hub_delete_captured_state reports not-found without throwing"() {
         given:
         stateMap.capturedDeviceStates = [keep: [devices: [], timestamp: 1000L, deviceCount: 0]]
 
@@ -1499,9 +1508,9 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.message.contains("'absent' not found")
     }
 
-    // -------- toolClearCapturedStates --------
+    // -------- toolDeleteCapturedState delete-all (clear) path --------
 
-    def "clear_captured_states empties state.capturedDeviceStates and returns count"() {
+    def "hub_delete_captured_state delete-all empties state.capturedDeviceStates and returns count"() {
         given:
         stateMap.capturedDeviceStates = [
             a: [devices: [], timestamp: 1000L, deviceCount: 0],
@@ -1510,7 +1519,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ]
 
         when:
-        def result = script.toolClearCapturedStates()
+        def result = script.toolDeleteCapturedState([:])
 
         then:
         result.success == true
@@ -1519,7 +1528,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "clear_captured_states via dispatch empties state and returns count (useGateways=#useGateways)"() {
+    def "hub_delete_captured_state delete-all via dispatch empties state and returns count (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         stateMap.capturedDeviceStates = [
@@ -1528,8 +1537,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
             c: [devices: [], timestamp: 3000L, deviceCount: 0]
         ]
 
-        when:
-        def response = mcpDriver.callTool('clear_captured_states', [:])
+        when: 'stateId omitted = delete ALL'
+        def response = mcpDriver.callTool('hub_delete_captured_state', [:])
 
         then:
         response.error == null
@@ -1543,9 +1552,9 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "clear_captured_states is idempotent on empty state"() {
+    def "hub_delete_captured_state delete-all is idempotent on empty state"() {
         when:
-        def result = script.toolClearCapturedStates()
+        def result = script.toolDeleteCapturedState([:])
 
         then:
         result.success == true

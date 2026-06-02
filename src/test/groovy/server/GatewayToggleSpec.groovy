@@ -16,19 +16,19 @@ class GatewayToggleSpec extends ToolSpecBase {
         def names = tools*.name as Set
 
         then: 'gateway entries appear'
-        names.contains('manage_rooms')
-        names.contains('manage_files')
-        names.contains('manage_logs')
+        names.contains('hub_manage_rooms')
+        names.contains('hub_manage_files')
+        names.contains('hub_manage_logs')
 
         and: 'sub-tools that live behind a gateway are NOT top-level'
-        !names.contains('list_rooms')
-        !names.contains('list_files')
-        !names.contains('get_hub_logs')
+        !names.contains('hub_list_rooms')
+        !names.contains('hub_list_files')
+        !names.contains('hub_get_logs')
 
         and: 'core tools still appear'
-        names.contains('list_devices')
-        names.contains('get_device')
-        names.contains('search_tools')
+        names.contains('hub_list_devices')
+        names.contains('hub_get_device')
+        names.contains('hub_search_tools')
     }
 
     def "default (null) and explicit useGateways=true produce identical tool lists"() {
@@ -44,7 +44,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         explicitTrueNames == defaultNames
     }
 
-    def "useGateways=false: every tool advertised individually, gateway entries gone, search_tools hidden"() {
+    def "useGateways=false: every tool advertised individually, gateway entries gone, hub_search_tools hidden"() {
         given: 'gateways off; the feature toggles whose tools we expect to see are on'
         settingsMap.useGateways = false
         settingsMap.enableBuiltinApp = true
@@ -55,29 +55,29 @@ class GatewayToggleSpec extends ToolSpecBase {
         def names = tools*.name as Set
 
         then: 'no gateway entries on tools/list'
-        !names.contains('manage_rooms')
-        !names.contains('manage_files')
-        !names.contains('manage_logs')
-        !names.contains('manage_diagnostics')
-        !names.contains('manage_rules_admin')
-        !names.contains('manage_native_rules_and_apps')
-        !names.contains('manage_mcp_self')
+        !names.contains('hub_manage_rooms')
+        !names.contains('hub_manage_files')
+        !names.contains('hub_manage_logs')
+        !names.contains('hub_manage_diagnostics')
+        !names.contains('hub_manage_rules')
+        !names.contains('hub_manage_native_rules')
+        !names.contains('hub_manage_mcp')
 
         and: 'every previously-proxied sub-tool is now top-level'
-        names.contains('list_rooms')
-        names.contains('get_room')
-        names.contains('list_files')
-        names.contains('get_hub_logs')
-        names.contains('get_zwave_details')
-        names.contains('list_rm_rules')
+        names.contains('hub_list_rooms')
+        names.contains('hub_get_room')
+        names.contains('hub_list_files')
+        names.contains('hub_get_logs')
+        names.contains('hub_get_radio_details')
+        names.contains('hub_list_rules')
 
         and: 'core tools still appear'
-        names.contains('list_devices')
-        names.contains('get_device')
-        names.contains('custom_create_rule')
+        names.contains('hub_list_devices')
+        names.contains('hub_get_device')
+        names.contains('hub_create_custom_rule')
 
-        and: 'search_tools is suppressed in flat mode (its purpose is finding tools hidden behind gateways)'
-        !names.contains('search_tools')
+        and: 'hub_search_tools is suppressed in flat mode (its purpose is finding tools hidden behind gateways)'
+        !names.contains('hub_search_tools')
 
         and: 'every entry has the MCP tool shape'
         tools.every {
@@ -87,7 +87,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         }
     }
 
-    def "useGateways=false: catalog equals all tools minus search_tools (no leaks, no drops)"() {
+    def "useGateways=false: catalog equals all tools minus hub_search_tools (no leaks, no drops)"() {
         given: 'all feature toggles on so the gateway-filter is the only narrowing'
         settingsMap.useGateways = false
         settingsMap.enableBuiltinApp = true
@@ -98,7 +98,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         def allNames = script.getAllToolDefinitions()*.name as Set
 
         then:
-        flatNames == (allNames - 'search_tools')
+        flatNames == (allNames - 'hub_search_tools')
     }
 
     @Unroll
@@ -129,25 +129,25 @@ class GatewayToggleSpec extends ToolSpecBase {
 
         where:
         subTool << [
-            'custom_delete_rule', 'custom_test_rule', 'custom_export_rule', 'custom_import_rule', 'custom_clone_rule',
-            'list_variables', 'get_variable', 'set_variable', 'delete_variable',
-            'list_rooms', 'get_room', 'create_room', 'delete_room', 'rename_room',
-            'reboot_hub', 'shutdown_hub', 'delete_device',
-            'list_hub_apps', 'list_hub_drivers', 'get_app_source', 'get_driver_source',
-            'list_item_backups', 'get_item_backup',
-            'install_app', 'install_driver', 'update_app_code', 'update_driver_code',
-            'delete_app', 'delete_driver', 'restore_item_backup',
-            'get_hub_logs', 'get_device_history', 'get_performance_stats', 'get_hub_jobs',
-            'get_debug_logs', 'clear_debug_logs', 'set_log_level', 'get_logging_status',
-            'get_set_hub_metrics', 'get_memory_history', 'force_garbage_collection',
-            'device_health_check', 'custom_get_rule_diagnostics',
-            'get_zwave_details', 'get_zigbee_details', 'zwave_repair',
-            'list_captured_states', 'delete_captured_state', 'clear_captured_states',
-            'list_files', 'read_file', 'write_file', 'delete_file',
-            'list_installed_apps', 'get_device_in_use_by', 'get_app_config', 'list_app_pages',
-            'list_rm_rules', 'run_rm_rule', 'pause_rm_rule', 'resume_rm_rule', 'set_rm_rule_boolean',
-            'create_native_app', 'update_native_app', 'delete_native_app', 'check_rule_health',
-            'update_mcp_settings'
+            'hub_delete_custom_rule', 'hub_test_custom_rule', 'hub_export_custom_rule', 'hub_import_custom_rule', 'hub_clone_custom_rule',
+            'hub_list_variables', 'hub_get_variable', 'hub_set_variable', 'hub_delete_variable',
+            'hub_list_rooms', 'hub_get_room', 'hub_create_room', 'hub_delete_room', 'hub_update_room',
+            'hub_reboot', 'hub_shutdown', 'hub_delete_device',
+            'hub_list_apps', 'hub_list_drivers', 'hub_get_source',
+            'hub_list_backups', 'hub_get_backup',
+            'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
+            'hub_delete_item', 'hub_restore_backup',
+            'hub_get_logs', 'hub_get_performance_stats', 'hub_get_jobs',
+            'hub_get_debug_logs', 'hub_delete_debug_logs', 'hub_set_log_level',
+            'hub_get_metrics', 'hub_get_memory_history', 'hub_call_gc',
+            'hub_get_device_health',
+            'hub_get_radio_details', 'hub_call_zwave_repair',
+            'hub_list_captured_states', 'hub_delete_captured_state',
+            'hub_list_files', 'hub_read_file', 'hub_write_file', 'hub_delete_file',
+            'hub_list_installed_apps', 'hub_list_device_dependents', 'hub_get_app_config', 'hub_list_app_pages',
+            'hub_list_rules', 'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
+            'hub_create_native_app', 'hub_update_native_app', 'hub_delete_native_app', 'hub_get_rule_health',
+            'hub_update_mcp_settings'
         ]
     }
 
@@ -159,7 +159,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.executeTool('list_rooms', [:])
+        def result = script.executeTool('hub_list_rooms', [:])
 
         then:
         result.rooms*.name == ['Living Room']
@@ -170,14 +170,14 @@ class GatewayToggleSpec extends ToolSpecBase {
         settingsMap.useGateways = false
 
         when:
-        def result = script.executeTool('manage_rooms', [tool: 'list_rooms', args: [:]])
+        def result = script.executeTool('hub_manage_rooms', [tool: 'hub_list_rooms', args: [:]])
 
         then:
         result.isError == true
-        result.error.contains('manage_rooms')
+        result.error.contains('hub_manage_rooms')
         result.error.contains('disabled')
-        result.hint.contains('list_rooms')
-        result.hint.contains('rename_room')
+        result.hint.contains('hub_list_rooms')
+        result.hint.contains('hub_update_room')
     }
 
     def "useGateways=true (default): calling a gateway name still dispatches normally"() {
@@ -188,7 +188,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.executeTool('manage_rooms', [tool: 'list_rooms', args: [:]])
+        def result = script.executeTool('hub_manage_rooms', [tool: 'hub_list_rooms', args: [:]])
 
         then:
         result.isError != true
@@ -198,7 +198,7 @@ class GatewayToggleSpec extends ToolSpecBase {
     def "useGateways=false + enableBuiltinApp=false: built-in-app tools still hidden in the flat catalog"() {
         // Pins that the flat-mode branch reuses hideByName — a refactor that splits
         // hide-list construction out of the gateway-mode path would silently leak
-        // list_rm_rules / create_native_app etc. into flat mode.
+        // hub_list_rules / hub_create_native_app etc. into flat mode.
         given:
         settingsMap.useGateways = false
         settingsMap.enableBuiltinApp = false
@@ -208,14 +208,14 @@ class GatewayToggleSpec extends ToolSpecBase {
         def names = script.getToolDefinitions()*.name as Set
 
         then: 'built-in-app tools are removed from the flat catalog, not just from gateway entries'
-        !names.contains('list_rm_rules')
-        !names.contains('create_native_app')
-        !names.contains('list_installed_apps')
-        !names.contains('check_rule_health')
+        !names.contains('hub_list_rules')
+        !names.contains('hub_create_native_app')
+        !names.contains('hub_list_installed_apps')
+        !names.contains('hub_get_rule_health')
 
         and: 'tools that do not depend on enableBuiltinApp are still present'
-        names.contains('get_app_config')
-        names.contains('list_devices')
+        names.contains('hub_get_app_config')
+        names.contains('hub_list_devices')
     }
 
     def "useGateways=false + enableCustomRuleEngine=false (readonly): write-side custom_* tools hidden"() {
@@ -230,17 +230,15 @@ class GatewayToggleSpec extends ToolSpecBase {
         def names = script.getToolDefinitions()*.name as Set
 
         then: 'write/structural custom_* tools are removed'
-        !names.contains('custom_create_rule')
-        !names.contains('custom_delete_rule')
-        !names.contains('custom_export_rule')
-        !names.contains('custom_import_rule')
-        !names.contains('custom_clone_rule')
+        !names.contains('hub_create_custom_rule')
+        !names.contains('hub_delete_custom_rule')
+        !names.contains('hub_export_custom_rule')
+        !names.contains('hub_import_custom_rule')
+        !names.contains('hub_clone_custom_rule')
 
-        and: 'read-side custom_* tools remain'
-        names.contains('custom_list_rules')
-        names.contains('custom_get_rule')
-        names.contains('custom_test_rule')
-        names.contains('custom_get_rule_diagnostics')
+        and: 'read-side custom_* tools remain (hub_get_custom_rule now also serves list + diagnostics modes)'
+        names.contains('hub_get_custom_rule')
+        names.contains('hub_test_custom_rule')
     }
 
     def "useGateways=true + enableCustomRuleEngine=false (readonly): gateway sub-tool catalogs shrink to read-only tools"() {
@@ -257,44 +255,44 @@ class GatewayToggleSpec extends ToolSpecBase {
 
         when:
         def tools = script.getToolDefinitions()
-        def rulesAdmin = tools.find { it.name == 'manage_rules_admin' }
+        def rulesAdmin = tools.find { it.name == 'hub_manage_rules' }
 
-        then: 'gateway entry still appears (custom_test_rule remains visible)'
+        then: 'gateway entry still appears (hub_test_custom_rule remains visible)'
         rulesAdmin != null
 
         and: 'write/structural sub-tools are removed from the catalog prose'
-        !rulesAdmin.description.contains('custom_delete_rule')
-        !rulesAdmin.description.contains('custom_export_rule')
-        !rulesAdmin.description.contains('custom_import_rule')
-        !rulesAdmin.description.contains('custom_clone_rule')
+        !rulesAdmin.description.contains('hub_delete_custom_rule')
+        !rulesAdmin.description.contains('hub_export_custom_rule')
+        !rulesAdmin.description.contains('hub_import_custom_rule')
+        !rulesAdmin.description.contains('hub_clone_custom_rule')
 
         and: 'and from the input-schema tool enum (clients should not be offered them)'
         def toolEnum = rulesAdmin.inputSchema.properties.tool.enum as Set
-        !toolEnum.contains('custom_delete_rule')
-        !toolEnum.contains('custom_export_rule')
-        !toolEnum.contains('custom_import_rule')
-        !toolEnum.contains('custom_clone_rule')
+        !toolEnum.contains('hub_delete_custom_rule')
+        !toolEnum.contains('hub_export_custom_rule')
+        !toolEnum.contains('hub_import_custom_rule')
+        !toolEnum.contains('hub_clone_custom_rule')
 
         and: 'the surviving read sub-tool is still offered'
-        toolEnum.contains('custom_test_rule')
+        toolEnum.contains('hub_test_custom_rule')
     }
 
     def "useGateways=false + builtin/custom both off: gateway-name hint omits hidden sub-tools"() {
         // The flat-mode guard's hint must filter through hideByName — telling a stale
-        // client to call list_rm_rules when it's also disabled by enableBuiltinApp=false
+        // client to call hub_list_rules when it's also disabled by enableBuiltinApp=false
         // would just trade one error for another.
         given:
         settingsMap.useGateways = false
         settingsMap.enableBuiltinApp = false
         settingsMap.enableCustomRuleEngine = false
 
-        when: 'every sub-tool of manage_native_rules_and_apps is hidden by enableBuiltinApp=false'
-        def result = script.executeTool('manage_native_rules_and_apps', [tool: 'list_rm_rules', args: [:]])
+        when: 'every sub-tool of hub_manage_native_rules is hidden by enableBuiltinApp=false'
+        def result = script.executeTool('hub_manage_native_rules', [tool: 'hub_list_rules', args: [:]])
 
         then: 'guard fires, hint does not name any of the hidden sub-tools'
         result.isError == true
-        !result.hint.contains('list_rm_rules')
-        !result.hint.contains('create_native_app')
+        !result.hint.contains('hub_list_rules')
+        !result.hint.contains('hub_create_native_app')
 
         and: 'hint mentions the responsible toggles instead'
         result.hint.contains('Built-in App Tools') || result.hint.contains('Custom Rule Engine')

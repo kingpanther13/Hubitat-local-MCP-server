@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolListInstalledApps (hubitat-mcp-server.groovy approx line 7483).
- * Gateway: manage_installed_apps -> list_installed_apps.
+ * Gateway: hub_manage_installed_apps -> hub_list_installed_apps.
  *
  * Covers: gate-throw, golden path flattening with parentId wiring, the
  * includeHidden promotion logic, each filter value, invalid filter rejection,
@@ -34,13 +34,13 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_installed_apps via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
+    def "hub_list_installed_apps via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = false
 
         when:
-        def response = mcpDriver.callTool('list_installed_apps', [:])
+        def response = mcpDriver.callTool('hub_list_installed_apps', [:])
 
         then:
         response.error.code == -32602
@@ -92,7 +92,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_installed_apps via dispatch flattens 2-level tree with parentId wiring (useGateways=#useGateways)"() {
+    def "hub_list_installed_apps via dispatch flattens 2-level tree with parentId wiring (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -110,7 +110,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { params -> treeJson }
 
         when:
-        def response = mcpDriver.callTool('list_installed_apps', [filter: 'all'])
+        def response = mcpDriver.callTool('hub_list_installed_apps', [filter: 'all'])
 
         then:
         response.error == null
@@ -151,7 +151,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_installed_apps via dispatch filter=builtin returns only non-user apps (useGateways=#useGateways)"() {
+    def "hub_list_installed_apps via dispatch filter=builtin returns only non-user apps (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -164,7 +164,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { params -> treeJson }
 
         when:
-        def response = mcpDriver.callTool('list_installed_apps', [filter: 'builtin'])
+        def response = mcpDriver.callTool('hub_list_installed_apps', [filter: 'builtin'])
 
         then:
         response.error == null
@@ -198,7 +198,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_installed_apps via dispatch filter=user returns only user apps (useGateways=#useGateways)"() {
+    def "hub_list_installed_apps via dispatch filter=user returns only user apps (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -211,7 +211,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { params -> treeJson }
 
         when:
-        def response = mcpDriver.callTool('list_installed_apps', [filter: 'user'])
+        def response = mcpDriver.callTool('hub_list_installed_apps', [filter: 'user'])
 
         then:
         response.error == null
@@ -245,7 +245,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_installed_apps via dispatch filter=disabled returns only disabled apps (useGateways=#useGateways)"() {
+    def "hub_list_installed_apps via dispatch filter=disabled returns only disabled apps (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -258,7 +258,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { params -> treeJson }
 
         when:
-        def response = mcpDriver.callTool('list_installed_apps', [filter: 'disabled'])
+        def response = mcpDriver.callTool('hub_list_installed_apps', [filter: 'disabled'])
 
         then:
         response.error == null
@@ -296,7 +296,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_installed_apps via dispatch filter=parents returns only apps with children (useGateways=#useGateways)"() {
+    def "hub_list_installed_apps via dispatch filter=parents returns only apps with children (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -313,7 +313,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { params -> treeJson }
 
         when:
-        def response = mcpDriver.callTool('list_installed_apps', [filter: 'parents'])
+        def response = mcpDriver.callTool('hub_list_installed_apps', [filter: 'parents'])
 
         then:
         response.error == null
@@ -351,7 +351,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_installed_apps via dispatch filter=children returns only apps with parentId (useGateways=#useGateways)"() {
+    def "hub_list_installed_apps via dispatch filter=children returns only apps with parentId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -368,7 +368,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { params -> treeJson }
 
         when:
-        def response = mcpDriver.callTool('list_installed_apps', [filter: 'children'])
+        def response = mcpDriver.callTool('hub_list_installed_apps', [filter: 'children'])
 
         then:
         response.error == null
@@ -411,7 +411,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_installed_apps via dispatch excludes hidden parent and promotes child to root (useGateways=#useGateways)"() {
+    def "hub_list_installed_apps via dispatch excludes hidden parent and promotes child to root (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -428,7 +428,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { params -> treeJson }
 
         when:
-        def response = mcpDriver.callTool('list_installed_apps', [filter: 'all'])
+        def response = mcpDriver.callTool('hub_list_installed_apps', [filter: 'all'])
 
         then:
         response.error == null
@@ -472,7 +472,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_installed_apps via dispatch promotes grandchildren past hidden middle ancestor (useGateways=#useGateways)"() {
+    def "hub_list_installed_apps via dispatch promotes grandchildren past hidden middle ancestor (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -490,7 +490,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_installed_apps', [:])
+        def response = mcpDriver.callTool('hub_list_installed_apps', [:])
 
         then:
         response.error == null
@@ -532,7 +532,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_installed_apps via dispatch includeHidden=true includes hidden parent (useGateways=#useGateways)"() {
+    def "hub_list_installed_apps via dispatch includeHidden=true includes hidden parent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -549,7 +549,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         hubGet.register('/hub2/appsList') { params -> treeJson }
 
         when:
-        def response = mcpDriver.callTool('list_installed_apps', [filter: 'all', includeHidden: true])
+        def response = mcpDriver.callTool('hub_list_installed_apps', [filter: 'all', includeHidden: true])
 
         then:
         response.error == null
@@ -577,13 +577,13 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_installed_apps via dispatch returns -32602 envelope for invalid filter (useGateways=#useGateways)"() {
+    def "hub_list_installed_apps via dispatch returns -32602 envelope for invalid filter (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('list_installed_apps', [filter: 'bogus'])
+        def response = mcpDriver.callTool('hub_list_installed_apps', [filter: 'bogus'])
 
         then:
         response.error.code == -32602
@@ -607,14 +607,14 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_installed_apps via dispatch returns success=false envelope when hub body is empty (useGateways=#useGateways)"() {
+    def "hub_list_installed_apps via dispatch returns success=false envelope when hub body is empty (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params -> '' }
 
         when:
-        def response = mcpDriver.callTool('list_installed_apps', [:])
+        def response = mcpDriver.callTool('hub_list_installed_apps', [:])
 
         then:
         response.error == null
@@ -641,14 +641,14 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_installed_apps via dispatch returns success=false envelope when hub body is non-JSON (useGateways=#useGateways)"() {
+    def "hub_list_installed_apps via dispatch returns success=false envelope when hub body is non-JSON (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params -> 'not json at all' }
 
         when:
-        def response = mcpDriver.callTool('list_installed_apps', [:])
+        def response = mcpDriver.callTool('hub_list_installed_apps', [:])
 
         then:
         response.error == null
@@ -751,7 +751,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('cursor')
-        ex.message.contains('list_installed_apps')
+        ex.message.contains('hub_list_installed_apps')
     }
 
     def "negative cursor is rejected as out of range (matches PR #180 contract)"() {
@@ -862,7 +862,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.handleGateway('manage_installed_apps', 'list_installed_apps', [filter: 'all'])
+        def result = script.handleGateway('hub_manage_installed_apps', 'hub_list_installed_apps', [filter: 'all'])
 
         then:
         result.apps instanceof List

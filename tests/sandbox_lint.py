@@ -1300,8 +1300,8 @@ def check_tool_guide_pointers(src_override: str | None = None,
         "file_manager": "File Manager",
         "performance": "Performance Tips",
         "builtin_app_tools": "Built-in App Tools",
-        "update_native_app_reference": "`update_native_app` capability reference",
-        "create_native_app_reference": "`create_native_app` reference",
+        "update_native_app_reference": "`hub_update_native_app` capability reference",
+        "create_native_app_reference": "`hub_create_native_app` reference",
     }
     for key in section_keys:
         hint = key_to_heading_hint.get(key)

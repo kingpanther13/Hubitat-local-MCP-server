@@ -3,12 +3,13 @@ package server
 import support.ToolSpecBase
 
 /**
- * Spec for the library management tools in manage_app_driver_code gateway:
+ * Spec for the library management tools in the hub_manage_code_read
+ * (hub_get_source) and hub_manage_code_write (create/update/delete) gateways:
  *
- * - toolGetLibrarySource   -> get_library_source
- * - toolInstallLibrary     -> install_library
- * - toolUpdateLibraryCode  -> update_library_code
- * - toolDeleteLibrary      -> delete_library
+ * - toolGetLibrarySource   -> hub_get_source (type:library)
+ * - toolInstallLibrary     -> hub_create_library
+ * - toolUpdateLibraryCode  -> hub_update_library
+ * - toolDeleteLibrary      -> hub_delete_item (type:library)
  *
  * Hub API contracts verified here:
  *   GET  /library/list/single/data/<id>  -- returns [{id, version, source, name, namespace, ...}]
@@ -73,7 +74,7 @@ def helperMethod() { return "ok" }
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('get_library_source', [libraryId: '42'])
+        def response = mcpDriver.callTool('hub_get_source', [type: 'library', id: '42'])
 
         then:
         response.error.code == -32602
@@ -102,7 +103,7 @@ def helperMethod() { return "ok" }
         enableHubAdminRead()
 
         when:
-        def response = mcpDriver.callTool('get_library_source', [:])
+        def response = mcpDriver.callTool('hub_get_source', [type: 'library'])
 
         then:
         response.error.code == -32602
@@ -142,7 +143,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
 
         when:
-        def response = mcpDriver.callTool('get_library_source', [libraryId: '42'])
+        def response = mcpDriver.callTool('hub_get_source', [type: 'library', id: '42'])
 
         then:
         response.error == null
@@ -184,7 +185,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/list/single/data/999') { params -> '[]' }
 
         when:
-        def response = mcpDriver.callTool('get_library_source', [libraryId: '999'])
+        def response = mcpDriver.callTool('hub_get_source', [type: 'library', id: '999'])
 
         then:
         response.error == null
@@ -219,7 +220,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/list/single/data/42') { params -> null }
 
         when:
-        def response = mcpDriver.callTool('get_library_source', [libraryId: '42'])
+        def response = mcpDriver.callTool('hub_get_source', [type: 'library', id: '42'])
 
         then:
         response.error == null
@@ -254,7 +255,7 @@ def helperMethod() { return "ok" }
         result.totalLength == 65000
         result.hasMore == true
         result.sourceFile == 'mcp-source-library-10.groovy'
-        result.sourceFileHint.contains('update_library_code')
+        result.sourceFileHint.contains('hub_update_library')
         uploadedFiles.containsKey('mcp-source-library-10.groovy')
     }
 
@@ -274,7 +275,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('get_library_source', [libraryId: '10'])
+        def response = mcpDriver.callTool('hub_get_source', [type: 'library', id: '10'])
 
         then:
         response.error == null
@@ -284,7 +285,7 @@ def helperMethod() { return "ok" }
         inner.totalLength == 65000
         inner.hasMore == true
         inner.sourceFile == 'mcp-source-library-10.groovy'
-        inner.sourceFileHint.contains('update_library_code')
+        inner.sourceFileHint.contains('hub_update_library')
         uploadedFiles.containsKey('mcp-source-library-10.groovy')
 
         where:
@@ -320,7 +321,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/list/single/data/5') { params -> libJson }
 
         when:
-        def response = mcpDriver.callTool('get_library_source', [libraryId: '5', offset: 100, length: 50])
+        def response = mcpDriver.callTool('hub_get_source', [type: 'library', id: '5', offset: 100, length: 50])
 
         then:
         response.error == null
@@ -339,7 +340,7 @@ def helperMethod() { return "ok" }
 
     // -------- toolInstallLibrary --------
 
-    def "install_library throws when Hub Admin Write is disabled"() {
+    def "hub_create_library throws when Hub Admin Write is disabled"() {
         when:
         script.toolInstallLibrary([source: SAMPLE_SOURCE, confirm: true])
 
@@ -349,12 +350,12 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error.code == -32602
@@ -364,7 +365,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library throws when confirm is not provided"() {
+    def "hub_create_library throws when confirm is not provided"() {
         given:
         enableHubAdminWrite()
 
@@ -377,13 +378,13 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE])
+        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE])
 
         then:
         response.error.code == -32602
@@ -393,7 +394,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library throws when neither source nor sourceFile is supplied"() {
+    def "hub_create_library throws when neither source nor sourceFile is supplied"() {
         given:
         enableHubAdminWrite()
 
@@ -407,13 +408,13 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch returns -32602 envelope when neither source nor sourceFile supplied (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns -32602 envelope when neither source nor sourceFile supplied (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_library', [confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [confirm: true])
 
         then:
         response.error.code == -32602
@@ -424,7 +425,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library throws when both source and sourceFile are supplied"() {
+    def "hub_create_library throws when both source and sourceFile are supplied"() {
         given:
         enableHubAdminWrite()
 
@@ -437,13 +438,13 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch returns -32602 envelope when both source and sourceFile supplied (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns -32602 envelope when both source and sourceFile supplied (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, sourceFile: 'foo.groovy', confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, sourceFile: 'foo.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -453,7 +454,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library (source mode) POSTs JSON to /library/saveOrUpdateJson and returns libraryId"() {
+    def "hub_create_library (source mode) POSTs JSON to /library/saveOrUpdateJson and returns libraryId"() {
         given:
         enableHubAdminWrite()
         def capturedBody = null
@@ -481,7 +482,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch (source mode) POSTs JSON and returns libraryId (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch (source mode) POSTs JSON and returns libraryId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -495,7 +496,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         capturedBody.id == null
@@ -515,7 +516,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library (sourceFile mode) reads source from File Manager and posts it"() {
+    def "hub_create_library (sourceFile mode) reads source from File Manager and posts it"() {
         given:
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String fileName ->
@@ -541,7 +542,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch (sourceFile mode) reads source from File Manager and posts it (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch (sourceFile mode) reads source from File Manager and posts it (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -558,7 +559,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [sourceFile: 'mylib.groovy', confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [sourceFile: 'mylib.groovy', confirm: true])
 
         then:
         capturedBody.source == SAMPLE_SOURCE
@@ -573,7 +574,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library throws when sourceFile is not found in File Manager"() {
+    def "hub_create_library throws when sourceFile is not found in File Manager"() {
         given:
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
@@ -587,14 +588,14 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch returns -32602 envelope when sourceFile not found in File Manager (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns -32602 envelope when sourceFile not found in File Manager (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        def response = mcpDriver.callTool('install_library', [sourceFile: 'missing.groovy', confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [sourceFile: 'missing.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -604,7 +605,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library reports hub failure when saveOrUpdateJson returns success=false"() {
+    def "hub_create_library reports hub failure when saveOrUpdateJson returns success=false"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
@@ -622,7 +623,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch reports failure envelope when saveOrUpdateJson returns success=false (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch reports failure envelope when saveOrUpdateJson returns success=false (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -631,7 +632,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: 'bad source', confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [source: 'bad source', confirm: true])
 
         then:
         response.error == null
@@ -646,7 +647,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library reports failure when hub POST throws"() {
+    def "hub_create_library reports failure when hub POST throws"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
@@ -663,7 +664,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch reports failure envelope when hub POST throws (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch reports failure envelope when hub POST throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -672,7 +673,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -686,7 +687,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library fails closed when post-install verification finds the library absent from the list"() {
+    def "hub_create_library fails closed when post-install verification finds the library absent from the list"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
@@ -708,7 +709,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch fails closed envelope when verification finds library absent (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch fails closed envelope when verification finds library absent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -718,7 +719,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/hub2/userLibraries') { params -> '[]' }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -735,7 +736,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library returns success with verified=true when post-install library list includes the new library"() {
+    def "hub_create_library returns success with verified=true when post-install library list includes the new library"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
@@ -757,7 +758,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch returns success envelope with verified=true when verify includes new library (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns success envelope with verified=true when verify includes new library (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -769,7 +770,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -785,7 +786,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library returns success with verifyError when post-install verification fetch throws"() {
+    def "hub_create_library returns success with verifyError when post-install verification fetch throws"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
@@ -808,7 +809,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch returns success envelope with verifyError when verify fetch throws (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns success envelope with verifyError when verify fetch throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -820,7 +821,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -836,7 +837,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library fails closed with anti-retry note when verify returns unparseable body"() {
+    def "hub_create_library fails closed with anti-retry note when verify returns unparseable body"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
@@ -855,7 +856,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch fails closed envelope with anti-retry note when verify returns unparseable body (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch fails closed envelope with anti-retry note when verify returns unparseable body (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -865,7 +866,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/hub2/userLibraries') { params -> '<html>login page</html>' }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -880,7 +881,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library fails closed with anti-retry note when hub returns null/empty response"() {
+    def "hub_create_library fails closed with anti-retry note when hub returns null/empty response"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostJson = { String path, String body -> null }
@@ -898,14 +899,14 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch fails closed envelope when hub returns null response (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch fails closed envelope when hub returns null response (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
         script.metaClass.hubInternalPostJson = { String path, String body -> null }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -922,7 +923,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "install_library fails closed with anti-retry note when hub response has no id field"() {
+    def "hub_create_library fails closed with anti-retry note when hub response has no id field"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
@@ -942,7 +943,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "install_library via dispatch fails closed envelope when hub response has no id field (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch fails closed envelope when hub response has no id field (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -951,7 +952,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('install_library', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -970,7 +971,7 @@ def helperMethod() { return "ok" }
 
     // -------- toolUpdateLibraryCode --------
 
-    def "update_library_code throws when Hub Admin Write is disabled"() {
+    def "hub_update_library throws when Hub Admin Write is disabled"() {
         when:
         script.toolUpdateLibraryCode([libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
@@ -980,12 +981,12 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error.code == -32602
@@ -995,7 +996,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "update_library_code throws when confirm is not provided"() {
+    def "hub_update_library throws when confirm is not provided"() {
         given:
         enableHubAdminWrite()
 
@@ -1008,13 +1009,13 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: SAMPLE_SOURCE])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE])
 
         then:
         response.error.code == -32602
@@ -1024,7 +1025,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "update_library_code throws when libraryId is missing"() {
+    def "hub_update_library throws when libraryId is missing"() {
         given:
         enableHubAdminWrite()
 
@@ -1037,13 +1038,13 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code via dispatch returns -32602 envelope when libraryId missing (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns -32602 envelope when libraryId missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error.code == -32602
@@ -1053,7 +1054,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "update_library_code throws when none of source, sourceFile, or resave is supplied"() {
+    def "hub_update_library throws when none of source, sourceFile, or resave is supplied"() {
         given:
         enableHubAdminWrite()
 
@@ -1066,13 +1067,13 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code via dispatch returns -32602 envelope when none of source/sourceFile/resave (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns -32602 envelope when none of source/sourceFile/resave (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1082,7 +1083,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "update_library_code (source mode) backs up, fetches version, POSTs to saveOrUpdateJson"() {
+    def "hub_update_library (source mode) backs up, fetches version, POSTs to saveOrUpdateJson"() {
         given:
         enableHubAdminWrite()
         // Backup + version fetch use /library/list/single/data/42
@@ -1124,7 +1125,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code via dispatch (source mode) backs up fetches version and POSTs (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch (source mode) backs up fetches version and POSTs (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1138,7 +1139,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
         then:
         uploads.size() == 1
@@ -1161,7 +1162,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "update_library_code skips re-uploading backup when an entry exists within the 1-hour dedup window"() {
+    def "hub_update_library skips re-uploading backup when an entry exists within the 1-hour dedup window"() {
         given:
         enableHubAdminWrite()
         // Pre-populate manifest with a recent backup (60s ago, well inside 1-hour window).
@@ -1202,7 +1203,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code via dispatch skips re-uploading backup when entry exists within 1-hour dedup window (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch skips re-uploading backup when entry exists within 1-hour dedup window (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1223,7 +1224,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: SAMPLE_SOURCE + ' // edit', confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE + ' // edit', confirm: true])
 
         then:
         uploads == []
@@ -1240,7 +1241,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "update_library_code (sourceFile mode) reads source from File Manager"() {
+    def "hub_update_library (sourceFile mode) reads source from File Manager"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
@@ -1265,7 +1266,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code via dispatch (sourceFile mode) reads source from File Manager (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch (sourceFile mode) reads source from File Manager (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1281,7 +1282,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', sourceFile: 'updated-lib.groovy', confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', sourceFile: 'updated-lib.groovy', confirm: true])
 
         then:
         capturedBody.source == SAMPLE_SOURCE
@@ -1296,7 +1297,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "update_library_code (sourceFile mode) throws when File Manager file is absent"() {
+    def "hub_update_library (sourceFile mode) throws when File Manager file is absent"() {
         given:
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
@@ -1310,14 +1311,14 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code via dispatch returns -32602 envelope when sourceFile absent (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns -32602 envelope when sourceFile absent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', sourceFile: 'missing.groovy', confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', sourceFile: 'missing.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1327,7 +1328,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "update_library_code (resave mode) fetches source and version, then re-saves without external source"() {
+    def "hub_update_library (resave mode) fetches source and version, then re-saves without external source"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
@@ -1349,7 +1350,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code via dispatch (resave mode) fetches source and version then re-saves (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch (resave mode) fetches source and version then re-saves (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1362,7 +1363,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', resave: true, confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', resave: true, confirm: true])
 
         then:
         capturedBody.version == 1
@@ -1377,7 +1378,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "update_library_code throws when resave mode cannot fetch the library"() {
+    def "hub_update_library throws when resave mode cannot fetch the library"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/library/list/single/data/999') { params -> '[]' }
@@ -1391,14 +1392,14 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code via dispatch returns -32602 envelope when resave mode cannot fetch library (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns -32602 envelope when resave mode cannot fetch library (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
         hubGet.register('/library/list/single/data/999') { params -> '[]' }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '999', resave: true, confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '999', resave: true, confirm: true])
 
         then:
         response.error.code == -32602
@@ -1408,7 +1409,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "update_library_code reports hub failure when saveOrUpdateJson returns success=false"() {
+    def "hub_update_library reports hub failure when saveOrUpdateJson returns success=false"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
@@ -1427,7 +1428,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code via dispatch reports failure envelope when saveOrUpdateJson returns success=false (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch reports failure envelope when saveOrUpdateJson returns success=false (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1438,7 +1439,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error == null
@@ -1452,7 +1453,7 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
-    def "update_library_code throws when pre-update backup fails"() {
+    def "hub_update_library throws when pre-update backup fails"() {
         given:
         enableHubAdminWrite()
         // Backup GET throws -- update must abort (fail-closed, matching apps/drivers update path)
@@ -1468,7 +1469,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code via dispatch surfaces error envelope when pre-update backup fails (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch surfaces error envelope when pre-update backup fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1477,7 +1478,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
         then: 'any thrown exception must surface as either -32602 (IAE) or isError envelope (RuntimeException)'
         response.error?.code == -32602 || response.result?.isError == true
@@ -1503,7 +1504,7 @@ def helperMethod() { return "ok" }
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('delete_library', [libraryId: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1532,7 +1533,7 @@ def helperMethod() { return "ok" }
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('delete_library', [libraryId: '42'])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42'])
 
         then:
         response.error.code == -32602
@@ -1561,7 +1562,7 @@ def helperMethod() { return "ok" }
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('delete_library', [confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1591,7 +1592,7 @@ def helperMethod() { return "ok" }
         result.libraryId == '42'
         result.backupFile == 'mcp-backup-library-42.groovy'
         uploads == ['mcp-backup-library-42.groovy']
-        result.restoreHint.contains('install_library')
+        result.restoreHint.contains('hub_create_library')
     }
 
     @spock.lang.Unroll
@@ -1605,7 +1606,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/edit/deleteJson/42') { params -> '{"success":true,"message":null}' }
 
         when:
-        def response = mcpDriver.callTool('delete_library', [libraryId: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
 
         then:
         response.error == null
@@ -1615,7 +1616,7 @@ def helperMethod() { return "ok" }
         inner.libraryId == '42'
         inner.backupFile == 'mcp-backup-library-42.groovy'
         uploads == ['mcp-backup-library-42.groovy']
-        inner.restoreHint.contains('install_library')
+        inner.restoreHint.contains('hub_create_library')
 
         where:
         useGateways << [true, false]
@@ -1653,7 +1654,7 @@ def helperMethod() { return "ok" }
         result.success == true
         result.libraryId == '42'
         result.backupFile == 'mcp-backup-library-42.groovy'
-        result.restoreHint.contains('install_library')
+        result.restoreHint.contains('hub_create_library')
     }
 
     @spock.lang.Unroll
@@ -1676,7 +1677,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/edit/deleteJson/42') { params -> '{"success":true,"message":null}' }
 
         when:
-        def response = mcpDriver.callTool('delete_library', [libraryId: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
 
         then:
         uploads == []
@@ -1686,7 +1687,7 @@ def helperMethod() { return "ok" }
         inner.success == true
         inner.libraryId == '42'
         inner.backupFile == 'mcp-backup-library-42.groovy'
-        inner.restoreHint.contains('install_library')
+        inner.restoreHint.contains('hub_create_library')
 
         where:
         useGateways << [true, false]
@@ -1722,7 +1723,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/edit/deleteJson/42') { params -> '{"success":true,"message":null}' }
 
         when:
-        def response = mcpDriver.callTool('delete_library', [libraryId: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
 
         then:
         response.error == null
@@ -1768,7 +1769,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('delete_library', [libraryId: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
 
         then:
         response.error == null
@@ -1813,7 +1814,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('delete_library', [libraryId: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
 
         then:
         response.error == null
@@ -1856,7 +1857,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/edit/deleteJson/42') { params -> '' }
 
         when:
-        def response = mcpDriver.callTool('delete_library', [libraryId: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
 
         then:
         response.error == null
@@ -1904,7 +1905,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('delete_library', [libraryId: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
 
         then:
         response.error == null
@@ -1922,7 +1923,7 @@ def helperMethod() { return "ok" }
     // -------- libraryId integer validation (Finding #10) --------
     //
     // Three tools share the same positive-integer guard for libraryId:
-    // get_library_source, update_library_code, delete_library.
+    // get_library_source, hub_update_library, delete_library.
     // All three should reject the same bad-input cases identically.
 
     @spock.lang.Unroll
@@ -1952,7 +1953,7 @@ def helperMethod() { return "ok" }
         enableHubAdminRead()
 
         when:
-        def response = mcpDriver.callTool('get_library_source', [libraryId: badId])
+        def response = mcpDriver.callTool('hub_get_source', [type: 'library', id: badId])
 
         then:
         response.error.code == -32602
@@ -1971,7 +1972,7 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code rejects invalid libraryId: #description"() {
+    def "hub_update_library rejects invalid libraryId: #description"() {
         given:
         enableHubAdminWrite()
 
@@ -1991,13 +1992,13 @@ def helperMethod() { return "ok" }
     }
 
     @spock.lang.Unroll
-    def "update_library_code via dispatch returns -32602 envelope for invalid libraryId '#badId' (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns -32602 envelope for invalid libraryId '#badId' (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: badId, source: SAMPLE_SOURCE, confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: badId, source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error.code == -32602
@@ -2042,7 +2043,7 @@ def helperMethod() { return "ok" }
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('delete_library', [libraryId: badId, confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: badId, confirm: true])
 
         then:
         response.error.code == -32602

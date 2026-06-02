@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 103 MCP tools (36 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 89 MCP tools (33 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 103 tools total — 23 core tools are always visible, while 80 additional tools are organized behind 13 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 89 tools total — 20 core tools are always visible, while 69 additional tools are organized behind 13 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -221,23 +221,22 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (103 total — 36 on tools/list)
+### MCP Tools (89 total — 33 on tools/list)
 
-The server has 103 tools total. To keep the MCP `tools/list` manageable, **23 core tools** are always visible and **80 additional tools** are organized behind **13 domain-named gateways**. The AI sees 36 items on `tools/list` (23 + 13 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 89 tools total. To keep the MCP `tools/list` manageable, **20 core tools** are always visible and **69 additional tools** are organized behind **13 domain-named gateways**. The AI sees 33 items on `tools/list` (20 + 13 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
-#### Core Tools (23) — Always visible on tools/list
+#### Core Tools (20) — Always visible on tools/list
 
 <details>
-<summary><b>Devices</b> (6) — Control and query devices</summary>
+<summary><b>Devices</b> (5) — Control and query devices</summary>
 
 | Tool | Description |
 |------|-------------|
-| `list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection) |
-| `get_device` | Full device details: attributes, commands, capabilities |
-| `get_attribute` | Get a specific attribute value |
-| `send_command` | Send a command (on, off, setLevel, etc.) |
-| `get_device_events` | Recent events for a device |
-| `poll_until_attribute` | Block-poll an attribute until it matches an expected value or times out. `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). At least one of `expectedValue` or `expectedValues` required. BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. |
+| `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) |
+| `hub_get_device` | Full device details: attributes, commands, capabilities |
+| `hub_get_device_attribute` | Get a specific attribute value. Pass `expectedValue` (or `expectedValues`) to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. |
+| `hub_call_device_command` | Send a command (on, off, setLevel, etc.) |
+| `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a time window (up to 7 days of device or location event history); omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. |
 
 </details>
 
@@ -246,13 +245,12 @@ The server has 103 tools total. To keep the MCP `tools/list` manageable, **23 co
 
 | Tool | Description |
 |------|-------------|
-| `custom_list_rules` | List all custom-engine rules with status |
-| `custom_get_rule` | Full custom-engine rule details (triggers, conditions, actions) |
-| `custom_create_rule` | Create a new custom-engine automation rule (separate from native Rule Machine) |
-| `custom_update_rule` | Update custom-engine rule triggers, conditions, actions, or enabled state (`enabled=true/false`) |
-| `create_native_app` | Create a NATIVE classic SmartApp (RM 5.1 by default; `appType` enum extends to Room Lighting / Button Controllers / Basic Rules / etc.). Appears under Apps / Automations like a normally-created app. |
-| `update_native_app` | Modify any classic native app by appId (multiple=true contract automatic, snapshot-before-write) |
-| `delete_native_app` | Delete a classic native app (auto-snapshot to File Manager) |
+| `hub_get_custom_rule` | Full custom-engine rule details (triggers, conditions, actions). Omit `ruleId` to list all custom-engine rules with status; pass `detailed=true` for comprehensive diagnostics on a specific rule. |
+| `hub_create_custom_rule` | Create a new custom-engine automation rule (separate from native Rule Machine) |
+| `hub_update_custom_rule` | Update custom-engine rule triggers, conditions, actions, or enabled state (`enabled=true/false`) |
+| `hub_create_native_app` | Create a NATIVE classic SmartApp (RM 5.1 by default; `appType` enum extends to Room Lighting / Button Controllers / Basic Rules / etc.). Appears under Apps / Automations like a normally-created app. |
+| `hub_update_native_app` | Modify any classic native app by appId (multiple=true contract automatic, snapshot-before-write) |
+| `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager) |
 
 </details>
 
@@ -261,7 +259,7 @@ The server has 103 tools total. To keep the MCP `tools/list` manageable, **23 co
 
 | Tool | Description |
 |------|-------------|
-| `update_device` | Update device properties (label, room, preferences, etc.) |
+| `hub_update_device` | Update device properties (label, room, preferences, etc.) |
 
 </details>
 
@@ -270,21 +268,20 @@ The server has 103 tools total. To keep the MCP `tools/list` manageable, **23 co
 
 | Tool | Description |
 |------|-------------|
-| `get_hub_info` | Comprehensive hub info: hardware, health, MCP stats. PII (name, IP, location) requires Hub Admin Read |
-| `get_modes` | List location modes |
-| `set_mode` | Change location mode (Home, Away, Night, etc.) |
-| `get_hsm_status` | Get Home Security Monitor status |
-| `set_hsm` | Change HSM arm mode |
+| `hub_get_info` | Comprehensive hub info: hardware, health, MCP stats. PII (name, IP, location) requires Hub Admin Read |
+| `hub_list_modes` | List location modes |
+| `hub_set_mode` | Change location mode (Home, Away, Night, etc.) |
+| `hub_get_hsm_status` | Get Home Security Monitor status |
+| `hub_set_hsm` | Change HSM arm mode |
 
 </details>
 
 <details>
-<summary><b>Virtual Devices</b> (2) — MCP-managed virtual devices</summary>
+<summary><b>Virtual Devices</b> (1) — MCP-managed virtual devices</summary>
 
 | Tool | Description |
 |------|-------------|
-| `manage_virtual_device` | Create or delete an MCP-managed virtual device (`action`: "create", "delete") -- supports built-in `deviceType` OR `customDriver={namespace, name}` (Hub Admin Write) |
-| `list_virtual_devices` | List MCP-managed virtual devices with states |
+| `hub_manage_virtual_device` | Create or delete an MCP-managed virtual device (`action`: "create", "delete") -- supports built-in `deviceType` OR `customDriver={namespace, name}` (Hub Admin Write). To list MCP-managed virtual devices with states, use `hub_list_devices` with `filter='virtual'`. |
 
 </details>
 
@@ -293,9 +290,9 @@ The server has 103 tools total. To keep the MCP `tools/list` manageable, **23 co
 
 | Tool | Description |
 |------|-------------|
-| `create_hub_backup` | Create full hub backup (required before admin writes) |
-| `check_for_update` | Check if a newer MCP server version is available |
-| `generate_bug_report` | Generate comprehensive diagnostic report |
+| `hub_create_backup` | Create full hub backup (required before admin writes) |
+| `hub_get_update_status` | Check if a newer MCP server version is available |
+| `hub_report_issue` | Generate comprehensive diagnostic report |
 
 </details>
 
@@ -304,8 +301,8 @@ The server has 103 tools total. To keep the MCP `tools/list` manageable, **23 co
 
 | Tool | Description |
 |------|-------------|
-| `get_tool_guide` | Full tool reference from the MCP server itself |
-| `search_tools` | Natural-language search across all tools (BM25 ranking); returns matches with their gateway location |
+| `hub_get_tool_guide` | Full tool reference from the MCP server itself |
+| `hub_search_tools` | Natural-language search across all tools (BM25 ranking); returns matches with their gateway location |
 
 </details>
 
@@ -314,200 +311,189 @@ The server has 103 tools total. To keep the MCP `tools/list` manageable, **23 co
 Call a gateway with no arguments to see full parameter schemas. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
 <details>
-<summary><b>manage_rules_admin</b> (5) — Rule administration</summary>
+<summary><b>hub_manage_rules</b> (5) — Rule administration</summary>
 
 | Tool | Description |
 |------|-------------|
-| `custom_delete_rule` | Permanently delete a custom-engine rule (auto-backs up first) |
-| `custom_test_rule` | Dry-run a custom-engine rule without executing actions |
-| `custom_export_rule` | Export custom-engine rule to JSON for backup/sharing |
-| `custom_import_rule` | Import custom-engine rule from exported JSON |
-| `custom_clone_rule` | Clone an existing custom-engine rule (starts disabled) |
+| `hub_delete_custom_rule` | Permanently delete a custom-engine rule (auto-backs up first) |
+| `hub_test_custom_rule` | Dry-run a custom-engine rule without executing actions |
+| `hub_export_custom_rule` | Export custom-engine rule to JSON for backup/sharing |
+| `hub_import_custom_rule` | Import custom-engine rule from exported JSON |
+| `hub_clone_custom_rule` | Clone an existing custom-engine rule (starts disabled) |
 
 </details>
 
 <details>
-<summary><b>manage_hub_variables</b> (8) — Hub variables</summary>
+<summary><b>hub_manage_variables</b> (8) — Hub variables</summary>
 
 | Tool | Description |
 |------|-------------|
-| `list_variables` | List all hub connector and rule engine variables |
-| `get_variable` | Get a variable value and metadata |
-| `set_variable` | Set a variable value |
-| `create_variable` | Create a new hub variable |
-| `delete_variable` | Permanently delete a hub variable (DESTRUCTIVE) |
-| `create_connector` | Create a virtual-device connector for a hub variable |
-| `remove_connector` | Remove the connector device for a hub variable |
-| `get_variable_history` | Recent hub-variable changes since the MCP app last started |
+| `hub_list_variables` | List all hub connector and rule engine variables |
+| `hub_get_variable` | Get a variable value and metadata |
+| `hub_set_variable` | Set a variable value |
+| `hub_create_variable` | Create a new hub variable |
+| `hub_delete_variable` | Permanently delete a hub variable (DESTRUCTIVE) |
+| `hub_create_connector` | Create a virtual-device connector for a hub variable |
+| `hub_delete_connector` | Remove the connector device for a hub variable |
+| `hub_list_variable_changes` | Recent hub-variable changes since the MCP app last started |
 
 </details>
 
 <details>
-<summary><b>manage_rooms</b> (5) — Room management</summary>
+<summary><b>hub_manage_rooms</b> (5) — Room management</summary>
 
 | Tool | Description |
 |------|-------------|
-| `list_rooms` | List all rooms with IDs, names, and device counts |
-| `get_room` | Get room details with assigned devices |
-| `create_room` | Create a new room (Hub Admin Write + confirm) |
-| `delete_room` | Permanently delete a room (Hub Admin Write + confirm) |
-| `rename_room` | Rename a room (Hub Admin Write + confirm) |
+| `hub_list_rooms` | List all rooms with IDs, names, and device counts |
+| `hub_get_room` | Get room details with assigned devices |
+| `hub_create_room` | Create a new room (Hub Admin Write + confirm) |
+| `hub_delete_room` | Permanently delete a room (Hub Admin Write + confirm) |
+| `hub_update_room` | Rename a room (Hub Admin Write + confirm) |
 
 </details>
 
 <details>
-<summary><b>manage_destructive_hub_ops</b> (3) — Destructive hub operations</summary>
+<summary><b>hub_manage_destructive_ops</b> (3) — Destructive hub operations</summary>
 
 | Tool | Description |
 |------|-------------|
-| `reboot_hub` | Reboot the hub (1-3 min downtime) |
-| `shutdown_hub` | Power OFF the hub (requires physical restart) |
-| `delete_device` | Permanently delete any device (**no undo**) |
+| `hub_reboot` | Reboot the hub (1-3 min downtime) |
+| `hub_shutdown` | Power OFF the hub (requires physical restart) |
+| `hub_delete_device` | Permanently delete any device (**no undo**) |
 
 All operations are disruptive. Hub admin tools require Hub Admin Read/Write to be enabled in settings. Write tools enforce a **three-layer safety gate**: Hub Admin Write enabled + hub backup within 24 hours + explicit `confirm=true`.
 
 </details>
 
 <details>
-<summary><b>manage_apps_drivers</b> (7) — App/driver/library listing, source code, and backups (read-only)</summary>
+<summary><b>hub_manage_code_read</b> (5) — App/driver/library listing, source code, and backups (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `list_hub_apps` | List all installed apps on the hub |
-| `list_hub_drivers` | List all installed drivers on the hub |
-| `get_app_source` | Get app Groovy source code |
-| `get_driver_source` | Get driver Groovy source code |
-| `get_library_source` | Get library Groovy source code with chunked reading support |
-| `list_item_backups` | List auto-created source code backups |
-| `get_item_backup` | Get source from a backup |
+| `hub_list_apps` | List all installed apps on the hub |
+| `hub_list_drivers` | List all installed drivers on the hub |
+| `hub_get_source` | Get Groovy source code for an app, driver, or library (`type`: "app", "driver", "library"; `id`). Supports chunked reading via `offset`/`length`. |
+| `hub_list_backups` | List auto-created source code backups |
+| `hub_get_backup` | Get source from a backup |
 
 </details>
 
 <details>
-<summary><b>manage_app_driver_code</b> (10) — Install, update, delete apps/drivers/libraries and restore backups</summary>
+<summary><b>hub_manage_code_write</b> (8) — Install, update, delete apps/drivers/libraries and restore backups</summary>
 
 | Tool | Description |
 |------|-------------|
-| `install_app` | Install new app from Groovy source or File Manager file (`source` or `sourceFile`). Verifies install succeeded. |
-| `install_driver` | Install new driver from Groovy source or File Manager file (`source` or `sourceFile`). Bulk mode: `installs=[{sourceFile},...]`. Verifies each install succeeded. |
-| `update_app_code` | Modify existing app code (source, sourceFile, or resave) |
-| `update_driver_code` | Modify existing driver code (single-driver or bulk `updates` array) |
-| `delete_app` | Permanently delete an app (auto-backs up) |
-| `delete_driver` | Permanently delete a driver (auto-backs up) |
-| `restore_item_backup` | Restore app/driver to backed-up version (libraries: see `update_library_code`) |
-| `install_library` | Install new Groovy library (#include namespace.Name) |
-| `update_library_code` | Modify existing library code |
-| `delete_library` | Permanently delete a library (auto-backs up) |
+| `hub_create_app` | Install new app from Groovy source or File Manager file (`source` or `sourceFile`). Verifies install succeeded. |
+| `hub_create_driver` | Install new driver from Groovy source or File Manager file (`source` or `sourceFile`). Bulk mode: `installs=[{sourceFile},...]`. Verifies each install succeeded. |
+| `hub_update_app` | Modify existing app code (source, sourceFile, or resave) |
+| `hub_update_driver` | Modify existing driver code (single-driver or bulk `updates` array) |
+| `hub_delete_item` | Permanently delete an app, driver, or library (`type`: "app", "driver", "library"; auto-backs up first) |
+| `hub_restore_backup` | Restore app/driver to backed-up version (libraries: see `hub_update_library`) |
+| `hub_create_library` | Install new Groovy library (#include namespace.Name) |
+| `hub_update_library` | Modify existing library code |
 
 Source code is automatically backed up before any modify/delete operation.
 
 </details>
 
 <details>
-<summary><b>manage_logs</b> (8) — Logs, performance stats, and log configuration</summary>
+<summary><b>hub_manage_logs</b> (6) — Logs, performance stats, and log configuration</summary>
 
 | Tool | Description |
 |------|-------------|
-| `get_hub_logs` | Hub log entries (most recent first) with level/source/regex filters, multi-pattern AND/OR, time-window (since/until, max 30d relative -- throws if exceeded; use ISO-8601 for longer ranges), and server-side deviceId/appId scoping. `pattern` matches the message field only; pathological regex like `(.*)*` may hang the matcher. |
-| `get_device_history` | Up to 7 days of device or location event history (omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent history) |
-| `get_performance_stats` | Device/app performance stats (count, % busy, total ms, state size, events, large-state flag) |
-| `get_hub_jobs` | Scheduled jobs, running jobs, and hub actions |
-| `get_debug_logs` | Retrieve MCP debug log entries |
-| `clear_debug_logs` | Clear all MCP debug logs |
-| `set_log_level` | Set MCP log level (debug/info/warn/error) |
-| `get_logging_status` | Get logging system status and capacity |
+| `hub_get_logs` | Hub log entries (most recent first) with level/source/regex filters, multi-pattern AND/OR, time-window (since/until, max 30d relative -- throws if exceeded; use ISO-8601 for longer ranges), and server-side deviceId/appId scoping. `pattern` matches the message field only; pathological regex like `(.*)*` may hang the matcher. (Device/location event *history* is in `hub_list_device_events` via `hoursBack`.) |
+| `hub_get_performance_stats` | Device/app performance stats (count, % busy, total ms, state size, events, large-state flag) |
+| `hub_get_jobs` | Scheduled jobs, running jobs, and hub actions |
+| `hub_get_debug_logs` | Retrieve MCP debug log entries. Pass `mode='status'` to get logging system status and capacity instead. |
+| `hub_delete_debug_logs` | Clear all MCP debug logs |
+| `hub_set_log_level` | Set MCP log level (debug/info/warn/error) |
 
 Monitoring tools require Hub Admin Read to be enabled.
 
 </details>
 
 <details>
-<summary><b>manage_diagnostics</b> (11) — Diagnostics, memory, radio details, and state capture</summary>
+<summary><b>hub_manage_diagnostics</b> (8) — Diagnostics, memory, radio details, and state capture</summary>
 
 | Tool | Description |
 |------|-------------|
-| `get_set_hub_metrics` | Record/retrieve hub metrics with CSV trend history |
-| `get_memory_history` | Free OS memory and CPU load history with summary stats (Hub Admin Read) |
-| `force_garbage_collection` | Force JVM garbage collection; returns before/after free memory (Hub Admin Read) |
-| `device_health_check` | Find stale/offline devices |
-| `custom_get_rule_diagnostics` | Comprehensive diagnostics for a specific custom rule |
-| `get_zwave_details` | Z-Wave radio info (firmware, devices) |
-| `get_zigbee_details` | Zigbee radio info (channel, PAN ID, devices) |
-| `zwave_repair` | Z-Wave network repair (5-30 min) |
-| `list_captured_states` | List saved device state snapshots |
-| `delete_captured_state` | Delete a specific state snapshot |
-| `clear_captured_states` | Delete all state snapshots |
+| `hub_get_metrics` | Record/retrieve hub metrics with CSV trend history |
+| `hub_get_memory_history` | Free OS memory and CPU load history with summary stats (Hub Admin Read) |
+| `hub_call_gc` | Force JVM garbage collection; returns before/after free memory (Hub Admin Read) |
+| `hub_get_device_health` | Find stale/offline devices |
+| `hub_get_radio_details` | Radio info — Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. |
+| `hub_call_zwave_repair` | Z-Wave network repair (5-30 min) |
+| `hub_list_captured_states` | List saved device state snapshots |
+| `hub_delete_captured_state` | Delete a captured device state snapshot. Omit `stateId` to delete all snapshots. |
 
 </details>
 
 <details>
-<summary><b>manage_files</b> (4) — Hub File Manager</summary>
+<summary><b>hub_manage_files</b> (4) — Hub File Manager</summary>
 
 | Tool | Description |
 |------|-------------|
-| `list_files` | List all files in File Manager |
-| `read_file` | Read a file's contents |
-| `write_file` | Create or update a file (auto-backs up existing) |
-| `delete_file` | Delete a file (auto-backs up first) |
+| `hub_list_files` | List all files in File Manager |
+| `hub_read_file` | Read a file's contents |
+| `hub_write_file` | Create or update a file (auto-backs up existing) |
+| `hub_delete_file` | Delete a file (auto-backs up first) |
 
 Write/delete require Hub Admin Write + confirm.
 
 </details>
 
 <details>
-<summary><b>manage_installed_apps</b> (4) — Built-in app visibility and configuration</summary>
+<summary><b>hub_manage_installed_apps</b> (4) — Built-in app visibility and configuration</summary>
 
 | Tool | Description |
 |------|-------------|
-| `list_installed_apps` | Enumerate all apps on the hub (built-in + user) with parent/child tree. Filter by builtin/user/disabled/parents/children. |
-| `get_device_in_use_by` | Find all apps that reference a specific device (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.) |
-| `get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.) — sections, inputs, values. Multi-page apps via `pageName`. Read-only. Hub Admin Read. |
-| `list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before `get_app_config` on multi-page apps to avoid guessing page names. Hub Admin Read. |
+| `hub_list_installed_apps` | Enumerate all apps on the hub (built-in + user) with parent/child tree. Filter by builtin/user/disabled/parents/children. |
+| `hub_list_device_dependents` | Find all apps that reference a specific device (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.) |
+| `hub_get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.) — sections, inputs, values. Multi-page apps via `pageName`. Read-only. Hub Admin Read. |
+| `hub_list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before `hub_get_app_config` on multi-page apps to avoid guessing page names. Hub Admin Read. |
 
-`list_installed_apps` and `get_device_in_use_by` require opt-in **Enable Built-in App Tools** setting. `get_app_config` and `list_app_pages` require Hub Admin Read.
+`hub_list_installed_apps` and `hub_list_device_dependents` require opt-in **Enable Built-in App Tools** setting. `hub_get_app_config` and `hub_list_app_pages` require Hub Admin Read.
 
 </details>
 
 <details>
-<summary><b>manage_hpm</b> (2) — Hubitat Package Manager state introspection (read-only)</summary>
+<summary><b>hub_manage_hpm</b> (1) — Hubitat Package Manager state introspection (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `list_hpm_packages` | List all packages tracked by HPM — name, version, beta flag, author, and full component inventory (apps, drivers, files with heIDs). Top-level `count` and echoed `hpmAppId`. Auto-discovers HPM's app ID. Hub Admin Read. |
-| `get_hpm_drift` | Cross-reference HPM-tracked packages against installed apps and drivers to surface missing-required components, orphan apps, and orphan drivers. Optional `packageFilter` substring. Surfaces `orphanDetection` / `orphanDriverDetection` when registry fetches fail. Currently the only data-quality warning types are: `heid-whitespace-normalized`, `heid-non-scalar-dropped`, `empty-heid`, `skipped-malformed-component` — see `get_tool_guide` section=manage_hpm for full details. Hub Admin Read. |
+| `hub_list_hpm_packages` | List all packages tracked by HPM — name, version, beta flag, author, and full component inventory (apps, drivers, files with heIDs). Top-level `count` and echoed `hpmAppId`. Auto-discovers HPM's app ID. Pass `includeDrift=true` to also cross-reference HPM-tracked packages against installed apps and drivers (surfacing missing-required components, orphan apps, and orphan drivers under a `drift` key; optional `packageFilter` substring; surfaces `orphanDetection` / `orphanDriverDetection` when registry fetches fail; data-quality warning types: `heid-whitespace-normalized`, `heid-non-scalar-dropped`, `empty-heid`, `skipped-malformed-component` — see `hub_get_tool_guide` section=hub_manage_hpm for full details). Hub Admin Read. |
 
 Both tools require Hub Admin Read. HPM itself must be installed on the hub.
 
 </details>
 
 <details>
-<summary><b>manage_native_rules_and_apps</b> (12) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
+<summary><b>hub_manage_native_rules</b> (11) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `list_rm_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API |
-| `run_rm_rule` | Trigger an RM rule (`action`: "rule"/"actions"/"stop") |
-| `pause_rm_rule` | Pause an RM rule (reversible) |
-| `resume_rm_rule` | Resume a paused RM rule |
-| `set_rm_rule_boolean` | Set an RM rule's private boolean variable |
-| `create_native_app` | Create a new empty native automation app (RM 5.1 by default; `appType` enum extends to Room Lighting / Button Controllers / etc.). Returns `appId`. |
-| `update_native_app` | Modify any classic native app by appId (triggers, actions, settings, structured shortcuts). Auto-snapshots before every write. `clearActions` / `replaceActions` commit the delete synchronously via a full selectActions page-form submit (runs RM's trashActs handler in-band), so the actions are gone when the call returns. A thin defensive verify-retry remains: on the rare residual it returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` -- verify via `get_app_config` rather than rolling back. |
-| `delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
-| `clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. |
-| `export_native_app` | Export a classic SmartApp to JSON (round-trippable with `import_native_app`). |
-| `import_native_app` | Import previously-exported app JSON into a new instance. Returns the new `appId`. |
-| `check_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. |
+| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API |
+| `hub_call_rule` | Trigger an RM rule (`action`: "rule"/"actions"/"stop") |
+| `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible) |
+| `hub_set_rule_private_boolean` | Set an RM rule's private boolean variable |
+| `hub_create_native_app` | Create a new empty native automation app (RM 5.1 by default; `appType` enum extends to Room Lighting / Button Controllers / etc.). Returns `appId`. |
+| `hub_update_native_app` | Modify any classic native app by appId (triggers, actions, settings, structured shortcuts). Auto-snapshots before every write. `clearActions` / `replaceActions` commit the delete synchronously via a full selectActions page-form submit (runs RM's trashActs handler in-band), so the actions are gone when the call returns. A thin defensive verify-retry remains: on the rare residual it returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` -- verify via `hub_get_app_config` rather than rolling back. |
+| `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
+| `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. |
+| `hub_export_native_app` | Export a classic SmartApp to JSON (round-trippable with `hub_import_native_app`). |
+| `hub_import_native_app` | Import previously-exported app JSON into a new instance. Returns the new `appId`. |
+| `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. |
 
 Requires opt-in **Enable Built-in App Tools** setting. Create/update/delete additionally requires Hub Admin Write.
 
 </details>
 
 <details>
-<summary><b>manage_mcp_self</b> (1) — Developer Mode self-administration</summary>
+<summary><b>hub_manage_mcp</b> (1) — Developer Mode self-administration</summary>
 
 | Tool | Description |
 |------|-------------|
-| `update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Allowlist-gated. |
+| `hub_update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Allowlist-gated. |
 
 First gateway under the **Developer Mode** pattern — for LLM-agent and CI/CD pipelines that need to manage the MCP rule app's own configuration without manual UI intervention. Additional self-admin tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle. Requires opt-in **Enable Developer Mode Tools** setting (default OFF). Each successful write is logged at WARN level for audit.
 
@@ -684,7 +670,7 @@ Additionally, tools that modify or delete existing apps/drivers automatically ba
 <details>
 <summary><b>Item Backup & Restore</b></summary>
 
-When you use `update_app_code`, `update_driver_code`, `delete_app`, or `delete_driver`, the server automatically saves the **original source code** before making changes.
+When you use `hub_update_app`, `hub_update_driver`, `delete_app`, or `delete_driver`, the server automatically saves the **original source code** before making changes.
 
 - Backups stored as `.groovy` files in the hub's local **File Manager**
 - Named `mcp-backup-app-<id>.groovy` or `mcp-backup-driver-<id>.groovy`
@@ -694,8 +680,8 @@ When you use `update_app_code`, `update_driver_code`, `delete_app`, or `delete_d
 - 1-hour protection window: multiple edits preserve the pre-edit original
 
 **Restore via MCP:**
-1. `list_item_backups` to see available backups
-2. `restore_item_backup` with the backup key and `confirm=true`
+1. `hub_list_backups` to see available backups
+2. `hub_restore_backup` with the backup key and `confirm=true`
 
 **Restore manually (without MCP):**
 1. Go to Hubitat web UI > **Settings** > **File Manager**
@@ -733,7 +719,7 @@ If your hub has Hub Security enabled (login required for the web UI), the MCP se
 <details>
 <summary><b>Known Limits</b></summary>
 
-- **`list_devices` with `detailed=true`** — Can be slow on 50+ devices. Use pagination: `list_devices(detailed=true, limit=25, offset=0)`. Use `labelFilter` or `capabilityFilter` to narrow server-side before pagination. Use `fields=[...]` to skip expensive hub reads -- `currentStates` and `attributes` trigger per-device hub reads and are the ones worth projecting out; `capabilities` and `commands` are in-memory and cheap.
+- **`hub_list_devices` with `detailed=true`** — Can be slow on 50+ devices. Use pagination: `hub_list_devices(detailed=true, limit=25, offset=0)`. Use `labelFilter` or `capabilityFilter` to narrow server-side before pagination. Use `fields=[...]` to skip expensive hub reads -- `currentStates` and `attributes` trigger per-device hub reads and are the ones worth projecting out; `capabilities` and `commands` are in-memory and cheap.
 - **Duration triggers** — Maximum of 2 hours (7200 seconds)
 - **Captured states** — Default limit of 20 (configurable 1-100 in settings)
 - **Hubitat Cloud responses** — 128KB maximum (AWS MQTT limit). Use pagination for large device lists.
@@ -782,15 +768,15 @@ Make sure the device is selected in the app's "Select Devices for MCP Access" se
 </details>
 
 <details>
-<summary><b>list_devices(detailed=true) fails over Hubitat Cloud</b></summary>
+<summary><b>hub_list_devices(detailed=true) fails over Hubitat Cloud</b></summary>
 
 Hubitat Cloud has a **128KB response size limit** (AWS MQTT limitation). Use pagination and server-side filtering to stay under the limit:
 
 ```
-list_devices(detailed=true, limit=25, offset=0)               // First 25 devices
-list_devices(detailed=true, limit=25, offset=25)              // Next 25 devices
-list_devices(capabilityFilter='Switch', limit=25, offset=0)   // Only Switch devices
-list_devices(fields=['id','label','currentStates'], limit=50) // Slim payload
+hub_list_devices(detailed=true, limit=25, offset=0)               // First 25 devices
+hub_list_devices(detailed=true, limit=25, offset=25)              // Next 25 devices
+hub_list_devices(capabilityFilter='Switch', limit=25, offset=0)   // Only Switch devices
+hub_list_devices(fields=['id','label','currentStates'], limit=50) // Slim payload
 ```
 
 The response includes `total`, `hasMore`, and `nextOffset` to help with pagination.
@@ -808,9 +794,9 @@ Version 0.1.0 uses a new parent/child architecture. Old rules stored in `state.r
 <summary><b>Reporting bugs</b></summary>
 
 For easier bug reporting:
-1. Set debug log level: Settings > MCP Debug Log Level > "Debug", or ask your AI to `set_log_level` to "debug"
+1. Set debug log level: Settings > MCP Debug Log Level > "Debug", or ask your AI to `hub_set_log_level` to "debug"
 2. Reproduce the issue
-3. Ask your AI to use the `generate_bug_report` tool — it will gather diagnostics and format a ready-to-submit report
+3. Ask your AI to use the `hub_report_issue` tool — it will gather diagnostics and format a ready-to-submit report
 4. Submit at [GitHub Issues](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues)
 
 </details>
@@ -854,7 +840,7 @@ For easier bug reporting:
   > 4. Package request body, headers, and query params into pseudo-event for variable substitution
 
 - [x] **Hub variable change triggers** — *Closed differently than originally planned (issue #92).*
-  > Originally scoped as a `variable_change` trigger type for the legacy MCP rule engine. With the legacy engine now frozen and native Rule Machine providing variable triggers natively, the equivalent capability for MCP/AI consumers ships as observation tooling instead: the parent app subscribes to `variable:*` location events on install/update, buffers the last 200 changes in `atomicState.variableHistory`, and exposes them via `get_variable_history`. The `renameVariable(oldName, newName)` callback keeps the buffer consistent across UI renames. See PR closing #92 / #96.
+  > Originally scoped as a `variable_change` trigger type for the legacy MCP rule engine. With the legacy engine now frozen and native Rule Machine providing variable triggers natively, the equivalent capability for MCP/AI consumers ships as observation tooling instead: the parent app subscribes to `variable:*` location events on install/update, buffers the last 200 changes in `atomicState.variableHistory`, and exposes them via `hub_list_variable_changes`. The `renameVariable(oldName, newName)` callback keeps the buffer consistent across UI renames. See PR closing #92 / #96.
 
 - [ ] **System start trigger** — `Difficulty: 2 | Effort: S`
   > *Feasible.* Hubitat supports `subscribe(location, "systemStart", handler)`. Add a `system_start` trigger type. After hub reboot, the app restores, `initialize()` → `subscribeToTriggers()` runs, and the systemStart event fires the rule. Minor edge case: the event may fire before all apps finish restoring — needs testing on hardware.
@@ -891,7 +877,7 @@ For easier bug reporting:
   > 1. Define tree data structure with `operator` and `operands` fields
   > 2. Implement recursive `evaluateConditionTree()` method
   > 3. Support both legacy flat format and new tree format (migration path)
-  > 4. Update `custom_create_rule`/`custom_update_rule` tool schemas
+  > 4. Update `hub_create_custom_rule`/`hub_update_custom_rule` tool schemas
   > 5. Update `describeCondition()` for recursive formatting
 
 - [ ] **Private Boolean per rule** — `Difficulty: 2 | Effort: S`
@@ -980,7 +966,7 @@ For easier bug reporting:
   > *Already implemented.* The existing `device_command` action type accepts any device ID, command, and parameters via dynamic invocation (`device."${command}"(*params)`). This is the "any capability + command" feature.
 
 - [ ] **Disable/Enable a device** — `Difficulty: 1 | Effort: S`
-  > *Feasible (partially done).* The `update_device` MCP tool already supports the `enabled` property via the internal `/device/disable` endpoint. A new `set_device_enabled` rule action type wraps the same call. Requires Hub Admin Write. Should warn if the target device is used in active rule triggers.
+  > *Feasible (partially done).* The `hub_update_device` MCP tool already supports the `enabled` property via the internal `/device/disable` endpoint. A new `set_device_enabled` rule action type wraps the same call. Requires Hub Admin Write. Should warn if the target device is used in active rule triggers.
   >
   > **Implementation plan:**
   > 1. Add `set_device_enabled` action type with `deviceId` and `enabled` boolean
@@ -995,8 +981,8 @@ For easier bug reporting:
   > 2. Reuse `rampValue()` utility from fade actions
   > 3. For devices with `startLevelChange`/`stopLevelChange`, offer a hardware ramp option
 
-- [x] **Ping IP address (ICMP)** — folded into `device_health_check` (issue #91).
-  > Rather than a standalone `ping_host` tool, ICMP ping was integrated into the existing `device_health_check` tool via `pingHosts` (max 5 IPv4) and `pingCount` (1–5) parameters. Each host is pinged through `hubitat.helper.NetworkUtils.ping()` and reported under `pingResults` with `reachable`, `rttAvg`, `rttMin`, `rttMax`, `packetsTransmitted`, `packetsReceived`, `packetLoss`. The custom MCP rule engine is legacy-only, so no rule-action half was added.
+- [x] **Ping IP address (ICMP)** — folded into `hub_get_device_health` (issue #91).
+  > Rather than a standalone `ping_host` tool, ICMP ping was integrated into the existing `hub_get_device_health` tool via `pingHosts` (max 5 IPv4) and `pingCount` (1–5) parameters. Each host is pinged through `hubitat.helper.NetworkUtils.ping()` and reported under `pingResults` with `reachable`, `rttAvg`, `rttMin`, `rttMax`, `packetsTransmitted`, `packetsReceived`, `packetLoss`. The custom MCP rule engine is legacy-only, so no rule-action half was added.
 
 - [ ] **HTTP reachability check** — `Difficulty: 3 | Effort: M`
   > *Feasible — complementary to ICMP ping above.* An HTTP GET against a target URL still has value for hosts that don't respond to ICMP or when you need to verify HTTP-layer health, not just network reachability. Keep as a secondary action type alongside the native ping.
@@ -1024,7 +1010,7 @@ For easier bug reporting:
   > 5. Document that hub variables should use Hubitat's built-in connectors instead
 
 - [~] **Variable change events** — *Hub-variable half closed under issue #92; MCP-rule-engine half deferred (legacy engine frozen).*
-  > Hub-variable change observation now ships via `get_variable_history` (see "Hub variable change triggers" above). The MCP-rule-engine half — sending a `ruleVariableChanged` location event when `setRuleVariable()` writes — would require new code in the legacy child app, which is no longer being extended. New rule-variable consumers should use native Rule Machine, which has variable triggers built in.
+  > Hub-variable change observation now ships via `hub_list_variable_changes` (see "Hub variable change triggers" above). The MCP-rule-engine half — sending a `ruleVariableChanged` location event when `setRuleVariable()` writes — would require new code in the legacy child app, which is no longer being extended. New rule-variable consumers should use native Rule Machine, which has variable triggers built in.
 
 - [ ] **Local variable triggers** — `Difficulty: 2 | Effort: S`
   > *Feasible.* After `set_local_variable` or `variable_math` modifies a local variable, check for matching `local_variable_change` triggers and re-trigger asynchronously via `runIn(0, handler)`. High risk of infinite loops if a rule triggers itself — recommend only firing from external changes (another rule setting this rule's local variable via rule-to-rule control). The loop guard provides a safety net.
@@ -1041,31 +1027,31 @@ For easier bug reporting:
 
 > **Philosophy: prefer native Hubitat apps.** The MCP server was built to complement Hubitat, not replace it. These native apps (Room Lighting, Mode Manager, Button Controller, etc.) are well-maintained, have proper UIs, and are battle-tested. The MCP can already interact with the *effects* of these apps — it can read/set modes, control devices, trigger on device events, and see virtual devices they create.
 >
-> **The AI assistant is the wizard.** Rather than building dedicated wizard tools that generate MCP rules to replicate what native apps already do, the AI can compose rules on the fly using existing `custom_create_rule` and the full rule engine. Dedicated MCP tooling for these patterns is **low priority** and would only be implemented if the MCP genuinely cannot interact with the native app's functionality in some way. Each item will be reviewed on a case-by-case basis.
+> **The AI assistant is the wizard.** Rather than building dedicated wizard tools that generate MCP rules to replicate what native apps already do, the AI can compose rules on the fly using existing `hub_create_custom_rule` and the full rule engine. Dedicated MCP tooling for these patterns is **low priority** and would only be implemented if the MCP genuinely cannot interact with the native app's functionality in some way. Each item will be reviewed on a case-by-case basis.
 
 - [ ] **Room Lighting (room-centric lighting with vacancy mode)** — `Low priority`
-  > *Native app preferred.* Hubitat's built-in Room Lighting app handles this well. The MCP can already control all the same devices, trigger on motion events, and use `if_then_else` / `delay` / `cancel_delayed` to build equivalent logic via `custom_create_rule` if needed. No dedicated MCP tool required unless a gap is identified where MCP cannot interact with Room Lighting's behavior.
+  > *Native app preferred.* Hubitat's built-in Room Lighting app handles this well. The MCP can already control all the same devices, trigger on motion events, and use `if_then_else` / `delay` / `cancel_delayed` to build equivalent logic via `hub_create_custom_rule` if needed. No dedicated MCP tool required unless a gap is identified where MCP cannot interact with Room Lighting's behavior.
 
 - [ ] **Zone Motion Controller (multi-sensor zones)** — `Low priority`
-  > *Native app preferred.* Hubitat's built-in Zone Motion Controller creates a virtual motion device that aggregates multiple sensors. If the user adds this virtual device to MCP's selected devices, MCP can already see and trigger on it. The AI can also replicate the logic using `create_virtual_device` + `custom_create_rule` with multi-device triggers if needed. Only implement if MCP cannot adequately interact with the native app's output device.
+  > *Native app preferred.* Hubitat's built-in Zone Motion Controller creates a virtual motion device that aggregates multiple sensors. If the user adds this virtual device to MCP's selected devices, MCP can already see and trigger on it. The AI can also replicate the logic using `create_virtual_device` + `hub_create_custom_rule` with multi-device triggers if needed. Only implement if MCP cannot adequately interact with the native app's output device.
 
 - [ ] **Mode Manager (automated mode changes)** — `Low priority`
-  > *Native app preferred.* Hubitat's built-in Mode Manager handles time-based and presence-based mode changes. The MCP can already read/set modes via `get_modes`/`set_mode`, trigger on `mode_change`, and build time/presence-triggered rules that call `set_mode`. No dedicated tool needed unless a specific interaction gap is found.
+  > *Native app preferred.* Hubitat's built-in Mode Manager handles time-based and presence-based mode changes. The MCP can already read/set modes via `hub_list_modes`/`set_mode`, trigger on `mode_change`, and build time/presence-triggered rules that call `set_mode`. No dedicated tool needed unless a specific interaction gap is found.
 
 - [ ] **Button Controller (streamlined button-to-action mapping)** — `Low priority`
-  > *Native app preferred.* Hubitat's built-in Button Controller handles this natively. The MCP rule engine already has `button_event` triggers with full support for button numbers (1–20) and action types (pushed/held/doubleTapped/released). The AI can create these rules directly via `custom_create_rule`. No dedicated tool needed.
+  > *Native app preferred.* Hubitat's built-in Button Controller handles this natively. The MCP rule engine already has `button_event` triggers with full support for button numbers (1–20) and action types (pushed/held/doubleTapped/released). The AI can create these rules directly via `hub_create_custom_rule`. No dedicated tool needed.
 
 - [ ] **Thermostat Scheduler (schedule-based setpoints)** — `Low priority`
   > *Native app preferred.* Hubitat's built-in Thermostat Scheduler handles schedule-based setpoints. The MCP rule engine already has `time` triggers, `set_thermostat` actions, `mode` and `days_of_week` conditions — the AI can compose schedule rules directly. No dedicated tool needed unless MCP cannot interact with the native scheduler's effects.
 
 - [ ] **Lock Code Manager** — `Low priority — review needed`
-  > *May warrant a dedicated tool.* Hubitat's built-in Lock Code Manager handles code management via a UI. The MCP can already send lock code commands via `send_command` (`setCode`, `deleteCode`) and read `lockCodes`/`lastCodeName` attributes, so basic interaction is possible today. However, the native app's internal code inventory and temporary code scheduling are not directly accessible. A dedicated tool may add value for programmatic code management if the native app's outputs prove insufficient. **Needs case-by-case review.**
+  > *May warrant a dedicated tool.* Hubitat's built-in Lock Code Manager handles code management via a UI. The MCP can already send lock code commands via `hub_call_device_command` (`setCode`, `deleteCode`) and read `lockCodes`/`lastCodeName` attributes, so basic interaction is possible today. However, the native app's internal code inventory and temporary code scheduling are not directly accessible. A dedicated tool may add value for programmatic code management if the native app's outputs prove insufficient. **Needs case-by-case review.**
 
 - ~~[ ] **Groups and Scenes (Zigbee group messaging)**~~ — `Not feasible`
   > *Not feasible.* The `zigbee` object and `sendHubCommand()` with `Protocol.ZIGBEE` are only available in drivers, not apps. The MCP server is an app and cannot send raw Zigbee commands or manage Zigbee group IDs. Zigbee group management is handled by closed-source platform internals with no documented HTTP API endpoints.
   >
   > **Alternatives already available:**
-  > - **Leverage built-in Groups and Scenes app**: Guide users to create Zigbee groups via the built-in app, then control the resulting group activator device through MCP's `send_command` (group activator devices are regular switch/dimmer devices that MCP can already control)
+  > - **Leverage built-in Groups and Scenes app**: Guide users to create Zigbee groups via the built-in app, then control the resulting group activator device through MCP's `hub_call_device_command` (group activator devices are regular switch/dimmer devices that MCP can already control)
   > - **Software-level group control**: Create rules that send commands to multiple devices sequentially — already possible via multi-device rules or `device_command` actions
   > - **Scene capture/restore**: The existing `capture_state`/`restore_state` actions provide scene-like functionality across multiple devices
 
@@ -1083,7 +1069,7 @@ For easier bug reporting:
   > 4. Cache results in `state` to reduce API calls
 
 - [ ] **Install/uninstall packages via HPM** — `Difficulty: 4 | Effort: L`
-  > *Partially feasible.* HPM has no programmatic API — it's purely UI-driven. **Bypass approach**: fetch the package manifest JSON, download each app/driver source, and install via existing `install_app`/`install_driver` tools. However, packages installed this way won't appear in HPM's "Installed" list, creating a fragmented experience. Uninstall requires removing running app instances (not just code) via poorly documented `/installedapp/` endpoints.
+  > *Partially feasible.* HPM has no programmatic API — it's purely UI-driven. **Bypass approach**: fetch the package manifest JSON, download each app/driver source, and install via existing `hub_create_app`/`hub_create_driver` tools. However, packages installed this way won't appear in HPM's "Installed" list, creating a fragmented experience. Uninstall requires removing running app instances (not just code) via poorly documented `/installedapp/` endpoints.
   >
   > **Implementation plan:**
   > 1. Create `install_package` MCP tool using the bypass approach
@@ -1093,7 +1079,7 @@ For easier bug reporting:
   > 5. For uninstall: `delete_app`/`delete_driver` for code, investigate `/installedapp/disable` for instances
 
 - [ ] **Check for updates across installed packages** — `Difficulty: 3 | Effort: M`
-  > *Partially feasible.* For MCP-tracked packages (from the install tool above): fetch each manifest URL and compare versions -- same pattern as the existing `checkForUpdate()` for the MCP server itself. For HPM-managed packages: HPM's installed-package state IS readable via hub-internal endpoints (`/installedapp/statusJson/` + `/hub2/appsList`), as demonstrated by `list_hpm_packages` and `get_hpm_drift`. A `check_package_updates` tool could cross-reference HPM's recorded manifest URLs and versions against live manifest files to detect available updates.
+  > *Partially feasible.* For MCP-tracked packages (from the install tool above): fetch each manifest URL and compare versions -- same pattern as the existing `checkForUpdate()` for the MCP server itself. For HPM-managed packages: HPM's installed-package state IS readable via hub-internal endpoints (`/installedapp/statusJson/` + `/hub2/appsList`), as demonstrated by `hub_list_hpm_packages` and `get_hpm_drift`. A `check_package_updates` tool could cross-reference HPM's recorded manifest URLs and versions against live manifest files to detect available updates.
   >
   > **Implementation plan:**
   > 1. Create `check_package_updates` MCP tool
@@ -1103,7 +1089,7 @@ For easier bug reporting:
   > 5. Handle fetch failures gracefully (GitHub rate limiting, network issues)
 
 - [ ] **Search for official integrations not yet enabled** — `Difficulty: 3 | Effort: M`
-  > *Partially feasible.* No documented endpoint for enumerating available built-in apps. The `list_hub_apps` tool returns user-installed app types, not built-in ones. **Practical approach**: maintain a hardcoded catalog of known official integrations (Hue Bridge, Sonos, Alexa, Google Home, HomeKit, etc.) and check which ones have running instances. The list only changes with firmware updates.
+  > *Partially feasible.* No documented endpoint for enumerating available built-in apps. The `hub_list_apps` tool returns user-installed app types, not built-in ones. **Practical approach**: maintain a hardcoded catalog of known official integrations (Hue Bridge, Sonos, Alexa, Google Home, HomeKit, etc.) and check which ones have running instances. The list only changes with firmware updates.
   >
   > **Implementation plan:**
   > 1. Create `list_available_integrations` MCP tool
@@ -1169,7 +1155,7 @@ For easier bug reporting:
   >
   > **Implementation plan:**
   > 1. Add `import hubitat.helper.RMUtils` to parent app
-  > 2. Create `list_rm_rules` MCP tool
+  > 2. Create `hub_list_rules` MCP tool
   > 3. Call both `getRuleList("5.0")` and `getRuleList()` for full coverage
   > 4. Handle the case where Rule Machine is not installed
 
@@ -1200,7 +1186,7 @@ For easier bug reporting:
   > 2. Accept rule ID and boolean value, map to appropriate sendAction call
 
 - [x] **Hub variable bridge for cross-engine coordination** — `Difficulty: 2 | Effort: S`
-  > *Already ~90% implemented.* The existing `set_variable`/`get_variable` tools work with Hubitat's global connector variables via `getGlobalConnectorVariable()`/`setGlobalConnectorVariable()`. These are the same variables Rule Machine reads/writes. Variables set via MCP are immediately visible to RM and vice versa. To formalize: document the convention that shared variables should use hub connector variables.
+  > *Already ~90% implemented.* The existing `set_variable`/`hub_get_variable` tools work with Hubitat's global connector variables via `getGlobalConnectorVariable()`/`setGlobalConnectorVariable()`. These are the same variables Rule Machine reads/writes. Variables set via MCP are immediately visible to RM and vice versa. To formalize: document the convention that shared variables should use hub connector variables.
 
 ---
 
@@ -1239,10 +1225,10 @@ For easier bug reporting:
 
 ### Advanced Automation Patterns
 
-> These patterns don't require new MCP tools — the AI assistant can already compose them using existing `custom_create_rule`, `set_variable`, `create_virtual_device`, and other tools. They're documented here as reference patterns showing what's achievable today with the current rule engine. No dedicated wizard tools are planned unless a specific gap is identified.
+> These patterns don't require new MCP tools — the AI assistant can already compose them using existing `hub_create_custom_rule`, `set_variable`, `create_virtual_device`, and other tools. They're documented here as reference patterns showing what's achievable today with the current rule engine. No dedicated wizard tools are planned unless a specific gap is identified.
 
 - [ ] **Occupancy / room state machine** — `No new tools needed`
-  > *Already achievable.* The AI can compose this using existing primitives: a hub variable `roomState_<room>` holds state (vacant/occupied/engaged/checking). `device_event` triggers on motion/contact sensors feed into `if_then_else` chains with `set_variable` actions for state transitions. Duration-based triggers handle timeouts. Other rules check room state via `variable` conditions. No dedicated tool required — the AI can build this pattern on request using `custom_create_rule` and `set_variable`.
+  > *Already achievable.* The AI can compose this using existing primitives: a hub variable `roomState_<room>` holds state (vacant/occupied/engaged/checking). `device_event` triggers on motion/contact sensors feed into `if_then_else` chains with `set_variable` actions for state transitions. Duration-based triggers handle timeouts. Other rules check room state via `variable` conditions. No dedicated tool required — the AI can build this pattern on request using `hub_create_custom_rule` and `set_variable`.
 
 - [ ] **Presence-based automation (first-to-arrive, last-to-leave)** — `No new tools needed`
   > *Already achievable.* The AI can compose this: a hub variable `homeCount` tracks present people. `device_event` triggers on presence sensors increment/decrement via `variable_math`. Rules with `variable` conditions fire when `homeCount` transitions 0→1 (first arrive) or 1→0 (last leave). All building blocks exist today.
@@ -1258,7 +1244,7 @@ For easier bug reporting:
 ### Monitoring & Diagnostics
 
 - [ ] **Device health watchdog** — `Difficulty: 2 | Effort: S`
-  > *Feasible.* The existing `device_health_check` tool is on-demand only. Enhancement: add a scheduled background check (every 4–6 hours) that proactively detects stale/offline devices and low batteries. Push alerts via notification devices. Write results to a CSV for trend analysis. Fire a `mcpDeviceHealthAlert` location event for rule integration.
+  > *Feasible.* The existing `hub_get_device_health` tool is on-demand only. Enhancement: add a scheduled background check (every 4–6 hours) that proactively detects stale/offline devices and low batteries. Push alerts via notification devices. Write results to a CSV for trend analysis. Fire a `mcpDeviceHealthAlert` location event for rule integration.
   >
   > **Implementation plan:**
   > 1. Add `schedule("0 0 */6 ? * *", "runHealthWatchdog")` to parent app
@@ -1289,7 +1275,7 @@ For easier bug reporting:
   > 5. Note: computation-heavy analytics may time out with many devices
 
 - [x] **Hub performance trend monitoring** — `Difficulty: 1 | Effort: S`
-  > *Mostly already implemented.* The `get_set_hub_metrics` tool records snapshots to CSV, maintains a 500-point rolling window, returns configurable trend points, and includes threshold warnings. **Incremental enhancement:** add scheduled periodic sampling (every 4 hours) instead of only recording when the AI calls the tool. Add trend direction analysis (rate of change, declining memory detection).
+  > *Mostly already implemented.* The `hub_get_metrics` tool records snapshots to CSV, maintains a 500-point rolling window, returns configurable trend points, and includes threshold warnings. **Incremental enhancement:** add scheduled periodic sampling (every 4 hours) instead of only recording when the AI calls the tool. Add trend direction analysis (rate of change, declining memory detection).
   >
   > **Implementation plan (incremental):**
   > 1. Add `schedule("0 0 */4 ? * *", "recordPerformanceSnapshot")` to parent
@@ -1389,7 +1375,7 @@ For easier bug reporting:
   > **Alternative: Pairing guidance tool** *(added below)*
 
 - [ ] **Device pairing guidance** *(alternative to active pairing)* — `Difficulty: 2 | Effort: S`
-  > *Feasible.* A `guide_device_pairing` tool that provides step-by-step textual instructions for using the Hubitat web UI to pair devices. After pairing, the AI can help configure the device (driver selection, room assignment, label, preferences) using existing MCP tools like `update_device`, `send_command`, and room management tools.
+  > *Feasible.* A `guide_device_pairing` tool that provides step-by-step textual instructions for using the Hubitat web UI to pair devices. After pairing, the AI can help configure the device (driver selection, room assignment, label, preferences) using existing MCP tools like `hub_update_device`, `hub_call_device_command`, and room management tools.
   >
   > **Implementation plan:**
   > 1. Create `guide_device_pairing` MCP tool
@@ -1403,7 +1389,7 @@ For easier bug reporting:
 
 > The following items have been determined to be not achievable due to platform constraints. They are listed here with explanations and the alternatives that have been added to the plan above.
 
-- ~~**Groups and Scenes (Zigbee group messaging)**~~ — The `zigbee` object and `sendHubCommand(Protocol.ZIGBEE)` are driver-only APIs. No HTTP endpoint exists for Zigbee group management. **→ Use software group commands or the built-in Groups and Scenes app's activator devices via `send_command`**
+- ~~**Groups and Scenes (Zigbee group messaging)**~~ — The `zigbee` object and `sendHubCommand(Protocol.ZIGBEE)` are driver-only APIs. No HTTP endpoint exists for Zigbee group management. **→ Use software group commands or the built-in Groups and Scenes app's activator devices via `hub_call_device_command`**
 
 - ~~**MQTT client (direct)**~~ — `interfaces.mqtt` is driver-only. No raw TCP sockets in apps. **→ Companion driver approach added as alternative**
 
@@ -1418,14 +1404,14 @@ For easier bug reporting:
 #### Phase 1: Quick Wins (Small effort, high value)
 1. **Rule Machine Interoperability** (list, control, trigger, booleans) — All use `RMUtils`, implement as 1–2 tools
 2. **Native hub variable change triggers** — `subscribe(location, "variable:<name>", handler)` + `addInUseGlobalVar()` registration
-3. **ICMP ping** — done; folded into `device_health_check` via `pingHosts`/`pingCount` (issue #91)
+3. **ICMP ping** — done; folded into `hub_get_device_health` via `pingHosts`/`pingCount` (issue #91)
 4. **Search HPM repositories** — Public GraphQL API, immediate discovery value
 5. **Rate limiting / throttling** — Pure in-app logic, enables safer notifications
 6. **System start trigger** — Single `subscribe()` call
 7. **Date range condition** — Follows existing condition patterns
 8. **Device health watchdog** — Add scheduled task to existing tool
 9. **Private Boolean per rule** — Cross-rule coordination via parent mediation
-10. **Disable/Enable a device action** — Wraps existing `update_device` capability
+10. **Disable/Enable a device action** — Wraps existing `hub_update_device` capability
 11. **File write/append/delete actions** — Wraps existing parent file methods
 12. **Music/siren control actions** — Convenience wrappers around `device_command`
 
@@ -1464,7 +1450,7 @@ For easier bug reporting:
 38. **Mode Manager** — Use native app; MCP already reads/sets modes
 39. **Button Controller** — Use native app; MCP already has `button_event` triggers
 40. **Thermostat Scheduler** — Use native app; MCP already has `set_thermostat` actions
-41. **Lock Code Manager** — Use native app; review if `send_command` proves insufficient
+41. **Lock Code Manager** — Use native app; review if `hub_call_device_command` proves insufficient
 
 </details>
 <!-- FUTURE_PLANS_END -->
@@ -1488,23 +1474,23 @@ For easier bug reporting:
 - **v1.4.0** - refactor: flat-mode tool surface reduction (103 → 95 tools). PRs: [#208](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/208)
 - **v1.3.15** - docs: codify MCP tool design rules in AGENTS.md + derivative docs (part of #105); docs: vendor hub2 Vue SPA source as reference resource; docs: add PR1 (issue #105 tool audit) game plan to docs/; feat: per-capability reveal walker fixes Required Expression & ifThen Broken Conditions (issue #195 Group A). PRs: [#210](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/210), [#211](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/211), [#214](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/214), [#203](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/203)
 - **v1.3.14** - fix: prevent (and detect) IF/END-IF + Repeat structural imbalance (#178). PRs: [#206](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/206)
-- **v1.3.13** - fix: drop top-level anyOf from import_native_app input_schema (Haiku 4.5 compat). PRs: [#205](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/205)
+- **v1.3.13** - fix: drop top-level anyOf from hub_import_native_app input_schema (Haiku 4.5 compat). PRs: [#205](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/205)
 - **v1.3.12** - feat: addAction Set-Variable, runCommand variable parameters, Set-Mode modeName. PRs: [#196](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/196)
 - **v1.3.11** - feat: MCP readOnlyHint + destructiveHint annotations on every tool. PRs: [#202](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/202)
-- **v1.3.10** - fix(get_tool_guide): expose schema-referenced reference sections + add drift lint. PRs: [#201](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/201)
+- **v1.3.10** - fix(hub_get_tool_guide): expose schema-referenced reference sections + add drift lint. PRs: [#201](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/201)
 - **v1.3.9** - fix: release-notes generator was picking issue refs instead of PR numbers. PRs: [#200](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/200)
 - **v1.3.8** - docs: add CONTRIBUTING.md and link it from styleguide; fix: end beta-status paragraph with bug-report guidance, not dev jargon; PR #181. PRs: [#197](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/197), [#199](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/199)
 - **v1.3.7** - test: close issue #141 Section A Spock coverage gaps; ci(hub-e2e): deploy PR source to test hub before running tests; PR #169. PRs: [#193](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/193), [#192](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/192)
 - **v1.3.6** - PR #187; PR #174
-- **v1.3.5** - feat: optimistic-lock + self-update guard for update_app_code / update_driver_code. PRs: [#189](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/189)
+- **v1.3.5** - feat: optimistic-lock + self-update guard for hub_update_app / hub_update_driver. PRs: [#189](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/189)
 - **v1.3.4** - feat: fold location event history into get_device_history. PRs: [#188](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/188)
-- **v1.3.3** - feat(manage_virtual_device): allow custom-driver instantiation via {namespace, name}. PRs: [#168](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/168)
-- **v1.3.2** - test: cut gradle test suite time ~87% via per-JVM compile cache + strict-mode CI matrix; feat: add identify-hub LED option to get_hub_info and device_health_check; feat(tools/list, manage_hpm): cursor pagination + R7 doc/spec follow-up. PRs: [#184](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/184), [#186](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/186), [#180](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/180)
-- **v1.3.1** - feat: rework generate_bug_report for issue templates, scoped logs, public-safe mode. PRs: [#182](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/182)
-- **v1.3.0** - chore(sandbox_lint): enforce tool-count consistency + sync doc drift; feat(manage_hpm): HPM read-only gateway — list_hpm_packages + get_hpm_drift. PRs: [#165](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/165), [#167](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/167)
-- **v1.2.1** - feat(manage_app_driver_code): library management (install/update/delete/get_source). PRs: [#164](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/164)
-- **v1.2.0** - feat: add clone/export/import_native_app via Hubitat appCloner. PRs: [#158](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/158)
-- **v1.1.2** - docs(futureplans): align rule-tool names with PR #134 custom_ rename; feat(manage_app_driver_code): driver-code lifecycle improvements -- sourceFile + bulk + token-economy. PRs: [#162](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/162), [#163](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/163)
+- **v1.3.3** - feat(hub_manage_virtual_device): allow custom-driver instantiation via {namespace, name}. PRs: [#168](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/168)
+- **v1.3.2** - test: cut gradle test suite time ~87% via per-JVM compile cache + strict-mode CI matrix; feat: add identify-hub LED option to hub_get_info and hub_get_device_health; feat(tools/list, hub_manage_hpm): cursor pagination + R7 doc/spec follow-up. PRs: [#184](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/184), [#186](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/186), [#180](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/180)
+- **v1.3.1** - feat: rework hub_report_issue for issue templates, scoped logs, public-safe mode. PRs: [#182](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/182)
+- **v1.3.0** - chore(sandbox_lint): enforce tool-count consistency + sync doc drift; feat(hub_manage_hpm): HPM read-only gateway — hub_list_hpm_packages + get_hpm_drift. PRs: [#165](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/165), [#167](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/167)
+- **v1.2.1** - feat(hub_manage_code_write): library management (install/update/delete/hub_get_source). PRs: [#164](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/164)
+- **v1.2.0** - feat: add clone/export/hub_import_native_app via Hubitat appCloner. PRs: [#158](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/158)
+- **v1.1.2** - docs(futureplans): align rule-tool names with PR #134 custom_ rename; feat(hub_manage_code_write): driver-code lifecycle improvements -- sourceFile + bulk + token-economy. PRs: [#162](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/162), [#163](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/163)
 - **v1.1.1** - ci: consolidate post-merge automation into release workflow (closes race). PRs: [#160](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/160)
 - **v1.1.0** - feat(devices): add poll_until_attribute -- block-poll until attribute matches; PR #92. PRs: [#157](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/157)
 - **v1.0.5** - docs: correct AGENTS.md falsehoods and auto-sync CLAUDE.md; feat(get-hub-logs): server-side regex / multi-pattern / time-window filters. PRs: [#156](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/156), [#155](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/155)
@@ -1514,35 +1500,35 @@ For easier bug reporting:
 - **v1.0.1** - feat: optional flat tool-list mode (toggle off category gateways). PRs: [#136](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/136)
 - **v1.0.0** - ci(hub-e2e): self-configuring CI workflow against test hub (closes #77); feat(rm-native): native Rule Machine tools and classic-app CRUD + custom_ rename of MCP rule engine tools. PRs: [#148](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/148), [#134](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/134)
 - **v0.11.1** - build(deps): bump gradle-wrapper from 9.4.1 to 9.5.0 in the gradle-dependencies group ([#143](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/143), @app/dependabot); feat(release): author-curated, minor-scoped HPM release notes + PR review tooling. PRs: [#143](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/143), [#146](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/146)
-- **v0.11.0** - fix(release): positive-match the skip cascade so recursion guard short-circuits cleanly; PR #120; tests: RM 5.1 native BAT suite — acceptance gate for #120; docs: add Gemini testing results for PR #134; fix(manage_virtual_device): rename "Virtual Presence Sensor" enum entry to "Virtual Presence"; feat(developer-mode): add manage_mcp_self gateway + delete_variable. PRs: [#123](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/123), [#133](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/133), [#138](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/138), [#144](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/144), [#145](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/145)
-- **v0.10.1** - test(server): unit-test manage_destructive_hub_ops / manage_apps_drivers / manage_app_driver_code gateways; test(server): unit-test manage_logs / manage_diagnostics / manage_files gateways; PR #75; test(rules): breadth coverage for conditions, actions, triggers, loop guard, error paths (closes #75); test: backfill regression specs from CHANGELOG / release-notes history (closes #76); PR #76; Add get_app_config + list_app_pages (manage_installed_apps gateway); test: backfill sunrise/sunset silent-failure fix + broader silent-device-not-found coverage (#76); PR #77; test(integration): in-harness dispatch drive-through for handleMcpRequest + subscribe/fire (#77); fix(release): push via deploy key to bypass main-branch ruleset. PRs: [#110](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/110), [#111](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/111), [#115](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/115), [#116](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/116), [#112](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/112), [#117](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/117), [#119](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/119), [#122](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/122)
-- **v0.10.0** - docs: re-collapse Future Plans + refresh MCP tools list; build(deps): bump the gradle-dependencies group with 2 updates ([#101](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/101), @app/dependabot); fix(lint): scan GString interpolations for sandbox violations; perf(test): cache HubitatAppSandbox parse per spec class (5m → 1.5m); Built-in app visibility + Rule Machine interop (2 new gateways, 7 tools); test(server): unit-test manage_rules_admin / manage_hub_variables / manage_rooms gateways; test(rm-interop): pin registerRmRule warn-log emission and type classification; fix(release): trigger on push to main (fork-PR bot-permission workaround); fix(release): cascade skip flags + retry PR lookup for indexing lag. PRs: [#102](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/102), [#101](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/101), [#103](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/103), [#104](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/104), [#79](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/79), [#106](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/106), [#107](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/107), [#108](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/108), [#109](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/109)
+- **v0.11.0** - fix(release): positive-match the skip cascade so recursion guard short-circuits cleanly; PR #120; tests: RM 5.1 native BAT suite — acceptance gate for #120; docs: add Gemini testing results for PR #134; fix(hub_manage_virtual_device): rename "Virtual Presence Sensor" enum entry to "Virtual Presence"; feat(developer-mode): add hub_manage_mcp gateway + hub_delete_variable. PRs: [#123](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/123), [#133](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/133), [#138](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/138), [#144](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/144), [#145](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/145)
+- **v0.10.1** - test(server): unit-test hub_manage_destructive_ops / hub_manage_code_read / hub_manage_code_write gateways; test(server): unit-test hub_manage_logs / hub_manage_diagnostics / hub_manage_files gateways; PR #75; test(rules): breadth coverage for conditions, actions, triggers, loop guard, error paths (closes #75); test: backfill regression specs from CHANGELOG / release-notes history (closes #76); PR #76; Add hub_get_app_config + hub_list_app_pages (hub_manage_installed_apps gateway); test: backfill sunrise/sunset silent-failure fix + broader silent-device-not-found coverage (#76); PR #77; test(integration): in-harness dispatch drive-through for handleMcpRequest + subscribe/fire (#77); fix(release): push via deploy key to bypass main-branch ruleset. PRs: [#110](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/110), [#111](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/111), [#115](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/115), [#116](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/116), [#112](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/112), [#117](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/117), [#119](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/119), [#122](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/122)
+- **v0.10.0** - docs: re-collapse Future Plans + refresh MCP tools list; build(deps): bump the gradle-dependencies group with 2 updates ([#101](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/101), @app/dependabot); fix(lint): scan GString interpolations for sandbox violations; perf(test): cache HubitatAppSandbox parse per spec class (5m → 1.5m); Built-in app visibility + Rule Machine interop (2 new gateways, 7 tools); test(server): unit-test hub_manage_rules / hub_manage_variables / hub_manage_rooms gateways; test(rm-interop): pin registerRmRule warn-log emission and type classification; fix(release): trigger on push to main (fork-PR bot-permission workaround); fix(release): cascade skip flags + retry PR lookup for indexing lag. PRs: [#102](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/102), [#101](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/101), [#103](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/103), [#104](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/104), [#79](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/79), [#106](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/106), [#107](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/107), [#108](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/108), [#109](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/109)
 - **v0.9.7** - build: add Groovy/Spock/HubitatCI test harness (#69); test: gateway proxy dispatch + JSON-RPC envelope + resolution paths; ci: silence Groovy 2.5 reflective warnings + run Gradle daemon on JDK 17; chore: migrate hubitat_ci to joelwetzel fork + Dependabot + version-check; docs: credit biocomp and joelwetzel for the test harness; build(deps): bump the github-actions group with 5 updates ([#87](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/87), @app/dependabot); build(deps): bump gradle-wrapper from 8.10 to 9.4.1 in the gradle-dependencies group ([#86](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/86), @app/dependabot); build: assignment syntax for url + exceptionFormat (Gradle 10 prep); docs(futureplans): correct two 'infeasible' claims contradicted by Hubitat docs; test: rule-engine primitive specs (closes #71); chore: migrate test harness from joelwetzel to eighty20results/hubitat_ci. PRs: [#81](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/81), [#82](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/82), [#83](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/83), [#85](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/85), [#88](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/88), [#87](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/87), [#86](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/86), [#89](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/89), [#90](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/90), [#98](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/98), [#100](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/100)
 - **v0.9.6** - fix: drop PR reference from packageManifest.json releaseNotes. PRs: [#80](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/80)
 - **v0.9.5** - feat: include PR main-commit extended description in release notes. PRs: [#78](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/78)
 - **v0.9.4** - fix: release workflow pushes the version tag explicitly; chore: drop unused json import in sandbox_lint.py. PRs: [#67](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/67), [#68](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/68)
 - **v0.9.3** - Release automation: bot-driven version bumps + CHANGELOG + release notes sync. PRs: [#66](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/66)
-- **v0.9.2** - Enriched `list_devices` summary (new fields: `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId`) + server-side `filter` arg (`enabled` / `disabled` / `stale:<hours>`) applied before pagination — closes the N+1 roundtrip problem for common bulk questions. Fix `get_hub_logs` ordering (now returns most recent entries first; previously returned oldest from the ring buffer) + new `deviceId` / `appId` server-side scope args (~93% payload reduction when scoped).
-- **v0.9.1** - New `search_tools`: BM25 natural language search across all 74 MCP tools (core + gateway sub-tools). Searches tool names, descriptions, and parameter names. Returns matching tools ranked by relevance with gateway attribution so the LLM knows how to call them. Inspired by FastMCP 3.1 Tool Search transform. 74 MCP tools total (31 on `tools/list`).
-- **v0.9.0** - New tools: `get_performance_stats` (device/app performance stats — method call counts, % busy, cumulative total ms, state size, events, large state flag; sortable by `pct`/`count`/`stateSize`/`totalMs`/`name`) and `get_hub_jobs` (scheduled/running jobs, hub actions), both in `manage_logs` gateway. Enhanced `get_memory_history`: `limit` parameter (default 100) to prevent response-too-large errors, now includes Java heap (`totalJavaKB`, `freeJavaKB`) and direct/NIO buffer memory (`directJavaKB`) per entry with min/max tracking in summary for leak detection. 73 MCP tools total (30 on `tools/list`).
-- **v0.8.7** - Add memory diagnostic tools: `get_memory_history` and `force_garbage_collection`, both in `manage_diagnostics` gateway. 71 MCP tools total.
+- **v0.9.2** - Enriched `hub_list_devices` summary (new fields: `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId`) + server-side `filter` arg (`enabled` / `disabled` / `stale:<hours>`) applied before pagination — closes the N+1 roundtrip problem for common bulk questions. Fix `hub_get_logs` ordering (now returns most recent entries first; previously returned oldest from the ring buffer) + new `deviceId` / `appId` server-side scope args (~93% payload reduction when scoped).
+- **v0.9.1** - New `hub_search_tools`: BM25 natural language search across all 74 MCP tools (core + gateway sub-tools). Searches tool names, descriptions, and parameter names. Returns matching tools ranked by relevance with gateway attribution so the LLM knows how to call them. Inspired by FastMCP 3.1 Tool Search transform. 74 MCP tools total (31 on `tools/list`).
+- **v0.9.0** - New tools: `hub_get_performance_stats` (device/app performance stats — method call counts, % busy, cumulative total ms, state size, events, large state flag; sortable by `pct`/`count`/`stateSize`/`totalMs`/`name`) and `hub_get_jobs` (scheduled/running jobs, hub actions), both in `hub_manage_logs` gateway. Enhanced `hub_get_memory_history`: `limit` parameter (default 100) to prevent response-too-large errors, now includes Java heap (`totalJavaKB`, `freeJavaKB`) and direct/NIO buffer memory (`directJavaKB`) per entry with min/max tracking in summary for leak detection. 73 MCP tools total (30 on `tools/list`).
+- **v0.8.7** - Add memory diagnostic tools: `hub_get_memory_history` and `hub_call_gc`, both in `hub_manage_diagnostics` gateway. 71 MCP tools total.
 - **v0.8.6** - Bug fix: `days_of_week` condition crash (`Date.format(String, Locale)` not available in Hubitat sandbox).
 
 <details>
 <summary><b>Older versions (v0.7.0 – v0.8.5)</b></summary>
 
-- **v0.8.5** - Bug fixes: fix `send_command` Map-parameter handling (Hubitat's JSON parser chokes on nested JSON objects in parameter arrays, falling back to raw String — now extracts embedded JSON objects by brace-matching), fix `get_hub_logs` source filter (was checking timestamp field instead of message field — source searches never matched app/device names), add JSON string-to-Map parsing in rule action parameter converter
-- **v0.8.2** - Critical bug fixes: fix rule action execution crash (`log.isDebugEnabled()` not available in Hubitat sandbox — all rule actions were silently failing), fix `send_command` setColor/map-parameter handling (JSON string parameters now auto-parsed into Maps for commands like `setColor` that expect Map arguments)
+- **v0.8.5** - Bug fixes: fix `hub_call_device_command` Map-parameter handling (Hubitat's JSON parser chokes on nested JSON objects in parameter arrays, falling back to raw String — now extracts embedded JSON objects by brace-matching), fix `hub_get_logs` source filter (was checking timestamp field instead of message field — source searches never matched app/device names), add JSON string-to-Map parsing in rule action parameter converter
+- **v0.8.2** - Critical bug fixes: fix rule action execution crash (`log.isDebugEnabled()` not available in Hubitat sandbox — all rule actions were silently failing), fix `hub_call_device_command` setColor/map-parameter handling (JSON string parameters now auto-parsed into Maps for commands like `setColor` that expect Map arguments)
 - **v0.8.1** - Bug fixes: remove dead code (toolEnableRule/toolDisableRule/toolToggleRule), fix stale tool references in messages and docs, update BAT-v2 for final 9-gateway architecture
-- **v0.8.0** - Category gateway proxy: consolidate 48 tools behind 9 domain-named gateways, reducing `tools/list` from 69 to 30. 21 core tools stay ungrouped (devices, rules, modes, HSM, update_device, manage_virtual_device, list_virtual_devices, get_hub_info, create_hub_backup, check_for_update, generate_bug_report, get_tool_guide). Merged get_hub_health and get_hub_details into get_hub_info — comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip code) gated behind Hub Admin Read. Merged enable_rule/disable_rule into update_rule (use `enabled=true/false`). Merged create_virtual_device/delete_virtual_device into manage_virtual_device (with `action` enum). Promoted create_hub_backup, check_for_update, and generate_bug_report to core tools. Dissolved manage_hub_info gateway (radio details moved to manage_diagnostics). Renamed manage_hub_maintenance to manage_destructive_hub_ops, manage_code_changes to manage_app_driver_code. Each gateway shows tool summaries with parameter hints in its description (always visible to LLMs) and returns full schemas on demand. Gateways: manage_rules_admin, manage_hub_variables, manage_rooms, manage_destructive_hub_ops, manage_apps_drivers (read-only), manage_app_driver_code, manage_logs, manage_diagnostics, manage_files. Modeled after ha-mcp PR #637. Breaking change: proxied tools removed from `tools/list` but accessible via gateways.
+- **v0.8.0** - Category gateway proxy: consolidate 48 tools behind 9 domain-named gateways, reducing `tools/list` from 69 to 30. 21 core tools stay ungrouped (devices, rules, modes, HSM, hub_update_device, hub_manage_virtual_device, list_virtual_devices, hub_get_info, hub_create_backup, hub_get_update_status, hub_report_issue, hub_get_tool_guide). Merged get_hub_health and get_hub_details into hub_get_info — comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip code) gated behind Hub Admin Read. Merged enable_rule/disable_rule into update_rule (use `enabled=true/false`). Merged create_virtual_device/delete_virtual_device into hub_manage_virtual_device (with `action` enum). Promoted hub_create_backup, hub_get_update_status, and hub_report_issue to core tools. Dissolved manage_hub_info gateway (radio details moved to hub_manage_diagnostics). Renamed manage_hub_maintenance to hub_manage_destructive_ops, manage_code_changes to hub_manage_code_write. Each gateway shows tool summaries with parameter hints in its description (always visible to LLMs) and returns full schemas on demand. Gateways: hub_manage_rules, hub_manage_variables, hub_manage_rooms, hub_manage_destructive_ops, hub_manage_code_read (read-only), hub_manage_code_write, hub_manage_logs, hub_manage_diagnostics, hub_manage_files. Modeled after ha-mcp PR #637. Breaking change: proxied tools removed from `tools/list` but accessible via gateways.
 - **v0.7.7** - Code review round 2: MCP protocol fix (tool errors use isError flag per spec), fix formatAge() singular grammar, short-circuit condition evaluation, fix CI sed double-demotion, consolidate redundant API calls, guard eager debug logging, deduplicate sunrise/sunset reschedule, fix variable_math double atomicState read, efficiency improvements
 - **v0.7.6** - Code review: fix hoursAgo calculation bug, fix variable shadowing, centralize version string, extract shared helpers (~90 lines reduced)
-- **v0.7.5** - Token efficiency: lean tool descriptions with progressive disclosure via `get_tool_guide` (~27% token reduction)
+- **v0.7.5** - Token efficiency: lean tool descriptions with progressive disclosure via `hub_get_tool_guide` (~27% token reduction)
 - **v0.7.4** - Stability: configurable execution loop guard with push notifications, safe room move, resilient date parsing
 - **v0.7.3** - Documentation sync (SKILL.md section names match source code structure)
-- **v0.7.2** - Device authorization safety + optimized tool descriptions + get_tool_guide (74 tools)
+- **v0.7.2** - Device authorization safety + optimized tool descriptions + hub_get_tool_guide (74 tools)
 - **v0.7.1** - Auto-backup for delete_rule, testRule flag, bug fixes
-- **v0.7.0** - Room management: list_rooms, get_room, create_room, delete_room, rename_room (73 tools)
+- **v0.7.0** - Room management: hub_list_rooms, hub_get_room, hub_create_room, hub_delete_room, hub_update_room (73 tools)
 
 </details>
 
@@ -1561,14 +1547,14 @@ For easier bug reporting:
 - **v0.6.6** - Room assignment: diagnostic build with device JSON dump
 - **v0.6.5** - Fix room assignment: use `deviceTypeId` field (not `typeId`)
 - **v0.6.4** - Fix room assignment: extract device data from nested `fullJson.device`
-- **v0.6.3** - Fix `update_device` room assignment (500) and enable/disable (404) bugs + debug logging
-- **v0.6.2** - Add `update_device` tool (68 tools)
+- **v0.6.3** - Fix `hub_update_device` room assignment (500) and enable/disable (404) bugs + debug logging
+- **v0.6.2** - Add `hub_update_device` tool (68 tools)
 - **v0.6.1** - Fix BigDecimal.round() crash in version update checker (67 tools)
 - **v0.6.0** - Virtual device creation and management (67 tools)
-- **v0.5.4** - Fix BigDecimal arithmetic with pure integer math in `device_health_check` and `delete_device` (64 tools)
-- **v0.5.3** - Fix `BigDecimal.round()` in `device_health_check` (64 tools)
-- **v0.5.2** - Fix `device_health_check` error handling (64 tools)
-- **v0.5.1** - Fix `get_hub_logs` JSON array parsing (64 tools)
+- **v0.5.4** - Fix BigDecimal arithmetic with pure integer math in `hub_get_device_health` and `hub_delete_device` (64 tools)
+- **v0.5.3** - Fix `BigDecimal.round()` in `hub_get_device_health` (64 tools)
+- **v0.5.2** - Fix `hub_get_device_health` error handling (64 tools)
+- **v0.5.1** - Fix `hub_get_logs` JSON array parsing (64 tools)
 - **v0.5.0** - Monitoring tools and device management (64 tools)
 - **v0.4.8** - Fix Z-Wave and Zigbee endpoint compatibility (59 tools)
 - **v0.4.7** - Comprehensive bug fixes from code review (59 tools)
@@ -1589,7 +1575,7 @@ For easier bug reporting:
 - **v0.2.9** - Critical bug fixes from second thorough review
 - **v0.2.8** - Thorough code review fixes
 - **v0.2.7** - Fixed StackOverflowError on app install/open
-- **v0.2.6** - Added `generate_bug_report` tool
+- **v0.2.6** - Added `hub_report_issue` tool
 - **v0.2.5** - Added UI control for MCP debug log level
 - **v0.2.4** - Added version field to `get_logging_status`
 - **v0.2.3** - Version bump for HPM release
@@ -1618,7 +1604,7 @@ For easier bug reporting:
 - **v0.1.4** - Added remaining documented actions
 - **v0.1.3** - Major rule engine fixes
 - **v0.1.2** - Fixed missing action types
-- **v0.1.1** - Added pagination for `list_devices`
+- **v0.1.1** - Added pagination for `hub_list_devices`
 - **v0.1.0** - Parent/Child architecture
 - **v0.0.6** - Fixed trigger/condition/action save flow
 - **v0.0.5** - Bug fixes for device and variable tools
@@ -1683,13 +1669,13 @@ The `tests/` directory contains:
 ./gradlew test
 ```
 
-See [docs/testing.md](docs/testing.md) for the full Spock harness overview, how to add new specs, and the RMUtils mocking recipe for `manage_native_rules_and_apps` tools.
+See [docs/testing.md](docs/testing.md) for the full Spock harness overview, how to add new specs, and the RMUtils mocking recipe for `hub_manage_native_rules` tools.
 
 ## Contributing
 
 Contributions welcome! Fork the repo, create a feature branch, make your changes, and submit a pull request.
 
-**New MCP tools must ship with unit tests** — both golden-path and error-path coverage. Tool handler tests go under `src/test/groovy/server/`; rule-engine tests under `src/test/groovy/rules/`. See [docs/testing.md](docs/testing.md) for the harness overview, the recipe for adding a new tool spec, and the RMUtils mocking pattern for `manage_native_rules_and_apps`-style tools.
+**New MCP tools must ship with unit tests** — both golden-path and error-path coverage. Tool handler tests go under `src/test/groovy/server/`; rule-engine tests under `src/test/groovy/rules/`. See [docs/testing.md](docs/testing.md) for the harness overview, the recipe for adding a new tool spec, and the RMUtils mocking pattern for `hub_manage_native_rules`-style tools.
 
 PRs that add tools without tests will be asked to add them before merge. CI (`./gradlew test`) runs on every PR via `.github/workflows/unit-tests.yml`.
 
@@ -1706,7 +1692,7 @@ MIT License - see [LICENSE](LICENSE)
 - [biocomp/hubitat_ci](https://github.com/biocomp/hubitat_ci) ([@biocomp](https://github.com/biocomp)) — original Hubitat Groovy unit-testing framework our harness is built on (Apache 2.0)
 - [eighty20results/hubitat_ci](https://github.com/eighty20results/hubitat_ci) ([@eighty20results](https://github.com/eighty20results)) — actively-maintained Groovy 3.0 fork of the above, consumed as our test dependency via JitPack (Apache 2.0); previously we used [joelwetzel/hubitat_ci](https://github.com/joelwetzel/hubitat_ci) ([@joelwetzel](https://github.com/joelwetzel)) and migrated to eighty20results for Groovy 3 support and native sandbox mapping of `hubitat.helper.*` helpers
 - [@ashwinma14](https://github.com/ashwinma14) - Fix for StackOverflowError on app install ([#15](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/15))
-- [@level99](https://github.com/level99) - Enriched `list_devices` summary + server-side `filter` arg ([#63](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/63)) and `get_hub_logs` ordering fix + `deviceId`/`appId` server-side scope ([#64](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/64))
+- [@level99](https://github.com/level99) - Enriched `hub_list_devices` summary + server-side `filter` arg ([#63](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/63)) and `hub_get_logs` ordering fix + `deviceId`/`appId` server-side scope ([#64](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/64))
 
 ## Disclaimer
 

@@ -4,8 +4,8 @@ import support.RMUtilsMock
 import support.ToolSpecBase
 
 /**
- * Spec for toolResumeRmRule (hubitat-mcp-server.groovy approx line 7819).
- * Gateway: manage_native_rules_and_apps -> resume_rm_rule.
+ * Spec for toolSetRulePaused resume path (value:false).
+ * Gateway: hub_manage_native_rules -> hub_set_rule_paused.
  *
  * Covers: gate-throw, missing ruleId, golden-path resumeRule dispatch,
  * and String ruleId coercion.
@@ -28,7 +28,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinApp = false
 
         when:
-        script.toolResumeRmRule([ruleId: 1])
+        script.toolSetRulePaused([ruleId: 1, value: false])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -36,13 +36,13 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "resume_rm_rule via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
+    def "hub_set_rule_paused (resume) via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = false
 
         when:
-        def response = mcpDriver.callTool('resume_rm_rule', [ruleId: 1])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 1, value: false])
 
         then:
         response.error.code == -32602
@@ -57,7 +57,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinApp = true
 
         when:
-        script.toolResumeRmRule([:])
+        script.toolSetRulePaused([value: false])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -65,13 +65,13 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "resume_rm_rule via dispatch returns -32602 envelope when ruleId is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule_paused (resume) via dispatch returns -32602 envelope when ruleId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('resume_rm_rule', [:])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [value: false])
 
         then:
         response.error.code == -32602
@@ -86,7 +86,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinApp = true
 
         when:
-        def result = script.toolResumeRmRule([ruleId: 600])
+        def result = script.toolSetRulePaused([ruleId: 600, value: false])
 
         then:
         result.success == true
@@ -95,13 +95,13 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "resume_rm_rule via dispatch dispatches resumeRule sendAction for the given ruleId (useGateways=#useGateways)"() {
+    def "hub_set_rule_paused (resume) via dispatch dispatches resumeRule sendAction for the given ruleId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('resume_rm_rule', [ruleId: 600])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 600, value: false])
 
         then:
         response.error == null
@@ -120,7 +120,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinApp = true
 
         when:
-        def result = script.toolResumeRmRule([ruleId: '601'])
+        def result = script.toolSetRulePaused([ruleId: '601', value: false])
 
         then:
         result.success == true
@@ -129,13 +129,13 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "resume_rm_rule via dispatch coerces String ruleId to Integer (useGateways=#useGateways)"() {
+    def "hub_set_rule_paused (resume) via dispatch coerces String ruleId to Integer (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('resume_rm_rule', [ruleId: '601'])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: '601', value: false])
 
         then:
         response.error == null
@@ -154,7 +154,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinApp = true
 
         when:
-        script.toolResumeRmRule([ruleId: 'xyz'])
+        script.toolSetRulePaused([ruleId: 'xyz', value: false])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -162,13 +162,13 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "resume_rm_rule via dispatch returns -32602 envelope on non-numeric ruleId (useGateways=#useGateways)"() {
+    def "hub_set_rule_paused (resume) via dispatch returns -32602 envelope on non-numeric ruleId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('resume_rm_rule', [ruleId: 'xyz'])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 'xyz', value: false])
 
         then:
         response.error.code == -32602
@@ -178,12 +178,12 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "gateway dispatch via handleGateway routes to resume_rm_rule"() {
+    def "gateway dispatch via handleGateway routes to hub_set_rule_paused (resume)"() {
         given:
         settingsMap.enableBuiltinApp = true
 
         when:
-        def result = script.handleGateway('manage_native_rules_and_apps', 'resume_rm_rule', [ruleId: 700])
+        def result = script.handleGateway('hub_manage_native_rules', 'hub_set_rule_paused', [ruleId: 700, value: false])
 
         then:
         result.success == true

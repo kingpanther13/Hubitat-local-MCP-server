@@ -34,7 +34,7 @@ import support.ToolSpecBase
  */
 class RegressionsFromHistorySpec extends ToolSpecBase {
 
-    // update_app_code self-update guard reads app.id and fails closed when unavailable.
+    // hub_update_app self-update guard reads app.id and fails closed when unavailable.
     // appId='50' (the value used by the v0.4.6 regression specs below) does not match.
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
 
@@ -117,7 +117,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         asyncHttpCalls.isEmpty()
     }
 
-    // --- device_health_check hoursAgo formula (v0.7.6; context v0.5.3–v0.5.4)
+    // --- hub_get_device_health hoursAgo formula (v0.7.6; context v0.5.3–v0.5.4)
     //
     // Release history for this formula: v0.5.3 added .round() safety,
     // v0.5.4 swapped to pure integer math, v0.7.6 re-introduced fractional
@@ -132,7 +132,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     // revert to the v0.7.6-era 10x-off formula would produce 27.0 and
     // trip the assertion. Shape lives inside toolDeviceHealthCheck().
 
-    def "device_health_check reports hoursAgo as fractional hours with one decimal place (v0.7.6)"() {
+    def "hub_get_device_health reports hoursAgo as fractional hours with one decimal place (v0.7.6)"() {
         given: 'a selected device whose lastActivity is 2.7h before the harness now()'
         def twoPointSevenHoursAgo = new Date(1234567890000L - (long)(2.7 * 3_600_000L))
         def device = new TestDevice(id: 1, name: 'sensor', label: 'Sensor')
@@ -153,7 +153,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "device_health_check via dispatch reports hoursAgo as fractional hours (useGateways=#useGateways)"() {
+    def "hub_get_device_health via dispatch reports hoursAgo as fractional hours (useGateways=#useGateways)"() {
         given: 'a selected device whose lastActivity is 2.7h before the harness now()'
         settingsMap.useGateways = useGateways
         def twoPointSevenHoursAgo = new Date(1234567890000L - (long)(2.7 * 3_600_000L))
@@ -163,7 +163,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         settingsMap.selectedDevices = [device]
 
         when:
-        def response = mcpDriver.callTool('device_health_check', [staleHours: 24, includeHealthy: true])
+        def response = mcpDriver.callTool('hub_get_device_health', [staleHours: 24, includeHealthy: true])
 
         then: 'JSON-RPC envelope present with parseable content'
         response.jsonrpc == '2.0'
@@ -182,14 +182,14 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // --- get_hub_logs source filter applied to the message field (v0.8.5) --
+    // --- hub_get_logs source filter applied to the message field (v0.8.5) --
     //
     // The pre-fix code compared the source filter against `entry.time`
     // (timestamp), so a filter like source='Thermostat' never matched any
     // log lines. The fix in toolGetHubLogs() checks both `entry.message`
     // and `entry.name`.
 
-    def "get_hub_logs source filter matches against message field, not timestamp"() {
+    def "hub_get_logs source filter matches against message field, not timestamp"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/logs/past/json') { params ->
@@ -214,7 +214,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "get_hub_logs via dispatch filters against message field, not timestamp (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch filters against message field, not timestamp (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -226,7 +226,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         }
 
         when: 'source filter matches a word that only appears in the message field'
-        def positiveResp = mcpDriver.callTool('get_hub_logs', [source: 'Thermostat'])
+        def positiveResp = mcpDriver.callTool('hub_get_logs', [source: 'Thermostat'])
 
         then:
         positiveResp.jsonrpc == '2.0'
@@ -237,7 +237,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         positive.logs[0].message.contains('Thermostat')
 
         when: 'source filter matches the timestamp prefix — a pre-fix hit, a post-fix miss'
-        def negativeResp = mcpDriver.callTool('get_hub_logs', [source: '2026-04-19'])
+        def negativeResp = mcpDriver.callTool('hub_get_logs', [source: '2026-04-19'])
 
         then:
         negativeResp.error == null
@@ -249,14 +249,14 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // --- get_hub_logs JSON array parsing + line-split fallback (v0.5.1) ---
+    // --- hub_get_logs JSON array parsing + line-split fallback (v0.5.1) ---
     //
     // v0.5.1 fixed JSON array parsing of /logs/past/json. The current
     // toolGetHubLogs() attempts JsonSlurper first and falls back to
     // newline-splitting when the hub returns a non-JSON body (older
     // firmware shape).
 
-    def "get_hub_logs handles a non-JSON newline-delimited response (older-firmware fallback)"() {
+    def "hub_get_logs handles a non-JSON newline-delimited response (older-firmware fallback)"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/logs/past/json') { params ->
@@ -275,7 +275,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "get_hub_logs via dispatch handles non-JSON newline-delimited response (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch handles non-JSON newline-delimited response (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -285,7 +285,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_hub_logs', [:])
+        def response = mcpDriver.callTool('hub_get_logs', [:])
 
         then:
         response.jsonrpc == '2.0'
@@ -300,7 +300,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // --- send_command parameter normalisation (v0.8.2 + v0.8.5) -------------
+    // --- hub_call_device_command parameter normalisation (v0.8.2 + v0.8.5) -------------
     //
     // v0.8.2 fixed JSON-string parameters not being parsed to Maps for
     // setColor-style commands. v0.8.5 broadened handling: when Hubitat's
@@ -358,7 +358,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     // its own fetch), then falls back to the cached backup version only
     // if the fresh fetch fails. These two tests pin both branches.
 
-    def "update_app_code uses the fresh version from the hub, not the stale backup-manifest cache (v0.4.6)"() {
+    def "hub_update_app uses the fresh version from the hub, not the stale backup-manifest cache (v0.4.6)"() {
         given: 'a recent cached backup whose manifest carries a stale version=5'
         settingsMap.enableHubAdminWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
@@ -395,7 +395,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "update_app_code via dispatch uses fresh version from the hub, not stale cache (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch uses fresh version from the hub, not stale cache (useGateways=#useGateways)"() {
         given: 'a recent cached backup whose manifest carries a stale version=5'
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminWrite = true
@@ -422,7 +422,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '50', source: 'new source', confirm: true])
+        def response = mcpDriver.callTool('hub_update_app', [appId: '50', source: 'new source', confirm: true])
 
         then: 'update POST carries the fresh version=12'
         posted.body.version == 12
@@ -469,11 +469,11 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     }
 
     // Companion dispatch feature for the isNewerVersion data table: exercises
-    // check_for_update through the envelope so the version-check tool surface
+    // hub_get_update_status through the envelope so the version-check tool surface
     // is locked under both gateway modes. The data-table above pins the pure
     // helper; this pins the tool that consumes it.
     @Unroll
-    def "check_for_update via dispatch returns success envelope with installedVersion (useGateways=#useGateways)"() {
+    def "hub_get_update_status via dispatch returns success envelope with installedVersion (useGateways=#useGateways)"() {
         given: 'clear any prior updateCheck so the tool forces a fresh async check'
         settingsMap.useGateways = useGateways
         stateMap.remove('updateCheck')
@@ -482,7 +482,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         script.metaClass.doUpdateCheck = { -> /* no-op: tool returns current snapshot */ }
 
         when:
-        def response = mcpDriver.callTool('check_for_update', [:])
+        def response = mcpDriver.callTool('hub_get_update_status', [:])
 
         then: 'JSON-RPC success envelope; tool body reports success + a version'
         response.jsonrpc == '2.0'
@@ -499,7 +499,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_app_code falls back to the cached backup version when the fresh-fetch fails (v0.4.6)"() {
+    def "hub_update_app falls back to the cached backup version when the fresh-fetch fails (v0.4.6)"() {
         given: 'a recent cached backup with version=5 (stale, but the only thing we have)'
         settingsMap.enableHubAdminWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
@@ -533,7 +533,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "update_app_code via dispatch falls back to cached backup version when fresh-fetch fails (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch falls back to cached backup version when fresh-fetch fails (useGateways=#useGateways)"() {
         given: 'a recent cached backup with version=5 (stale, but the only thing we have)'
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminWrite = true
@@ -559,7 +559,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '50', source: 'new source', confirm: true])
+        def response = mcpDriver.callTool('hub_update_app', [appId: '50', source: 'new source', confirm: true])
 
         then: 'best-effort fallback — use the cached version=5'
         posted.body.version == 5
@@ -576,18 +576,18 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // --- update_library_code dedup-path version correctness ------------------
+    // --- hub_update_library dedup-path version correctness ------------------
     //
-    // When the 1-hour backup dedup window is active, update_library_code must
+    // When the 1-hour backup dedup window is active, hub_update_library must
     // still fetch the CURRENT version from the hub (via /library/list/single/data/<id>)
     // for the optimistic-locking POST field -- not reuse the stale version
     // stored in the backup manifest. If the fresh fetch fails, it falls back
     // to the cached manifest version rather than aborting.
     //
     // These two tests pin both branches of that version-resolution path,
-    // mirroring the v0.4.6 regression tests for update_app_code above.
+    // mirroring the v0.4.6 regression tests for hub_update_app above.
 
-    def "update_library_code dedup path uses the fresh version from the hub, not the stale backup-manifest cache"() {
+    def "hub_update_library dedup path uses the fresh version from the hub, not the stale backup-manifest cache"() {
         given: 'a recent cached backup whose manifest carries a stale version=1'
         settingsMap.enableHubAdminWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
@@ -623,7 +623,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "update_library_code via dispatch uses fresh version from the hub, not stale cache (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch uses fresh version from the hub, not stale cache (useGateways=#useGateways)"() {
         given: 'a recent cached backup whose manifest carries a stale version=1'
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminWrite = true
@@ -649,7 +649,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: 'new source', confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: 'new source', confirm: true])
 
         then: 'POST body carries the fresh version=9'
         capturedBody.version == 9
@@ -666,7 +666,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_library_code dedup path falls back to the cached backup version when the fresh-fetch fails"() {
+    def "hub_update_library dedup path falls back to the cached backup version when the fresh-fetch fails"() {
         given: 'a recent cached backup with version=7 (stale, but the only value available)'
         settingsMap.enableHubAdminWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
@@ -702,7 +702,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "update_library_code via dispatch falls back to cached backup version when fresh-fetch fails (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch falls back to cached backup version when fresh-fetch fails (useGateways=#useGateways)"() {
         given: 'a recent cached backup with version=7 (stale, but the only value available)'
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminWrite = true
@@ -728,7 +728,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_library_code', [libraryId: '42', source: 'new source', confirm: true])
+        def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: 'new source', confirm: true])
 
         then: 'best-effort fallback -- use the cached version=7'
         capturedBody.version == 7

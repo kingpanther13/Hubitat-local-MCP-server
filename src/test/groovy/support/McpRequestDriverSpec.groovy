@@ -11,7 +11,7 @@ class McpRequestDriverSpec extends ToolSpecBase {
     McpRequestDriver driver
 
     def setupSpec() {
-        // get_hub_info reads location.hub; wire a stub so the callTool test
+        // hub_get_info reads location.hub; wire a stub so the callTool test
         // exercises a real success path rather than the tool's outer error wrap.
         appExecutor.getLocation() >> sharedLocation
     }
@@ -141,7 +141,7 @@ class McpRequestDriverSpec extends ToolSpecBase {
         hubGet.register('/hub/advanced/freeOSMemory') { params -> 'TestHub-987654' }
 
         when:
-        def response = mcpDriver.callTool('get_hub_info', [:])
+        def response = mcpDriver.callTool('hub_get_info', [:])
 
         then:
         response.jsonrpc == '2.0'

@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolSetRmRuleBoolean (hubitat-mcp-server.groovy approx line 7837).
- * Gateway: manage_native_rules_and_apps -> set_rm_rule_boolean.
+ * Gateway: hub_manage_native_rules -> hub_set_rule_private_boolean.
  *
  * Load-bearing: strict coercion policy. Accepts ONLY Boolean true/false OR
  * the lowercase strings "true"/"false". All other truthy-looking values
@@ -40,13 +40,13 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_rm_rule_boolean via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = false
 
         when:
-        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 1, value: true])
+        def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 1, value: true])
 
         then:
         response.error.code == -32602
@@ -69,13 +69,13 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_rm_rule_boolean via dispatch returns -32602 envelope when ruleId is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch returns -32602 envelope when ruleId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('set_rm_rule_boolean', [value: true])
+        def response = mcpDriver.callTool('hub_set_rule_private_boolean', [value: true])
 
         then:
         response.error.code == -32602
@@ -98,13 +98,13 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_rm_rule_boolean via dispatch returns -32602 envelope when value is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch returns -32602 envelope when value is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 1])
+        def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 1])
 
         then:
         response.error.code == -32602
@@ -127,13 +127,13 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_rm_rule_boolean via dispatch Boolean true dispatches setRuleBooleanTrue (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch Boolean true dispatches setRuleBooleanTrue (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 800, value: true])
+        def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 800, value: true])
 
         then:
         response.error == null
@@ -159,13 +159,13 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_rm_rule_boolean via dispatch Boolean false dispatches setRuleBooleanFalse (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch Boolean false dispatches setRuleBooleanFalse (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 801, value: false])
+        def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 801, value: false])
 
         then:
         response.error == null
@@ -191,13 +191,13 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_rm_rule_boolean via dispatch String 'true' is accepted and dispatches setRuleBooleanTrue (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch String 'true' is accepted and dispatches setRuleBooleanTrue (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 802, value: 'true'])
+        def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 802, value: 'true'])
 
         then:
         response.error == null
@@ -223,13 +223,13 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_rm_rule_boolean via dispatch String 'false' is accepted and dispatches setRuleBooleanFalse (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch String 'false' is accepted and dispatches setRuleBooleanFalse (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 803, value: 'false'])
+        def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 803, value: 'false'])
 
         then:
         response.error == null
@@ -258,13 +258,13 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_rm_rule_boolean via dispatch rejects capitalized boolean string '#value' with -32602 (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch rejects capitalized boolean string '#value' with -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 999, value: value])
+        def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 999, value: value])
 
         then:
         response.error.code == -32602
@@ -298,13 +298,13 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_rm_rule_boolean via dispatch rejects truthy-looking string '#value' with -32602 (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch rejects truthy-looking string '#value' with -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 999, value: value])
+        def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 999, value: value])
 
         then:
         response.error.code == -32602
@@ -338,13 +338,13 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_rm_rule_boolean via dispatch rejects integer value #value with -32602 (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch rejects integer value #value with -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('set_rm_rule_boolean', [ruleId: 999, value: value])
+        def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 999, value: value])
 
         then:
         response.error.code == -32602
@@ -358,12 +358,12 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         false       | 0
     }
 
-    def "gateway dispatch via handleGateway routes to set_rm_rule_boolean"() {
+    def "gateway dispatch via handleGateway routes to hub_set_rule_private_boolean"() {
         given:
         settingsMap.enableBuiltinApp = true
 
         when:
-        def result = script.handleGateway('manage_native_rules_and_apps', 'set_rm_rule_boolean', [ruleId: 900, value: true])
+        def result = script.handleGateway('hub_manage_native_rules', 'hub_set_rule_private_boolean', [ruleId: 900, value: true])
 
         then:
         result.success == true

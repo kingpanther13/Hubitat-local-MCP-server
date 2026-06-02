@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolListAppPages (hubitat-mcp-server.groovy).
- * Gateway tool under manage_installed_apps -- executeTool() dispatches via case "list_app_pages".
+ * Gateway tool under hub_manage_installed_apps -- executeTool() dispatches via case "hub_list_app_pages".
  *
  * Covers:
  *  - Hub Admin Read gate (throws when disabled)
@@ -78,13 +78,13 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = false
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 35])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
 
         then:
         response.error.code == -32602
@@ -111,13 +111,13 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch returns -32602 envelope when appId is missing (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns -32602 envelope when appId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [:])
+        def response = mcpDriver.callTool('hub_list_app_pages', [:])
 
         then:
         response.error.code == -32602
@@ -140,13 +140,13 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch returns -32602 envelope when appId is blank (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns -32602 envelope when appId is blank (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: '   '])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: '   '])
 
         then:
         response.error.code == -32602
@@ -172,13 +172,13 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch returns -32602 envelope when appId is non-numeric (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns -32602 envelope when appId is non-numeric (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 'not-a-number'])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 'not-a-number'])
 
         then:
         response.error.code == -32602
@@ -230,7 +230,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch returns all curated HPM page names (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns all curated HPM page names (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -239,7 +239,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 35])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
 
         then:
         response.error == null
@@ -286,7 +286,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch returns single mainPage with RM rule note (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns single mainPage with RM rule note (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -295,7 +295,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 35])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
 
         then:
         response.error == null
@@ -336,7 +336,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch returns primary page only with uncurated note (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns primary page only with uncurated note (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -345,7 +345,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 35])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
 
         then:
         response.error == null
@@ -380,14 +380,14 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch returns success=false envelope when hub returns empty body (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns success=false envelope when hub returns empty body (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/99') { params -> '' }
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 99])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 99])
 
         then:
         response.error == null
@@ -423,7 +423,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch returns success=false envelope for unknown appId (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns success=false envelope for unknown appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -437,7 +437,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 9999])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 9999])
 
         then:
         response.error == null
@@ -465,14 +465,14 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch returns success=false envelope when response is not a JSON object (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns success=false envelope when response is not a JSON object (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> '"just a string"' }
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 35])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
 
         then:
         response.error == null
@@ -507,7 +507,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch returns success=false envelope when configPage is missing (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns success=false envelope when configPage is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -520,7 +520,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 35])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
 
         then:
         response.error == null
@@ -549,14 +549,14 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch returns success=false envelope when hub returns unparseable JSON (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns success=false envelope when hub returns unparseable JSON (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> '{not valid json' }
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 35])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
 
         then:
         response.error == null
@@ -596,7 +596,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch Room Lighting curated match '#appTypeName' returns Room Lighting note (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch Room Lighting curated match '#appTypeName' returns Room Lighting note (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -605,7 +605,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 35])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
 
         then:
         response.error == null
@@ -644,7 +644,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch Mode Manager curated match returns Mode Manager note (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch Mode Manager curated match returns Mode Manager note (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -653,7 +653,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 35])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
 
         then:
         response.error == null
@@ -690,7 +690,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch Rule Machine parent app returns mainPage (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch Rule Machine parent app returns mainPage (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -699,7 +699,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 35])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
 
         then:
         response.error == null
@@ -736,7 +736,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch HPM curated dispatch is case-insensitive '#appTypeName' (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch HPM curated dispatch is case-insensitive '#appTypeName' (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -745,7 +745,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 35])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
 
         then:
         response.error == null
@@ -786,7 +786,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_app_pages via dispatch accepts integer appId (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch accepts integer appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -795,7 +795,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_app_pages', [appId: 35])
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
 
         then:
         response.error == null

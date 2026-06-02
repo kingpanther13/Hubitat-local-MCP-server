@@ -5,9 +5,9 @@ import support.TestChildApp
 import support.ToolSpecBase
 
 /**
- * Spec for the manage_mcp_self gateway tool in hubitat-mcp-server.groovy:
+ * Spec for the hub_manage_mcp gateway tool in hubitat-mcp-server.groovy:
  *
- * - toolUpdateMcpSettings -> update_mcp_settings
+ * - toolUpdateMcpSettings -> hub_update_mcp_settings
  *
  * Four validation gates fire before any app.updateSetting() call (all-or-nothing):
  *   1. settings.enableDeveloperMode must be true                  -> IllegalArgumentException
@@ -495,13 +495,13 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     // verified end-to-end alongside the direct-call golden paths above.
 
     @spock.lang.Unroll
-    def "update_mcp_settings via dispatch writes setting (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch writes setting (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_mcp_settings', [
+        def response = mcpDriver.callTool('hub_update_mcp_settings', [
             settings: [enableCustomRuleEngine: false],
             confirm: true
         ])
@@ -519,14 +519,14 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_mcp_settings via dispatch maps developer-mode-off to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps developer-mode-off to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
 
         when:
-        def response = mcpDriver.callTool('update_mcp_settings', [
+        def response = mcpDriver.callTool('hub_update_mcp_settings', [
             settings: [debugLogging: true], confirm: true
         ])
 
@@ -540,13 +540,13 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_mcp_settings via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_mcp_settings', [
+        def response = mcpDriver.callTool('hub_update_mcp_settings', [
             settings: [debugLogging: true]
         ])
 
@@ -559,13 +559,13 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_mcp_settings via dispatch maps empty-settings to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps empty-settings to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_mcp_settings', [
+        def response = mcpDriver.callTool('hub_update_mcp_settings', [
             settings: [:], confirm: true
         ])
 
@@ -578,13 +578,13 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_mcp_settings via dispatch maps disallowed-key to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps disallowed-key to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_mcp_settings', [
+        def response = mcpDriver.callTool('hub_update_mcp_settings', [
             settings: [enableHubAdminWrite: false], confirm: true
         ])
 
@@ -599,13 +599,13 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_mcp_settings via dispatch maps null-value to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps null-value to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_mcp_settings', [
+        def response = mcpDriver.callTool('hub_update_mcp_settings', [
             settings: [debugLogging: null], confirm: true
         ])
 
@@ -619,13 +619,13 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_mcp_settings via dispatch coerces string-bool 'true' (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch coerces string-bool 'true' (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_mcp_settings', [
+        def response = mcpDriver.callTool('hub_update_mcp_settings', [
             settings: [debugLogging: 'true'], confirm: true
         ])
 
@@ -639,13 +639,13 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_mcp_settings via dispatch rejects bad-bool 'yes' to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch rejects bad-bool 'yes' to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_mcp_settings', [
+        def response = mcpDriver.callTool('hub_update_mcp_settings', [
             settings: [debugLogging: 'yes'], confirm: true
         ])
 
@@ -660,14 +660,14 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_mcp_settings via dispatch applies mcpLogLevel to state cache (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch applies mcpLogLevel to state cache (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
         stateMap.debugLogs = [entries: [], config: [logLevel: 'info', maxEntries: 100]]
 
         when:
-        def response = mcpDriver.callTool('update_mcp_settings', [
+        def response = mcpDriver.callTool('hub_update_mcp_settings', [
             settings: [mcpLogLevel: 'warn'], confirm: true
         ])
 
@@ -682,13 +682,13 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_mcp_settings via dispatch maps bad mcpLogLevel enum to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_mcp_settings via dispatch maps bad mcpLogLevel enum to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableDeveloperModeAndAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_mcp_settings', [
+        def response = mcpDriver.callTool('hub_update_mcp_settings', [
             settings: [mcpLogLevel: 'blarg'], confirm: true
         ])
 
@@ -715,7 +715,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         // This spec exercises (1) directly via handleToolsCall. (2) is locked in by
         // sandbox lint + the source-line itself.
         given: 'Hub Admin Write enabled but Developer Mode toggle is off'
-        settingsMap.useGateways = true  // calling manage_mcp_self requires gateway mode on
+        settingsMap.useGateways = true  // calling hub_manage_mcp requires gateway mode on
         settingsMap.enableHubAdminWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
 
@@ -724,8 +724,8 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
             id: 99,
             method: 'tools/call',
             params: [
-                name: 'manage_mcp_self',
-                arguments: [tool: 'update_mcp_settings', args: [settings: [debugLogging: true], confirm: true]]
+                name: 'hub_manage_mcp',
+                arguments: [tool: 'hub_update_mcp_settings', args: [settings: [debugLogging: true], confirm: true]]
             ]
         ]
 
