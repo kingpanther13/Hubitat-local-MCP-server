@@ -147,7 +147,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         def tools = script.getToolDefinitions()
 
         then: 'gateways whose every sub-tool is in getReadOnlyToolNames()'
-        ['hub_read_apps_code'].each { gwName ->
+        ['hub_read_apps_code', 'hub_read_devices', 'hub_read_diagnostics', 'hub_read_files',
+         'hub_read_rooms', 'hub_read_rules', 'hub_read_variables'].each { gwName ->
             def gw = tools.find { it.name == gwName }
             assert gw != null : "${gwName} missing from gateway-mode catalog"
             assert gw.annotations.readOnlyHint == true : "${gwName} should be read-only"
@@ -171,10 +172,12 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_manage_rooms',              // create/delete/rename + others
             'hub_manage_destructive_ops',// reboot/shutdown/hub_delete_device
             'hub_manage_code',          // install/update/delete code
+            'hub_manage_devices',            // hub_call_device_command, hub_update_device
             'hub_manage_logs',               // hub_delete_debug_logs, hub_set_log_level
             'hub_manage_diagnostics',        // hub_call_zwave_repair, hub_delete_captured_state
             'hub_manage_files',              // hub_write_file, hub_delete_file
             'hub_manage_native_rules_and_apps', // create/update/delete/run native rules
+            'hub_manage_rule_machine',       // hub_call_rule, set_rule_paused, set_rule_private_boolean
             'hub_manage_mcp'            // hub_update_mcp_settings
         ]
         writeGateways.each { gwName ->
