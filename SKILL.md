@@ -272,7 +272,7 @@ Conventions:
 
 Three tiers of access control:
 
-**No gate** — Device tools, rule tools, system tools, `list_virtual_devices`, `hub_get_tool_guide`. These operate only on user-selected devices, MCP-managed child devices (virtual devices), MCP-managed rules, or return static reference content.
+**No gate** — Device tools, rule tools, system tools, `hub_list_devices` (filter='virtual'), `hub_get_tool_guide`. These operate only on user-selected devices, MCP-managed child devices (virtual devices), MCP-managed rules, or return static reference content.
 
 **`requireHubAdminRead()`** — Checks `settings.enableHubAdminRead` is true. Used for tools that read hub system info (hub details, health, app/driver lists, source code).
 
@@ -284,7 +284,7 @@ Three tiers of access control:
 Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup operation, so it can't require a prior backup).
 
 **`backupItemSource(type, id)`** — Automatic item-level backup for modify/delete operations:
-- Called by `hub_update_app`, `hub_update_driver`, `delete_app`, `delete_driver` before making changes
+- Called by `hub_update_app`, `hub_update_driver`, `hub_delete_item` (type=app|driver) before making changes
 - Fetches current source code and saves as a `.groovy` file in the hub's local File Manager via `uploadHubFile()`
 - Metadata (type, id, version, timestamp, fileName, sourceLength) stored in `state.itemBackupManifest` keyed by `"app_<id>"` or `"driver_<id>"`
 - 1-hour window: if a backup of the same item exists within the last hour, it is kept (preserves the pre-edit original across a series of edits)
@@ -330,7 +330,7 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - Restore via: `hub_read_file(fileName)` → `hub_import_custom_rule(exportData: <json>)`
 - **Test rules**: Set `testRule: true` in `hub_create_custom_rule` or `hub_update_custom_rule` to skip backup on deletion
 - `skipBackupCheck: true` parameter forces skip regardless of testRule flag (rarely needed)
-- Test rule flag visible in `hub_get_custom_rule` and `custom_list_rules` responses
+- Test rule flag visible in `hub_get_custom_rule` (both single-rule and list mode, i.e. with `ruleId` omitted) responses
 - No Hub Admin Write required (rules are MCP-managed, not hub-level resources)
 
 ### Hub Internal API Helpers
@@ -452,7 +452,7 @@ Virtual devices are managed via the unified `hub_manage_virtual_device` tool (ac
 - For custom drivers: `customDriver={namespace, name}` -- namespace + name are coerced to String then trimmed before use; whitespace-only or numeric values that trim to empty are rejected with a descriptive error before reaching the hub. Any exception from `addChildDevice` on the custom-driver path is translated to an `IllegalArgumentException` pointing to `hub_list_drivers` (fail-closed regardless of hub error text).
 - **Response shape** (`hub_manage_virtual_device create`): `{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, attributes}}`. `typeName` is a deprecated alias for `driverType` **because** existing callers reading `result.device.typeName` after create must not silently break; prefer `driverType` in new code.
 - **Response shape** (`hub_manage_virtual_device delete`): `{success, deviceId, deviceNetworkId, deviceLabel, message}`.
-- **Response shape** (`list_virtual_devices`): `{devices: [...], count, message}`. Per-device: `{id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, currentStates}`. `currentStates` is a map of attribute-name to current-value (not a list -- create returns `attributes` as a list while list returns `currentStates` as a map; both expose device state but under different shapes because create returns the freshly-read attribute list and list returns a compact state map). `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code. `driverNamespace` is authoritative for devices created by this tool (the namespace is persisted as a device data value at create time); for devices created before this version or by other means it falls back to a best-effort derivation that may report `"hubitat"`.
+- **Response shape** (`hub_list_devices` with `filter='virtual'`): `{devices: [...], count, message}`. Per-device: `{id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, currentStates}`. `currentStates` is a map of attribute-name to current-value (not a list -- create returns `attributes` as a list while list returns `currentStates` as a map; both expose device state but under different shapes because create returns the freshly-read attribute list and list returns a compact state map). `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code. `driverNamespace` is authoritative for devices created by this tool (the namespace is persisted as a device data value at create time); for devices created before this version or by other means it falls back to a best-effort derivation that may report `"hubitat"`.
 - **Error contract (N.36)**: `customDriver` not-found throws `IllegalArgumentException` (JSON-RPC -32602) because the bad driver spec is caller-supplied and recoverable by fixing args. Built-in not-found throws `RuntimeException` (isError:true) because hub firmware not including a built-in driver is a platform condition, not a caller error. This is a deliberate exception to the general `return [success:false]` convention -- the two-class split reflects the distinction between caller-fixable vs platform-gap failures.
 - Requires Hub Admin Write access (with backup verification) for create/delete operations
 
@@ -541,8 +541,8 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub/advanced/internalTempCelsius` | CPU temperature (text) |
 | `/hub/advanced/databaseSize` | Database size in KB (text) |
 | `/hub/advanced/blinkLED` | Fires the hub's identify-LED sequence (blue → red → green) once. Returns the literal text `true`. Single GET, no body, self-resetting. Surfaced via the opt-in `identifyHub` flag on `hub_get_info` and `hub_get_device_health`. |
-| `/hub2/userAppTypes` | Apps Code definitions (JSON array: id, name, namespace). Each entry is a code definition, NOT a running instance -- child-app templates appear here even with zero active instances. Distinct from the `userAppTypes[]` key embedded in `/hub2/appsList` (which is the instance tree). Used by `hub_list_apps` and `get_hpm_drift` (orphan-app detection). |
-| `/hub2/userDeviceTypes` | Drivers Code definitions (JSON array: id, name, namespace, capabilities, lastModified, usedBy[]). Despite the name, this is the Drivers Code registry (code definitions, not device instances). Used by `hub_list_drivers` and `get_hpm_drift` (orphan-driver detection). Note: hub uses `userDeviceTypes` for the driver registry while apps use `userAppTypes` -- the naming asymmetry is a hub convention, not an error. |
+| `/hub2/userAppTypes` | Apps Code definitions (JSON array: id, name, namespace). Each entry is a code definition, NOT a running instance -- child-app templates appear here even with zero active instances. Distinct from the `userAppTypes[]` key embedded in `/hub2/appsList` (which is the instance tree). Used by `hub_list_apps` and `hub_list_hpm_packages` (includeDrift=true; orphan-app detection). |
+| `/hub2/userDeviceTypes` | Drivers Code definitions (JSON array: id, name, namespace, capabilities, lastModified, usedBy[]). Despite the name, this is the Drivers Code registry (code definitions, not device instances). Used by `hub_list_drivers` and `hub_list_hpm_packages` (includeDrift=true; orphan-driver detection). Note: hub uses `userDeviceTypes` for the driver registry while apps use `userAppTypes` -- the naming asymmetry is a hub convention, not an error. |
 | `/hub2/zwaveInfo` | Z-Wave radio details (JSON) |
 | `/hub2/zigbeeInfo` | Zigbee radio details (JSON) |
 | `/app/ajax/code` with query `id=<id>` | App source code (JSON: source, version, status) |
@@ -556,7 +556,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub2/appsList` | All installed apps (built-in + user) as JSON. Keys: `systemAppTypes[]`, `userAppTypes[]`, `apps[]` (instance tree). Each `apps[]` entry has `{key, id, data: {id, name, type, disabled, user, hidden, appTypeId}, parent: bool, child: bool, children: [...]}`. Used by `hub_list_installed_apps`. |
 | `/device/fullJson/<id>` | Comprehensive device JSON — includes `appsUsing` array (apps referencing this device: `{id, name, label, trueLabel, disabled}`), `appsUsingCount`, `parentApp`, plus device commands/attributes/settings/dashboards. Used by `hub_list_device_dependents`. |
 | `/installedapp/configure/json/<id>[/<pageName>]` | SDK-level config-page serialization for any installed app using `dynamicPage()`. Returns `{app, configPage: {name, title, sections: [{title, input: [...], body: [...]}]}, settings, childApps}`. `app` carries identity (label, name, appType, disabled, parentAppId). Sections hold typed inputs with current values. The Web UI itself consumes this endpoint. Used by `hub_get_app_config`. |
-| `/installedapp/statusJson/<id>` | Raw Groovy `state` map for any installed app. Returns `{id, appState: [{name, value}, ...], appSettings: [...]}`. `appState[].value` shape varies: live hubs typically return the value already parsed as a Map (JsonSlurper recursively decoded the inner JSON); older firmwares or large payloads may leave it as a JSON-encoded String requiring a second parse. The implementation handles both: if value is already a Map, use it directly; if String, parse again. Used by `hub_list_hpm_packages` and `get_hpm_drift` to read HPM's `state.manifests` package registry. Requires Hub Admin Read. |
+| `/installedapp/statusJson/<id>` | Raw Groovy `state` map for any installed app. Returns `{id, appState: [{name, value}, ...], appSettings: [...]}`. `appState[].value` shape varies: live hubs typically return the value already parsed as a Map (JsonSlurper recursively decoded the inner JSON); older firmwares or large payloads may leave it as a JSON-encoded String requiring a second parse. The implementation handles both: if value is already a Map, use it directly; if String, parse again. Used by `hub_list_hpm_packages` (including its `includeDrift=true` mode) to read HPM's `state.manifests` package registry. Requires Hub Admin Read. |
 
 **Write endpoints (POST):**
 | Path | Body | Purpose |

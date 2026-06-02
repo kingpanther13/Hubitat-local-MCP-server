@@ -68,7 +68,7 @@ These tools follow an explicit opt-in convention so pre-`cursor` callers see no 
 | `hub_get_memory_history` | 100 | `limit=0` + cursor pages the full hub ring buffer (the only way to retrieve every entry without losing data). |
 | `hub_get_debug_logs` | 100 | Filters apply first; cursor pages within. |
 
-Tools without cursor support (`hub_get_app_config`, `hub_export_native_app`, `get_app_source`, `get_driver_source`, `get_library_source`) rely on their existing controls (`includeSettings=false`, `saveAs=<file>`, `hub_list_files`/`hub_read_file` round-trip) plus the universal size guard as the backstop.
+Tools without cursor support (`hub_get_app_config`, `hub_export_native_app`, `hub_get_source`) rely on their existing controls (`includeSettings=false`, `saveAs=<file>`, `hub_list_files`/`hub_read_file` round-trip) plus the universal size guard as the backstop.
 
 ## Device Authorization (CRITICAL)
 
@@ -132,7 +132,7 @@ All Hub Admin Write tools require these steps:
 **hub_create_app** (via `hub_manage_code_write`)
 - Accepts `source` (inline Groovy) OR `sourceFile` (filename in File Manager). Provide exactly one.
 - Token-economy tip: upload large source via local CLI first, then pass the filename as `sourceFile`. Avoids re-sending multi-KB source strings on each install attempt.
-- Performs post-install verification: after the hub creates the item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `appId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `get_app_source`. If the hub returns no item ID at all (no `Location` header), `appId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
+- Performs post-install verification: after the hub creates the item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `appId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `hub_get_source` (type=app, id). If the hub returns no item ID at all (no `Location` header), `appId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
 - Requires Hub Admin Write + confirm + backup <24h.
 
 **hub_create_driver** (via `hub_manage_code_write`)
@@ -142,7 +142,7 @@ All Hub Admin Write tools require these steps:
   - Top-level `success: true` only if ALL items succeeded.
   - Practical limit: ~10-20 drivers per call (each install is a sequential on-hub compilation, ~1-5 seconds each).
   - Token-economy pattern: upload all driver source files via local CLI, then call bulk `hub_create_driver` once with all `{sourceFile}` entries.
-- Performs post-install verification: after the hub creates each item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `driverId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `get_driver_source`. If the hub returns no item ID at all (no `Location` header), `driverId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
+- Performs post-install verification: after the hub creates each item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `driverId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `hub_get_source` (type=driver, id). If the hub returns no item ID at all (no `Location` header), `driverId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
 - Requires Hub Admin Write + confirm + backup <24h.
 
 **hub_update_app** (via `hub_manage_code_write`)
@@ -159,7 +159,7 @@ All Hub Admin Write tools require these steps:
   - Practical limit: ~20 drivers per call (each update is a sequential on-hub compilation, ~1-5 seconds each).
   - Token-economy pattern: upload all updated driver files via local CLI (curl -F / PowerShell Invoke-RestMethod), then call bulk `hub_update_driver` once with all `{driverId, sourceFile}` pairs.
 
-**delete_app / delete_driver / delete_library** (via `hub_manage_code_write`)
+**hub_delete_item** (type: app|driver|library, via `hub_manage_code_write`)
 - Remove app instances via Hubitat UI first (for apps)
 - Change devices to different driver first (for drivers)
 - Ensure no drivers/apps reference the library via #include before deleting (for libraries)
@@ -206,7 +206,7 @@ Use `hub_manage_code_read(tool="hub_list_drivers")` to see installed drivers and
 
 **Delete response shape** (`action=delete`): `{ success, deviceId, deviceNetworkId, deviceLabel, message }`.
 
-**List response shape** (`list_virtual_devices`): `{ devices: [...], count, message }`. Per-device: `{ id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, currentStates }`. `currentStates` is a map of attribute-name to current-value. Note: create returns device state as `attributes` (list) while list returns it as `currentStates` (map) -- different shapes for the same concept because create returns the freshly-read attribute list and list returns a compact state map. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code. `driverNamespace` is authoritative for devices created by this tool (the namespace is persisted at create time); for devices created before this version or by other means it falls back to a best-effort derivation that may report `"hubitat"`.
+**List response shape** (`hub_list_devices` with `filter='virtual'`): `{ devices: [...], count, message }`. Per-device: `{ id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, currentStates }`. `currentStates` is a map of attribute-name to current-value. Note: create returns device state as `attributes` (list) while list returns it as `currentStates` (map) -- different shapes for the same concept because create returns the freshly-read attribute list and list returns a compact state map. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code. `driverNamespace` is authoritative for devices created by this tool (the namespace is persisted at create time); for devices created before this version or by other means it falls back to a best-effort derivation that may report `"hubitat"`.
 
 MCP-managed virtual devices:
 - Auto-accessible to all MCP device tools without manual selection
@@ -307,7 +307,7 @@ Offset is in minutes (positive = after, negative = before)
 ## App/Driver/Library Code Management
 
 ### Reading Source Code
-- `get_app_source` / `get_driver_source` (via `hub_manage_code_read`) / `get_library_source` (via `hub_manage_code_read`) support chunked reading for large files
+- `hub_get_source` (type=app|driver|library, id; via `hub_manage_code_read`) supports chunked reading for large files
 - Large files auto-saved to File Manager as `mcp-source-app-{id}.groovy`, `mcp-source-driver-{id}.groovy`, or `mcp-source-library-{id}.groovy`
 - Use this saved file with `sourceFile` parameter in update tools
 
@@ -323,8 +323,8 @@ Auto-backs up before modifying. Rapid edits within 1 hour preserve the original.
 Hubitat Groovy libraries are shared code modules included by drivers and apps via `#include namespace.LibraryName`. The library management tools mirror the app/driver pattern:
 - `hub_create_library` - Install a new library from Groovy source (inline or via File Manager file)
 - `hub_update_library` - Update existing library source (source/sourceFile/resave modes)
-- `delete_library` - Delete a library (auto-backs up source first)
-- `get_library_source` - Read library source with chunked reading support
+- `hub_delete_item` (type=library) - Delete a library (auto-backs up source first)
+- `hub_get_source` (type=library, id) - Read library source with chunked reading support
 
 Libraries must include a valid `library()` definition block. Before deleting a library, ensure no installed drivers or apps reference it via `#include` -- deleting a library in use causes compilation errors in the referencing code.
 
@@ -339,7 +339,7 @@ curl -b cookies.txt -F "uploadFile=@mylib.groovy" -F "folder=/" http://<HUB_IP>/
 ```
 Then call `hub_create_library` or `hub_update_library` with `sourceFile: 'mylib.groovy'`.
 
-Note: `get_library_source` (read-only, Hub Admin Read) lives in `hub_manage_code_read` alongside `get_app_source` and `get_driver_source`. The write operations (`hub_create_library`, `hub_update_library`, `delete_library`) live in `hub_manage_code_write` (Hub Admin Write).
+Note: `hub_get_source` (type=library; read-only, Hub Admin Read) lives in `hub_manage_code_read` and serves apps, drivers, and libraries via its `type` discriminator. The write operations (`hub_create_library`, `hub_update_library`, `hub_delete_item` with type=library) live in `hub_manage_code_write` (Hub Admin Write).
 
 ### After Installation
 - Apps: Add via Apps > Add User App in Hubitat web UI
@@ -356,7 +356,7 @@ Note: `get_library_source` (read-only, Hub Admin Read) lives in `hub_manage_code
 - Only Hub Admin Write tool that doesn't require a prior backup
 
 ### Source Code Backups (Automatic)
-- Created automatically when using hub_update_app, hub_update_driver, hub_update_library, delete_app, delete_driver, delete_library
+- Created automatically when using hub_update_app, hub_update_driver, hub_update_library, hub_delete_item (type=app|driver|library)
 - Stored in File Manager as `.groovy` files
 - Persist even if MCP uninstalled
 - Max 20 kept, oldest pruned
@@ -386,7 +386,7 @@ Example redirect message:
 - Delete verb (`hub_delete_custom_rule`): points to `hub_manage_native_rules -> hub_delete_native_app` for programmatic deletion.
 - Test verb (`hub_test_custom_rule`): points to `hub_manage_installed_apps -> hub_get_app_config` for inspection. For Rule Machine rules specifically, the hint also includes a pointer to `hub_manage_native_rules -> hub_call_rule` to trigger them; non-RM rule-likes (Room Lighting, Basic Rules, Visual Rule Builder) receive only the `hub_get_app_config` pointer because `hub_call_rule` routes through `RMUtils.sendAction` and is RM-only.
 - The redirect check is best-effort: if the hub appsList call fails, a plain "Rule not found" message is returned with no secondary error.
-- `custom_list_rules` and `hub_create_custom_rule` are not affected (they do not take a rule id as input).
+- `hub_get_custom_rule` in list mode (ruleId omitted) and `hub_create_custom_rule` are not affected (they do not take a rule id as input).
 
 ---
 
@@ -424,16 +424,16 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - Default limit 10, recommended max 50
 - Higher values (100+) may cause delays on busy devices
 
-**poll_until_attribute:**
-- BLOCKS the MCP request up to `timeoutMs` MILLISECONDS (default 5000ms = 5 seconds, max 60000ms = 60 seconds). Use sparingly; prefer event-driven flows when available.
-- Concurrent MCP requests queue while this call blocks; avoid parallel `poll_until_attribute` calls.
+**hub_get_device_attribute (poll mode):**
+- Poll mode activates when `expectedValue`/`expectedValues` are supplied (with optional `timeoutMs`/`pollIntervalMs`). BLOCKS the MCP request up to `timeoutMs` MILLISECONDS (default 5000ms = 5 seconds, max 60000ms = 60 seconds). Use sparingly; prefer event-driven flows when available.
+- Concurrent MCP requests queue while this call blocks; avoid parallel poll-mode `hub_get_device_attribute` calls.
 - At least one of `expectedValue` or `expectedValues` must be provided. Both may be set simultaneously -- the poll succeeds if the current value matches either (OR semantics, not XOR).
 - Re-reads the attribute every `pollIntervalMs` MILLISECONDS (default 200ms, min 50ms, max 5000ms)
 - Returns `success: true` with `finalValue`, `elapsedMs`, `polledCount`, `timedOut: false` when the value matches
 - Returns `success: false` with `timedOut: true` and the last-read `finalValue` on timeout; adds `neverReported: true` if the attribute never returned a non-null value during the entire poll window
 - Returns `success: false` with `interrupted: true` (plus `finalValue`, `elapsedMs`, `polledCount`) if the hub interrupted the sleep (e.g. app reload during poll)
 - `pollIntervalMs` is automatically clamped to `timeoutMs` if larger, ensuring at least one poll
-- For passive one-shot reads, use `hub_get_device_attribute` instead -- this tool is for waiting on state transitions
+- For passive one-shot reads, omit `expectedValue`/`expectedValues` (plain read mode) -- poll mode is for waiting on state transitions
 - Common pattern after `hub_call_device_command`: poll for the resulting attribute state rather than sleeping client-side
 
 **hub_get_logs:**
@@ -446,8 +446,8 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - `since` / `until`: ISO-8601 timestamp (e.g. `'2024-01-15T10:30:00Z'`) or relative offset (`'30m'`, `'2h'`, `'1d'`, `'7d'`); relative offset subtracted from now; max 30d (throws if exceeded -- use ISO-8601 for longer ranges); entries with unparseable time fields pass through rather than being excluded. ISO-8601 timestamps without an explicit TZ marker (e.g., `'2024-01-15T10:30:00'` or `'2024-01-15 10:30:00.000'`) are parsed as UTC.
 - For single-device or single-app logs, pass `deviceId` or `appId` -- this is a server-side scope filter (mutually exclusive) and is much cheaper than post-filtering the full buffer
 
-**get_device_history:**
-- Up to 7 days of history
+**hub_list_device_events (windowed mode):**
+- Windowed mode activates when `hoursBack` is supplied: up to 7 days of history
 - Use attribute filter to reduce data volume
 - **Location-scope mode**: omit `deviceId` to return location events instead of device events. Returns mode changes (`name: 'mode'`), HSM status/alerts (`'hsmStatus'`, `'hsmAlert'`), hub variable changes (name = the variable's name), and any `sendLocationEvent(...)` emissions from rules/apps. `attribute` filter applies to event name in the same way. Response includes `source: 'location'` and omits `device`/`deviceId`.
 
@@ -462,7 +462,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 
 ## Built-in App Tools
 
-Tools in `hub_manage_installed_apps` and `hub_manage_native_rules` gateways have mixed gate requirements. `hub_list_installed_apps` and `hub_list_device_dependents` require the **Enable Built-in App Tools** toggle (`requireBuiltinApp`). `hub_get_app_config` and `hub_list_app_pages` require **Hub Admin Read** (`requireHubAdminRead`). Both `hub_manage_hpm` tools (`hub_list_hpm_packages` and `get_hpm_drift`) require **Hub Admin Read** only -- no Built-in App Tools toggle needed. `hub_manage_native_rules` tools require the **Enable Built-in App Tools** toggle for reads and **Hub Admin Write** (`requireHubAdminWrite`) for the CRUD path (`hub_create_native_app`, `hub_update_native_app`, `hub_delete_native_app`); Hub Admin Write also enforces a backup-within-24h gate before any write. If the user sees "Built-in App Tools are disabled", "Hub Admin Read is disabled", or "Hub Admin Write is disabled" errors, direct them to the MCP Rule Server app settings page to enable the relevant toggle. Note: Hub Admin Write operations additionally require a hub backup within the last 24 hours -- if the write gate blocks with a backup-age message, use `hub_create_backup` first.
+Tools in `hub_manage_installed_apps` and `hub_manage_native_rules` gateways have mixed gate requirements. `hub_list_installed_apps` and `hub_list_device_dependents` require the **Enable Built-in App Tools** toggle (`requireBuiltinApp`). `hub_get_app_config` and `hub_list_app_pages` require **Hub Admin Read** (`requireHubAdminRead`). `hub_list_hpm_packages` (including its `includeDrift=true` mode) requires **Hub Admin Read** only -- no Built-in App Tools toggle needed. `hub_manage_native_rules` tools require the **Enable Built-in App Tools** toggle for reads and **Hub Admin Write** (`requireHubAdminWrite`) for the CRUD path (`hub_create_native_app`, `hub_update_native_app`, `hub_delete_native_app`); Hub Admin Write also enforces a backup-within-24h gate before any write. If the user sees "Built-in App Tools are disabled", "Hub Admin Read is disabled", or "Hub Admin Write is disabled" errors, direct them to the MCP Rule Server app settings page to enable the relevant toggle. Note: Hub Admin Write operations additionally require a hub backup within the last 24 hours -- if the write gate blocks with a backup-age message, use `hub_create_backup` first.
 
 ### hub_manage_installed_apps (4 tools)
 
@@ -489,9 +489,9 @@ Tools in `hub_manage_installed_apps` and `hub_manage_native_rules` gateways have
   - Use this before `hub_get_app_config` on multi-page apps to avoid guessing page names
   - Args: `appId` (required)
 
-### hub_manage_hpm (2 tools)
+### hub_manage_hpm (1 tool)
 
-HPM package state introspection. Both tools require **Hub Admin Read** and HPM itself must be installed on the hub. Auto-discovers HPM's installed-app ID unless `hpmAppId` is supplied explicitly. All `IllegalArgumentException`s raised by either tool (multi-instance throw, wrong app type, missing HPM, non-numeric `hpmAppId`) are surfaced by the MCP dispatcher as JSON-RPC error `-32602` "Invalid params" -- the response is a JSON-RPC error, **not** a tool-result map with `success=false`.
+HPM package state introspection. The tool requires **Hub Admin Read** and HPM itself must be installed on the hub. Auto-discovers HPM's installed-app ID unless `hpmAppId` is supplied explicitly. All `IllegalArgumentException`s raised (multi-instance throw, wrong app type, missing HPM, non-numeric `hpmAppId`) are surfaced by the MCP dispatcher as JSON-RPC error `-32602` "Invalid params" -- the response is a JSON-RPC error, **not** a tool-result map with `success=false`.
 
 **`actualTypeName` diagnostic label sets — two distinct enums:** HPM tooling reports the parsed-JSON runtime type via an `actualTypeName` token at two distinct sites with different label sets. (1) `_hpmFetchManifests` parse-shape errors (surfaced as JSON-RPC `-32602` "Unexpected HPM statusJson shape" / "Unexpected HPM manifests shape"): `<actualTypeName>` is one of `List`, `null`, or `non-object` (any non-Map, non-List, non-null scalar). (2) `orphanDetection` / `orphanDriverDetection` registry-shape errors (surfaced in `reason` strings on a `success=true` response with `enabled=false`): `<actualTypeName>` is one of `Map`, `null`, or `unknown` (any non-List, non-null, non-Map shape). The label sets diverge because the expected shape at each site is different (a Map for statusJson, a List for the registries).
 
@@ -505,7 +505,7 @@ HPM package state introspection. Both tools require **Hub Admin Read** and HPM i
   - Auto-discovers HPM if `hpmAppId` omitted; when multiple HPM instances are detected, throws with a bracketed ID list capped at 10 entries with `"and N more (total M)"` suffix; when `hpmAppId` is supplied explicitly but points at an app that is not Hubitat Package Manager, throws `IllegalArgumentException` with the actual type disclosed (e.g. `"hpmAppId N is not Hubitat Package Manager (actual type: Simple Automation Rules)"`)
   - Use to audit what HPM-managed code is on the hub and compare against expected packages
 
-- **`get_hpm_drift`** — cross-reference HPM-tracked state against what is actually installed
+- **`hub_list_hpm_packages` with `includeDrift=true`** — also cross-reference HPM-tracked state against what is actually installed; drift results nest under a `drift` key on the response
   - Currently the only drift signal types are: `missing-required` (required=true, heID null), `orphan-app` (heID present but app code no longer in Apps Code registry), `orphan-driver` (heID present but driver code no longer in Drivers Code registry). Data-quality issues are emitted in a separate `dataQualityWarnings[]` aggregate and do NOT inflate `totalDriftSignals`.
   - Optional `packageFilter` (case-insensitive substring) narrows to specific packages
   - Auto-discovers HPM if `hpmAppId` omitted (including the multi-instance throw with up to 10 ids and `"and N more (total M)"` suffix); when `hpmAppId` is supplied explicitly but points at an app that is not Hubitat Package Manager, throws `IllegalArgumentException` with the actual type disclosed (e.g. `"hpmAppId N is not Hubitat Package Manager (actual type: Simple Automation Rules)"`)
@@ -521,21 +521,21 @@ HPM package state introspection. Both tools require **Hub Admin Read** and HPM i
   - Top-level `skippedMalformed[]`: manifest URLs whose value was not a Map (symmetric with `hub_list_hpm_packages`)
   - When `packageFilter` matched nothing: `filterMatchedZero=true` plus `availablePackages[]` for filter-spelling sanity check; in this case `packagesChecked == 0` and `summary` reads `"No drift detected across 0 tracked packages."`
   - Limitation: heID-presence-only. HPM stores no source hashes, so post-install edits via `hub_update_app` are not detectable.
-  - Example call: `hub_manage_hpm(tool="get_hpm_drift", args={packageFilter: "BOND"})` — checks only packages whose name contains "BOND"
-  - Design note: `hub_list_hpm_packages` emits `_warning` inline on each component **because** consumers typically enumerate components per-package; `get_hpm_drift` emits `dataQualityWarnings[]` as a separate aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count
+  - Example call: `hub_manage_hpm(tool="hub_list_hpm_packages", args={includeDrift: true, packageFilter: "BOND"})` — checks drift for only packages whose name contains "BOND"
+  - Design note: the base package inventory emits `_warning` inline on each component **because** consumers typically enumerate components per-package; the `includeDrift=true` output emits `dataQualityWarnings[]` as a separate aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count
 
-### hub_manage_native_rules (12 tools)
+### hub_manage_native_rules (11 tools)
 
 Two surfaces under one gateway: RMUtils-based runtime control for RM rules (RM-only because RMUtils is RM-only) plus admin-layer CRUD that works uniformly across any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.).
 
-**RMUtils control (5 tools, RM-only):**
+**RMUtils control (4 tools, RM-only):**
 
 - **`hub_list_rules`** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)
 - **`hub_call_rule`** — trigger an existing RM rule via `RMUtils.sendAction`
   - `action="rule"` (default, full evaluation): runs triggers + conditions + actions as if the rule fired
   - `action="actions"`: runs only the actions, bypassing conditions (useful for manual override)
   - `action="stop"`: stops running actions (cancels in-flight delays)
-- **`pause_rm_rule`** / **`resume_rm_rule`** — reversible toggle; paused rules don't fire on triggers
+- **`hub_set_rule_paused`** — reversible toggle (`value=true` pauses / `false` resumes); paused rules don't fire on triggers
 - **`hub_set_rule_private_boolean`** — set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). RM rules can use "Private Boolean" in conditions — this lets MCP flip that flag from outside.
 
 **Admin-layer CRUD (7 tools, generic across all classic SmartApps):**

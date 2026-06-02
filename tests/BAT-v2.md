@@ -155,7 +155,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_list_device_events`. Returns recent on/off events.
 
-### T07b — poll_until_attribute (basic match)
+### T07b — hub_get_device_attribute poll mode (basic match)
 
 ```json
 {
@@ -165,9 +165,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` (on), then `poll_until_attribute` with `attribute=switch, expectedValue="on", timeoutMs=5000`. Returns `success: true, timedOut: false`.
+**Expected**: Calls `hub_call_device_command` (on), then `hub_get_device_attribute` (poll mode) with `attribute=switch, expectedValue="on", timeoutMs=5000`. Returns `success: true, timedOut: false`.
 
-### T07c — poll_until_attribute (timeout path)
+### T07c — hub_get_device_attribute poll mode (timeout path)
 
 ```json
 {
@@ -177,9 +177,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `poll_until_attribute` with `expectedValue="on", timeoutMs=500`. Device was never turned on, so returns `success: false, timedOut: true`.
+**Expected**: Calls `hub_get_device_attribute` (poll mode) with `expectedValue="on", timeoutMs=500`. Device was never turned on, so returns `success: false, timedOut: true`.
 
-### T07d — poll_until_attribute (expectedValues OR semantics)
+### T07d — hub_get_device_attribute poll mode (expectedValues OR semantics)
 
 ```json
 {
@@ -189,9 +189,9 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `poll_until_attribute` with `expectedValues=["on","off"], timeoutMs=2000`. Device is in one of those states by default, so returns `success: true, timedOut: false` on the first poll.
+**Expected**: Calls `hub_get_device_attribute` (poll mode) with `expectedValues=["on","off"], timeoutMs=2000`. Device is in one of those states by default, so returns `success: true, timedOut: false` on the first poll.
 
-### T08 — custom_list_rules
+### T08 — hub_get_custom_rule (list mode)
 
 ```json
 {
@@ -199,7 +199,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `custom_list_rules`. Returns rule count, names, enabled/disabled status.
+**Expected**: Calls `hub_get_custom_rule` (list mode: omit ruleId). Returns rule count, names, enabled/disabled status.
 
 ### T09 — hub_get_custom_rule
 
@@ -301,7 +301,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_get_tool_guide` with section parameter. Returns reference content.
 
-### T18 — set_mode (read-only verification)
+### T18 — hub_set_mode (read-only verification)
 
 ```json
 {
@@ -309,7 +309,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_list_modes`. Reads only, does not call `set_mode`.
+**Expected**: Calls `hub_list_modes`. Reads only, does not call `hub_set_mode`.
 
 ### T19 — hub_manage_virtual_device (create)
 
@@ -322,7 +322,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_manage_virtual_device` with `action="create"`. Creates virtual device.
 
-### T19b — list_virtual_devices
+### T19b — hub_list_devices (virtual filter)
 
 ```json
 {
@@ -330,7 +330,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `list_virtual_devices`. Lists MCP-managed virtual devices.
+**Expected**: Calls `hub_list_devices` with `filter='virtual'`. Lists MCP-managed virtual devices.
 
 ### T19c — hub_manage_virtual_device (delete)
 
@@ -442,7 +442,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `hub_manage_variables` → `hub_list_variables`.
 
-### T25 — Discover set_variable (hub_manage_variables)
+### T25 — Discover hub_set_variable (hub_manage_variables)
 
 ```json
 {
@@ -451,7 +451,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_variables` → `set_variable`.
+**Expected v0.8.0**: Discovers `hub_manage_variables` → `hub_set_variable`.
 
 ### T26 — Discover hub_get_variable (hub_manage_variables)
 
@@ -530,7 +530,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Calls `hub_get_info` directly (core tool — includes hardware, health, MCP stats; PII gated behind Hub Admin Read).
 
-### T36 — Discover get_zwave_details (hub_manage_diagnostics)
+### T36 — Discover hub_get_radio_details for Z-Wave (hub_manage_diagnostics)
 
 ```json
 {
@@ -538,9 +538,9 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_diagnostics` → `get_zwave_details`.
+**Expected v0.8.0**: Discovers `hub_manage_diagnostics` → `hub_get_radio_details` with `radio=zwave`.
 
-### T37 — Discover get_zigbee_details (hub_manage_diagnostics)
+### T37 — Discover hub_get_radio_details for Zigbee (hub_manage_diagnostics)
 
 ```json
 {
@@ -548,7 +548,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_diagnostics` → `get_zigbee_details`.
+**Expected v0.8.0**: Discovers `hub_manage_diagnostics` → `hub_get_radio_details` with `radio=zigbee`.
 
 ### T38 — Discover hub_get_info for health (core)
 
@@ -600,7 +600,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `hub_manage_code_read` → `hub_list_drivers`.
 
-### T43 — Discover get_app_source (hub_manage_code_read)
+### T43 — Discover hub_get_source for an app (hub_manage_code_read)
 
 ```json
 {
@@ -608,9 +608,9 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_code_read` → `hub_list_apps` then → `get_app_source`.
+**Expected v0.8.0**: Discovers `hub_manage_code_read` → `hub_list_apps` then → `hub_get_source` with `type=app`.
 
-### T44 — Discover get_driver_source (hub_manage_code_read)
+### T44 — Discover hub_get_source for a driver (hub_manage_code_read)
 
 ```json
 {
@@ -618,7 +618,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_code_read` → `hub_list_drivers` then → `get_driver_source`.
+**Expected v0.8.0**: Discovers `hub_manage_code_read` → `hub_list_drivers` then → `hub_get_source` with `type=driver`.
 
 ### T45 — Discover hub_list_backups (hub_manage_code_read)
 
@@ -671,7 +671,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected**: Calls `hub_manage_logs` -> `hub_get_logs` with `patterns=['timeout', 'device']` and `patternMode='all'` (AND semantics) plus `since='2h'`. Demonstrates AND-mode multi-pattern filtering -- higher-value than OR-mode because it narrows results more precisely.
 
-### T48 — Discover get_device_history (hub_manage_logs)
+### T48 — Discover hub_list_device_events windowed (hub_manage_logs)
 
 ```json
 {
@@ -681,7 +681,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_logs` → `get_device_history`.
+**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_list_device_events` (windowed: pass `hoursBack`).
 
 ### T49 — Discover hub_get_metrics (hub_manage_diagnostics)
 
@@ -723,7 +723,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `hub_manage_diagnostics` → `hub_report_issue`.
 
-### T53 — Discover custom_get_rule_diagnostics (hub_manage_diagnostics)
+### T53 — Discover hub_get_custom_rule diagnostics (hub_manage_diagnostics)
 
 ```json
 {
@@ -733,7 +733,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_diagnostics` → `custom_get_rule_diagnostics`.
+**Expected v0.8.0**: Discovers `hub_manage_diagnostics` → `hub_get_custom_rule` (diagnostics: `detailed=true`).
 
 ### T54 — Discover hub_set_log_level (hub_manage_logs)
 
@@ -744,7 +744,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_set_log_level` and → `get_logging_status`.
+**Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_set_log_level` and → `hub_get_debug_logs` (mode='status').
 
 ### T55 — Discover hub_list_captured_states (hub_manage_diagnostics)
 
@@ -901,7 +901,7 @@ Casual natural language prompts that must route to the correct tool/gateway.
 }
 ```
 
-**Expected**: Routes to `set_variable`.
+**Expected**: Routes to `hub_set_variable`.
 
 ### T73 — "Show me what's in files" → file manager
 
@@ -923,7 +923,7 @@ Casual natural language prompts that must route to the correct tool/gateway.
 }
 ```
 
-**Expected**: Uses `custom_get_rule_diagnostics` or `hub_get_custom_rule`. Should notice the rule is disabled.
+**Expected**: Uses `hub_get_custom_rule` (diagnostics: `detailed=true`, or plain read). Should notice the rule is disabled.
 
 ### T75 — "What apps do I have installed?" → apps/drivers
 
@@ -1031,7 +1031,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected (v0.8.0)**: All core tools: `hub_manage_virtual_device(action="create")`, `list_virtual_devices`, `hub_call_device_command`, `hub_get_device_attribute`, `hub_manage_virtual_device(action="delete")`.
+**Expected (v0.8.0)**: All core tools: `hub_manage_virtual_device(action="create")`, `hub_list_devices(filter='virtual')`, `hub_call_device_command`, `hub_get_device_attribute`, `hub_manage_virtual_device(action="delete")`.
 
 ### T82 — Room management workflow
 
@@ -1061,7 +1061,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected (v0.8.0)**: Uses 5 gateways plus core: `hub_manage_rooms` (hub_list_rooms), core (`list_virtual_devices`), `hub_manage_variables` (hub_list_variables), `hub_manage_files` (hub_list_files), `hub_manage_code_read` (hub_list_backups), core (`hub_get_info`), `hub_manage_diagnostics` (hub_get_device_health).
+**Expected (v0.8.0)**: Uses 5 gateways plus core: `hub_manage_rooms` (hub_list_rooms), core (`hub_list_devices(filter='virtual')`), `hub_manage_variables` (hub_list_variables), `hub_manage_files` (hub_list_files), `hub_manage_code_read` (hub_list_backups), core (`hub_get_info`), `hub_manage_diagnostics` (hub_get_device_health).
 
 ### T85 — Rule with virtual device end-to-end
 
@@ -1130,7 +1130,7 @@ These test correct routing when the request is ambiguous.
 }
 ```
 
-**Expected**: Routes to `get_app_source` (app, not driver).
+**Expected**: Routes to `hub_get_source` with `type=app` (app, not driver).
 
 ### T94 — "Performance" ambiguity (hub_info vs diagnostics)
 
@@ -1524,7 +1524,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `custom_list_rules`.
+**Expected**: `hub_get_custom_rule` (list mode: omit ruleId).
 **Equivalent to**: T08
 
 #### T211 — Walk me through this automation
@@ -1667,7 +1667,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `list_virtual_devices`.
+**Expected**: `hub_list_devices` with `filter='virtual'`.
 **Equivalent to**: T19b
 
 #### T222 — Remove a test device
@@ -1782,7 +1782,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_list_modes`. Should NOT call `set_mode`.
+**Expected**: `hub_list_modes`. Should NOT call `hub_set_mode`.
 **Equivalent to**: T15, T18
 
 #### T242 — Is my security system armed?
@@ -1831,7 +1831,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `set_variable`.
+**Expected**: `hub_set_variable`.
 **Equivalent to**: T25
 
 #### T252 — What did I store?
@@ -1870,7 +1870,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_zwave_details`.
+**Expected**: `hub_get_radio_details` with `radio=zwave`.
 **Equivalent to**: T36
 
 #### T262 — Zigbee network info
@@ -1881,7 +1881,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_zigbee_details`.
+**Expected**: `hub_get_radio_details` with `radio=zigbee`.
 **Equivalent to**: T37
 
 #### T263 — Is my hub healthy?
@@ -1948,7 +1948,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_app_source`.
+**Expected**: `hub_get_source` with `type=app`.
 **Equivalent to**: T43
 
 #### T269 — Peek at driver code
@@ -1960,7 +1960,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_driver_source`.
+**Expected**: `hub_get_source` with `type=driver`.
 **Equivalent to**: T44
 
 #### T270 — Are there code backups?
@@ -2011,7 +2011,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `get_device_history`.
+**Expected**: `hub_list_device_events` (windowed: pass `hoursBack`).
 **Equivalent to**: T48
 
 #### T277 — Hub performance
@@ -2069,7 +2069,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `custom_get_rule_diagnostics` or `hub_get_custom_rule`. Should notice the rule is disabled.
+**Expected**: `hub_get_custom_rule` (diagnostics: `detailed=true`, or plain read). Should notice the rule is disabled.
 **Equivalent to**: T53, T74
 
 #### T282 — Too much noise in the logs
@@ -2081,7 +2081,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_set_log_level` (to 'warn' or 'error'), then `get_logging_status`.
+**Expected**: `hub_set_log_level` (to 'warn' or 'error'), then `hub_get_debug_logs` (mode='status').
 **Equivalent to**: T54
 
 #### T283 — Generate a bug report
@@ -2172,7 +2172,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_manage_virtual_device(action="create")` → `list_virtual_devices` (or `hub_get_device`) → `hub_call_device_command` → `hub_get_device_attribute` → `hub_manage_virtual_device(action="delete")`.
+**Expected**: `hub_manage_virtual_device(action="create")` → `hub_list_devices(filter='virtual')` (or `hub_get_device`) → `hub_call_device_command` → `hub_get_device_attribute` → `hub_manage_virtual_device(action="delete")`.
 **Equivalent to**: T81
 
 #### T297 — Room management end-to-end
@@ -2205,7 +2205,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `hub_list_rooms` + `list_virtual_devices` + `hub_list_variables` + `hub_list_files` + `hub_list_backups` + `hub_get_info` + `hub_get_device_health`.
+**Expected**: `hub_list_rooms` + `hub_list_devices(filter='virtual')` + `hub_list_variables` + `hub_list_files` + `hub_list_backups` + `hub_get_info` + `hub_get_device_health`.
 **Equivalent to**: T84
 
 #### T300 — Motion-activated light from scratch
@@ -2229,7 +2229,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 }
 ```
 
-**Expected**: `set_variable` → `hub_get_variable` → `set_variable` → `hub_get_variable` → `hub_list_variables`.
+**Expected**: `hub_set_variable` → `hub_get_variable` → `hub_set_variable` → `hub_get_variable` → `hub_list_variables`.
 **Equivalent to**: T86
 
 ---
@@ -2248,11 +2248,10 @@ These operations are too destructive for automated testing. Test manually with e
 | Install driver | `hub_create_driver` | hub_manage_code_write | Modifies hub code |
 | Update app code | `hub_update_app` | hub_manage_code_write | Modifies production code |
 | Update driver code | `hub_update_driver` | hub_manage_code_write | Modifies production code |
-| Delete app | `delete_app` | hub_manage_code_write | Permanent code removal |
-| Delete driver | `delete_driver` | hub_manage_code_write | Permanent code removal |
+| Delete app/driver/library | `hub_delete_item` (type: app\|driver\|library) | hub_manage_code_write | Permanent code removal |
 | Restore item backup | `hub_restore_backup` | hub_manage_code_write | Overwrites current code |
-| Set HSM | `set_hsm` | core | Changes security system state |
-| Set Mode | `set_mode` | core | Changes hub mode (may trigger automations) |
+| Set HSM | `hub_set_hsm` | core | Changes security system state |
+| Set Mode | `hub_set_mode` | core | Changes hub mode (may trigger automations) |
 
 ---
 
@@ -2331,7 +2330,7 @@ Tools in this section have mixed gate requirements. `hub_list_installed_apps` an
 ### Safety Rules for Section 11
 
 - Tests are **read-only or reversibly-trigger** — no create/modify/delete of RM rules or RL instances (platform blocks that anyway)
-- `hub_call_rule`, `pause_rm_rule`, `resume_rm_rule`, `hub_set_rule_private_boolean` tests must target a BAT-created or explicitly user-identified rule, NEVER a random production rule
+- `hub_call_rule`, `hub_set_rule_paused`, `hub_set_rule_private_boolean` tests must target a BAT-created or explicitly user-identified rule, NEVER a random production rule
 - Tests skip entirely if Built-in App Tools is disabled — that's the expected behavior of `requireBuiltinApp()`
 
 ### T200 — List installed apps (default)
@@ -2435,7 +2434,7 @@ Tools in this section have mixed gate requirements. `hub_list_installed_apps` an
 }
 ```
 
-**Expected**: Calls `pause_rm_rule` → confirms with user → calls `resume_rm_rule`. Both return `{success: true}`.
+**Expected**: Calls `hub_set_rule_paused` with `value=true` (pauses) → confirms with user → calls `hub_set_rule_paused` with `value=false` (resumes). Both return `{success: true}`.
 
 **WARNING**: Only runs if user has a BAT-prefixed RM rule OR explicitly identifies a safe rule. Never use a production rule.
 
@@ -2658,7 +2657,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write is enabled, recent backup exists. Use set_variable to create a temporary variable named BAT_E2E_DELETE_TEST with value 'scratch'.",
+  "setup_prompt": "Hub Admin Write is enabled, recent backup exists. Use hub_set_variable to create a temporary variable named BAT_E2E_DELETE_TEST with value 'scratch'.",
   "test_prompt": "We don't need BAT_E2E_DELETE_TEST any more. Use hub_delete_variable to remove it, then confirm via hub_get_variable that it's gone."
 }
 ```
@@ -2680,7 +2679,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write is enabled, recent backup exists. Use set_variable to create BAT_E2E_NO_CONFIRM with value 'safe'.",
+  "setup_prompt": "Hub Admin Write is enabled, recent backup exists. Use hub_set_variable to create BAT_E2E_NO_CONFIRM with value 'safe'.",
   "test_prompt": "Use hub_delete_variable to remove BAT_E2E_NO_CONFIRM. Don't pass confirm — let's see what happens."
 }
 ```
@@ -2699,7 +2698,7 @@ All tests below require Hub Admin Write enabled and a recent backup. Tests are e
 {
   "setup_prompt": "Hub Admin Write enabled, recent backup exists. Write a minimal driver stub to File Manager: hub_write_file(fileName='bat-test-driver.groovy', content='metadata { definition(name: \"BAT_DriverCodeLifecycle\", namespace: \"bat\", author: \"test\") { } }').",
   "test_prompt": "Install the driver using hub_create_driver with sourceFile='bat-test-driver.groovy' and confirm=true. Report the new driver ID.",
-  "teardown_prompt": "Delete the driver installed in this test using delete_driver with the driverId returned above and confirm=true. Also delete the File Manager file bat-test-driver.groovy using hub_delete_file."
+  "teardown_prompt": "Delete the driver installed in this test using hub_delete_item (type=driver) with the driverId returned above and confirm=true. Also delete the File Manager file bat-test-driver.groovy using hub_delete_file."
 }
 ```
 
@@ -2711,7 +2710,7 @@ All tests below require Hub Admin Write enabled and a recent backup. Tests are e
 {
   "setup_prompt": "Hub Admin Write enabled, recent backup exists. This test intentionally installs broken Groovy source -- the hub creates a stub slot in an error state (BAT_BrokenInstallStub). Note the driver ID returned for cleanup.",
   "test_prompt": "Install a driver with deliberately broken syntax using hub_create_driver(source='this is not valid groovy {{ }}', confirm=true). Report what happens.",
-  "teardown_prompt": "Delete the error-state driver slot created in this test using delete_driver with the driverId returned and confirm=true."
+  "teardown_prompt": "Delete the error-state driver slot created in this test using hub_delete_item (type=driver) with the driverId returned and confirm=true."
 }
 ```
 
@@ -2723,7 +2722,7 @@ All tests below require Hub Admin Write enabled and a recent backup. Tests are e
 {
   "setup_prompt": "Hub Admin Write enabled, recent backup exists. Install two minimal BAT_ driver stubs via hub_create_driver: (1) source='metadata { definition(name: \"BAT_BulkUpdate1\", namespace: \"bat\", author: \"test\") { } }' and (2) source='metadata { definition(name: \"BAT_BulkUpdate2\", namespace: \"bat\", author: \"test\") { } }'. Note both driverIds. Write updated source for each to File Manager with a version comment appended: hub_write_file(fileName='bat-bulk-1.groovy', content='...updated source...') and similarly for bat-bulk-2.groovy.",
   "test_prompt": "Update both drivers in a single call using hub_update_driver with updates=[{driverId: '<id1>', sourceFile: 'bat-bulk-1.groovy'}, {driverId: '<id2>', sourceFile: 'bat-bulk-2.groovy'}] and confirm=true.",
-  "teardown_prompt": "Delete both BAT_ drivers using delete_driver with confirm=true for each driverId. Also delete the File Manager files bat-bulk-1.groovy and bat-bulk-2.groovy using hub_delete_file."
+  "teardown_prompt": "Delete both BAT_ drivers using hub_delete_item (type=driver) with confirm=true for each driverId. Also delete the File Manager files bat-bulk-1.groovy and bat-bulk-2.groovy using hub_delete_file."
 }
 ```
 
@@ -2745,7 +2744,7 @@ All tests below require Hub Admin Write enabled and a recent backup. Tests are e
 {
   "setup_prompt": "Hub Admin Write enabled, recent backup exists. Write two minimal driver stubs to File Manager: hub_write_file(fileName='bat-bulk-install-1.groovy', content='metadata { definition(name: \"BAT_BulkInstall1\", namespace: \"bat\", author: \"test\") { } }') and hub_write_file(fileName='bat-bulk-install-2.groovy', content='metadata { definition(name: \"BAT_BulkInstall2\", namespace: \"bat\", author: \"test\") { } }').",
   "test_prompt": "Install both drivers in a single call using hub_create_driver with installs=[{sourceFile: 'bat-bulk-install-1.groovy'}, {sourceFile: 'bat-bulk-install-2.groovy'}] and confirm=true. Report the driver IDs returned.",
-  "teardown_prompt": "Delete both BAT_ drivers installed above using delete_driver with confirm=true for each driverId. Also delete the File Manager files bat-bulk-install-1.groovy and bat-bulk-install-2.groovy using hub_delete_file."
+  "teardown_prompt": "Delete both BAT_ drivers installed above using hub_delete_item (type=driver) with confirm=true for each driverId. Also delete the File Manager files bat-bulk-install-1.groovy and bat-bulk-install-2.groovy using hub_delete_file."
 }
 ```
 
@@ -2757,7 +2756,7 @@ All tests below require Hub Admin Write enabled and a recent backup. Tests are e
 {
   "setup_prompt": "Hub Admin Write enabled, recent backup exists. Write one driver stub to File Manager: hub_write_file(fileName='bat-bulk-partial.groovy', content='metadata { definition(name: \"BAT_BulkPartial\", namespace: \"bat\", author: \"test\") { } }'). Do NOT write 'bat-bulk-missing.groovy'.",
   "test_prompt": "Install two drivers in a single bulk call: hub_create_driver with installs=[{sourceFile: 'bat-bulk-partial.groovy'}, {sourceFile: 'bat-bulk-missing.groovy'}] and confirm=true. Report what happens for each item.",
-  "teardown_prompt": "Delete the successfully installed BAT_BulkPartial driver using delete_driver with confirm=true. Delete the File Manager file bat-bulk-partial.groovy using hub_delete_file."
+  "teardown_prompt": "Delete the successfully installed BAT_BulkPartial driver using hub_delete_item (type=driver) with confirm=true. Delete the File Manager file bat-bulk-partial.groovy using hub_delete_file."
 }
 ```
 
@@ -2777,7 +2776,7 @@ All tests below require Hub Admin Write enabled and a recent backup. Tests are e
 
 ## Section 14: Library Management Tests
 
-Write tools (`hub_create_library`, `hub_update_library`, `delete_library`) live in the `hub_manage_code_write` gateway and require Hub Admin Write + confirm + a hub backup within the last 24 hours. `get_library_source` (read-only) lives in the `hub_manage_code_read` gateway and requires Hub Admin Read only. Tests use the `BAT_` prefix and clean up after themselves.
+Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with type=library) live in the `hub_manage_code_write` gateway and require Hub Admin Write + confirm + a hub backup within the last 24 hours. `hub_get_source` with type=library (read-only) lives in the `hub_manage_code_read` gateway and requires Hub Admin Read only. Tests use the `BAT_` prefix and clean up after themselves.
 
 **Pre-flight (manual one-time):**
 1. Enable **Hub Admin Read Tools** and **Hub Admin Write Tools** in MCP Rule Server settings.
@@ -2785,16 +2784,16 @@ Write tools (`hub_create_library`, `hub_update_library`, `delete_library`) live 
 
 **Safety note:** Tests only create/modify/delete test-prefixed libraries. They do not touch any library with `usedByDeviceTypes` or `usedByAppTypes` populated.
 
-### T500 — get_library_source reads library source
+### T500 — hub_get_source (type=library) reads library source
 
 ```json
 {
   "setup_prompt": "Check Hubitat web UI (FOR DEVELOPERS > Libraries code) for an installed library ID, or install a test library first using hub_create_library.",
-  "test_prompt": "Get the source of the first library returned by hub2/userLibraries. Use hub_manage_code_read -> get_library_source."
+  "test_prompt": "Get the source of the first library returned by hub2/userLibraries. Use hub_manage_code_read -> hub_get_source with type=library."
 }
 ```
 
-**Expected**: AI calls `hub_manage_code_read(tool='get_library_source', args={libraryId:'<id>'})`. Result includes `success: true`, `source` (non-empty string), `version`, `name`, `namespace`, `totalLength`. If total length exceeds 64KB, `sourceFile` and `sourceFileHint` fields are present.
+**Expected**: AI calls `hub_manage_code_read(tool='hub_get_source', args={type:'library', id:'<id>'})`. Result includes `success: true`, `source` (non-empty string), `version`, `name`, `namespace`, `totalLength`. If total length exceeds 64KB, `sourceFile` and `sourceFileHint` fields are present.
 
 ### T501 — hub_create_library installs new library from inline source
 
@@ -2832,7 +2831,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `delete_library`) live 
 
 **Expected**: AI calls `hub_manage_code_write(tool='hub_update_library', args={libraryId:'<id>', resave:true, confirm:true})`. Result: `{success:true, sourceMode:'resave', note:'...no cloud round-trip...'}`. `newVersion` is a positive integer greater than `previousVersion`.
 
-### T504 — delete_library deletes and auto-backs up source
+### T504 — hub_delete_item (type=library) deletes and auto-backs up source
 
 ```json
 {
@@ -2842,7 +2841,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `delete_library`) live 
 }
 ```
 
-**Expected**: AI calls `hub_manage_code_write(tool='delete_library', args={libraryId:'<id>', confirm:true})`. Result: `{success:true, backupFile:'mcp-backup-library-<id>.groovy', restoreHint:...}`. Backup file appears in `hub_list_backups`. Subsequent `get_library_source` for the same ID returns `success:false` with "not found".
+**Expected**: AI calls `hub_manage_code_write(tool='hub_delete_item', args={type:'library', id:'<id>', confirm:true})`. Result: `{success:true, backupFile:'mcp-backup-library-<id>.groovy', restoreHint:...}`. Backup file appears in `hub_list_backups`. Subsequent `hub_get_source` (type=library) for the same ID returns `success:false` with "not found".
 
 ### T505 — hub_create_library refuses without confirm flag
 
@@ -2855,7 +2854,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `delete_library`) live 
 
 **Expected**: Gateway (or tool) returns an error (isError or -32602) containing "SAFETY CHECK FAILED" or "confirm". No library is created. AI explains the confirm requirement and the mandatory pre-flight checklist (backup).
 
-### T506 — get_library_source returns error for non-existent library
+### T506 — hub_get_source (type=library) returns error for non-existent library
 
 ```json
 {
@@ -2863,7 +2862,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `delete_library`) live 
 }
 ```
 
-**Expected**: AI calls `hub_manage_code_read(tool='get_library_source', args={libraryId:'999999'})`. Result: `{success:false, error:'...not found...'}` or similar. AI reports the error clearly and suggests using hub2/userLibraries or the Hubitat web UI (FOR DEVELOPERS > Libraries code) to find valid library IDs.
+**Expected**: AI calls `hub_manage_code_read(tool='hub_get_source', args={type:'library', id:'999999'})`. Result: `{success:false, error:'...not found...'}` or similar. AI reports the error clearly and suggests using hub2/userLibraries or the Hubitat web UI (FOR DEVELOPERS > Libraries code) to find valid library IDs.
 
 ### T507 — hub_update_library sourceFile mode reads from File Manager
 
@@ -2877,11 +2876,11 @@ Write tools (`hub_create_library`, `hub_update_library`, `delete_library`) live 
 
 **Expected**: AI calls `hub_manage_code_write(tool='hub_update_library', args={libraryId:'<id>', sourceFile:'bat-lib-update.groovy', confirm:true})`. Result: `{success:true, sourceMode:'sourceFile', note:'...File Manager...'}`.
 
-### T508 — delete_library proceeds with warning when backup fails
+### T508 — hub_delete_item (type=library) proceeds with warning when backup fails
 
 (Manual test -- not automatable without simulating File Manager failure.)
 
-**Expected behavior**: If `uploadHubFile` fails during pre-delete backup, `delete_library` still proceeds and sets `backupWarning` in the response. The deletion is not blocked by a backup failure. The response message contains "WARNING: Pre-delete backup failed".
+**Expected behavior**: If `uploadHubFile` fails during pre-delete backup, `hub_delete_item` (type=library) still proceeds and sets `backupWarning` in the response. The deletion is not blocked by a backup failure. The response message contains "WARNING: Pre-delete backup failed".
 
 ---
 
@@ -2907,7 +2906,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 **Failure modes**: AI calls `hub_get_app_config` with `pageName='prefPkgUninstall'` instead (works but slower and returns the page-rendered enum/option list rather than structured package records). `hub_list_hpm_packages` is the right tool for programmatic enumeration.
 
-### T601 — get_hpm_drift: surface drift signals
+### T601 — hub_list_hpm_packages (includeDrift): surface drift signals
 
 ```json
 {
@@ -2917,7 +2916,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 }
 ```
 
-**Expected**: AI calls `hub_manage_hpm(tool='get_hpm_drift')`. Returns `success=true`, `summary` sentence, `drift` array (may be empty), `packagesWithActionableDrift`, `totalDriftSignals`, `orphanDetection`, `orphanDriverDetection`, and `limitations` note. AI interprets the summary and describes any drift signals found (type, packageName, componentName). If no drift, AI confirms the packages are clean and mentions the heID-presence-only detection limitation. Response may also include `dataQualityWarnings[]` and `skippedMalformed[]` if manifest data quality issues exist. Per-package fields when emitted: `skippedAppCount`, `skippedDriverCount` (files are not iterated in drift -- no `skippedFileCount` on drift entries). Response-level fields when filter matches nothing: `filterMatchedZero=true`, `availablePackages[]`. When either detection system was disabled, `summary` includes a `"(partial: ...)"` suffix naming which detection field was disabled.
+**Expected**: AI calls `hub_manage_hpm(tool='hub_list_hpm_packages', args={includeDrift:true})`. Returns `success=true` with the drift payload nested under a `drift` key containing: `summary` sentence, drift-signals array (may be empty), `packagesWithActionableDrift`, `totalDriftSignals`, `orphanDetection`, `orphanDriverDetection`, and `limitations` note. AI interprets the summary and describes any drift signals found (type, packageName, componentName). If no drift, AI confirms the packages are clean and mentions the heID-presence-only detection limitation. Response may also include `dataQualityWarnings[]` and `skippedMalformed[]` if manifest data quality issues exist. Per-package fields when emitted: `skippedAppCount`, `skippedDriverCount` (files are not iterated in drift -- no `skippedFileCount` on drift entries). Response-level fields when filter matches nothing: `filterMatchedZero=true`, `availablePackages[]`. When either detection system was disabled, `summary` includes a `"(partial: ...)"` suffix naming which detection field was disabled.
 
 ### T602 — hub_manage_hpm gateway catalog discovery
 
@@ -2927,9 +2926,9 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 }
 ```
 
-**Expected**: AI calls `hub_manage_hpm` with no args, sees catalog of 2 tools (`hub_list_hpm_packages`, `get_hpm_drift`) with full parameter schemas. AI describes both tools and their shared Hub Admin Read requirement.
+**Expected**: AI calls `hub_manage_hpm` with no args, sees the catalog containing `hub_list_hpm_packages` (with its `includeDrift` parameter for drift detection) and full parameter schema. AI describes the tool and its Hub Admin Read requirement.
 
-### T603 — get_hpm_drift: data-quality-only entry does not inflate summary drift count
+### T603 — hub_list_hpm_packages (includeDrift): data-quality-only entry does not inflate summary drift count
 
 ```json
 {
@@ -2941,19 +2940,19 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 **Expected**: When a package has only `dataQualityWarnings[]` and no actionable `signals[]`, `totalDriftSignals` is 0 and `summary` reads "No drift detected..." even if `drift[]` has one entry (data-quality entry for visibility). Drift signal type strings: `missing-required`, `orphan-app`, `orphan-driver`. Data-quality warning type strings: `heid-whitespace-normalized` (padded heID normalized; component kept), `heid-non-scalar-dropped` (non-scalar heID; component dropped), `empty-heid`, `skipped-malformed-component`. `drift[].length` may exceed the actionable-drift package count in this scenario.
 
-### T604 — get_hpm_drift / hub_list_hpm_packages: hpmAppId pointing at a non-HPM app surfaces descriptive error
+### T604 — hub_list_hpm_packages (with and without includeDrift): hpmAppId pointing at a non-HPM app surfaces descriptive error
 
 ```json
 {
   "setup_prompt": "Hub Admin Read is enabled. HPM is installed. Use hub_list_installed_apps to find an app that is NOT Hubitat Package Manager (e.g. the MCP Rule Server itself) and note its appId.",
-  "test_prompt": "Call get_hpm_drift with the non-HPM appId you just found as hpmAppId. Then call hub_list_hpm_packages with the same non-HPM appId. Confirm both tools reject it with a descriptive error naming the actual app type.",
+  "test_prompt": "Call hub_list_hpm_packages with includeDrift=true and the non-HPM appId you just found as hpmAppId. Then call hub_list_hpm_packages again with the same non-HPM appId but includeDrift omitted. Confirm both calls reject it with a descriptive error naming the actual app type.",
   "teardown_prompt": "No teardown needed."
 }
 ```
 
-**Expected**: Both `get_hpm_drift` and `hub_list_hpm_packages` reject the call. Internally, `_hpmAssertAppIsHpm` throws `IllegalArgumentException` with a message that includes both the supplied ID and the actual app type (e.g. `"hpmAppId <id> is not Hubitat Package Manager (actual type: MCP Rule Server) -- verify the ID or omit hpmAppId to use auto-discovery"`). The MCP protocol surfaces this as a JSON-RPC error response (`-32602` invalid params), not as a tool-result Map with `success=false` and not as a raw exception. The error message contains the supplied id and the `actual type:` string. AI explains the rejection and suggests either omitting `hpmAppId` (to let the tool auto-discover HPM) or supplying the correct HPM instance ID from `hub_list_installed_apps`. The same validator runs in both tools, so the error shape is identical.
+**Expected**: `hub_list_hpm_packages` rejects the call on both the drift path (`includeDrift=true`) and the plain enumeration path. Internally, `_hpmAssertAppIsHpm` throws `IllegalArgumentException` with a message that includes both the supplied ID and the actual app type (e.g. `"hpmAppId <id> is not Hubitat Package Manager (actual type: MCP Rule Server) -- verify the ID or omit hpmAppId to use auto-discovery"`). The MCP protocol surfaces this as a JSON-RPC error response (`-32602` invalid params), not as a tool-result Map with `success=false` and not as a raw exception. The error message contains the supplied id and the `actual type:` string. AI explains the rejection and suggests either omitting `hpmAppId` (to let the tool auto-discover HPM) or supplying the correct HPM instance ID from `hub_list_installed_apps`. The same validator runs on both paths, so the error shape is identical.
 
-**Failure modes**: AI passes the wrong ID silently and returns an empty result (would indicate missing validation). AI reports a generic "tool failed" without extracting the `actual type` field from the error message. AI only tests one of the two tools instead of both.
+**Failure modes**: AI passes the wrong ID silently and returns an empty result (would indicate missing validation). AI reports a generic "tool failed" without extracting the `actual type` field from the error message. AI only tests one of the two paths (drift vs plain enumeration) instead of both.
 
 ### T605 — hub_list_hpm_packages: hpmAppId pointing at a non-HPM app surfaces descriptive error (standalone)
 
@@ -2989,7 +2988,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create an RM rule called 'BAT SetVariable Test'. Also ensure at least one hub connector variable exists (use hub_manage_variables set_variable to create 'bat_setvar_test' = 0 if it does not exist).",
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create an RM rule called 'BAT SetVariable Test'. Also ensure at least one hub connector variable exists (use hub_manage_variables hub_set_variable to create 'bat_setvar_test' = 0 if it does not exist).",
   "test_prompt": "Add an action to the 'BAT SetVariable Test' rule: capability='setVariable', variable='bat_setvar_test', value=99. Then call hub_get_rule_health on the rule and confirm no broken markers are present.",
   "teardown_prompt": "Delete the 'BAT SetVariable Test' rule. Delete the hub variable 'bat_setvar_test'."
 }

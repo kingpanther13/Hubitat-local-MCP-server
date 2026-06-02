@@ -670,7 +670,7 @@ Additionally, tools that modify or delete existing apps/drivers automatically ba
 <details>
 <summary><b>Item Backup & Restore</b></summary>
 
-When you use `hub_update_app`, `hub_update_driver`, `delete_app`, or `delete_driver`, the server automatically saves the **original source code** before making changes.
+When you use `hub_update_app`, `hub_update_driver`, or `hub_delete_item` (type: app|driver), the server automatically saves the **original source code** before making changes.
 
 - Backups stored as `.groovy` files in the hub's local **File Manager**
 - Named `mcp-backup-app-<id>.groovy` or `mcp-backup-driver-<id>.groovy`
@@ -1036,7 +1036,7 @@ For easier bug reporting:
   > *Native app preferred.* Hubitat's built-in Zone Motion Controller creates a virtual motion device that aggregates multiple sensors. If the user adds this virtual device to MCP's selected devices, MCP can already see and trigger on it. The AI can also replicate the logic using `create_virtual_device` + `hub_create_custom_rule` with multi-device triggers if needed. Only implement if MCP cannot adequately interact with the native app's output device.
 
 - [ ] **Mode Manager (automated mode changes)** — `Low priority`
-  > *Native app preferred.* Hubitat's built-in Mode Manager handles time-based and presence-based mode changes. The MCP can already read/set modes via `hub_list_modes`/`set_mode`, trigger on `mode_change`, and build time/presence-triggered rules that call `set_mode`. No dedicated tool needed unless a specific interaction gap is found.
+  > *Native app preferred.* Hubitat's built-in Mode Manager handles time-based and presence-based mode changes. The MCP can already read/set modes via `hub_list_modes`/`hub_set_mode`, trigger on `mode_change`, and build time/presence-triggered rules that call `set_mode`. No dedicated tool needed unless a specific interaction gap is found.
 
 - [ ] **Button Controller (streamlined button-to-action mapping)** — `Low priority`
   > *Native app preferred.* Hubitat's built-in Button Controller handles this natively. The MCP rule engine already has `button_event` triggers with full support for button numbers (1–20) and action types (pushed/held/doubleTapped/released). The AI can create these rules directly via `hub_create_custom_rule`. No dedicated tool needed.
@@ -1076,10 +1076,10 @@ For easier bug reporting:
   > 2. Fetch manifest → download sources → install via existing tools
   > 3. Track installed packages in File Manager for update checking
   > 4. Document the limitation: HPM won't know about these installations
-  > 5. For uninstall: `delete_app`/`delete_driver` for code, investigate `/installedapp/disable` for instances
+  > 5. For uninstall: `hub_delete_item` (type: app|driver) for code, investigate `/installedapp/disable` for instances
 
 - [ ] **Check for updates across installed packages** — `Difficulty: 3 | Effort: M`
-  > *Partially feasible.* For MCP-tracked packages (from the install tool above): fetch each manifest URL and compare versions -- same pattern as the existing `checkForUpdate()` for the MCP server itself. For HPM-managed packages: HPM's installed-package state IS readable via hub-internal endpoints (`/installedapp/statusJson/` + `/hub2/appsList`), as demonstrated by `hub_list_hpm_packages` and `get_hpm_drift`. A `check_package_updates` tool could cross-reference HPM's recorded manifest URLs and versions against live manifest files to detect available updates.
+  > *Partially feasible.* For MCP-tracked packages (from the install tool above): fetch each manifest URL and compare versions -- same pattern as the existing `checkForUpdate()` for the MCP server itself. For HPM-managed packages: HPM's installed-package state IS readable via hub-internal endpoints (`/installedapp/statusJson/` + `/hub2/appsList`), as demonstrated by `hub_list_hpm_packages` (includeDrift=true; drift nests under a `drift` key). A `check_package_updates` tool could cross-reference HPM's recorded manifest URLs and versions against live manifest files to detect available updates.
   >
   > **Implementation plan:**
   > 1. Create `check_package_updates` MCP tool
@@ -1186,7 +1186,7 @@ For easier bug reporting:
   > 2. Accept rule ID and boolean value, map to appropriate sendAction call
 
 - [x] **Hub variable bridge for cross-engine coordination** — `Difficulty: 2 | Effort: S`
-  > *Already ~90% implemented.* The existing `set_variable`/`hub_get_variable` tools work with Hubitat's global connector variables via `getGlobalConnectorVariable()`/`setGlobalConnectorVariable()`. These are the same variables Rule Machine reads/writes. Variables set via MCP are immediately visible to RM and vice versa. To formalize: document the convention that shared variables should use hub connector variables.
+  > *Already ~90% implemented.* The existing `hub_set_variable`/`hub_get_variable` tools work with Hubitat's global connector variables via `getGlobalConnectorVariable()`/`setGlobalConnectorVariable()`. These are the same variables Rule Machine reads/writes. Variables set via MCP are immediately visible to RM and vice versa. To formalize: document the convention that shared variables should use hub connector variables.
 
 ---
 
@@ -1225,10 +1225,10 @@ For easier bug reporting:
 
 ### Advanced Automation Patterns
 
-> These patterns don't require new MCP tools — the AI assistant can already compose them using existing `hub_create_custom_rule`, `set_variable`, `create_virtual_device`, and other tools. They're documented here as reference patterns showing what's achievable today with the current rule engine. No dedicated wizard tools are planned unless a specific gap is identified.
+> These patterns don't require new MCP tools — the AI assistant can already compose them using existing `hub_create_custom_rule`, `hub_set_variable`, `create_virtual_device`, and other tools. They're documented here as reference patterns showing what's achievable today with the current rule engine. No dedicated wizard tools are planned unless a specific gap is identified.
 
 - [ ] **Occupancy / room state machine** — `No new tools needed`
-  > *Already achievable.* The AI can compose this using existing primitives: a hub variable `roomState_<room>` holds state (vacant/occupied/engaged/checking). `device_event` triggers on motion/contact sensors feed into `if_then_else` chains with `set_variable` actions for state transitions. Duration-based triggers handle timeouts. Other rules check room state via `variable` conditions. No dedicated tool required — the AI can build this pattern on request using `hub_create_custom_rule` and `set_variable`.
+  > *Already achievable.* The AI can compose this using existing primitives: a hub variable `roomState_<room>` holds state (vacant/occupied/engaged/checking). `device_event` triggers on motion/contact sensors feed into `if_then_else` chains with `set_variable` actions for state transitions. Duration-based triggers handle timeouts. Other rules check room state via `variable` conditions. No dedicated tool required — the AI can build this pattern on request using `hub_create_custom_rule` and `hub_set_variable`.
 
 - [ ] **Presence-based automation (first-to-arrive, last-to-leave)** — `No new tools needed`
   > *Already achievable.* The AI can compose this: a hub variable `homeCount` tracks present people. `device_event` triggers on presence sensors increment/decrement via `variable_math`. Rules with `variable` conditions fire when `homeCount` transitions 0→1 (first arrive) or 1→0 (last leave). All building blocks exist today.

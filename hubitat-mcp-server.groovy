@@ -1036,7 +1036,7 @@ def getGatewayConfig() {
             searchHints: [
                 hub_get_metrics: "temperature database size trending monitoring over time",
                 hub_get_memory_history: "ram free used leak trending over time java heap nio",
-                hub_call_gc: "free reclaim ram cleanup java heap",
+                hub_call_gc: "gc garbage collection free reclaim ram cleanup java heap memory",
                 hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router gateway identify led blink locate physical hub",
                 hub_get_radio_details: "zwave zigbee mesh network frequency firmware 908mhz 700 800 series channel pan coordinator 2400mhz radio",
                 hub_call_zwave_repair: "fix heal network mesh routing neighbor rebuild",

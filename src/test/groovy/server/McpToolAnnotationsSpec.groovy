@@ -80,7 +80,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_get_debug_logs', 'hub_report_issue',
             'hub_get_logs', 'hub_list_device_events', 'hub_get_performance_stats',
             'hub_get_radio_details', 'hub_get_device_health',
-            'hub_list_apps', 'hub_get_source', 'hub_list_backups',
+            'hub_list_apps', 'hub_get_source', 'hub_list_backups', 'hub_get_backup',
             'hub_list_rooms', 'hub_get_room',
             'hub_list_files', 'hub_read_file',
             'hub_list_installed_apps', 'hub_get_app_config',

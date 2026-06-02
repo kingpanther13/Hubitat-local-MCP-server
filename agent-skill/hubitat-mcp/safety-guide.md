@@ -67,15 +67,12 @@ ALL Hub Admin Write tools require these steps in order:
   4. All device details logged to MCP debug logs for audit trail
 - **Never**: Delete a working device. If user wants to remove a device, guide them through proper exclusion first.
 
-#### delete_app / delete_driver
+#### hub_delete_item (type: app | driver | library)
 - Source code is auto-backed up before deletion
-- For apps: Remind user to remove app instances via Hubitat UI first
-- For drivers: Remind user to switch devices to a different driver first
-
-#### delete_library
-- Source code is auto-backed up before deletion
-- Check that no apps or drivers reference the library via `#include namespace.LibraryName` before deleting -- deletion breaks any code that still includes it
-- Deletion is permanent; restore requires `hub_update_library` with the backup source
+- For apps (`type="app"`): Remind user to remove app instances via Hubitat UI first
+- For drivers (`type="driver"`): Remind user to switch devices to a different driver first
+- For libraries (`type="library"`): Check that no apps or drivers reference the library via `#include namespace.LibraryName` before deleting -- deletion breaks any code that still includes it
+- Deletion is permanent; restore the source via `hub_update_app` / `hub_update_driver` / `hub_update_library` with the backup source
 
 #### hub_delete_room
 - Devices become unassigned (not deleted)
