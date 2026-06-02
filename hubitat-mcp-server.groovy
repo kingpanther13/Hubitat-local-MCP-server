@@ -1087,7 +1087,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_native_rules: [
-            description: "WHEN TO USE: this is the right path for any user who says 'create a rule machine rule,' 'make a Hubitat rule,' or wants the rule visible in Hubitat's Rule Machine app list / web UI. Use this for default rule-creation requests. The custom_* MCP rule engine (separate surface) is only appropriate when the user EXPLICITLY wants a sandbox MCP-managed rule that does not appear in Hubitat's UI -- uncommon outside power-user / testing scenarios. QUICK FLOW for a default rule create: (1) hub_create_native_app(appType='rule_machine', name='...', confirm=true) returns appId. (2) hub_update_native_app(appId=N, addTrigger={capability:'Certain Time (and optional date)', time:'A specific time', atTime:'17:00'}, confirm=true). (3) hub_update_native_app(appId=N, addAction={capability:'log', message:'...'}, confirm=true). Three calls. Each call returns settingsApplied so you can confirm the rule baked. Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules -- any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified hub_list_backups + hub_restore_backup tools in hub_manage_code_read. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via hub_get_app_config(appId=N) and inspect persisted settings before retrying.",
+            description: "WHEN TO USE: this is the right path for any user who says 'create a rule machine rule,' 'make a Hubitat rule,' or wants the rule visible in Hubitat's Rule Machine app list / web UI. Use this for default rule-creation requests. The custom_* MCP rule engine (separate surface) is only appropriate when the user EXPLICITLY wants a sandbox MCP-managed rule that does not appear in Hubitat's UI -- uncommon outside power-user / testing scenarios. QUICK FLOW for a default rule create: (1) hub_create_native_app(appType='rule_machine', name='...', confirm=true) returns appId. (2) hub_update_native_app(appId=N, addTrigger={capability:'Certain Time (and optional date)', time:'A specific time', atTime:'17:00'}, confirm=true). (3) hub_update_native_app(appId=N, addAction={capability:'log', message:'...'}, confirm=true). Three calls. Each call returns settingsApplied so you can confirm the rule baked. Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules -- any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified hub_list_backups (in hub_manage_code_read) + hub_restore_backup (in hub_manage_code_write) tools. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via hub_get_app_config(appId=N) and inspect persisted settings before retrying.",
             tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_create_native_app", "hub_update_native_app", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
@@ -1567,7 +1567,7 @@ Only query devices the user has mentioned or that are relevant to their request.
                     attribute: [type: "string", description: "Attribute name"],
                     expectedValue: [type: "string", description: "If set, block-poll until currentValue equals this string. Enables poll mode. At least one of expectedValue/expectedValues enables polling."],
                     expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue is any of these strings (OR with expectedValue). Enables poll mode."],
-                    timeoutMs: [type: "integer", description: "Poll mode: max wait in MILLISECONDS. Default 5000, min 100, max 60000.", default: 5000],
+                    timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000],
                     pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.", default: 200]
                 ],
                 required: ["deviceId", "attribute"]
@@ -1606,12 +1606,12 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
         // Rule Management
         [
             name: "hub_get_custom_rule",
-            description: "Read MCP custom-engine automation rules. Omit ruleId to LIST all rules (summaries; supports cursor pagination). Provide ruleId for one rule's full detail. Add detailed=true for comprehensive diagnostics (config + execution history + recent logs + errors). NOTE: when the Custom Rule Engine toggle is OFF, this operates read-only -- you can list/inspect existing custom rules, but create/modify/delete are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via hub_manage_native_rules.",
+            description: "Read MCP custom-engine automation rules. Omit ruleId to LIST all rules (summaries; supports cursor pagination). Provide ruleId for one rule's full detail. Add detailed=true (requires ruleId) for comprehensive diagnostics (config + execution history + recent logs + errors). NOTE: when the Custom Rule Engine toggle is OFF, this operates read-only -- you can list/inspect existing custom rules, but create/modify/delete are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via hub_manage_native_rules.",
             inputSchema: [
                 type: "object",
                 properties: [
                     ruleId: [type: "string", description: "Rule ID. Omit to list all rules; provide for one rule's detail."],
-                    detailed: [type: "boolean", description: "When ruleId is set, return comprehensive diagnostics (execution history, recent logs, errors) instead of plain rule data.", default: false],
+                    detailed: [type: "boolean", description: "Requires ruleId. Returns comprehensive diagnostics (execution history, recent logs, errors) instead of plain rule data. Rejected if set without a ruleId.", default: false],
                     cursor: [type: "string", description: "List mode only (ruleId omitted): opt-in pagination cursor. Pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ]
@@ -2782,7 +2782,7 @@ pageName: optional — target a specific sub-page whose schema drives the settin
 
 stateAttribute: optional string passed with the button click (e.g., RM uses this for editCond/editAct to identify which trigger/action).
 
-BEFORE EVERY WRITE: a full snapshot (configure/json + statusJson) is saved to File Manager. Response includes backup.backupKey for use with hub_restore_backup (in hub_manage_code_read) if the write goes wrong.
+BEFORE EVERY WRITE: a full snapshot (configure/json + statusJson) is saved to File Manager. Response includes backup.backupKey for use with hub_restore_backup (in hub_manage_code_write) if the write goes wrong.
 
 Auto-updateRule: main-page settings writes are followed by an implicit updateRule button click so initialize() re-fires. Sub-page writes (pageName=selectTriggers, selectActions, etc.) skip the auto-click so the wizard's stateAttribute (moreCond, editCond, editAct, ...) survives — commit the wizard via its own Done button (RM triggers: hasAll; RM actions: actionDone) and issue a final hub_update_native_app(button='updateRule') to re-initialize.
 
@@ -3263,7 +3263,7 @@ force=false (default): soft delete via /installedapp/delete. Hub refuses if the 
 
 force=true: hard delete via /installedapp/forcedelete/quiet — the same path the hub UI uses internally for its own \"Delete\" buttons. No child safety checks.
 
-BEFORE DELETE: full snapshot saved to File Manager. Response includes backup.backupKey; call hub_restore_backup (in hub_manage_code_read) with that key to recreate the app with all its settings re-applied.
+BEFORE DELETE: full snapshot saved to File Manager. Response includes backup.backupKey; call hub_restore_backup (in hub_manage_code_write) with that key to recreate the app with all its settings re-applied.
 
 Requires Hub Admin Write + confirm=true + recent hub backup.""",
             inputSchema: [
@@ -3350,7 +3350,10 @@ def executeTool(toolName, args) {
 
         // Rule Management - now using child apps
         case "hub_get_custom_rule":
-            // List mode when ruleId omitted; diagnostics when detailed=true; else single rule.
+            // ruleId omitted = list mode; detailed=true (requires ruleId) = diagnostics; else single rule.
+            // Reject detailed-without-ruleId loudly rather than silently dropping detailed and listing.
+            if (args.detailed == true && args.ruleId == null)
+                throw new IllegalArgumentException("detailed=true requires a ruleId (it returns per-rule diagnostics). Omit detailed to list all rules.")
             if (args.ruleId == null) return toolListRules(args)
             if (args.detailed == true) return toolGetRuleDiagnostics(args)
             return toolGetRule(args.ruleId)
@@ -3485,7 +3488,7 @@ def executeTool(toolName, args) {
         case "hub_set_rule_private_boolean": return toolSetRmRuleBoolean(args)
 
         // Native Rule Machine CRUD (hub admin-layer; backups flow through
-        // hub_list_backups + hub_restore_backup in hub_manage_code_read)
+        // hub_list_backups (hub_manage_code_read) + hub_restore_backup (hub_manage_code_write))
         case "hub_create_native_app": return toolCreateNativeApp(args)
         case "hub_update_native_app": return toolUpdateNativeApp(args)
         case "hub_delete_native_app": return toolDeleteNativeApp(args)
@@ -4083,11 +4086,14 @@ def toolGetAttribute(deviceId, attribute) {
  * timeout elapses. Uses pauseExecution() for inter-poll delays -- the only
  * synchronous sleep available in the Hubitat app sandbox.
  *
- * Internal helper for the hub_get_device_attribute tool's poll mode: executeTool routes
- * here when expectedValue/expectedValues is supplied, and to toolGetAttribute
- * for a one-shot read otherwise. The poll path BLOCKS up to timeoutMs (max 60s),
- * so the hub_get_device_attribute description flags the cost; a bare hub_get_device_attribute call
- * (no expected* arg) stays a sub-second read.
+ * Internal helper for the hub_get_device_attribute tool's poll mode: executeTool
+ * routes here when ANY poll arg is supplied (expectedValue/expectedValues OR
+ * timeoutMs/pollIntervalMs), and to toolGetAttribute for a one-shot read otherwise.
+ * Routing on the timeout/interval too is deliberate: a timeout without an expected
+ * value reaches here and is rejected ("at least one of expectedValue/expectedValues")
+ * rather than silently read once. The poll path BLOCKS up to timeoutMs (max 60s),
+ * so the hub_get_device_attribute description flags the cost; a bare call (no poll
+ * arg) stays a sub-second read.
  */
 def toolPollUntilAttribute(args) {
     // 0. Reject unknown args early to surface caller mistakes (e.g., timeoutSeconds vs timeoutMs).
@@ -24984,7 +24990,7 @@ Native CRUD (hub admin-layer, additionally requires Hub Admin Write):
 
 For READING an RM rule's current state, use **hub_get_app_config** in the hub_manage_installed_apps gateway — it works on any installed app including RM rules and returns the same configPage shape that hub_update_native_app expects to see.
 
-For BACKUP enumeration and restore, use the unified **hub_list_backups** + **hub_restore_backup** in hub_manage_code_read — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
+For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_manage_code_read) + **hub_restore_backup** (in hub_manage_code_write) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
 **Safety model for native CRUD:**
 1. Every write is preceded by a full snapshot (configure/json + statusJson) saved to File Manager; the response's backup.backupKey is the restore handle.

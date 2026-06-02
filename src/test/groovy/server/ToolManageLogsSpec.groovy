@@ -406,6 +406,40 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    @spock.lang.Unroll
+    def "hub_list_device_events via dispatch returns recent-N events when no window/filter is given (useGateways=#useGateways)"() {
+        given: 'no hoursBack and no attribute -> executeTool routes deviceId to toolGetDeviceEvents (device.events(max:))'
+        settingsMap.useGateways = useGateways
+        def fixedDate = new Date(1234567880000L)
+        def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
+        // toolGetDeviceEvents reads device.events(max: limit); TestDevice exposes
+        // events only as a List field, so stub the Map-arg call per-instance.
+        device.metaClass.events = { Map opts ->
+            [
+                [name: 'switch', value: 'on',  unit: null, descriptionText: 'turned on', date: fixedDate, isStateChange: true],
+                [name: 'level',  value: '75',  unit: '%',  descriptionText: 'dimmed',    date: fixedDate, isStateChange: true]
+            ]
+        }
+        settingsMap.selectedDevices = [device]
+
+        when:
+        def response = mcpDriver.callTool('hub_list_device_events', [deviceId: '42', limit: 5])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.device == 'Kitchen Light'
+        inner.count == 2
+        inner.events.size() == 2
+        inner.events[0].name == 'switch'
+        inner.events[0].value == 'on'
+        inner.events[1].name == 'level'
+
+        where:
+        useGateways << [true, false]
+    }
+
     def "hub_list_device_events applies attribute filter"() {
         given:
         def fixedDate = new Date(1234567880000L)

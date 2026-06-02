@@ -1481,4 +1481,42 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         where:
         useGateways << [true, false]
     }
+
+    // ---------------------------------------------------------------------------
+    // One-shot read branch: with NO poll args (no expectedValue/expectedValues/
+    // timeoutMs/pollIntervalMs), executeTool routes hub_get_device_attribute to
+    // toolGetAttribute for a single read rather than the poll path -- assert the
+    // {device, attribute, value} envelope.
+    // ---------------------------------------------------------------------------
+
+    @spock.lang.Unroll
+    def "hub_get_device_attribute one-shot read via dispatch returns device/attribute/value when no poll args given (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def device = new TestDevice(
+            id: 1070,
+            name: 'DispatchReadSwitch',
+            label: 'Dispatch Read Switch',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'on']
+        )
+        childDevicesList << device
+
+        when:
+        def response = mcpDriver.callTool('hub_get_device_attribute', [
+            deviceId : '1070',
+            attribute: 'switch'
+        ])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.device == 'Dispatch Read Switch'
+        inner.attribute == 'switch'
+        inner.value == 'on'
+
+        where:
+        useGateways << [true, false]
+    }
 }
