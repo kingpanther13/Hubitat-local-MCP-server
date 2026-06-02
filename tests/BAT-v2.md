@@ -530,7 +530,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Calls `hub_get_info` directly (core tool — includes hardware, health, MCP stats; PII gated behind Hub Admin Read).
 
-### T36 — Discover hub_get_radio_details for Z-Wave (hub_manage_diagnostics)
+### T36 — Discover hub_get_radio_details for Z-Wave (hub_read_diagnostics)
 
 ```json
 {
@@ -538,9 +538,9 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_diagnostics` → `hub_get_radio_details` with `radio=zwave`.
+**Expected v0.8.0**: Discovers `hub_read_diagnostics` → `hub_get_radio_details` with `radio=zwave` (also reachable via `hub_manage_diagnostics` — multi-membership).
 
-### T37 — Discover hub_get_radio_details for Zigbee (hub_manage_diagnostics)
+### T37 — Discover hub_get_radio_details for Zigbee (hub_read_diagnostics)
 
 ```json
 {
@@ -548,7 +548,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_diagnostics` → `hub_get_radio_details` with `radio=zigbee`.
+**Expected v0.8.0**: Discovers `hub_read_diagnostics` → `hub_get_radio_details` with `radio=zigbee` (also reachable via `hub_manage_diagnostics` — multi-membership).
 
 ### T38 — Discover hub_get_info for health (core)
 
@@ -683,7 +683,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `hub_read_devices` → `hub_list_device_events` (windowed: pass `hoursBack`).
 
-### T49 — Discover hub_get_metrics (hub_manage_diagnostics)
+### T49 — Discover hub_get_metrics (hub_read_diagnostics)
 
 ```json
 {
@@ -691,9 +691,9 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_diagnostics` → `hub_get_metrics`.
+**Expected v0.8.0**: Discovers `hub_read_diagnostics` → `hub_get_metrics` (the pure-read gateway; `hub_manage_diagnostics` also exposes it via multi-membership, so a read-only client still reaches it).
 
-### T50 — Discover hub_get_device_health (hub_manage_diagnostics)
+### T50 — Discover hub_get_device_health (hub_read_diagnostics)
 
 ```json
 {
@@ -701,7 +701,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_diagnostics` → `hub_get_device_health`.
+**Expected v0.8.0**: Discovers `hub_read_diagnostics` → `hub_get_device_health` (also in `hub_manage_diagnostics` via multi-membership).
 
 ### T51 — Discover hub_get_debug_logs (hub_manage_logs)
 
@@ -746,7 +746,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `hub_manage_logs` → `hub_set_log_level` and → `hub_get_debug_logs` (mode='status').
 
-### T55 — Discover hub_list_captured_states (hub_manage_diagnostics)
+### T55 — Discover hub_list_captured_states (hub_read_diagnostics)
 
 ```json
 {
@@ -754,7 +754,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Discovers `hub_manage_diagnostics` → `hub_list_captured_states`.
+**Expected v0.8.0**: Discovers `hub_read_diagnostics` → `hub_list_captured_states` (also in `hub_manage_diagnostics` via multi-membership).
 
 ### T56 — Discover hub_list_files (hub_manage_files)
 
@@ -1051,7 +1051,7 @@ Complex scenarios spanning multiple tools and gateways.
 }
 ```
 
-**Expected**: Split across `hub_manage_diagnostics` (hub_get_metrics, hub_get_device_health) and `hub_manage_logs` (hub_get_logs, hub_get_debug_logs).
+**Expected**: All four are reads available from `hub_read_diagnostics` (hub_get_metrics, hub_get_device_health, hub_get_logs, hub_get_debug_logs) — a read-only client gets the whole report from the pure-read gateway; the write-bearing `hub_manage_diagnostics` / `hub_manage_logs` also expose them.
 
 ### T84 — Cross-gateway workflow
 
@@ -1140,7 +1140,7 @@ These test correct routing when the request is ambiguous.
 }
 ```
 
-**Expected**: `hub_get_metrics` (in `hub_manage_diagnostics`), not `hub_get_info` (core). Performance metrics = diagnostics gateway.
+**Expected**: `hub_get_metrics` (in `hub_read_diagnostics`, also `hub_manage_diagnostics`), not `hub_get_info` (core). Performance metrics = diagnostics gateway.
 
 ### T95 — User references wrong gateway domain
 
@@ -1150,7 +1150,7 @@ These test correct routing when the request is ambiguous.
 }
 ```
 
-**Expected**: `hub_get_device_health` is in `hub_manage_diagnostics`. AI should find the right gateway despite the misdirection.
+**Expected**: `hub_get_device_health` is in `hub_read_diagnostics` (and `hub_manage_diagnostics`). AI should find the right gateway despite the misdirection.
 
 ### T96 — Same-name artifact ambiguity
 
@@ -2022,7 +2022,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_get_metrics` (via `hub_manage_diagnostics`).
+**Expected**: `hub_get_metrics` (via `hub_read_diagnostics`, also `hub_manage_diagnostics`).
 **Equivalent to**: T49
 
 #### T278 — Dead or unresponsive devices
