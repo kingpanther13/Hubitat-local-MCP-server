@@ -276,6 +276,42 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         sharedAppStub.settingsStore['maxCapturedStates'] == [type: 'number', value: 50]
     }
 
+    // -------- Golden path: useGateways (gateway-mode self-switch) --------
+
+    def "writes useGateways toggle — gateway-mode self-switch is allowlisted (dev-mode gated)"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when: 'the agent switches the server into gateway mode via its own self-admin tool'
+        def result = script.toolUpdateMcpSettings([
+            settings: [useGateways: true],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        result.updated == [useGateways: true]
+        sharedAppStub.settingsStore['useGateways'] == [type: 'bool', value: true]
+
+        and: 'message still steers the client to reconnect — the tools/list shape just changed'
+        result.message.contains('reconnect')
+    }
+
+    def "coerces useGateways string 'false' to native false — turning gateway mode OFF must not stay truthy"() {
+        given: 'a CI/curl client sends the string "false" to flatten the tool surface'
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def result = script.toolUpdateMcpSettings([
+            settings: [useGateways: 'false'],
+            confirm: true
+        ])
+
+        then: 'string "false" coerces to native false, not Groovy-truthy "false"'
+        result.success == true
+        sharedAppStub.settingsStore['useGateways'] == [type: 'bool', value: false]
+    }
+
     // -------- Golden path: mcpLogLevel delegates to toolSetLogLevel --------
 
     def "mcpLogLevel updates state.debugLogs.config AND settings (via toolSetLogLevel delegation)"() {

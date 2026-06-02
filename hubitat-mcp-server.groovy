@@ -1152,7 +1152,7 @@ def getGatewayConfig() {
                 hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Args: settings (map of key→value), confirm=true. Allowlist-gated."
             ],
             searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableHubAdminRead enableBuiltinApp enableCustomRuleEngine ci automation"
+                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableHubAdminRead enableBuiltinApp enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation"
             ]
         ],
         hub_read_devices: [
@@ -1939,7 +1939,7 @@ Verify rule after creation.""",
         ],
         [
             name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters). First tool under the Developer Mode self-administration surface — additional Developer Mode tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same `enableDeveloperMode` gate.\n\nGated on `enableDeveloperMode` + requireHubAdminWrite + recent backup. Every successful write is logged at WARN level for audit.\n\nAllowlisted settings (intentionally conservative for v1): mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableHubAdminRead, enableBuiltinApp, enableCustomRuleEngine.\n\nExcluded from v1 allowlist (require future explicit security-model discussion): enableHubAdminWrite (footgun: would disable own write path mid-session), enableDeveloperMode (lockout protection — must remain UI-only to disable), selectedDevices (different wire format, will get its own tool).\n\nAfter changing any enable* toggle, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema.",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters). First tool under the Developer Mode self-administration surface — additional Developer Mode tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same `enableDeveloperMode` gate.\n\nGated on `enableDeveloperMode` + requireHubAdminWrite + recent backup. Every successful write is logged at WARN level for audit.\n\nAllowlisted settings (intentionally conservative for v1): mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableHubAdminRead, enableBuiltinApp, enableCustomRuleEngine, useGateways.\n\nExcluded from v1 allowlist (require future explicit security-model discussion): enableHubAdminWrite (footgun: would disable own write path mid-session), enableDeveloperMode (lockout protection — must remain UI-only to disable), selectedDevices (different wire format, will get its own tool).\n\nAfter changing any enable* toggle or useGateways, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -5936,6 +5936,9 @@ def toolUpdateMcpSettings(args) {
 
     // Allowlist of settings that can be modified via this tool, with their Hubitat input
     // type (matches the input "<key>", "<type>", ... declarations in the mainPage section).
+    // useGateways is allowlisted: it only reshapes tools/list (gateway vs flat) — same class
+    // as enableBuiltinApp/enableCustomRuleEngine, no write-path or lockout risk; clients must
+    // reconnect afterward to pick up the new tool surface.
     // Excluded:
     //   enableHubAdminWrite  — would footgun: could disable own write path mid-session
     //   enableDeveloperMode  — lockout protection (must remain UI-only to disable)
@@ -5948,7 +5951,8 @@ def toolUpdateMcpSettings(args) {
         "loopGuardWindowSec":     "number",
         "enableHubAdminRead":     "bool",
         "enableBuiltinApp":       "bool",
-        "enableCustomRuleEngine": "bool"
+        "enableCustomRuleEngine": "bool",
+        "useGateways":            "bool"
     ]
 
     // Validate, coerce, and stage each update. Validation is fully atomic — every key
@@ -6007,7 +6011,7 @@ def toolUpdateMcpSettings(args) {
     return [
         success: true,
         updated: updates,
-        message: "Updated ${updateCount} ${settingWord}. MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag."
+        message: "Updated ${updateCount} ${settingWord}. MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag or useGateways."
     ]
 }
 

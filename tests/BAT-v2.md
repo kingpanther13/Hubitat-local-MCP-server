@@ -2656,6 +2656,18 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 **Expected**: Both calls return success. The `message` field on each response contains "MCP clients ... may need to reconnect to refresh cached tool schemas". AI surfaces this hint to the user explaining that tools/list won't reflect the toggle until the client reconnects.
 
+### T223b — hub_update_mcp_settings flips useGateways (gateway-mode self-switch)
+
+```json
+{
+  "setup_prompt": "Developer Mode is enabled, Hub Admin Write is enabled, recent backup exists. Note whether the server is currently in gateway mode or flat mode (useGateways).",
+  "test_prompt": "Use hub_update_mcp_settings to flip useGateways to the OPPOSITE of its current value. Report the response message, then explain what the user must do for the new tool surface to take effect.",
+  "teardown_prompt": "Use hub_update_mcp_settings to set useGateways back to its original value, then reconnect (/mcp refresh) so the tool list matches the server again."
+}
+```
+
+**Expected**: AI calls `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{useGateways:<flipped>}, confirm:true})`. The key is **accepted** (NOT rejected as outside the allowlist — this is the regression guard for the dev-mode gateway self-switch), result `{success:true, updated:{useGateways:<flipped>}, message:"...may need to reconnect to refresh cached tool schemas if you toggled an enable* flag or useGateways."}`. The WARN `[developer-mode]` audit line fires. AI explains the client must reconnect (`/mcp refresh`) before tools/list reflects the new gateway-vs-flat surface. Teardown restores the original value.
+
 ### T224 — hub_delete_variable removes a stale rule_engine variable
 
 ```json

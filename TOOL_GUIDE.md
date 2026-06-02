@@ -800,9 +800,9 @@ The `hub_manage_mcp` gateway exposes self-administration tools that let an LLM a
 
 - **`hub_update_mcp_settings`** — update one or more of the MCP rule app's own settings (toggles, log level, tuning params)
   - Args: `settings` (map of `{key: value}`), `confirm=true`
-  - Allowlisted keys (intentionally conservative for v1): `mcpLogLevel`, `debugLogging`, `maxCapturedStates`, `loopGuardMax`, `loopGuardWindowSec`, `enableHubAdminRead`, `enableBuiltinApp`, `enableCustomRuleEngine`
+  - Allowlisted keys (intentionally conservative for v1): `mcpLogLevel`, `debugLogging`, `maxCapturedStates`, `loopGuardMax`, `loopGuardWindowSec`, `enableHubAdminRead`, `enableBuiltinApp`, `enableCustomRuleEngine`, `useGateways`
   - **Excluded** from v1 allowlist: `enableHubAdminWrite` (footgun — would disable own write path mid-session), `enableDeveloperMode` (lockout protection — must remain UI-only to disable), `selectedDevices` (different wire format, separate tool planned)
-  - After changing any `enable*` toggle, MCP clients (Claude Code, etc.) may need to reconnect to refresh the cached tool schema
+  - After changing any `enable*` toggle or `useGateways`, MCP clients (Claude Code, etc.) may need to reconnect to refresh the cached tool schema
   - Gated on: `enableDeveloperMode` + `requireHubAdminWrite` + recent backup
 
 ### hub_manage_variables — `hub_delete_variable`
