@@ -36,7 +36,7 @@ These rules apply to every MCP tool added or renamed. Cached MCP clients refresh
 
 - **Universal service prefix.** Every MCP tool name begins with `hub_`. Anthropic's verified guidance: prefix-namespacing tools by service has "non-trivial effects on our tool-use evaluations" — *writing-tools-for-agents* (2025-09-11). Example: `hub_list_devices`, `hub_create_room`, `hub_call_device_command`.
 - **Verb-noun order.** After the `hub_` prefix, the name reads verb-noun. Verbs are drawn from the strict vocabulary table below. Nouns are the most natural English for the entity in context (drop redundant qualifiers — e.g., `rule` is preferred over `rm_rule` where context disambiguates).
-- **Gateways.** `manage_` is reserved for gateway tools (e.g., `hub_manage_rooms`, `hub_manage_logs`). One narrow exception: a flat tool that exposes a small set (≤4) of action-dispatched verbs on a single noun may use `manage_` (current example: `hub_manage_virtual_device` with `action: "create"/"delete"`). Don't introduce more flat-multi-action tools without explicit maintainer sign-off.
+- **Gateways and flat-only `manage_` tools.** `manage_` is the verb for gateway tools (e.g., `hub_manage_rooms`, `hub_manage_logs`). It MAY also be used by a **flat-only tool** — one that never sits behind any gateway and is always kept top-level on `tools/list` — even though it is not itself a gateway. The canonical case is a flat tool that action-dispatches a small set (≤4) of verbs on a single noun (current example: `hub_manage_virtual_device` with `action: "create"/"delete"`). Don't introduce more flat `manage_` tools without explicit maintainer sign-off.
 - **Multi-gateway membership.** A tool MAY appear under more than one gateway when both gateway domains apply.
 - **Gateway read/write split.** Gateways SHOULD be read-only OR write-only where the domain permits. Mixed-mode gateways are accepted only when splitting genuinely doesn't fit the domain. Pure-mode gateways enable cleaner per-gateway disable in LLM client settings and clearer mental models for AI consumers.
 - **Hard rename, no aliases.** Non-conforming tools are renamed in lockstep when the convention requires it. The expectation: MCP clients refresh their cached tool list on server update. No deprecation aliases are shipped.
@@ -56,7 +56,7 @@ Tools use exactly one verb from the table below. The table is the canonical list
 | `delete` | Write that destroys an entity (no ID = delete all) | `clear`, `remove` |
 | `set` | Write that assigns a value/state (`set_X_<attr>`) or replaces an entity wholesale (`set_X`, PUT-like) | `pause`, `resume`, `enable`, `disable`, `lock`, `unlock`, `mute`, `unmute`, `start`, `stop`, `open`, `close`, `assign`, `unassign` |
 | `call` | Invoke a method / service / dispatch / device command | `send`, `dispatch`, `invoke`, `request`, `evaluate`, `run`, `force` |
-| `manage` | Action-dispatch — gateways + narrow flat-multi-action exception | — |
+| `manage` | Action-dispatch — gateways, plus flat-only top-level tools (see Tool naming) | — |
 | `restore` | Re-apply a prior backup | — |
 | `import` / `export` | Round-trip serialization counterpart | — |
 | `clone` | Duplicate an existing entity | — |

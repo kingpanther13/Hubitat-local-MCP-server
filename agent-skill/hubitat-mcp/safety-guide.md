@@ -25,9 +25,9 @@ Always confirm device identity before acting on critical systems.
 
 ## Gateway Calling Convention (v0.8.0+)
 
-Many safety-critical tools are now accessed via gateways (e.g., `manage_destructive_hub_ops`, `manage_app_driver_code`). The gateway does **not** bypass any safety checks — all Hub Admin Read/Write gates, backup requirements, and confirm flags are enforced in the handler functions. When calling a tool through a gateway, the same pre-flight checklists apply.
+Many safety-critical tools are now accessed via gateways (e.g., `hub_manage_destructive_ops`, `hub_manage_code_write`). The gateway does **not** bypass any safety checks — all Hub Admin Read/Write gates, backup requirements, and confirm flags are enforced in the handler functions. When calling a tool through a gateway, the same pre-flight checklists apply.
 
-Example: To reboot the hub, call `manage_destructive_hub_ops(tool="reboot_hub", args={"confirm": true})` — the same backup and confirmation requirements apply as if `reboot_hub` were called directly.
+Example: To reboot the hub, call `hub_manage_destructive_ops(tool="hub_reboot", args={"confirm": true})` — the same backup and confirmation requirements apply as if `hub_reboot` were called directly.
 
 ---
 
@@ -35,67 +35,64 @@ Example: To reboot the hub, call `manage_destructive_hub_ops(tool="reboot_hub", 
 
 ALL Hub Admin Write tools require these steps in order:
 
-1. **Verify backup**: `create_hub_backup` was called within the last 24 hours
+1. **Verify backup**: `hub_create_backup` was called within the last 24 hours
 2. **Inform user**: Explain what you are about to do and its effects
 3. **Get confirmation**: Wait for explicit "yes", "confirm", or "proceed"
 4. **Execute with confirm=true**: Pass the confirmation flag
 
 ### Tool-Specific Safety
 
-#### reboot_hub
+#### hub_reboot
 - **Effects**: 1-3 minute downtime, all automations stop, scheduled jobs lost, Z-Wave/Zigbee radios restart
 - **Only when**: User explicitly requests a reboot
 - **Never**: Reboot as a troubleshooting step without asking
 
-#### shutdown_hub
+#### hub_shutdown
 - **Effects**: Hub powers OFF completely. Requires physical power cycle to restart.
 - **This is NOT a reboot** - the hub stays off until someone manually unplugs and replugs it
 - **Only when**: User explicitly requests shutdown (e.g., for maintenance or moving the hub)
 
-#### zwave_repair (via manage_diagnostics)
+#### hub_call_zwave_repair (via hub_manage_diagnostics)
 - **Effects**: 5-30 minute background process, Z-Wave devices may be unresponsive during
 - **Best run**: During off-peak hours when automations aren't critical
 - **Only when**: User reports Z-Wave issues and explicitly requests repair
 
-#### delete_device (via manage_destructive_hub_ops)
+#### hub_delete_device (via hub_manage_destructive_ops)
 - **THE MOST DESTRUCTIVE TOOL - NO UNDO**
 - **Intended for**: Ghost/orphaned Z-Wave nodes, stale database records, stuck virtual devices
 - **Pre-flight**:
-  1. Use `get_device` to verify correct device
+  1. Use `hub_get_device` to verify correct device
   2. Check for recent activity (warn if device was active recently)
   3. For Z-Wave/Zigbee: warn user to do proper exclusion/removal first
   4. All device details logged to MCP debug logs for audit trail
 - **Never**: Delete a working device. If user wants to remove a device, guide them through proper exclusion first.
 
-#### delete_app / delete_driver
+#### hub_delete_item (type: app | driver | library)
 - Source code is auto-backed up before deletion
-- For apps: Remind user to remove app instances via Hubitat UI first
-- For drivers: Remind user to switch devices to a different driver first
+- For apps (`type="app"`): Remind user to remove app instances via Hubitat UI first
+- For drivers (`type="driver"`): Remind user to switch devices to a different driver first
+- For libraries (`type="library"`): Check that no apps or drivers reference the library via `#include namespace.LibraryName` before deleting -- deletion breaks any code that still includes it
+- Deletion is permanent; restore the source via `hub_update_app` / `hub_update_driver` / `hub_update_library` with the backup source
 
-#### delete_library
-- Source code is auto-backed up before deletion
-- Check that no apps or drivers reference the library via `#include namespace.LibraryName` before deleting -- deletion breaks any code that still includes it
-- Deletion is permanent; restore requires `update_library_code` with the backup source
-
-#### delete_room
+#### hub_delete_room
 - Devices become unassigned (not deleted)
 - List affected devices to the user before proceeding
 - Dashboard layouts referencing the room may be affected
 
-#### install_app / install_driver
+#### hub_create_app / hub_create_driver
 - Verify source code looks reasonable before installing
 - Warn about namespace conflicts with existing apps/drivers
 
-#### install_library
+#### hub_create_library
 - Verify source includes a valid `library()` definition block before installing
 - Warn about namespace conflicts with existing libraries (`#include namespace.LibraryName` references must match exactly)
 
-#### update_app_code / update_driver_code
+#### hub_update_app / hub_update_driver
 - Source is auto-backed up before update (1-hour protection window preserves original)
 - Uses optimistic locking to prevent concurrent edit conflicts
 - Supports three modes: `source` (direct), `sourceFile` (from File Manager), `resave` (recompile)
 
-#### update_library_code
+#### hub_update_library
 - Source is auto-backed up before update (1-hour protection window preserves original); backup failure aborts the update
 - Uses optimistic locking to prevent concurrent edit conflicts
 - Supports three modes: `source` (direct), `sourceFile` (from File Manager), `resave` (recompile)
@@ -104,8 +101,8 @@ ALL Hub Admin Write tools require these steps in order:
 
 ## Virtual Device Safety
 
-- Use `manage_virtual_device` with `action="create"` or `action="delete"` for MCP-managed virtual devices
-- Do NOT use `delete_device` for virtual devices created by MCP
+- Use `hub_manage_virtual_device` with `action="create"` or `action="delete"` for MCP-managed virtual devices
+- Do NOT use `hub_delete_device` for virtual devices created by MCP
 - Virtual devices created by MCP are automatically accessible to all device tools
 - 15 supported types: Virtual Switch, Button, Contact Sensor, Motion Sensor, Presence, Lock, Temperature Sensor, Humidity Sensor, Dimmer, RGBW Light, Shade, Garage Door Opener, Water Sensor, Omni Sensor, Fan Controller
 
@@ -127,17 +124,17 @@ Defaults: 30 executions within 60 seconds. Configurable in app settings.
 
 ### Rule Deletion
 
-- `custom_delete_rule` auto-backs up the rule to File Manager before deletion
+- `hub_delete_custom_rule` auto-backs up the rule to File Manager before deletion
 - Backup format: `mcp_rule_backup_<name>_<timestamp>.json`
-- Restore via: `read_file(fileName)` then `custom_import_rule(exportData: <json>)`
+- Restore via: `hub_read_file(fileName)` then `hub_import_custom_rule(exportData: <json>)`
 - Mark test rules with `testRule: true` to skip backup on deletion
 
 ---
 
 ## File Manager Safety
 
-- `write_file` auto-backs up existing file before overwriting
-- `delete_file` auto-backs up file before deletion
+- `hub_write_file` auto-backs up existing file before overwriting
+- `hub_delete_file` auto-backs up file before deletion
 - Both require Hub Admin Write + confirm
 - File names must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
 - Files persist on hub even if MCP is uninstalled

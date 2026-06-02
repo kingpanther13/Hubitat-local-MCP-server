@@ -6,7 +6,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolRunRmRule (hubitat-mcp-server.groovy approx line 7788).
- * Gateway: manage_native_rules_and_apps -> run_rm_rule.
+ * Gateway: hub_manage_native_rules -> hub_call_rule.
  *
  * Covers: gate-throw, missing ruleId, action-to-rmAction mapping (rule/actions
  * via RMUtils; stop/start via the stopRule button toggle because RMUtils has
@@ -58,13 +58,13 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "run_rm_rule via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = false
 
         when:
-        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 1])
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 1])
 
         then:
         response.error.code == -32602
@@ -87,13 +87,13 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "run_rm_rule via dispatch returns -32602 envelope when ruleId is missing (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch returns -32602 envelope when ruleId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('run_rm_rule', [:])
+        def response = mcpDriver.callTool('hub_call_rule', [:])
 
         then:
         response.error.code == -32602
@@ -117,13 +117,13 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "run_rm_rule via dispatch action=rule dispatches runRule (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch action=rule dispatches runRule (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 101, action: 'rule'])
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 101, action: 'rule'])
 
         then:
         response.error == null
@@ -150,13 +150,13 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "run_rm_rule via dispatch action=actions dispatches runRuleAct (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch action=actions dispatches runRuleAct (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 102, action: 'actions'])
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 102, action: 'actions'])
 
         then:
         response.error == null
@@ -190,7 +190,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "run_rm_rule via dispatch action=stop clicks stopRule button when running (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch action=stop clicks stopRule button when running (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -202,7 +202,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 103, action: 'stop'])
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 103, action: 'stop'])
 
         then:
         response.error == null
@@ -237,7 +237,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "run_rm_rule via dispatch action=stop is idempotent when already stopped (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch action=stop is idempotent when already stopped (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -249,7 +249,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 104, action: 'stop'])
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 104, action: 'stop'])
 
         then:
         response.error == null
@@ -283,7 +283,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "run_rm_rule via dispatch action=start clicks stopRule button when stopped (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch action=start clicks stopRule button when stopped (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -295,7 +295,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 105, action: 'start'])
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 105, action: 'start'])
 
         then:
         response.error == null
@@ -329,7 +329,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "run_rm_rule via dispatch action=start is idempotent when already running (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch action=start is idempotent when already running (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -341,7 +341,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 106, action: 'start'])
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 106, action: 'start'])
 
         then:
         response.error == null
@@ -368,13 +368,13 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "run_rm_rule via dispatch default action dispatches runRule (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch default action dispatches runRule (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 107])
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 107])
 
         then:
         response.error == null
@@ -400,13 +400,13 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "run_rm_rule via dispatch returns -32602 envelope on invalid action (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch returns -32602 envelope on invalid action (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 108, action: 'explode'])
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 108, action: 'explode'])
 
         then:
         response.error.code == -32602
@@ -430,13 +430,13 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "run_rm_rule via dispatch coerces String ruleId to Integer (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch coerces String ruleId to Integer (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('run_rm_rule', [ruleId: '202'])
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: '202'])
 
         then:
         response.error == null
@@ -463,13 +463,13 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "run_rm_rule via dispatch returns -32602 envelope on non-numeric ruleId (useGateways=#useGateways)"() {
+    def "hub_call_rule via dispatch returns -32602 envelope on non-numeric ruleId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('run_rm_rule', [ruleId: 'not-a-number'])
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: 'not-a-number'])
 
         then:
         response.error.code == -32602
@@ -479,12 +479,12 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "gateway dispatch via handleGateway routes to run_rm_rule"() {
+    def "gateway dispatch via handleGateway routes to hub_call_rule"() {
         given:
         settingsMap.enableBuiltinApp = true
 
         when:
-        def result = script.handleGateway('manage_native_rules_and_apps', 'run_rm_rule', [ruleId: 300, action: 'rule'])
+        def result = script.handleGateway('hub_manage_native_rules', 'hub_call_rule', [ruleId: 300, action: 'rule'])
 
         then:
         result.success == true

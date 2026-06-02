@@ -3,14 +3,13 @@ package server
 import support.ToolSpecBase
 
 /**
- * Spec for the manage_apps_drivers gateway tools in hubitat-mcp-server.groovy:
+ * Spec for the hub_manage_code_read gateway tools in hubitat-mcp-server.groovy:
  *
- * - toolListHubApps       -> list_hub_apps
- * - toolListHubDrivers    -> list_hub_drivers
- * - toolGetAppSource      -> get_app_source     (delegates to toolGetItemSource)
- * - toolGetDriverSource   -> get_driver_source  (delegates to toolGetItemSource)
- * - toolListItemBackups   -> list_item_backups  (reads state only — no gating)
- * - toolGetItemBackup     -> get_item_backup    (reads state + downloadHubFile)
+ * - toolListHubApps       -> hub_list_apps
+ * - toolListHubDrivers    -> hub_list_drivers
+ * - toolGetSource         -> hub_get_source    (type:'app'|'driver'|'library'; delegates to toolGetItemSource / toolGetLibrarySource)
+ * - toolListItemBackups   -> hub_list_backups  (reads state only — no gating)
+ * - toolGetItemBackup     -> hub_get_backup    (reads state + downloadHubFile)
  *
  * All source/listing tools go through requireHubAdminRead — tests that exercise
  * the happy path seed settingsMap.enableHubAdminRead = true. Backup tools are
@@ -20,7 +19,7 @@ import support.ToolSpecBase
  *   - hubInternalGet   — routed by HarnessSpec via hubGet.register(path) closures.
  *   - downloadHubFile  — purely dynamic, stubbed per-test on script.metaClass.
  *   - uploadHubFile    — purely dynamic, stubbed per-test on script.metaClass
- *                        (only needed for large-source paths in get_app_source).
+ *                        (only needed for large-source paths in hub_get_source).
  *
  * Each direct-call feature has a parallel "via dispatch" feature that fires
  * the same tool through {@code mcpDriver.callTool} so the production
@@ -36,7 +35,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     // -------- toolListHubApps --------
 
-    def "list_hub_apps throws when Hub Admin Read is disabled"() {
+    def "hub_list_apps throws when Hub Admin Read is disabled"() {
         when:
         script.toolListHubApps([:])
 
@@ -46,12 +45,12 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_hub_apps via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
+    def "hub_list_apps via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('list_hub_apps', [:])
+        def response = mcpDriver.callTool('hub_list_apps', [:])
 
         then:
         response.error.code == -32602
@@ -61,7 +60,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "list_hub_apps returns parsed apps from the hub API"() {
+    def "hub_list_apps returns parsed apps from the hub API"() {
         given:
         enableHubAdminRead()
         hubGet.register('/hub2/userAppTypes') { params ->
@@ -78,7 +77,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_hub_apps via dispatch returns parsed apps from the hub API (useGateways=#useGateways)"() {
+    def "hub_list_apps via dispatch returns parsed apps from the hub API (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminRead()
@@ -87,7 +86,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_hub_apps', [:])
+        def response = mcpDriver.callTool('hub_list_apps', [:])
 
         then:
         response.error == null
@@ -101,7 +100,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "list_hub_apps returns raw response when hub returns non-JSON"() {
+    def "hub_list_apps returns raw response when hub returns non-JSON"() {
         given:
         enableHubAdminRead()
         hubGet.register('/hub2/userAppTypes') { params -> '<html>not json</html>' }
@@ -116,14 +115,14 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_hub_apps via dispatch returns raw response envelope when hub returns non-JSON (useGateways=#useGateways)"() {
+    def "hub_list_apps via dispatch returns raw response envelope when hub returns non-JSON (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminRead()
         hubGet.register('/hub2/userAppTypes') { params -> '<html>not json</html>' }
 
         when:
-        def response = mcpDriver.callTool('list_hub_apps', [:])
+        def response = mcpDriver.callTool('hub_list_apps', [:])
 
         then:
         response.error == null
@@ -137,7 +136,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "list_hub_apps falls back to MCP child apps when hub API throws"() {
+    def "hub_list_apps falls back to MCP child apps when hub API throws"() {
         given: 'hub API unavailable'
         enableHubAdminRead()
         hubGet.register('/hub2/userAppTypes') { params ->
@@ -154,7 +153,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_hub_apps via dispatch falls back to MCP child apps envelope when hub API throws (useGateways=#useGateways)"() {
+    def "hub_list_apps via dispatch falls back to MCP child apps envelope when hub API throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminRead()
@@ -163,7 +162,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_hub_apps', [:])
+        def response = mcpDriver.callTool('hub_list_apps', [:])
 
         then:
         response.error == null
@@ -179,7 +178,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     // -------- toolListHubDrivers --------
 
-    def "list_hub_drivers throws when Hub Admin Read is disabled"() {
+    def "hub_list_drivers throws when Hub Admin Read is disabled"() {
         when:
         script.toolListHubDrivers([:])
 
@@ -189,12 +188,12 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_hub_drivers via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
+    def "hub_list_drivers via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('list_hub_drivers', [:])
+        def response = mcpDriver.callTool('hub_list_drivers', [:])
 
         then:
         response.error.code == -32602
@@ -204,7 +203,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "list_hub_drivers returns parsed drivers from the hub API"() {
+    def "hub_list_drivers returns parsed drivers from the hub API"() {
         given:
         enableHubAdminRead()
         hubGet.register('/hub2/userDeviceTypes') { params ->
@@ -221,7 +220,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_hub_drivers via dispatch returns parsed drivers from the hub API (useGateways=#useGateways)"() {
+    def "hub_list_drivers via dispatch returns parsed drivers from the hub API (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminRead()
@@ -230,7 +229,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_hub_drivers', [:])
+        def response = mcpDriver.callTool('hub_list_drivers', [:])
 
         then:
         response.error == null
@@ -244,7 +243,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "list_hub_drivers reports unavailable when the hub API throws"() {
+    def "hub_list_drivers reports unavailable when the hub API throws"() {
         given:
         enableHubAdminRead()
         hubGet.register('/hub2/userDeviceTypes') { params ->
@@ -262,7 +261,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_hub_drivers via dispatch reports unavailable envelope when hub API throws (useGateways=#useGateways)"() {
+    def "hub_list_drivers via dispatch reports unavailable envelope when hub API throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminRead()
@@ -271,7 +270,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_hub_drivers', [:])
+        def response = mcpDriver.callTool('hub_list_drivers', [:])
 
         then:
         response.error == null
@@ -286,11 +285,11 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // -------- toolGetAppSource / toolGetDriverSource --------
+    // -------- toolGetSource (app / driver) --------
 
-    def "get_app_source throws when Hub Admin Read is disabled"() {
+    def "hub_get_source app throws when Hub Admin Read is disabled"() {
         when:
-        script.toolGetAppSource([appId: '1'])
+        script.toolGetSource([type: 'app', id: '1'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -298,12 +297,12 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_source via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
+    def "hub_get_source app via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('get_app_source', [appId: '1'])
+        def response = mcpDriver.callTool('hub_get_source', [type: 'app', id: '1'])
 
         then:
         response.error.code == -32602
@@ -313,12 +312,12 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_app_source throws when appId is missing"() {
+    def "hub_get_source app throws when id is missing"() {
         given:
         enableHubAdminRead()
 
         when:
-        script.toolGetAppSource([:])
+        script.toolGetSource([type: 'app'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -326,23 +325,26 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_source via dispatch returns -32602 envelope when appId is missing (useGateways=#useGateways)"() {
+    def "hub_get_source app via dispatch rejects missing id (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminRead()
 
         when:
-        def response = mcpDriver.callTool('get_app_source', [:])
+        // type present, id omitted: toolGetSource resolves id from args.appId (null) and
+        // toolGetItemSource throws 'appId is required' -> -32602. The ||-isError disjunct
+        // tolerates the gateway-name required-param pre-validation path too, matching the
+        // PR's established dispatch idiom.
+        def response = mcpDriver.callTool('hub_get_source', [type: 'app'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('appId is required')
+        response.error?.code == -32602 || response.result?.isError == true
 
         where:
         useGateways << [true, false]
     }
 
-    def "get_app_source returns the full source for a small app in a single chunk"() {
+    def "hub_get_source app returns the full source for a small app in a single chunk"() {
         given:
         enableHubAdminRead()
         hubGet.register('/app/ajax/code') { params ->
@@ -352,7 +354,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolGetAppSource([appId: '123'])
+        def result = script.toolGetSource([type: 'app', id: '123'])
 
         then:
         result.success == true
@@ -365,7 +367,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_source via dispatch returns full source for a small app in a single chunk (useGateways=#useGateways)"() {
+    def "hub_get_source app via dispatch returns full source for a small app in a single chunk (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminRead()
@@ -376,7 +378,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_app_source', [appId: '123'])
+        def response = mcpDriver.callTool('hub_get_source', [type: 'app', id: '123'])
 
         then:
         response.error == null
@@ -394,7 +396,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_app_source reports hub-side error when the ajax endpoint returns status=error"() {
+    def "hub_get_source app reports hub-side error when the ajax endpoint returns status=error"() {
         given:
         enableHubAdminRead()
         hubGet.register('/app/ajax/code') { params ->
@@ -402,7 +404,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolGetAppSource([appId: '999'])
+        def result = script.toolGetSource([type: 'app', id: '999'])
 
         then:
         result.success == false
@@ -410,7 +412,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_source via dispatch reports hub-side error envelope when ajax endpoint returns status=error (useGateways=#useGateways)"() {
+    def "hub_get_source app via dispatch reports hub-side error envelope when ajax endpoint returns status=error (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminRead()
@@ -419,7 +421,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_app_source', [appId: '999'])
+        def response = mcpDriver.callTool('hub_get_source', [type: 'app', id: '999'])
 
         then:
         response.error == null
@@ -432,7 +434,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_app_source chunks large sources and saves a File Manager copy"() {
+    def "hub_get_source app chunks large sources and saves a File Manager copy"() {
         given:
         enableHubAdminRead()
         def bigSource = 'x' * 70000  // exceeds the 64000-byte chunk threshold
@@ -447,7 +449,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolGetAppSource([appId: '456'])
+        def result = script.toolGetSource([type: 'app', id: '456'])
 
         then: 'first chunk returned with pagination metadata'
         result.success == true
@@ -465,7 +467,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_source via dispatch chunks large sources and saves File Manager copy (useGateways=#useGateways)"() {
+    def "hub_get_source app via dispatch chunks large sources and saves File Manager copy (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminRead()
@@ -480,7 +482,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_app_source', [appId: '456'])
+        def response = mcpDriver.callTool('hub_get_source', [type: 'app', id: '456'])
 
         then:
         response.error == null
@@ -501,7 +503,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_driver_source delegates to the same implementation with driverId"() {
+    def "hub_get_source driver delegates to the same implementation with id"() {
         given:
         enableHubAdminRead()
         hubGet.register('/driver/ajax/code') { params ->
@@ -511,7 +513,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolGetDriverSource([driverId: '88'])
+        def result = script.toolGetSource([type: 'driver', id: '88'])
 
         then:
         result.success == true
@@ -520,7 +522,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_driver_source via dispatch delegates with driverId (useGateways=#useGateways)"() {
+    def "hub_get_source driver via dispatch delegates with id (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminRead()
@@ -531,7 +533,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_driver_source', [driverId: '88'])
+        def response = mcpDriver.callTool('hub_get_source', [type: 'driver', id: '88'])
 
         then:
         response.error == null
@@ -545,12 +547,12 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_driver_source throws when driverId is missing"() {
+    def "hub_get_source driver throws when id is missing"() {
         given:
         enableHubAdminRead()
 
         when:
-        script.toolGetDriverSource([:])
+        script.toolGetSource([type: 'driver'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -558,17 +560,19 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_driver_source via dispatch returns -32602 envelope when driverId is missing (useGateways=#useGateways)"() {
+    def "hub_get_source driver via dispatch rejects missing id (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminRead()
 
         when:
-        def response = mcpDriver.callTool('get_driver_source', [:])
+        // type present, id omitted: toolGetSource resolves id from args.driverId (null) and
+        // toolGetItemSource throws 'driverId is required' -> -32602. The ||-isError disjunct
+        // tolerates the gateway-name required-param pre-validation path too.
+        def response = mcpDriver.callTool('hub_get_source', [type: 'driver'])
 
         then:
-        response.error.code == -32602
-        response.error.message.contains('driverId is required')
+        response.error?.code == -32602 || response.result?.isError == true
 
         where:
         useGateways << [true, false]
@@ -576,7 +580,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     // -------- toolListItemBackups --------
 
-    def "list_item_backups returns empty list and guidance when no backups exist"() {
+    def "hub_list_backups returns empty list and guidance when no backups exist"() {
         when:
         def result = script.toolListItemBackups()
 
@@ -588,12 +592,12 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_item_backups via dispatch returns empty list envelope when no backups exist (useGateways=#useGateways)"() {
+    def "hub_list_backups via dispatch returns empty list envelope when no backups exist (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('list_item_backups', [:])
+        def response = mcpDriver.callTool('hub_list_backups', [:])
 
         then:
         response.error == null
@@ -608,7 +612,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "list_item_backups returns all manifest entries sorted newest first"() {
+    def "hub_list_backups returns all manifest entries sorted newest first"() {
         given: 'two manifest entries with different timestamps'
         atomicStateMap.itemBackupManifest = [
             'app_10'   : [type: 'app',    id: '10', fileName: 'mcp-backup-app-10.groovy',
@@ -630,7 +634,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_item_backups via dispatch returns all manifest entries sorted newest first (useGateways=#useGateways)"() {
+    def "hub_list_backups via dispatch returns all manifest entries sorted newest first (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         atomicStateMap.itemBackupManifest = [
@@ -641,7 +645,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('list_item_backups', [:])
+        def response = mcpDriver.callTool('hub_list_backups', [:])
 
         then:
         response.error == null
@@ -660,7 +664,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     // -------- toolGetItemBackup --------
 
-    def "get_item_backup throws when backupKey is missing"() {
+    def "hub_get_backup throws when backupKey is missing"() {
         when:
         script.toolGetItemBackup([:])
 
@@ -670,12 +674,12 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_item_backup via dispatch returns -32602 envelope when backupKey is missing (useGateways=#useGateways)"() {
+    def "hub_get_backup via dispatch returns -32602 envelope when backupKey is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('get_item_backup', [:])
+        def response = mcpDriver.callTool('hub_get_backup', [:])
 
         then:
         response.error.code == -32602
@@ -685,7 +689,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_item_backup returns helpful error when the key is unknown"() {
+    def "hub_get_backup returns helpful error when the key is unknown"() {
         given:
         atomicStateMap.itemBackupManifest = [
             'app_1': [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
@@ -698,11 +702,11 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         result.error.contains("'app_missing'")
         result.availableBackups.contains('app_1')
-        result.hint.contains('list_item_backups')
+        result.hint.contains('hub_list_backups')
     }
 
     @spock.lang.Unroll
-    def "get_item_backup via dispatch returns helpful error envelope when key is unknown (useGateways=#useGateways)"() {
+    def "hub_get_backup via dispatch returns helpful error envelope when key is unknown (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         atomicStateMap.itemBackupManifest = [
@@ -711,7 +715,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('get_item_backup', [backupKey: 'app_missing'])
+        def response = mcpDriver.callTool('hub_get_backup', [backupKey: 'app_missing'])
 
         then:
         response.error == null
@@ -719,13 +723,13 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.error.contains("'app_missing'")
         inner.availableBackups.contains('app_1')
-        inner.hint.contains('list_item_backups')
+        inner.hint.contains('hub_list_backups')
 
         where:
         useGateways << [true, false]
     }
 
-    def "get_item_backup reads the backup source from File Manager"() {
+    def "hub_get_backup reads the backup source from File Manager"() {
         given:
         atomicStateMap.itemBackupManifest = [
             'app_5': [type: 'app', id: '5', fileName: 'mcp-backup-app-5.groovy',
@@ -747,11 +751,11 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.version == 2
         result.source == 'definition(name: "App Five")'
         result.sourceLength == result.source.length()
-        result.howToRestore.contains('restore_item_backup')
+        result.howToRestore.contains('hub_restore_backup')
     }
 
     @spock.lang.Unroll
-    def "get_item_backup via dispatch reads backup source from File Manager (useGateways=#useGateways)"() {
+    def "hub_get_backup via dispatch reads backup source from File Manager (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         atomicStateMap.itemBackupManifest = [
@@ -763,7 +767,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_item_backup', [backupKey: 'app_5'])
+        def response = mcpDriver.callTool('hub_get_backup', [backupKey: 'app_5'])
 
         then:
         response.error == null
@@ -775,13 +779,13 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         inner.version == 2
         inner.source == 'definition(name: "App Five")'
         inner.sourceLength == inner.source.length()
-        inner.howToRestore.contains('restore_item_backup')
+        inner.howToRestore.contains('hub_restore_backup')
 
         where:
         useGateways << [true, false]
     }
 
-    def "get_item_backup reports error when the backup file cannot be read"() {
+    def "hub_get_backup reports error when the backup file cannot be read"() {
         given:
         atomicStateMap.itemBackupManifest = [
             'app_6': [type: 'app', id: '6', fileName: 'mcp-backup-app-6.groovy',
@@ -799,7 +803,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_item_backup via dispatch reports error envelope when backup file cannot be read (useGateways=#useGateways)"() {
+    def "hub_get_backup via dispatch reports error envelope when backup file cannot be read (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         atomicStateMap.itemBackupManifest = [
@@ -809,7 +813,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        def response = mcpDriver.callTool('get_item_backup', [backupKey: 'app_6'])
+        def response = mcpDriver.callTool('hub_get_backup', [backupKey: 'app_6'])
 
         then:
         response.error == null
@@ -823,7 +827,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_item_backup omits inline source when the file exceeds the MCP response limit"() {
+    def "hub_get_backup omits inline source when the file exceeds the MCP response limit"() {
         given:
         atomicStateMap.itemBackupManifest = [
             'driver_9': [type: 'driver', id: '9', fileName: 'mcp-backup-driver-9.groovy',
@@ -843,7 +847,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_item_backup via dispatch omits inline source when file exceeds the MCP response limit (useGateways=#useGateways)"() {
+    def "hub_get_backup via dispatch omits inline source when file exceeds the MCP response limit (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         atomicStateMap.itemBackupManifest = [
@@ -854,7 +858,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName -> hugeSource.getBytes('UTF-8') }
 
         when:
-        def response = mcpDriver.callTool('get_item_backup', [backupKey: 'driver_9'])
+        def response = mcpDriver.callTool('hub_get_backup', [backupKey: 'driver_9'])
 
         then:
         response.error == null
@@ -869,10 +873,10 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_item_backup library-type uses update_library_code restore path, not restore_item_backup"() {
+    def "hub_get_backup library-type uses hub_update_library restore path, not hub_restore_backup"() {
         given:
-        // Library backups cannot go through restore_item_backup -- that tool only handles
-        // apps and drivers. The howToRestore text must point to update_library_code.
+        // Library backups cannot go through hub_restore_backup -- that tool only handles
+        // apps and drivers. The howToRestore text must point to hub_update_library.
         atomicStateMap.itemBackupManifest = [
             'library_42': [type: 'library', id: '42', fileName: 'mcp-backup-library-42.groovy',
                            version: 3, timestamp: 1_234_000_000_000L, sourceLength: 50]
@@ -892,9 +896,9 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.source == 'library(name:"Foo")'
         result.directDownload.contains('mcp-backup-library-42.groovy')
 
-        and: 'restore path names update_library_code as the action; restore_item_backup mentioned only as not applicable'
-        result.howToRestore.contains('update_library_code')
-        result.howToRestore.contains('cannot be restored via restore_item_backup')
+        and: 'restore path names hub_update_library as the action; hub_restore_backup mentioned only as not applicable'
+        result.howToRestore.contains('hub_update_library')
+        result.howToRestore.contains('cannot be restored via hub_restore_backup')
 
         and: 'restore path includes the correct library ID and file reference'
         result.howToRestore.contains("libraryId='42'")
@@ -902,7 +906,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_item_backup via dispatch library-type uses update_library_code restore path (useGateways=#useGateways)"() {
+    def "hub_get_backup via dispatch library-type uses hub_update_library restore path (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         atomicStateMap.itemBackupManifest = [
@@ -914,7 +918,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_item_backup', [backupKey: 'library_42'])
+        def response = mcpDriver.callTool('hub_get_backup', [backupKey: 'library_42'])
 
         then:
         response.error == null
@@ -926,8 +930,8 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         inner.version == 3
         inner.source == 'library(name:"Foo")'
         inner.directDownload.contains('mcp-backup-library-42.groovy')
-        inner.howToRestore.contains('update_library_code')
-        inner.howToRestore.contains('cannot be restored via restore_item_backup')
+        inner.howToRestore.contains('hub_update_library')
+        inner.howToRestore.contains('cannot be restored via hub_restore_backup')
         inner.howToRestore.contains("libraryId='42'")
         inner.howToRestore.contains("sourceFile='mcp-backup-library-42.groovy'")
 

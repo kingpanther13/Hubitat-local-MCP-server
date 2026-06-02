@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolGetDeviceInUseBy (hubitat-mcp-server.groovy approx line 7573).
- * Gateway: manage_installed_apps -> get_device_in_use_by.
+ * Gateway: hub_manage_installed_apps -> hub_list_device_dependents.
  *
  * Critical: PR-79-review fix tightened deviceId validation -- findDevice()
  * is called before any HTTP request, so unknown IDs throw
@@ -60,13 +60,13 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_device_in_use_by via dispatch maps device-not-found IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_device_dependents via dispatch maps device-not-found IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
 
         when:
-        def response = mcpDriver.callTool('get_device_in_use_by', [deviceId: '999'])
+        def response = mcpDriver.callTool('hub_list_device_dependents', [deviceId: '999'])
 
         then:
         response.error != null
@@ -79,13 +79,13 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_device_in_use_by via dispatch maps Built-in-App-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_device_dependents via dispatch maps Built-in-App-disabled IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = false
 
         when:
-        def response = mcpDriver.callTool('get_device_in_use_by', [:])
+        def response = mcpDriver.callTool('hub_list_device_dependents', [:])
 
         then:
         response.error != null
@@ -135,7 +135,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_device_in_use_by via dispatch returns appsUsing list (useGateways=#useGateways)"() {
+    def "hub_list_device_dependents via dispatch returns appsUsing list (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -155,7 +155,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { params -> responseJson }
 
         when:
-        def response = mcpDriver.callTool('get_device_in_use_by', [deviceId: '42'])
+        def response = mcpDriver.callTool('hub_list_device_dependents', [deviceId: '42'])
 
         then:
         response.error == null
@@ -264,7 +264,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_device_in_use_by via dispatch returns success=false envelope on empty hub body (useGateways=#useGateways)"() {
+    def "hub_list_device_dependents via dispatch returns success=false envelope on empty hub body (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableBuiltinApp = true
@@ -273,7 +273,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/88') { params -> '' }
 
         when:
-        def response = mcpDriver.callTool('get_device_in_use_by', [deviceId: '88'])
+        def response = mcpDriver.callTool('hub_list_device_dependents', [deviceId: '88'])
 
         then: 'tool wraps the empty-body fallback into a success-envelope success=false'
         response.error == null
@@ -365,7 +365,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/10') { params -> responseJson }
 
         when:
-        def result = script.handleGateway('manage_installed_apps', 'get_device_in_use_by', [deviceId: '10'])
+        def result = script.handleGateway('hub_manage_installed_apps', 'hub_list_device_dependents', [deviceId: '10'])
 
         then:
         result.deviceId == '10'

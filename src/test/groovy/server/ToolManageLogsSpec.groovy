@@ -8,16 +8,16 @@ import support.TestLocation
 import support.ToolSpecBase
 
 /**
- * Spec for the manage_logs gateway tools (hubitat-mcp-server.groovy):
+ * Spec for the hub_manage_logs gateway tools (hubitat-mcp-server.groovy):
  *
- * - toolGetHubLogs         -> get_hub_logs          (additional coverage beyond ToolGetHubLogsSpec)
- * - toolGetDeviceHistory   -> get_device_history
- * - toolGetPerformanceStats-> get_performance_stats
- * - toolGetHubJobs         -> get_hub_jobs
- * - toolGetDebugLogs       -> get_debug_logs
- * - toolClearDebugLogs     -> clear_debug_logs
- * - toolSetLogLevel        -> set_log_level
- * - toolGetLoggingStatus   -> get_logging_status
+ * - toolGetHubLogs         -> hub_get_logs          (additional coverage beyond ToolGetHubLogsSpec)
+ * - toolGetDeviceHistory   -> hub_list_device_events (core tool; windowed/location branch)
+ * - toolGetPerformanceStats-> hub_get_performance_stats
+ * - toolGetHubJobs         -> hub_get_jobs
+ * - toolGetDebugLogs       -> hub_get_debug_logs
+ * - toolClearDebugLogs     -> hub_delete_debug_logs
+ * - toolSetLogLevel        -> hub_set_log_level
+ * - toolGetLoggingStatus   -> hub_get_debug_logs(mode:'status')
  *
  * Mocking strategy (see docs/testing.md):
  *   - hubInternalGet     -> HarnessSpec's hubGet.register(path) closures
@@ -31,7 +31,7 @@ import support.ToolSpecBase
  *                           clears the settingsStore between tests.
  *   - debug-log state    -> state.debugLogs is a plain Map, seeded in given:
  *
- * Additional get_hub_logs coverage — this spec complements ToolGetHubLogsSpec
+ * Additional hub_get_logs coverage — this spec complements ToolGetHubLogsSpec
  * with level/source/limit/empty-response/deviceId/appId/truncation cases.
  */
 class ToolManageLogsSpec extends ToolSpecBase {
@@ -57,7 +57,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- toolGetHubLogs (additional coverage) --------
 
-    def "get_hub_logs filters by level=#level"() {
+    def "hub_get_logs filters by level=#level"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/logs/past/json') { params ->
@@ -86,7 +86,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_hub_logs via dispatch filters by level=warn (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch filters by level=warn (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -100,7 +100,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_hub_logs', [level: 'warn'])
+        def response = mcpDriver.callTool('hub_get_logs', [level: 'warn'])
 
         then:
         response.error == null
@@ -114,7 +114,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_hub_logs filters by source substring (case-insensitive)"() {
+    def "hub_get_logs filters by source substring (case-insensitive)"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/logs/past/json') { params ->
@@ -133,7 +133,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.logs.every { it.name.toLowerCase().contains('kitchen') }
     }
 
-    def "get_hub_logs trims to the limit argument (keeping newest)"() {
+    def "hub_get_logs trims to the limit argument (keeping newest)"() {
         given:
         settingsMap.enableHubAdminRead = true
         def lines = (1..10).collect { i ->
@@ -152,7 +152,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.logs[2].message == 'Message 8'
     }
 
-    def "get_hub_logs scopes to a selected device and passes type=dev&id=X in query"() {
+    def "hub_get_logs scopes to a selected device and passes type=dev&id=X in query"() {
         given: 'a selected device so findDevice succeeds'
         settingsMap.enableHubAdminRead = true
         def device = new TestDevice(id: 42, name: 'K', label: 'K')
@@ -171,7 +171,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.logs.size() == 1
     }
 
-    def "get_hub_logs rejects an unknown deviceId before hitting the hub"() {
+    def "hub_get_logs rejects an unknown deviceId before hitting the hub"() {
         given: 'no selected device with id 999'
         settingsMap.enableHubAdminRead = true
         // If the tool ever called hubInternalGet, HubInternalGetMock would throw
@@ -187,13 +187,13 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_hub_logs via dispatch maps unknown-deviceId IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch maps unknown-deviceId IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
 
         when:
-        def response = mcpDriver.callTool('get_hub_logs', [deviceId: '999'])
+        def response = mcpDriver.callTool('hub_get_logs', [deviceId: '999'])
 
         then:
         response.error != null
@@ -204,7 +204,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_hub_logs scopes to an app and passes type=app&id=X in query"() {
+    def "hub_get_logs scopes to an app and passes type=app&id=X in query"() {
         given:
         settingsMap.enableHubAdminRead = true
         def capturedParams = null
@@ -221,7 +221,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.logs.size() == 1
     }
 
-    def "get_hub_logs truncates messages when estimated JSON exceeds the 120KB cloud limit"() {
+    def "hub_get_logs truncates messages when estimated JSON exceeds the 120KB cloud limit"() {
         given: 'many entries with long messages so estimatedJsonSize trips the 120000-byte truncation guard'
         settingsMap.enableHubAdminRead = true
         def longMsg = 'x' * 2000
@@ -239,7 +239,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.logs.every { it.message.length() <= 200 }
     }
 
-    def "get_hub_logs handles empty hub response gracefully"() {
+    def "hub_get_logs handles empty hub response gracefully"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/logs/past/json') { params -> null }
@@ -255,7 +255,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- toolGetDeviceHistory --------
 
-    def "get_device_history returns location events when deviceId is omitted"() {
+    def "hub_list_device_events returns location events when deviceId is omitted"() {
         given: 'location.eventsSince stubbed to return mode + HSM + hub-variable events'
         def fixedDate = new Date(1234567880000L)
         def capturedSince = null
@@ -291,7 +291,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         sharedLocation.metaClass = null
     }
 
-    def "get_device_history applies attribute filter to location events"() {
+    def "hub_list_device_events applies attribute filter to location events"() {
         given:
         def fixedDate = new Date(1234567880000L)
         sharedLocation.metaClass.eventsSince = { Date since, Map opts ->
@@ -315,7 +315,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         sharedLocation.metaClass = null
     }
 
-    def "get_device_history returns an error map when location.eventsSince throws"() {
+    def "hub_list_device_events returns an error map when location.eventsSince throws"() {
         given:
         sharedLocation.metaClass.eventsSince = { Date since, Map opts ->
             throw new RuntimeException('location event store unavailable')
@@ -333,7 +333,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         sharedLocation.metaClass = null
     }
 
-    def "get_device_history throws when device is not found"() {
+    def "hub_list_device_events throws when device is not found"() {
         when:
         script.toolGetDeviceHistory([deviceId: '999'])
 
@@ -342,7 +342,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         ex.message.contains('Device not found')
     }
 
-    def "get_device_history returns events for a selected device"() {
+    def "hub_list_device_events returns events for a selected device"() {
         given: 'a selected device whose eventsSince returns 2 events'
         def fixedDate = new Date(1234567880000L)
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
@@ -377,7 +377,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_device_history via dispatch returns events for a selected device (useGateways=#useGateways)"() {
+    def "hub_list_device_events via dispatch returns events for a selected device (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def fixedDate = new Date(1234567880000L)
@@ -391,7 +391,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [device]
 
         when:
-        def response = mcpDriver.callTool('get_device_history', [deviceId: '42', hoursBack: 12, limit: 50])
+        def response = mcpDriver.callTool('hub_list_device_events', [deviceId: '42', hoursBack: 12, limit: 50])
 
         then:
         response.error == null
@@ -406,7 +406,41 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_device_history applies attribute filter"() {
+    @spock.lang.Unroll
+    def "hub_list_device_events via dispatch returns recent-N events when no window/filter is given (useGateways=#useGateways)"() {
+        given: 'no hoursBack and no attribute -> executeTool routes deviceId to toolGetDeviceEvents (device.events(max:))'
+        settingsMap.useGateways = useGateways
+        def fixedDate = new Date(1234567880000L)
+        def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
+        // toolGetDeviceEvents reads device.events(max: limit); TestDevice exposes
+        // events only as a List field, so stub the Map-arg call per-instance.
+        device.metaClass.events = { Map opts ->
+            [
+                [name: 'switch', value: 'on',  unit: null, descriptionText: 'turned on', date: fixedDate, isStateChange: true],
+                [name: 'level',  value: '75',  unit: '%',  descriptionText: 'dimmed',    date: fixedDate, isStateChange: true]
+            ]
+        }
+        settingsMap.selectedDevices = [device]
+
+        when:
+        def response = mcpDriver.callTool('hub_list_device_events', [deviceId: '42', limit: 5])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.device == 'Kitchen Light'
+        inner.count == 2
+        inner.events.size() == 2
+        inner.events[0].name == 'switch'
+        inner.events[0].value == 'on'
+        inner.events[1].name == 'level'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "hub_list_device_events applies attribute filter"() {
         given:
         def fixedDate = new Date(1234567880000L)
         def device = new TestDevice(id: 42, name: 'Multi', label: 'Multi')
@@ -428,7 +462,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.attributeFilter == 'switch'
     }
 
-    def "get_device_history returns an error map when eventsSince throws"() {
+    def "hub_list_device_events returns an error map when eventsSince throws"() {
         given:
         def device = new TestDevice(id: 42, name: 'Broken', label: 'Broken')
         device.metaClass.eventsSince = { Date since, Map opts ->
@@ -447,7 +481,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- toolGetPerformanceStats --------
 
-    def "get_performance_stats returns device stats sorted by pct (default)"() {
+    def "hub_get_performance_stats returns device stats sorted by pct (default)"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/logs/json') { params ->
@@ -477,7 +511,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_performance_stats via dispatch returns sorted device stats (useGateways=#useGateways)"() {
+    def "hub_get_performance_stats via dispatch returns sorted device stats (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -493,7 +527,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_performance_stats', [:])
+        def response = mcpDriver.callTool('hub_get_performance_stats', [:])
 
         then:
         response.error == null
@@ -507,7 +541,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_performance_stats sortBy=count reorders results"() {
+    def "hub_get_performance_stats sortBy=count reorders results"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/logs/json') { params ->
@@ -529,7 +563,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.deviceStats[1].name == 'Few'
     }
 
-    def "get_performance_stats type=app returns only app stats"() {
+    def "hub_get_performance_stats type=app returns only app stats"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/logs/json') { params ->
@@ -552,7 +586,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.appSummary.appCount == 1
     }
 
-    def "get_performance_stats surfaces the largeState flag on flagged entries"() {
+    def "hub_get_performance_stats surfaces the largeState flag on flagged entries"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/logs/json') { params ->
@@ -576,7 +610,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         !result.deviceStats[1].containsKey('largeState')
     }
 
-    def "get_performance_stats limit=0 returns all entries with the unlimited-response note"() {
+    def "hub_get_performance_stats limit=0 returns all entries with the unlimited-response note"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/logs/json') { params ->
@@ -595,7 +629,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.note?.contains('2 entries')
     }
 
-    def "get_performance_stats returns an error map when fetchLogsJson throws (Hub Admin Read gate is indirect)"() {
+    def "hub_get_performance_stats returns an error map when fetchLogsJson throws (Hub Admin Read gate is indirect)"() {
         // toolGetPerformanceStats has no direct requireHubAdminRead() call;
         // the gate fires deeper inside fetchLogsJson (server ~line 5508)
         // and the IllegalArgumentException is caught and wrapped into the
@@ -610,7 +644,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- toolGetHubJobs --------
 
-    def "get_hub_jobs returns scheduled + running + hubActions"() {
+    def "hub_get_jobs returns scheduled + running + hubActions"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/logs/json') { params ->
@@ -639,7 +673,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_hub_jobs via dispatch returns scheduled + running + hubActions (useGateways=#useGateways)"() {
+    def "hub_get_jobs via dispatch returns scheduled + running + hubActions (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -657,7 +691,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_hub_jobs', [:])
+        def response = mcpDriver.callTool('hub_get_jobs', [:])
 
         then:
         response.error == null
@@ -673,7 +707,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_hub_jobs returns an error map when fetchLogsJson fails"() {
+    def "hub_get_jobs returns an error map when fetchLogsJson fails"() {
         when: 'Hub Admin Read disabled — fetchLogsJson throws inside the tool'
         def result = script.toolGetHubJobs([:])
 
@@ -683,7 +717,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- toolGetDebugLogs --------
 
-    def "get_debug_logs returns recent entries with metadata"() {
+    def "hub_get_debug_logs returns recent entries with metadata"() {
         given:
         stateMap.debugLogs = [
             entries: [
@@ -706,7 +740,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_debug_logs via dispatch returns recent entries with metadata (useGateways=#useGateways)"() {
+    def "hub_get_debug_logs via dispatch returns recent entries with metadata (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         stateMap.debugLogs = [
@@ -718,7 +752,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('get_debug_logs', [:])
+        def response = mcpDriver.callTool('hub_get_debug_logs', [:])
 
         then:
         response.error == null
@@ -732,7 +766,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_debug_logs filters by level"() {
+    def "hub_get_debug_logs filters by level"() {
         given:
         stateMap.debugLogs = [
             entries: [
@@ -751,7 +785,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.entries[0].message == 'e1'
     }
 
-    def "get_debug_logs filters by ruleId"() {
+    def "hub_get_debug_logs filters by ruleId"() {
         given:
         stateMap.debugLogs = [
             entries: [
@@ -770,7 +804,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.entries*.message == ['r42a', 'r42b']
     }
 
-    def "get_debug_logs filters by component substring"() {
+    def "hub_get_debug_logs filters by component substring"() {
         given:
         stateMap.debugLogs = [
             entries: [
@@ -789,7 +823,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.entries*.message == ['r1', 'r2']
     }
 
-    def "get_debug_logs caps at limit argument (most recent)"() {
+    def "hub_get_debug_logs caps at limit argument (most recent)"() {
         given:
         stateMap.debugLogs = [
             entries: (1..10).collect { i ->
@@ -809,7 +843,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- toolClearDebugLogs --------
 
-    def "clear_debug_logs empties state.debugLogs.entries and reports count"() {
+    def "hub_delete_debug_logs empties state.debugLogs.entries and reports count"() {
         given: 'logLevel=debug so the post-clear confirmation mcpLog write is retained'
         stateMap.debugLogs = [
             entries: [
@@ -834,7 +868,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "clear_debug_logs via dispatch empties entries and reports count (useGateways=#useGateways)"() {
+    def "hub_delete_debug_logs via dispatch empties entries and reports count (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         stateMap.debugLogs = [
@@ -846,7 +880,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('clear_debug_logs', [:])
+        def response = mcpDriver.callTool('hub_delete_debug_logs', [:])
 
         then:
         response.error == null
@@ -859,7 +893,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "clear_debug_logs succeeds when there are no entries"() {
+    def "hub_delete_debug_logs succeeds when there are no entries"() {
         given: 'explicit logLevel=error so the post-clear info log is below threshold — pinned against initDebugLogs default drift'
         stateMap.debugLogs = [entries: [], config: [logLevel: 'error', maxEntries: 100]]
 
@@ -874,7 +908,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- toolSetLogLevel --------
 
-    def "set_log_level throws for an invalid level"() {
+    def "hub_set_log_level throws for an invalid level"() {
         when:
         script.toolSetLogLevel([level: 'trace'])
 
@@ -884,12 +918,12 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_log_level via dispatch maps invalid-level IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_set_log_level via dispatch maps invalid-level IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('set_log_level', [level: 'trace'])
+        def response = mcpDriver.callTool('hub_set_log_level', [level: 'trace'])
 
         then:
         response.error != null
@@ -900,7 +934,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "set_log_level updates state + setting and returns previous level"() {
+    def "hub_set_log_level updates state + setting and returns previous level"() {
         given: 'prior log level is info and app.updateSetting routes through the shared TestChildApp stub'
         stateMap.debugLogs = [entries: [], config: [logLevel: 'info', maxEntries: 100]]
 
@@ -916,13 +950,13 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_log_level via dispatch updates state + setting (useGateways=#useGateways)"() {
+    def "hub_set_log_level via dispatch updates state + setting (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         stateMap.debugLogs = [entries: [], config: [logLevel: 'info', maxEntries: 100]]
 
         when:
-        def response = mcpDriver.callTool('set_log_level', [level: 'warn'])
+        def response = mcpDriver.callTool('hub_set_log_level', [level: 'warn'])
 
         then:
         response.error == null
@@ -939,7 +973,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- toolGetLoggingStatus --------
 
-    def "get_logging_status reports counts by level + current config"() {
+    def "hub_get_debug_logs(mode:status) reports counts by level + current config"() {
         given:
         stateMap.debugLogs = [
             entries: [
@@ -968,7 +1002,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_logging_status via dispatch reports counts by level + current config (useGateways=#useGateways)"() {
+    def "hub_get_debug_logs(mode:status) via dispatch reports counts by level + current config (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         stateMap.debugLogs = [
@@ -983,7 +1017,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('get_logging_status', [:])
+        def response = mcpDriver.callTool('hub_get_debug_logs', [mode: 'status'])
 
         then:
         response.error == null
@@ -998,7 +1032,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "get_logging_status handles empty buffer"() {
+    def "hub_get_debug_logs(mode:status) handles empty buffer"() {
         when:
         def result = script.toolGetLoggingStatus([:])
 

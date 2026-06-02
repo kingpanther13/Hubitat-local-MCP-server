@@ -5,7 +5,8 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolListHpmPackages and toolGetHpmDrift.
- * Gateway: manage_hpm -> list_hpm_packages / get_hpm_drift.
+ * Gateway: hub_manage_hpm -> hub_list_hpm_packages (drift folds in via includeDrift=true,
+ * which attaches the toolGetHpmDrift result under a `drift` key on the list response).
  *
  * HPM stores its tracked packages in state.manifests. The /installedapp/statusJson
  * endpoint returns this as appState[].value, which is typically a Map on live hubs
@@ -65,7 +66,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     /**
      * /hub2/userAppTypes response: flat JSON array of code definitions.
      * Each entry has at minimum an id field. This is the Apps Code registry
-     * (what list_hub_apps uses), not the installed-instances tree in appsList.
+     * (what hub_list_apps uses), not the installed-instances tree in appsList.
      * Child-app templates appear here even with zero running instances.
      */
     private static String makeUserAppTypes(List<String> ids = []) {
@@ -159,10 +160,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // list_hpm_packages: Hub Admin Read gate
+    // hub_list_hpm_packages: Hub Admin Read gate
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages throws when Hub Admin Read is disabled"() {
+    def "hub_list_hpm_packages throws when Hub Admin Read is disabled"() {
         given:
         settingsMap.enableHubAdminRead = false
 
@@ -175,10 +176,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // list_hpm_packages: explicit hpmAppId validation
+    // hub_list_hpm_packages: explicit hpmAppId validation
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages throws when hpmAppId is non-numeric"() {
+    def "hub_list_hpm_packages throws when hpmAppId is non-numeric"() {
         given:
         settingsMap.enableHubAdminRead = true
 
@@ -190,7 +191,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         ex.message.contains("hpmAppId must be numeric")
     }
 
-    def "list_hpm_packages throws when explicit hpmAppId exists but belongs to a different app type"() {
+    def "hub_list_hpm_packages throws when explicit hpmAppId exists but belongs to a different app type"() {
         given:
         settingsMap.enableHubAdminRead = true
         // App 999 exists but is type "Simple Automation Rules", not HPM
@@ -214,7 +215,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         ex.message.contains("actual type: Simple Automation Rules")
     }
 
-    def "list_hpm_packages throws when explicit hpmAppId does not exist in installed apps"() {
+    def "hub_list_hpm_packages throws when explicit hpmAppId does not exist in installed apps"() {
         given:
         settingsMap.enableHubAdminRead = true
         // Installed apps list has no entry with id "998"
@@ -238,10 +239,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // list_hpm_packages: auto-discovery
+    // hub_list_hpm_packages: auto-discovery
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages auto-discovers hpmAppId when not supplied"() {
+    def "hub_list_hpm_packages auto-discovers hpmAppId when not supplied"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub2/appsList') { makeAppsListWithHpm("37") }
@@ -261,7 +262,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
      * fixture. The broken implementation incorrectly matched via userAppTypes[] and would have
      * returned "101" or failed outright (real userAppTypes[] has no namespace field).
      */
-    def "list_hpm_packages discovery returns installed-instance id, not app-type-catalog id"() {
+    def "hub_list_hpm_packages discovery returns installed-instance id, not app-type-catalog id"() {
         given:
         settingsMap.enableHubAdminRead = true
         // Fixture: type-catalog id = "101", installed-instance id = "37"
@@ -277,7 +278,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.hpmAppId != "101"
     }
 
-    def "list_hpm_packages throws when HPM is not installed"() {
+    def "hub_list_hpm_packages throws when HPM is not installed"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub2/appsList') { makeAppsListNoHpm() }
@@ -291,10 +292,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // list_hpm_packages: golden path with explicit hpmAppId
+    // hub_list_hpm_packages: golden path with explicit hpmAppId
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages golden path: returns single package with apps, drivers, and files"() {
+    def "hub_list_hpm_packages golden path: returns single package with apps, drivers, and files"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
@@ -345,7 +346,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
      * the String path exists for any hub variant that leaves the inner value as a String.
      * Both paths must produce the same package list.
      */
-    def "list_hpm_packages handles appState value as JSON-encoded String (double-encoded fallback path)"() {
+    def "hub_list_hpm_packages handles appState value as JSON-encoded String (double-encoded fallback path)"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
@@ -362,7 +363,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.packages[0].apps[0].heID == "142"
     }
 
-    def "list_hpm_packages handles multiple packages and returns correct count"() {
+    def "hub_list_hpm_packages handles multiple packages and returns correct count"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = onePackageManifests() + [
@@ -388,7 +389,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.packages.any { it.packageName == "Second Package" }
     }
 
-    def "list_hpm_packages handles package with no apps or drivers or files"() {
+    def "hub_list_hpm_packages handles package with no apps or drivers or files"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -416,10 +417,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // list_hpm_packages: no packages tracked (empty appState)
+    // hub_list_hpm_packages: no packages tracked (empty appState)
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages returns count=0 when no manifests entry in appState"() {
+    def "hub_list_hpm_packages returns count=0 when no manifests entry in appState"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
@@ -435,10 +436,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // list_hpm_packages: error paths
+    // hub_list_hpm_packages: error paths
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages returns success=false when statusJson body is empty"() {
+    def "hub_list_hpm_packages returns success=false when statusJson body is empty"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
@@ -453,7 +454,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.error.contains("Empty response from /installedapp/statusJson")
     }
 
-    def "list_hpm_packages returns success=false when manifests value is not parseable JSON"() {
+    def "hub_list_hpm_packages returns success=false when manifests value is not parseable JSON"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
@@ -475,7 +476,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.error.contains("Failed to parse HPM manifests value")
     }
 
-    def "list_hpm_packages returns success=false with type disclosure when statusJson outer parse yields non-Map"() {
+    def "hub_list_hpm_packages returns success=false with type disclosure when statusJson outer parse yields non-Map"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
@@ -492,7 +493,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.error.contains("got List")
     }
 
-    def "list_hpm_packages returns success=false with type disclosure when manifests value parses to non-Map"() {
+    def "hub_list_hpm_packages returns success=false with type disclosure when manifests value parses to non-Map"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
@@ -516,10 +517,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // list_hpm_packages: heID type coercion
+    // hub_list_hpm_packages: heID type coercion
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages coerces Integer heID to String"() {
+    def "hub_list_hpm_packages coerces Integer heID to String"() {
         given:
         settingsMap.enableHubAdminRead = true
         // HPM sometimes stores heID as an Integer (from Location header parsing).
@@ -549,7 +550,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         !app.containsKey('_warning')
     }
 
-    def "list_hpm_packages coerces Integer heID to String on a driver component"() {
+    def "hub_list_hpm_packages coerces Integer heID to String on a driver component"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -577,7 +578,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         driver.heID == "123"
     }
 
-    def "list_hpm_packages represents null heID as null (not string 'null')"() {
+    def "hub_list_hpm_packages represents null heID as null (not string 'null')"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -1155,7 +1156,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // Auto-discovery: BFS into children[] (I7)
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages auto-discovery finds HPM nested under a parent app in the apps tree"() {
+    def "hub_list_hpm_packages auto-discovery finds HPM nested under a parent app in the apps tree"() {
         given:
         settingsMap.enableHubAdminRead = true
         // HPM (id "37") is a child of some parent app (id "10") in the instance tree.
@@ -1185,7 +1186,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // Auto-discovery: multiple HPM instances throws (C2)
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages auto-discovery throws when multiple HPM instances are found"() {
+    def "hub_list_hpm_packages auto-discovery throws when multiple HPM instances are found"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub2/appsList') {
@@ -1212,7 +1213,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // _hpmDiscoverAppId: HPM entry found but id field is null (B-Grid-1)
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages auto-discovery throws when HPM entry exists but has no id field"() {
+    def "hub_list_hpm_packages auto-discovery throws when HPM entry exists but has no id field"() {
         given:
         settingsMap.enableHubAdminRead = true
         // Simulate a rare edge case: an entry whose type matches HPM but data.id is null.
@@ -1388,10 +1389,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // list_hpm_packages: non-scalar heID handling on app and driver entries
+    // hub_list_hpm_packages: non-scalar heID handling on app and driver entries
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages adds _warning to app entry when heID is a non-scalar type (List)"() {
+    def "hub_list_hpm_packages adds _warning to app entry when heID is a non-scalar type (List)"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -1416,11 +1417,11 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def app = result.packages[0].apps[0]
         app.heID == null
         app._warning != null
-        // list_hpm_packages clears the heID and keeps the component entry (heID cleared disposition)
+        // hub_list_hpm_packages clears the heID and keeps the component entry (heID cleared disposition)
         app._warning.contains("non-scalar heID (not Number or String) -- heID cleared")
     }
 
-    def "list_hpm_packages adds _warning to driver entry when heID is a non-scalar type (Map)"() {
+    def "hub_list_hpm_packages adds _warning to driver entry when heID is a non-scalar type (Map)"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -1446,7 +1447,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def driver = result.packages[0].drivers[0]
         driver.heID == null
         driver._warning != null
-        // list_hpm_packages clears the heID and keeps the component entry (heID cleared disposition)
+        // hub_list_hpm_packages clears the heID and keeps the component entry (heID cleared disposition)
         driver._warning.contains("non-scalar heID (not Number or String) -- heID cleared")
     }
 
@@ -1498,7 +1499,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.drift[0].signals == []
         result.drift[0].dataQualityWarnings?.size() == 1
         result.drift[0].dataQualityWarnings[0].type == "heid-non-scalar-dropped"
-        // get_hpm_drift drops the component entirely (component skipped disposition -- different from list_hpm_packages which clears heID)
+        // get_hpm_drift drops the component entirely (component skipped disposition -- different from hub_list_hpm_packages which clears heID)
         result.drift[0].dataQualityWarnings[0]._warning.contains("non-scalar heID (not Number or String) -- component skipped")
         result.dataQualityWarnings != null
         result.dataQualityWarnings.size() == 1
@@ -1554,10 +1555,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // list_hpm_packages: per-entry malformed manifest entries land in skippedMalformed[]
+    // hub_list_hpm_packages: per-entry malformed manifest entries land in skippedMalformed[]
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages skips non-Map manifest entry into skippedMalformed and keeps well-formed neighbors"() {
+    def "hub_list_hpm_packages skips non-Map manifest entry into skippedMalformed and keeps well-formed neighbors"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -1635,7 +1636,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // _hpmDiscoverAppId: nested-under-children[] duplicate detected (BFS walks unconditionally)
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages auto-discovery throws when duplicate HPM app is nested under a parent"() {
+    def "hub_list_hpm_packages auto-discovery throws when duplicate HPM app is nested under a parent"() {
         given:
         settingsMap.enableHubAdminRead = true
         // One HPM at top level (37), one nested under a parent (88).
@@ -1662,10 +1663,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // Empty/whitespace heID normalization in list_hpm_packages
+    // Empty/whitespace heID normalization in hub_list_hpm_packages
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages emits _warning and sets heID=null for empty-string heID on app component"() {
+    def "hub_list_hpm_packages emits _warning and sets heID=null for empty-string heID on app component"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -1695,7 +1696,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         app._warning.contains("''")
     }
 
-    def "list_hpm_packages emits _warning and sets heID=null for whitespace-only heID on driver component"() {
+    def "hub_list_hpm_packages emits _warning and sets heID=null for whitespace-only heID on driver component"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -1900,7 +1901,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.drift[0].signals == []
         def dqw = result.drift[0].dataQualityWarnings?.find { it.type == "heid-non-scalar-dropped" && it.componentType == "driver" }
         dqw != null
-        // get_hpm_drift drops the component entirely (component skipped disposition -- different from list_hpm_packages which clears heID)
+        // get_hpm_drift drops the component entirely (component skipped disposition -- different from hub_list_hpm_packages which clears heID)
         dqw._warning.contains("non-scalar heID (not Number or String) -- component skipped")
     }
 
@@ -2061,7 +2062,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // Multi-instance HPM auto-discovery: truncated error message format
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages auto-discovery throws with truncated id list when more than 10 HPM instances found"() {
+    def "hub_list_hpm_packages auto-discovery throws with truncated id list when more than 10 HPM instances found"() {
         given:
         settingsMap.enableHubAdminRead = true
         // 15 HPM instances -- discovery must truncate at 10 and report "and 5 more (total 15)"
@@ -2132,7 +2133,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // skippedAppCount: emitted when > 0, omitted when all entries are well-formed
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages includes skippedAppCount on package entry when > 0"() {
+    def "hub_list_hpm_packages includes skippedAppCount on package entry when > 0"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -2165,7 +2166,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         pkg.apps[0].name == "Good App"
     }
 
-    def "list_hpm_packages includes skippedDriverCount on package entry when > 0 and omits skippedAppCount"() {
+    def "hub_list_hpm_packages includes skippedDriverCount on package entry when > 0 and omits skippedAppCount"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -2198,7 +2199,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         pkg.drivers[0].name == "Good Driver"
     }
 
-    def "list_hpm_packages omits skippedAppCount when all app entries are well-formed"() {
+    def "hub_list_hpm_packages omits skippedAppCount when all app entries are well-formed"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub2/appsList') { makeAppsListWithHpmOnly("37") }
@@ -2219,7 +2220,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // Non-scalar heID _warning contains literal "non-scalar" (List and Map variants)
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages _warning for non-scalar app heID contains literal 'non-scalar heID'"() {
+    def "hub_list_hpm_packages _warning for non-scalar app heID contains literal 'non-scalar heID'"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -2243,7 +2244,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def app = result.packages[0].apps[0]
         app.heID == null
         app._warning != null
-        // list_hpm_packages clears the heID and keeps the component entry (heID cleared disposition)
+        // hub_list_hpm_packages clears the heID and keeps the component entry (heID cleared disposition)
         app._warning.contains("non-scalar heID (not Number or String) -- heID cleared")
     }
 
@@ -2496,7 +2497,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         result.orphanDriverDetection.reason.contains("got null")
     }
 
-    def "list_hpm_packages _warning for non-scalar driver heID contains literal 'non-scalar heID'"() {
+    def "hub_list_hpm_packages _warning for non-scalar driver heID contains literal 'non-scalar heID'"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -2521,7 +2522,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         def driver = result.packages[0].drivers[0]
         driver.heID == null
         driver._warning != null
-        // list_hpm_packages clears the heID and keeps the component entry (heID cleared disposition)
+        // hub_list_hpm_packages clears the heID and keeps the component entry (heID cleared disposition)
         driver._warning.contains("non-scalar heID (not Number or String) -- heID cleared")
     }
 
@@ -2615,10 +2616,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // Coverage gap: list_hpm_packages _warning text for whitespace-padded heID
+    // Coverage gap: hub_list_hpm_packages _warning text for whitespace-padded heID
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages _warning for whitespace-padded app heID contains normalization text with trimmed value"() {
+    def "hub_list_hpm_packages _warning for whitespace-padded app heID contains normalization text with trimmed value"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -2646,7 +2647,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         app._warning.contains("whitespace-padded heID ' 142 ' normalized to '142'")
     }
 
-    def "list_hpm_packages _warning for whitespace-padded driver heID contains normalization text with trimmed value"() {
+    def "hub_list_hpm_packages _warning for whitespace-padded driver heID contains normalization text with trimmed value"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -2780,10 +2781,10 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // Coverage gap: skippedFileCount > 0 in list_hpm_packages
+    // Coverage gap: skippedFileCount > 0 in hub_list_hpm_packages
     // -------------------------------------------------------------------------
 
-    def "list_hpm_packages emits skippedFileCount when files list contains a non-Map entry"() {
+    def "hub_list_hpm_packages emits skippedFileCount when files list contains a non-Map entry"() {
         given:
         settingsMap.enableHubAdminRead = true
         def manifests = [
@@ -2818,7 +2819,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // Coverage gap: gateway dispatch regression
     // -------------------------------------------------------------------------
 
-    def "gateway dispatch: manage_hpm(tool='list_hpm_packages') produces same shape as direct toolListHpmPackages call"() {
+    def "gateway dispatch: hub_manage_hpm(tool='hub_list_hpm_packages') produces same shape as direct toolListHpmPackages call"() {
         given:
         settingsMap.useGateways = true  // gateway-name dispatch requires gateway mode on
         settingsMap.enableHubAdminRead = true
@@ -2827,7 +2828,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
 
         when:
         def direct  = script.toolListHpmPackages([hpmAppId: "37"])
-        def gateway = script.executeTool('manage_hpm', [tool: 'list_hpm_packages', args: [hpmAppId: "37"]])
+        def gateway = script.executeTool('hub_manage_hpm', [tool: 'hub_list_hpm_packages', args: [hpmAppId: "37"]])
 
         then: 'both paths return success=true with deep structural equality'
         direct.success == true
@@ -2835,7 +2836,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         gateway == direct
     }
 
-    def "gateway dispatch: manage_hpm(tool='get_hpm_drift') produces same shape as direct toolGetHpmDrift call"() {
+    def "gateway dispatch: hub_manage_hpm(tool='hub_list_hpm_packages', includeDrift=true) nests drift block matching direct toolGetHpmDrift call"() {
         given:
         settingsMap.useGateways = true  // gateway-name dispatch requires gateway mode on
         settingsMap.enableHubAdminRead = true
@@ -2853,18 +2854,21 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes(["89"]) }
 
         when:
+        // Drift is now a projection of hub_list_hpm_packages: includeDrift=true attaches the
+        // toolGetHpmDrift result under a `drift` key. The gateway's nested drift block must
+        // deep-equal the direct toolGetHpmDrift call.
         def direct  = script.toolGetHpmDrift([hpmAppId: "37"])
-        def gateway = script.executeTool('manage_hpm', [tool: 'get_hpm_drift', args: [hpmAppId: "37"]])
+        def gateway = script.executeTool('hub_manage_hpm', [tool: 'hub_list_hpm_packages', args: [hpmAppId: "37", includeDrift: true]])
 
-        then: 'both paths return success=true with deep structural equality'
+        then: 'both paths return success=true; gateway nests the drift block under a `drift` key'
         direct.success == true
         gateway.success == true
-        gateway == direct
+        gateway.drift == direct
     }
 
     // -------------------------------------------------------------------------
     // get_hpm_drift: auto-discovery throws when multiple HPM instances found
-    // (mirror of the list_hpm_packages spec -- both tools share _hpmDiscoverAppId)
+    // (mirror of the hub_list_hpm_packages spec -- both tools share _hpmDiscoverAppId)
     // -------------------------------------------------------------------------
 
     def "get_hpm_drift auto-discovery throws when multiple HPM instances are found"() {
@@ -2996,20 +3000,20 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
     // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
     // verified end-to-end alongside the direct-call golden paths above. The
-    // direct-call tests (above) and the existing manage_hpm gateway-shape tests
+    // direct-call tests (above) and the existing hub_manage_hpm gateway-shape tests
     // (line ~2821) already pin tool-result deep structure; these tests add the
     // missing JSON-RPC envelope + render(Map) pipeline coverage by routing the
     // same scenarios through mcpDriver.callTool().
     // -------------------------------------------------------------------------
 
     @spock.lang.Unroll
-    def "list_hpm_packages via dispatch maps Hub Admin Read disabled to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages via dispatch maps Hub Admin Read disabled to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = false
 
         when:
-        def response = mcpDriver.callTool('list_hpm_packages', [:])
+        def response = mcpDriver.callTool('hub_list_hpm_packages', [:])
 
         then:
         response.error?.code == -32602
@@ -3020,13 +3024,13 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_hpm_packages via dispatch maps non-numeric hpmAppId to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages via dispatch maps non-numeric hpmAppId to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
 
         when:
-        def response = mcpDriver.callTool('list_hpm_packages', [hpmAppId: 'not-a-number'])
+        def response = mcpDriver.callTool('hub_list_hpm_packages', [hpmAppId: 'not-a-number'])
 
         then:
         response.error?.code == -32602
@@ -3037,14 +3041,14 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_hpm_packages via dispatch maps HPM not installed to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages via dispatch maps HPM not installed to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
         hubGet.register('/hub2/appsList') { makeAppsListNoHpm() }
 
         when:
-        def response = mcpDriver.callTool('list_hpm_packages', [:])
+        def response = mcpDriver.callTool('hub_list_hpm_packages', [:])
 
         then:
         response.error?.code == -32602
@@ -3054,7 +3058,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_hpm_packages via dispatch returns golden path package (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages via dispatch returns golden path package (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -3062,7 +3066,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJson("37", onePackageManifests()) }
 
         when:
-        def response = mcpDriver.callTool('list_hpm_packages', [hpmAppId: '37'])
+        def response = mcpDriver.callTool('hub_list_hpm_packages', [hpmAppId: '37'])
 
         then:
         response.error == null
@@ -3077,7 +3081,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_hpm_packages via dispatch handles String-shaped manifests value (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages via dispatch handles String-shaped manifests value (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -3085,7 +3089,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJsonStringValue("37", onePackageManifests()) }
 
         when:
-        def response = mcpDriver.callTool('list_hpm_packages', [hpmAppId: '37'])
+        def response = mcpDriver.callTool('hub_list_hpm_packages', [hpmAppId: '37'])
 
         then:
         response.error == null
@@ -3099,7 +3103,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_hpm_packages via dispatch returns count=0 when manifests entry is missing (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages via dispatch returns count=0 when manifests entry is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -3107,7 +3111,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/37') { makeHpmStatusJsonEmpty("37") }
 
         when:
-        def response = mcpDriver.callTool('list_hpm_packages', [hpmAppId: '37'])
+        def response = mcpDriver.callTool('hub_list_hpm_packages', [hpmAppId: '37'])
 
         then:
         response.error == null
@@ -3121,13 +3125,13 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_hpm_drift via dispatch maps Hub Admin Read disabled to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages includeDrift via dispatch maps Hub Admin Read disabled to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = false
 
         when:
-        def response = mcpDriver.callTool('get_hpm_drift', [:])
+        def response = mcpDriver.callTool('hub_list_hpm_packages', [includeDrift: true])
 
         then:
         response.error?.code == -32602
@@ -3138,13 +3142,13 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_hpm_drift via dispatch maps non-numeric hpmAppId to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages includeDrift via dispatch maps non-numeric hpmAppId to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
 
         when:
-        def response = mcpDriver.callTool('get_hpm_drift', [hpmAppId: 'not-a-number'])
+        def response = mcpDriver.callTool('hub_list_hpm_packages', [hpmAppId: 'not-a-number', includeDrift: true])
 
         then:
         response.error?.code == -32602
@@ -3155,7 +3159,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_hpm_drift via dispatch returns no-drift happy path (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages includeDrift via dispatch returns no-drift happy path under drift key (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -3173,23 +3177,23 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes(["89"]) }
 
         when:
-        def response = mcpDriver.callTool('get_hpm_drift', [hpmAppId: '37'])
+        def response = mcpDriver.callTool('hub_list_hpm_packages', [hpmAppId: '37', includeDrift: true])
 
-        then:
+        then: 'drift fields nest under the `drift` key on the list response'
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.packagesChecked == 1
-        inner.packagesWithActionableDrift == 0
-        inner.totalDriftSignals == 0
+        inner.drift.packagesChecked == 1
+        inner.drift.packagesWithActionableDrift == 0
+        inner.drift.totalDriftSignals == 0
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "get_hpm_drift via dispatch surfaces orphan-app signal (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages includeDrift via dispatch surfaces orphan-app signal under drift key (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -3208,22 +3212,22 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes(["89"]) }
 
         when:
-        def response = mcpDriver.callTool('get_hpm_drift', [hpmAppId: '37'])
+        def response = mcpDriver.callTool('hub_list_hpm_packages', [hpmAppId: '37', includeDrift: true])
 
-        then:
+        then: 'orphan-app signal surfaces in the nested drift block'
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.totalDriftSignals >= 1
-        inner.drift.any { it.signals?.any { s -> s.type == 'orphan-app' } }
+        inner.drift.totalDriftSignals >= 1
+        inner.drift.drift.any { it.signals?.any { s -> s.type == 'orphan-app' } }
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "get_hpm_drift via dispatch handles packageFilter no-match (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages includeDrift via dispatch handles packageFilter no-match under drift key (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -3241,21 +3245,21 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         hubGet.register('/hub2/userDeviceTypes') { makeUserDriverTypes(["89"]) }
 
         when:
-        def response = mcpDriver.callTool('get_hpm_drift', [hpmAppId: '37', packageFilter: 'NoSuchPackage'])
+        def response = mcpDriver.callTool('hub_list_hpm_packages', [hpmAppId: '37', packageFilter: 'NoSuchPackage', includeDrift: true])
 
-        then:
+        then: 'packageFilter narrows the nested drift block to zero packages'
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.packagesChecked == 0
+        inner.drift.packagesChecked == 0
 
         where:
         useGateways << [true, false]
     }
 
     @spock.lang.Unroll
-    def "list_hpm_packages via dispatch maps wrong-type explicit hpmAppId to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_hpm_packages via dispatch maps wrong-type explicit hpmAppId to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -3271,7 +3275,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_hpm_packages', [hpmAppId: '999'])
+        def response = mcpDriver.callTool('hub_list_hpm_packages', [hpmAppId: '999'])
 
         then:
         response.error?.code == -32602

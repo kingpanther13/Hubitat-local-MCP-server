@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolGetAppConfig (hubitat-mcp-server.groovy approx line 6232).
- * Gateway tool under manage_installed_apps — executeTool() dispatches via case "get_app_config".
+ * Gateway tool under hub_manage_installed_apps — executeTool() dispatches via case "hub_get_app_config".
  *
  * Covers:
  *  - Hub Admin Read gate (throws when disabled)
@@ -106,13 +106,13 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = false
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error.code == -32602
@@ -141,13 +141,13 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch returns -32602 envelope when appId is missing (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns -32602 envelope when appId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [:])
+        def response = mcpDriver.callTool('hub_get_app_config', [:])
 
         then:
         response.error.code == -32602
@@ -170,13 +170,13 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch returns -32602 envelope when appId is blank (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns -32602 envelope when appId is blank (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: '   '])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: '   '])
 
         then:
         response.error.code == -32602
@@ -202,13 +202,13 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch returns -32602 envelope when appId is non-numeric (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns -32602 envelope when appId is non-numeric (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 'not-a-number'])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 'not-a-number'])
 
         then:
         response.error.code == -32602
@@ -231,13 +231,13 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch returns -32602 envelope when pageName contains a path separator (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns -32602 envelope when pageName contains a path separator (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35, pageName: '../etc/passwd'])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, pageName: '../etc/passwd'])
 
         then:
         response.error.code == -32602
@@ -260,13 +260,13 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch returns -32602 envelope when pageName contains a space (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns -32602 envelope when pageName contains a space (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35, pageName: 'page name'])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, pageName: 'page name'])
 
         then:
         response.error.code == -32602
@@ -320,14 +320,14 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch returns app identity, sections, inputs, child apps (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns app identity, sections, inputs, child apps (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error == null
@@ -375,7 +375,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch includes pageName segment in endpoint (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch includes pageName segment in endpoint (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -386,7 +386,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35, pageName: 'prefPkgModify'])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, pageName: 'prefPkgModify'])
 
         then:
         response.error == null
@@ -432,7 +432,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch strips HTML span tags from app label (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch strips HTML span tags from app label (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -451,7 +451,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/42') { params -> jsonWithHtml }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 42])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 42])
 
         then:
         response.error == null
@@ -489,14 +489,14 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch with includeSettings=false omits settings key (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch with includeSettings=false omits settings key (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error == null
@@ -532,14 +532,14 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch with includeSettings=true exposes settings (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch with includeSettings=true exposes settings (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35, includeSettings: true])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeSettings: true])
 
         then:
         response.error == null
@@ -574,14 +574,14 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch returns success=false envelope when hub returns empty body (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns success=false envelope when hub returns empty body (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/99') { params -> '' }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 99])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 99])
 
         then:
         response.error == null
@@ -621,7 +621,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch returns success=false envelope for unknown appId (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns success=false envelope for unknown appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -635,7 +635,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 9999])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 9999])
 
         then:
         response.error == null
@@ -666,14 +666,14 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch returns success=false envelope when response is not a JSON object (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns success=false envelope when response is not a JSON object (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> '"just a string"' }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error == null
@@ -701,14 +701,14 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch returns success=false envelope when hub response is unparseable JSON (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns success=false envelope when hub response is unparseable JSON (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> '{not valid json' }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error == null
@@ -744,7 +744,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch returns success=false envelope when configPage is missing (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns success=false envelope when configPage is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -756,7 +756,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error == null
@@ -770,7 +770,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "returns success=false with fingerprint and list_app_pages hint when configPage.sections is not a list"() {
+    def "returns success=false with fingerprint and hub_list_app_pages hint when configPage.sections is not a list"() {
         given:
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -788,12 +788,12 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         then:
         result.success == false
         result.fingerprint == 'sections not a list'
-        // Note must guide the agent toward list_app_pages and away from dead-end retries
-        result.error.contains('list_app_pages')
+        // Note must guide the agent toward hub_list_app_pages and away from dead-end retries
+        result.error.contains('hub_list_app_pages')
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch returns success=false envelope when configPage.sections is not a list (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns success=false envelope when configPage.sections is not a list (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -807,7 +807,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error == null
@@ -815,7 +815,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.fingerprint == 'sections not a list'
-        inner.error.contains('list_app_pages')
+        inner.error.contains('hub_list_app_pages')
 
         where:
         useGateways << [true, false]
@@ -875,7 +875,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch strips HTML from List-shape enum option labels (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch strips HTML from List-shape enum option labels (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -909,7 +909,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error == null
@@ -976,7 +976,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch strips HTML from Map-shape enum option values (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch strips HTML from Map-shape enum option values (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -1011,7 +1011,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error == null
@@ -1049,14 +1049,14 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch accepts integer appId (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch accepts integer appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error == null
@@ -1084,14 +1084,14 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch accepts string numeric appId (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch accepts string numeric appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: '35'])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: '35'])
 
         then:
         response.error == null
@@ -1151,7 +1151,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch preserves bool input with value=true (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch preserves bool input with value=true (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -1182,7 +1182,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error == null
@@ -1239,7 +1239,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch preserves bool input with value=false (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch preserves bool input with value=false (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -1270,7 +1270,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error == null
@@ -1330,7 +1330,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_app_config via dispatch filters non-bool input with defaultValue=true sentinel (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch filters non-bool input with defaultValue=true sentinel (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -1362,7 +1362,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/35') { params -> json }
 
         when:
-        def response = mcpDriver.callTool('get_app_config', [appId: 35])
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error == null

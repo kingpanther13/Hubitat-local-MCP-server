@@ -85,7 +85,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         ex.message.toLowerCase().contains('mutually exclusive')
     }
 
-    def "non-numeric cursor throws with the list_devices-specific error message"() {
+    def "non-numeric cursor throws with the hub_list_devices-specific error message"() {
         given:
         settingsMap.selectedDevices = [makeDevice(id: 1, name: 'D1')]
 
@@ -95,7 +95,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('cursor')
-        ex.message.contains('list_devices')
+        ex.message.contains('hub_list_devices')
     }
 
     def "cursor + format='ids' emits nextCursor in the ids branch too"() {
@@ -136,7 +136,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [kitchen, bath, office]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [labelFilter: 'kitchen'])
+        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'kitchen'])
 
         then:
         response.error == null
@@ -173,7 +173,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1, d2]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [labelFilter: 'KITCHEN'])
+        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'KITCHEN'])
 
         then:
         response.error == null
@@ -208,7 +208,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1, d2]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [:])
+        def response = mcpDriver.callTool('hub_list_devices', [:])
 
         then:
         response.error == null
@@ -242,7 +242,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1, d2]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [labelFilter: ''])
+        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: ''])
 
         then:
         response.error == null
@@ -275,7 +275,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [labelFilter: 'basement'])
+        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'basement'])
 
         then:
         response.error == null
@@ -315,7 +315,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [sw, motion, dimmer]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [capabilityFilter: 'Switch'])
+        def response = mcpDriver.callTool('hub_list_devices', [capabilityFilter: 'Switch'])
 
         then:
         response.error == null
@@ -351,7 +351,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [sw, motion]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [capabilityFilter: 'switch'])
+        def response = mcpDriver.callTool('hub_list_devices', [capabilityFilter: 'switch'])
 
         then:
         response.error == null
@@ -386,7 +386,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1, d2]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [:])
+        def response = mcpDriver.callTool('hub_list_devices', [:])
 
         then:
         response.error == null
@@ -428,7 +428,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1, d2, d3]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [format: 'ids'])
+        def response = mcpDriver.callTool('hub_list_devices', [format: 'ids'])
 
         then:
         response.error == null
@@ -469,7 +469,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1, d2, d3]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [labelFilter: 'kitchen', format: 'ids'])
+        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'kitchen', format: 'ids'])
 
         then:
         response.error == null
@@ -513,7 +513,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [fields: ['id', 'label']])
+        def response = mcpDriver.callTool('hub_list_devices', [fields: ['id', 'label']])
 
         then:
         response.error == null
@@ -558,7 +558,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [detailed: true, fields: ['id', 'capabilities']])
+        def response = mcpDriver.callTool('hub_list_devices', [detailed: true, fields: ['id', 'capabilities']])
 
         then:
         response.error == null
@@ -598,7 +598,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [fields: ['id', 'lable', 'label']])
+        def response = mcpDriver.callTool('hub_list_devices', [fields: ['id', 'lable', 'label']])
 
         then:
         response.error.code == -32602
@@ -637,7 +637,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [fields: []])
+        def response = mcpDriver.callTool('hub_list_devices', [fields: []])
 
         then:
         response.error == null
@@ -682,7 +682,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [format: 'xml'])
+        def response = mcpDriver.callTool('hub_list_devices', [format: 'xml'])
 
         then:
         response.error.code == -32602
@@ -722,7 +722,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [kitchenSwitch, kitchenSensor, bedroomSwitch]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [labelFilter: 'kitchen', capabilityFilter: 'Switch'])
+        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'kitchen', capabilityFilter: 'Switch'])
 
         then:
         response.error == null
@@ -769,7 +769,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1, d2, d3, d4, d5]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [offset: 1, limit: 2, labelFilter: 'light'])
+        def response = mcpDriver.callTool('hub_list_devices', [offset: 1, limit: 2, labelFilter: 'light'])
 
         then:
         response.error == null
@@ -813,7 +813,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [:])
+        def response = mcpDriver.callTool('hub_list_devices', [:])
 
         then:
         response.error == null
@@ -853,7 +853,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('list_devices', [limit: 3, format: 'ids'])
+        def response = mcpDriver.callTool('hub_list_devices', [limit: 3, format: 'ids'])
 
         then:
         response.error == null
@@ -900,7 +900,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [fields: ['id', 'capabilities']])
+        def response = mcpDriver.callTool('hub_list_devices', [fields: ['id', 'capabilities']])
 
         then:
         response.error == null
@@ -945,7 +945,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [offset: 999, format: 'ids'])
+        def response = mcpDriver.callTool('hub_list_devices', [offset: 999, format: 'ids'])
 
         then:
         response.error == null
@@ -986,7 +986,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [offset: 999, format: 'xml'])
+        def response = mcpDriver.callTool('hub_list_devices', [offset: 999, format: 'xml'])
 
         then:
         response.error.code == -32602
@@ -1024,7 +1024,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1, d2, d3]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [labelFilter: 'kitchen'])
+        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'kitchen'])
 
         then:
         response.error == null
@@ -1066,7 +1066,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1, d2, d3]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [capabilityFilter: 'Switch', format: 'ids'])
+        def response = mcpDriver.callTool('hub_list_devices', [capabilityFilter: 'Switch', format: 'ids'])
 
         then:
         response.error == null
@@ -1112,7 +1112,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1, d2, d3]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [offset: 999, labelFilter: 'kitchen', format: 'ids'])
+        def response = mcpDriver.callTool('hub_list_devices', [offset: 999, labelFilter: 'kitchen', format: 'ids'])
 
         then:
         response.error == null
@@ -1151,7 +1151,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [fields: ['nope']])
+        def response = mcpDriver.callTool('hub_list_devices', [fields: ['nope']])
 
         then:
         response.error.code == -32602
@@ -1186,7 +1186,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [sw]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [capabilityFilter: 'Switches'])
+        def response = mcpDriver.callTool('hub_list_devices', [capabilityFilter: 'Switches'])
 
         then:
         response.error == null
@@ -1228,7 +1228,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [sw]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [labelFilter: 'basement', capabilityFilter: 'Switch'])
+        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'basement', capabilityFilter: 'Switch'])
 
         then:
         response.error == null
@@ -1265,7 +1265,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [capabilityFilter: ['Switch']])
+        def response = mcpDriver.callTool('hub_list_devices', [capabilityFilter: ['Switch']])
 
         then:
         response.error.code == -32602
@@ -1296,7 +1296,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [labelFilter: ['kitchen']])
+        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: ['kitchen']])
 
         then:
         response.error.code == -32602
@@ -1327,7 +1327,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [fields: 'id,label'])
+        def response = mcpDriver.callTool('hub_list_devices', [fields: 'id,label'])
 
         then:
         response.error.code == -32602
@@ -1376,7 +1376,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [fields: ['id', 'label']])
+        def response = mcpDriver.callTool('hub_list_devices', [fields: ['id', 'label']])
 
         then:
         response.error == null
@@ -1426,7 +1426,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [fields: ['id', 'label', 'currentStates']])
+        def response = mcpDriver.callTool('hub_list_devices', [fields: ['id', 'label', 'currentStates']])
 
         then:
         response.error == null
@@ -1494,7 +1494,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [kSwitch, kSensor, kDimmer, kOutlet, kFan, bSwitch, bSensor, bDimmer]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [offset: 1, limit: 2, labelFilter: 'kitchen', capabilityFilter: 'Switch'])
+        def response = mcpDriver.callTool('hub_list_devices', [offset: 1, limit: 2, labelFilter: 'kitchen', capabilityFilter: 'Switch'])
 
         then:
         response.error == null
@@ -1544,7 +1544,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1, d2]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [labelFilter: 'KITCHEN'])
+        def response = mcpDriver.callTool('hub_list_devices', [labelFilter: 'KITCHEN'])
 
         then:
         response.error == null
@@ -1578,7 +1578,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [sw]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [capabilityFilter: 'SWITCH'])
+        def response = mcpDriver.callTool('hub_list_devices', [capabilityFilter: 'SWITCH'])
 
         then:
         response.error == null
@@ -1617,7 +1617,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         settingsMap.selectedDevices = [d1]
 
         when:
-        def response = mcpDriver.callTool('list_devices', [fields: ['label']])
+        def response = mcpDriver.callTool('hub_list_devices', [fields: ['label']])
 
         then:
         response.error == null

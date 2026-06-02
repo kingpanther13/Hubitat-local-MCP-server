@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 103 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, HPM package state introspection, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 89 tools (33 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, HPM package state introspection, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -20,7 +20,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 **Documentation files:**
 - `README.md` — User-facing documentation
 - `SKILL.md` — Developer reference (this file)
-- `TOOL_GUIDE.md` — Human-readable tool reference (same content available to AI via `get_tool_guide` MCP tool)
+- `TOOL_GUIDE.md` — Human-readable tool reference (same content available to AI via `hub_get_tool_guide` MCP tool)
 
 ## Architecture
 
@@ -32,7 +32,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 103 tools (36 on tools/list + gateways) │  │
+│  │  - 89 tools (33 on tools/list + gateways)  │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -93,38 +93,38 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 103 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 89 items to 33. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
 
 **Architecture:**
 - `getGatewayConfig()` — defines 13 gateways, each with a description, tools list, and summaries map
-- `getToolDefinitions()` — returns 23 core tools + 13 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 103 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getToolDefinitions()` — returns 20 core tools + 13 gateway tool definitions (client-visible)
+- `getAllToolDefinitions()` — returns all 89 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
 1. AI calls `manage_<domain>()` with no args → gets full tool schemas (catalog mode)
 2. AI calls `manage_<domain>(tool="tool_name", args={...})` → executes the proxied tool
 
-**13 gateways (80 proxied tools):**
+**13 gateways (69 proxied tools):**
 | Gateway | Tools | Domain |
 |---------|-------|--------|
-| `manage_rules_admin` | 5 | Rule delete/test/export/import/clone |
-| `manage_hub_variables` | 8 | Hub connector and rule engine variables (CRUD + connector + history) |
-| `manage_rooms` | 5 | Room CRUD |
-| `manage_destructive_hub_ops` | 3 | Hub reboot, shutdown, device deletion (write) |
-| `manage_apps_drivers` | 7 | List/get apps, drivers, libraries, backups (read-only) |
-| `manage_app_driver_code` | 10 | Install/update/delete apps+drivers+libraries, restore backup (write) |
-| `manage_logs` | 8 | Logs, monitoring, performance stats, hub jobs, debug tools |
-| `manage_diagnostics` | 11 | Diagnostics, state capture, zwave/zigbee details, zwave repair, memory history, GC |
-| `manage_files` | 4 | File Manager CRUD |
-| `manage_installed_apps` | 4 | Built-in + user app visibility, device-in-use-by lookup, app config inspection, page-name directory |
-| `manage_hpm` | 2 | HPM package state introspection (list tracked packages, drift signals) -- read-only, Hub Admin Read |
-| `manage_native_rules_and_apps` | 12 | Rule Machine interop (RMUtils: list/run/pause/resume/boolean) + admin-layer CRUD on any classic SmartApp (create/update/delete/clone/export/import_native_app + check_rule_health — works on RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.) |
-| `manage_mcp_self` | 1 | Developer Mode self-administration — update MCP rule app's own settings (allowlist-gated, requires `enableDeveloperMode`) |
+| `hub_manage_rules` | 5 | Rule delete/test/export/import/clone |
+| `hub_manage_variables` | 8 | Hub connector and rule engine variables (CRUD + connector + history) |
+| `hub_manage_rooms` | 5 | Room CRUD |
+| `hub_manage_destructive_ops` | 3 | Hub reboot, shutdown, device deletion (write) |
+| `hub_manage_code_read` | 5 | List apps/drivers, get source (app/driver/library), backups (read-only) |
+| `hub_manage_code_write` | 8 | Install/update apps+drivers+libraries, delete item (app/driver/library), restore backup (write) |
+| `hub_manage_logs` | 6 | Logs, performance stats, hub jobs, debug tools |
+| `hub_manage_diagnostics` | 8 | Diagnostics, state capture, radio details (zwave/zigbee), zwave repair, memory history, GC |
+| `hub_manage_files` | 4 | File Manager CRUD |
+| `hub_manage_installed_apps` | 4 | Built-in + user app visibility, device-in-use-by lookup, app config inspection, page-name directory |
+| `hub_manage_hpm` | 1 | HPM package state introspection (list tracked packages + optional drift signals) -- read-only, Hub Admin Read |
+| `hub_manage_native_rules` | 11 | Rule Machine interop (RMUtils: list/run/set-paused/boolean) + admin-layer CRUD on any classic SmartApp (create/update/delete/clone/export/hub_import_native_app + hub_get_rule_health — works on RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.) |
+| `hub_manage_mcp` | 1 | Developer Mode self-administration — update MCP rule app's own settings (allowlist-gated, requires `enableDeveloperMode`) |
 
-`update_native_app` `clearActions` / `replaceActions` shortcuts: the trashActs delete commits synchronously via a full selectActions page-form submit (the complete form-action envelope plus serialized page state, mirroring the native UI), which runs RM's `trashActs` submitOnChange handler in-band -- the actions are gone by the time the call returns. A thin defensive verify-retry remains: on the rare residual where verification still sees the actions (stuck `state.editAct`, or an uncommon firmware commit lag) the tool returns `partial:true, asyncCommitLikely:true` with a `stage` discriminator and a `safeRecovery` block. Verify via `get_app_config` rather than rolling back if that fires. See TOOL_GUIDE.md for the full response shape.
+`hub_update_native_app` `clearActions` / `replaceActions` shortcuts: the trashActs delete commits synchronously via a full selectActions page-form submit (the complete form-action envelope plus serialized page state, mirroring the native UI), which runs RM's `trashActs` submitOnChange handler in-band -- the actions are gone by the time the call returns. A thin defensive verify-retry remains: on the rare residual where verification still sees the actions (stuck `state.editAct`, or an uncommon firmware commit lag) the tool returns `partial:true, asyncCommitLikely:true` with a `stage` discriminator and a `safeRecovery` block. Verify via `hub_get_app_config` rather than rolling back if that fires. See TOOL_GUIDE.md for the full response shape.
 
-**Core tools:** `list_devices`, `get_device`, `get_attribute`, `send_command`, `get_device_events`, `poll_until_attribute` (block-poll attribute until expected value or timeout; `timeoutMs` in MILLISECONDS, default 5000ms = 5 seconds, max 60000ms; at least one of `expectedValue`/`expectedValues` required; BLOCKS the MCP request -- use sparingly, prefer event-driven flows), `custom_list_rules`, `custom_get_rule`, `custom_create_rule`, `custom_update_rule` (the MCP custom rule engine — distinct from native Rule Machine; native-RM CRUD (and Room Lighting, Button Controllers, Basic Rules, etc.) is in the `manage_native_rules_and_apps` gateway via `create_native_app` / `update_native_app` / `delete_native_app` / `check_rule_health`), `update_device`, `manage_virtual_device` (action enum: "create", "delete"), `list_virtual_devices`, `get_hub_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — gated behind Hub Admin Read), `get_modes`, `set_mode`, `get_hsm_status`, `set_hsm`, `create_hub_backup`, `check_for_update`, `generate_bug_report`, `get_tool_guide`, `search_tools` (BM25 natural language search across all tools)
+**Core tools:** `hub_list_devices` (`filter='virtual'` lists only MCP-managed virtual devices), `hub_get_device`, `hub_get_device_attribute` (pass `expectedValue`/`expectedValues` to block-poll the attribute until it matches or times out; `timeoutMs` in MILLISECONDS, default 5000ms = 5 seconds, max 60000ms; polling BLOCKS the MCP request -- use sparingly, prefer event-driven flows), `hub_call_device_command`, `hub_list_device_events` (add `hoursBack` for a window — up to 7 days of device or location event history; omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events), `hub_get_custom_rule` (omit `ruleId` to list all custom-engine rules; `detailed=true` for comprehensive diagnostics on one rule), `hub_create_custom_rule`, `hub_update_custom_rule` (the MCP custom rule engine — distinct from native Rule Machine; native-RM CRUD (and Room Lighting, Button Controllers, Basic Rules, etc.) is in the `hub_manage_native_rules` gateway via `hub_create_native_app` / `hub_update_native_app` / `hub_delete_native_app` / `hub_get_rule_health`), `hub_update_device`, `hub_manage_virtual_device` (action enum: "create", "delete"), `hub_get_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — gated behind Hub Admin Read), `hub_list_modes`, `hub_set_mode`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`, `hub_get_tool_guide`, `hub_search_tools` (BM25 natural language search across all tools)
 
 **Safety gates are preserved:** All Hub Admin Read/Write checks live in the handler functions (e.g., `requireHubAdminRead()`, `requireHubAdminWrite(args.confirm)`), not in the dispatch layer. The gateway simply calls `executeTool()`, which calls the handler, which enforces the gate. No safety check is bypassed.
 
@@ -272,7 +272,7 @@ Conventions:
 
 Three tiers of access control:
 
-**No gate** — Device tools, rule tools, system tools, `list_virtual_devices`, `get_tool_guide`. These operate only on user-selected devices, MCP-managed child devices (virtual devices), MCP-managed rules, or return static reference content.
+**No gate** — Device tools, rule tools, system tools, `hub_list_devices` (filter='virtual'), `hub_get_tool_guide`. These operate only on user-selected devices, MCP-managed child devices (virtual devices), MCP-managed rules, or return static reference content.
 
 **`requireHubAdminRead()`** — Checks `settings.enableHubAdminRead` is true. Used for tools that read hub system info (hub details, health, app/driver lists, source code).
 
@@ -284,7 +284,7 @@ Three tiers of access control:
 Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup operation, so it can't require a prior backup).
 
 **`backupItemSource(type, id)`** — Automatic item-level backup for modify/delete operations:
-- Called by `update_app_code`, `update_driver_code`, `delete_app`, `delete_driver` before making changes
+- Called by `hub_update_app`, `hub_update_driver`, `hub_delete_item` (type=app|driver) before making changes
 - Fetches current source code and saves as a `.groovy` file in the hub's local File Manager via `uploadHubFile()`
 - Metadata (type, id, version, timestamp, fileName, sourceLength) stored in `state.itemBackupManifest` keyed by `"app_<id>"` or `"driver_<id>"`
 - 1-hour window: if a backup of the same item exists within the last hour, it is kept (preserves the pre-edit original across a series of edits)
@@ -295,26 +295,26 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - Requires firmware ≥2.3.4.132 for `uploadHubFile()` support
 
 **Item Backup Tools** (3 tools, always available without Hub Admin Read/Write):
-- `list_item_backups` — lists all backups with metadata (type, id, version, age, size) and direct download URLs
-- `get_item_backup` — retrieves full source code from a backup via `downloadHubFile()` by key (e.g., `app_123`); returns source inline for files ≤60KB, otherwise provides download URL
-- `restore_item_backup` — reads backup via `downloadHubFile()` and pushes source back to the hub via `update_app_code`/`update_driver_code` (requires Hub Admin Write); removes manifest entry first so the current code gets backed up during restore; on failure, puts the manifest entry back
+- `hub_list_backups` — lists all backups with metadata (type, id, version, age, size) and direct download URLs
+- `hub_get_backup` — retrieves full source code from a backup via `downloadHubFile()` by key (e.g., `app_123`); returns source inline for files ≤60KB, otherwise provides download URL
+- `hub_restore_backup` — reads backup via `downloadHubFile()` and pushes source back to the hub via `hub_update_app`/`hub_update_driver` (requires Hub Admin Write); removes manifest entry first so the current code gets backed up during restore; on failure, puts the manifest entry back
 - Every tool response includes `howToRestore` and `manualRestore` instructions for user recovery without MCP
 - All operations are fully local — no cloud involvement
 
 **File Manager Tools** (4 tools):
-- `list_files` — lists all files via `/hub/fileManager/json` internal API endpoint; always available, no access gate
-- `read_file` — reads file via `downloadHubFile()`; returns content inline for files ≤60KB, otherwise provides download URL; always available
-- `write_file` — writes via `uploadHubFile()`; requires Hub Admin Write + confirm; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`)
-- `delete_file` — deletes via `deleteHubFile()`; requires Hub Admin Write + confirm; automatically backs up file before deletion
+- `hub_list_files` — lists all files via `/hub/fileManager/json` internal API endpoint; always available, no access gate
+- `hub_read_file` — reads file via `downloadHubFile()`; returns content inline for files ≤60KB, otherwise provides download URL; always available
+- `hub_write_file` — writes via `uploadHubFile()`; requires Hub Admin Write + confirm; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`)
+- `hub_delete_file` — deletes via `deleteHubFile()`; requires Hub Admin Write + confirm; automatically backs up file before deletion
 - File name validation: must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
 
 **Device Authorization Safety** (v0.7.2+):
 - Device tools require AI to confirm before using non-exact device matches
 - If user specifies an exact device name that matches, AI can use it directly
 - If no exact match: AI must suggest similar devices and **ask user to confirm** before using any of them
-- When a tool fails (e.g., `manage_virtual_device`), AI must report the failure — not silently use existing devices as a workaround
+- When a tool fails (e.g., `hub_manage_virtual_device`), AI must report the failure — not silently use existing devices as a workaround
 - This prevents accidentally controlling critical systems (HVAC, locks) when user meant a different device
-- The `delete_device` tool has its own extensive safety checklist (requires recent backup, explicit confirmation, audit logging)
+- The `hub_delete_device` tool has its own extensive safety checklist (requires recent backup, explicit confirmation, audit logging)
 
 **Optimized Tool Descriptions** (v0.7.2+):
 - Tool descriptions reduced by ~387 lines for better token efficiency
@@ -322,15 +322,15 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - All critical safety rules preserved: pre-flight checklists, confirm requirements, backup requirements
 - Descriptions follow "explain like to a new hire" principle — concise but complete
 - Reduces context consumption when tools are loaded into AI context
-- New `get_tool_guide` tool provides detailed reference on-demand (embedded in server, accessible via MCP)
+- New `hub_get_tool_guide` tool provides detailed reference on-demand (embedded in server, accessible via MCP)
 
-**Custom-engine Rule Deletion Safety** (custom_delete_rule):
+**Custom-engine Rule Deletion Safety** (hub_delete_custom_rule):
 - Automatically backs up rule to File Manager before deletion as `mcp_rule_backup_<name>_<timestamp>.json`
 - Backup includes full rule export (triggers, conditions, actions, device manifest)
-- Restore via: `read_file(fileName)` → `custom_import_rule(exportData: <json>)`
-- **Test rules**: Set `testRule: true` in `custom_create_rule` or `custom_update_rule` to skip backup on deletion
+- Restore via: `hub_read_file(fileName)` → `hub_import_custom_rule(exportData: <json>)`
+- **Test rules**: Set `testRule: true` in `hub_create_custom_rule` or `hub_update_custom_rule` to skip backup on deletion
 - `skipBackupCheck: true` parameter forces skip regardless of testRule flag (rarely needed)
-- Test rule flag visible in `custom_get_rule` and `custom_list_rules` responses
+- Test rule flag visible in `hub_get_custom_rule` (both single-rule and list mode, i.e. with `ruleId` omitted) responses
 - No Hub Admin Write required (rules are MCP-managed, not hub-level resources)
 
 ### Hub Internal API Helpers
@@ -434,13 +434,13 @@ def findDevice(deviceId) {
 
 Devices are accessible from two sources:
 1. **`settings.selectedDevices`** — the user explicitly selects which physical/existing devices to expose to MCP (security boundary)
-2. **`getChildDevices()`** — MCP-managed virtual devices created via `manage_virtual_device` are automatically accessible without manual selection
+2. **`getChildDevices()`** — MCP-managed virtual devices created via `hub_manage_virtual_device` are automatically accessible without manual selection
 
-`list_devices` also combines both sources (deduplicating by ID) and marks child devices with `mcpManaged: true`.
+`hub_list_devices` also combines both sources (deduplicating by ID) and marks child devices with `mcpManaged: true`.
 
 ### Virtual Device Management
 
-Virtual devices are managed via the unified `manage_virtual_device` tool (action enum: "create", "delete") as **child devices** of the MCP Rule Server app using `addChildDevice()` — the officially supported Hubitat API. Key design:
+Virtual devices are managed via the unified `hub_manage_virtual_device` tool (action enum: "create", "delete") as **child devices** of the MCP Rule Server app using `addChildDevice()` — the officially supported Hubitat API. Key design:
 
 - **`addChildDevice(namespace, driverName, dni, null, [name: ..., label: ..., isComponent: false])`** — 5-argument form with `null` hub ID for cross-firmware compatibility. Namespace is `"hubitat"` for built-in virtual drivers, or the user-supplied namespace for custom drivers.
 - **Two mutually exclusive create modes**: `deviceType` (one of 15 built-in virtual driver names, namespace hardcoded to `"hubitat"`) **because** built-in types are a finite validated set requiring only a type name; OR `customDriver={namespace, name}` (user-installed driver with any namespace) **because** custom drivers require both a namespace discriminator and a type name to be uniquely identified on the hub. Exactly one must be provided -- supplying both is an error. Blank-after-trim `deviceType` with `customDriver` also raises the mutex error.
@@ -449,16 +449,16 @@ Virtual devices are managed via the unified `manage_virtual_device` tool (action
 - **`deleteChildDevice(dni)`** removes by device network ID
 - Auto-generated DNIs use format `mcp-virtual-<hex-timestamp>-<hex-random>` with retry logic to avoid collisions
 - Supports 15 built-in virtual device types: Virtual Switch, Virtual Button, Virtual Contact Sensor, Virtual Motion Sensor, Virtual Presence, Virtual Lock, Virtual Temperature Sensor, Virtual Humidity Sensor, Virtual Dimmer, Virtual RGBW Light, Virtual Shade, Virtual Garage Door Opener, Virtual Water Sensor, Virtual Omni Sensor, Virtual Fan Controller
-- For custom drivers: `customDriver={namespace, name}` -- namespace + name are coerced to String then trimmed before use; whitespace-only or numeric values that trim to empty are rejected with a descriptive error before reaching the hub. Any exception from `addChildDevice` on the custom-driver path is translated to an `IllegalArgumentException` pointing to `list_hub_drivers` (fail-closed regardless of hub error text).
-- **Response shape** (`manage_virtual_device create`): `{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, attributes}}`. `typeName` is a deprecated alias for `driverType` **because** existing callers reading `result.device.typeName` after create must not silently break; prefer `driverType` in new code.
-- **Response shape** (`manage_virtual_device delete`): `{success, deviceId, deviceNetworkId, deviceLabel, message}`.
-- **Response shape** (`list_virtual_devices`): `{devices: [...], count, message}`. Per-device: `{id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, currentStates}`. `currentStates` is a map of attribute-name to current-value (not a list -- create returns `attributes` as a list while list returns `currentStates` as a map; both expose device state but under different shapes because create returns the freshly-read attribute list and list returns a compact state map). `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code. `driverNamespace` is authoritative for devices created by this tool (the namespace is persisted as a device data value at create time); for devices created before this version or by other means it falls back to a best-effort derivation that may report `"hubitat"`.
+- For custom drivers: `customDriver={namespace, name}` -- namespace + name are coerced to String then trimmed before use; whitespace-only or numeric values that trim to empty are rejected with a descriptive error before reaching the hub. Any exception from `addChildDevice` on the custom-driver path is translated to an `IllegalArgumentException` pointing to `hub_list_drivers` (fail-closed regardless of hub error text).
+- **Response shape** (`hub_manage_virtual_device create`): `{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, attributes}}`. `typeName` is a deprecated alias for `driverType` **because** existing callers reading `result.device.typeName` after create must not silently break; prefer `driverType` in new code.
+- **Response shape** (`hub_manage_virtual_device delete`): `{success, deviceId, deviceNetworkId, deviceLabel, message}`.
+- **Response shape** (`hub_list_devices` with `filter='virtual'`): `{devices: [...], count, message}`. Per-device: `{id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, currentStates}`. `currentStates` is a map of attribute-name to current-value (not a list -- create returns `attributes` as a list while list returns `currentStates` as a map; both expose device state but under different shapes because create returns the freshly-read attribute list and list returns a compact state map). `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code. `driverNamespace` is authoritative for devices created by this tool (the namespace is persisted as a device data value at create time); for devices created before this version or by other means it falls back to a best-effort derivation that may report `"hubitat"`.
 - **Error contract (N.36)**: `customDriver` not-found throws `IllegalArgumentException` (JSON-RPC -32602) because the bad driver spec is caller-supplied and recoverable by fixing args. Built-in not-found throws `RuntimeException` (isError:true) because hub firmware not including a built-in driver is a platform condition, not a caller error. This is a deliberate exception to the general `return [success:false]` convention -- the two-class split reflects the distinction between caller-fixable vs platform-gap failures.
 - Requires Hub Admin Write access (with backup verification) for create/delete operations
 
-#### update_device Tool
+#### hub_update_device Tool
 
-The `update_device` tool modifies properties on any accessible device (selected or MCP-managed). It accepts all parameters as optional — only specified fields are changed:
+The `hub_update_device` tool modifies properties on any accessible device (selected or MCP-managed). It accepts all parameters as optional — only specified fields are changed:
 
 - **label** — `device.setLabel(value)` (official API)
 - **name** — `device.setName(value)` (official API)
@@ -476,11 +476,11 @@ Room assignment and enable/disable use the hub's internal API at `http://127.0.0
 
 | Tool | Access Gate | Description |
 |------|------------|-------------|
-| `list_rooms` | None | Lists all rooms with IDs, names, device counts via `getRooms()` |
-| `get_room` | None | Room details with full device info/states. Accepts name (case-insensitive) or ID |
-| `create_room` | Hub Admin Write | Creates room via `POST /room/save` with `roomId: 0` (Grails create convention) |
-| `delete_room` | Hub Admin Write | Deletes room via `POST /room/delete/<id>` or `GET /room/delete/<id>`. Devices become unassigned |
-| `rename_room` | Hub Admin Write | Renames room via `POST /room/save` with existing `roomId` and new `name`. Preserves device assignments |
+| `hub_list_rooms` | None | Lists all rooms with IDs, names, device counts via `getRooms()` |
+| `hub_get_room` | None | Room details with full device info/states. Accepts name (case-insensitive) or ID |
+| `hub_create_room` | Hub Admin Write | Creates room via `POST /room/save` with `roomId: 0` (Grails create convention) |
+| `hub_delete_room` | Hub Admin Write | Deletes room via `POST /room/delete/<id>` or `GET /room/delete/<id>`. Devices become unassigned |
+| `hub_update_room` | Hub Admin Write | Renames room via `POST /room/save` with existing `roomId` and new `name`. Preserves device assignments |
 
 **Key API details:**
 - All room mutations use `POST /room/save` at `http://127.0.0.1:8080` with `Content-Type: application/json`
@@ -540,9 +540,9 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub/advanced/freeOSMemory` | Free memory in KB (text) |
 | `/hub/advanced/internalTempCelsius` | CPU temperature (text) |
 | `/hub/advanced/databaseSize` | Database size in KB (text) |
-| `/hub/advanced/blinkLED` | Fires the hub's identify-LED sequence (blue → red → green) once. Returns the literal text `true`. Single GET, no body, self-resetting. Surfaced via the opt-in `identifyHub` flag on `get_hub_info` and `device_health_check`. |
-| `/hub2/userAppTypes` | Apps Code definitions (JSON array: id, name, namespace). Each entry is a code definition, NOT a running instance -- child-app templates appear here even with zero active instances. Distinct from the `userAppTypes[]` key embedded in `/hub2/appsList` (which is the instance tree). Used by `list_hub_apps` and `get_hpm_drift` (orphan-app detection). |
-| `/hub2/userDeviceTypes` | Drivers Code definitions (JSON array: id, name, namespace, capabilities, lastModified, usedBy[]). Despite the name, this is the Drivers Code registry (code definitions, not device instances). Used by `list_hub_drivers` and `get_hpm_drift` (orphan-driver detection). Note: hub uses `userDeviceTypes` for the driver registry while apps use `userAppTypes` -- the naming asymmetry is a hub convention, not an error. |
+| `/hub/advanced/blinkLED` | Fires the hub's identify-LED sequence (blue → red → green) once. Returns the literal text `true`. Single GET, no body, self-resetting. Surfaced via the opt-in `identifyHub` flag on `hub_get_info` and `hub_get_device_health`. |
+| `/hub2/userAppTypes` | Apps Code definitions (JSON array: id, name, namespace). Each entry is a code definition, NOT a running instance -- child-app templates appear here even with zero active instances. Distinct from the `userAppTypes[]` key embedded in `/hub2/appsList` (which is the instance tree). Used by `hub_list_apps` and `hub_list_hpm_packages` (includeDrift=true; orphan-app detection). |
+| `/hub2/userDeviceTypes` | Drivers Code definitions (JSON array: id, name, namespace, capabilities, lastModified, usedBy[]). Despite the name, this is the Drivers Code registry (code definitions, not device instances). Used by `hub_list_drivers` and `hub_list_hpm_packages` (includeDrift=true; orphan-driver detection). Note: hub uses `userDeviceTypes` for the driver registry while apps use `userAppTypes` -- the naming asymmetry is a hub convention, not an error. |
 | `/hub2/zwaveInfo` | Z-Wave radio details (JSON) |
 | `/hub2/zigbeeInfo` | Zigbee radio details (JSON) |
 | `/app/ajax/code` with query `id=<id>` | App source code (JSON: source, version, status) |
@@ -553,10 +553,10 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub/fileManager/json` | Lists all files in File Manager (JSON array: name, size, date) |
 | `/hub2/roomsList` | List of rooms as JSON (alternative to `getRooms()` SDK method) |
 | `/logs/past/json` | Hub log buffer as JSON array of tab-delimited strings (chronological order, oldest first — reverse client-side for newest-first). Accepts optional `?type=dev&id=<deviceId>` or `?type=app&id=<appId>` to scope server-side to a single source. |
-| `/hub2/appsList` | All installed apps (built-in + user) as JSON. Keys: `systemAppTypes[]`, `userAppTypes[]`, `apps[]` (instance tree). Each `apps[]` entry has `{key, id, data: {id, name, type, disabled, user, hidden, appTypeId}, parent: bool, child: bool, children: [...]}`. Used by `list_installed_apps`. |
-| `/device/fullJson/<id>` | Comprehensive device JSON — includes `appsUsing` array (apps referencing this device: `{id, name, label, trueLabel, disabled}`), `appsUsingCount`, `parentApp`, plus device commands/attributes/settings/dashboards. Used by `get_device_in_use_by`. |
-| `/installedapp/configure/json/<id>[/<pageName>]` | SDK-level config-page serialization for any installed app using `dynamicPage()`. Returns `{app, configPage: {name, title, sections: [{title, input: [...], body: [...]}]}, settings, childApps}`. `app` carries identity (label, name, appType, disabled, parentAppId). Sections hold typed inputs with current values. The Web UI itself consumes this endpoint. Used by `get_app_config`. |
-| `/installedapp/statusJson/<id>` | Raw Groovy `state` map for any installed app. Returns `{id, appState: [{name, value}, ...], appSettings: [...]}`. `appState[].value` shape varies: live hubs typically return the value already parsed as a Map (JsonSlurper recursively decoded the inner JSON); older firmwares or large payloads may leave it as a JSON-encoded String requiring a second parse. The implementation handles both: if value is already a Map, use it directly; if String, parse again. Used by `list_hpm_packages` and `get_hpm_drift` to read HPM's `state.manifests` package registry. Requires Hub Admin Read. |
+| `/hub2/appsList` | All installed apps (built-in + user) as JSON. Keys: `systemAppTypes[]`, `userAppTypes[]`, `apps[]` (instance tree). Each `apps[]` entry has `{key, id, data: {id, name, type, disabled, user, hidden, appTypeId}, parent: bool, child: bool, children: [...]}`. Used by `hub_list_installed_apps`. |
+| `/device/fullJson/<id>` | Comprehensive device JSON — includes `appsUsing` array (apps referencing this device: `{id, name, label, trueLabel, disabled}`), `appsUsingCount`, `parentApp`, plus device commands/attributes/settings/dashboards. Used by `hub_list_device_dependents`. |
+| `/installedapp/configure/json/<id>[/<pageName>]` | SDK-level config-page serialization for any installed app using `dynamicPage()`. Returns `{app, configPage: {name, title, sections: [{title, input: [...], body: [...]}]}, settings, childApps}`. `app` carries identity (label, name, appType, disabled, parentAppId). Sections hold typed inputs with current values. The Web UI itself consumes this endpoint. Used by `hub_get_app_config`. |
+| `/installedapp/statusJson/<id>` | Raw Groovy `state` map for any installed app. Returns `{id, appState: [{name, value}, ...], appSettings: [...]}`. `appState[].value` shape varies: live hubs typically return the value already parsed as a Map (JsonSlurper recursively decoded the inner JSON); older firmwares or large payloads may leave it as a JSON-encoded String requiring a second parse. The implementation handles both: if value is already a Map, use it directly; if String, parse again. Used by `hub_list_hpm_packages` (including its `includeDrift=true` mode) to read HPM's `state.manifests` package registry. Requires Hub Admin Read. |
 
 **Write endpoints (POST):**
 | Path | Body | Purpose |
@@ -590,7 +590,7 @@ The server implements MCP protocol version `2024-11-05`:
 - **Methods**: `initialize`, `tools/list`, `tools/call`, `ping`
 - **Notifications**: Handled silently (HTTP 204)
 - **Error codes**: `-32700` (parse), `-32600` (invalid request), `-32601` (method not found), `-32602` (invalid params from `IllegalArgumentException`), `-32603` (internal error)
-- **`tools/list` returns the full catalog in one response.** Pagination was tried (page size 50, cursor-based) but removed because many MCP clients — including the Claude.ai connector — don't iterate `nextCursor`, which silently truncated the flat-mode catalog at 50 tools. The full-catalog response is backstopped by the universal response-size guard at `handleMcpRequest` (124,000-byte threshold) that emits a loud `-32603 "Response too large"` envelope if the catalog ever exceeds the hub cap. Stale clients passing a `cursor` get the full catalog and find no `nextCursor`. Opt-in cursor pagination on `tools/call` (`list_devices`, `list_installed_apps`, `list_rm_rules`, etc.) is unaffected.
+- **`tools/list` returns the full catalog in one response.** Pagination was tried (page size 50, cursor-based) but removed because many MCP clients — including the Claude.ai connector — don't iterate `nextCursor`, which silently truncated the flat-mode catalog at 50 tools. The full-catalog response is backstopped by the universal response-size guard at `handleMcpRequest` (124,000-byte threshold) that emits a loud `-32603 "Response too large"` envelope if the catalog ever exceeds the hub cap. Stale clients passing a `cursor` get the full catalog and find no `nextCursor`. Opt-in cursor pagination on `tools/call` (`hub_list_devices`, `hub_list_installed_apps`, `hub_list_rules`, etc.) is unaffected.
 
 ### Common Pitfalls
 

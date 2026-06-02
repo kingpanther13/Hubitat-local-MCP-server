@@ -75,13 +75,13 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         and: 'at least these well-known entries are in the catalog by name (non-gatewayed base tools + a gateway)'
         def names = response.result.tools*.name as Set
-        // list_devices + get_device are base tools (not behind a gateway) — getToolDefinitions
+        // hub_list_devices + hub_get_device are base tools (not behind a gateway) — getToolDefinitions
         // at hubitat-mcp-server.groovy:717-744 folds gatewayed tools under a gateway entry
         // instead of listing them individually.
-        names.contains('list_devices')
-        names.contains('get_device')
-        // manage_rooms is a gateway, so it appears by its gateway name, not its sub-tool names.
-        names.contains('manage_rooms')
+        names.contains('hub_list_devices')
+        names.contains('hub_get_device')
+        // hub_manage_rooms is a gateway, so it appears by its gateway name, not its sub-tool names.
+        names.contains('hub_manage_rooms')
 
         and: 'every entry has the MCP tool shape with non-blank name + description'
         response.result.tools.every {
@@ -93,7 +93,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         and: 'no inputSchema carries a top-level anyOf/oneOf/allOf (issue #204 regression guard — Anthropic input_schema validator HTTP-400s on these; first surfaced via Haiku 4.5)'
         // Iterates the full catalog so this guard catches a new tool added
         // anywhere in getToolDefinitions(), not just the one that originally
-        // tripped it (import_native_app). Both modes carry this assertion
+        // tripped it (hub_import_native_app). Both modes carry this assertion
         // because the flat catalog is what Anthropic-validator clients
         // actually see (gateway-mode hides sub-tool schemas under the
         // gateway entry's catalog payload, but the catch-all here still
@@ -111,10 +111,10 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // A regression in applyDescriptionTransform / JsonOutput that stripped
         // the `annotations` key would silently undo the Read/Write split.
         response.result.tools.every { it.annotations?.readOnlyHint instanceof Boolean }
-        def listDevices = response.result.tools.find { it.name == 'list_devices' }
+        def listDevices = response.result.tools.find { it.name == 'hub_list_devices' }
         listDevices.annotations.readOnlyHint == true
         listDevices.annotations.containsKey('destructiveHint') == false
-        def manageDestructive = response.result.tools.find { it.name == 'manage_destructive_hub_ops' }
+        def manageDestructive = response.result.tools.find { it.name == 'hub_manage_destructive_ops' }
         manageDestructive.annotations.readOnlyHint == false
         manageDestructive.annotations.destructiveHint == true
     }
@@ -144,23 +144,23 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // loud -32603 envelope if the catalog exceeds the hub's 124,000-byte
         // cap -- avoids that footgun. Any client that DOES iterate nextCursor
         // simply finds none and terminates after one call. Note: cursor
-        // pagination on tools/call (list_devices, list_installed_apps, etc.
+        // pagination on tools/call (hub_list_devices, hub_list_installed_apps, etc.
         // via _paginateList) is unchanged -- that is opt-in and remains.
         !response.result.containsKey('nextCursor')
 
-        and: 'response carries every flat-mode tool (gateway entries gone, sub-tools surface, search_tools suppressed)'
+        and: 'response carries every flat-mode tool (gateway entries gone, sub-tools surface, hub_search_tools suppressed)'
         def names = response.result.tools*.name as Set
-        !names.contains('manage_rooms')
-        !names.contains('manage_files')
-        !names.contains('search_tools')
-        names.contains('list_rooms')
-        names.contains('list_files')
-        names.contains('list_devices')
+        !names.contains('hub_manage_rooms')
+        !names.contains('hub_manage_files')
+        !names.contains('hub_search_tools')
+        names.contains('hub_list_rooms')
+        names.contains('hub_list_files')
+        names.contains('hub_list_devices')
 
         and: 'feature-toggle-gated tools also surface (proves the envelope returns the full flat catalog, not just the cores)'
-        names.contains('list_rm_rules')
-        names.contains('list_installed_apps')
-        names.contains('custom_create_rule')
+        names.contains('hub_list_rules')
+        names.contains('hub_list_installed_apps')
+        names.contains('hub_create_custom_rule')
 
         and: 'no duplicate tool names in the response'
         response.result.tools.size() == names.size()
@@ -179,10 +179,10 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         and: 'flat-mode wire envelope also carries readOnlyHint per leaf tool'
         response.result.tools.every { it.annotations?.readOnlyHint instanceof Boolean }
-        def listRooms = response.result.tools.find { it.name == 'list_rooms' }
+        def listRooms = response.result.tools.find { it.name == 'hub_list_rooms' }
         listRooms.annotations.readOnlyHint == true
         listRooms.annotations.containsKey('destructiveHint') == false
-        def deleteRoom = response.result.tools.find { it.name == 'delete_room' }
+        def deleteRoom = response.result.tools.find { it.name == 'hub_delete_room' }
         deleteRoom.annotations.readOnlyHint == false
         deleteRoom.annotations.destructiveHint == true
     }
@@ -210,7 +210,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // nextCursor (or any value -- numeric, non-numeric, out-of-range, negative,
         // empty) now receive the full catalog rather than a -32602 error. Their
         // iteration loop terminates on the missing nextCursor in the same response.
-        // Opt-in tools/call cursors (list_devices etc.) are not affected.
+        // Opt-in tools/call cursors (hub_list_devices etc.) are not affected.
         given:
         mcpDriver.pushBody([jsonrpc: '2.0', id: 70, method: 'tools/list', params: [cursor: cursorValue]])
 
@@ -242,7 +242,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         script.metaClass.getRooms = { -> bigRooms }
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 100, method: 'tools/call',
-            params: [name: 'list_rooms', arguments: [:]]
+            params: [name: 'hub_list_rooms', arguments: [:]]
         ])
 
         when:
@@ -259,7 +259,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
         inner.response_too_large == true
         inner.truncated == true
-        inner.tool == 'list_rooms'
+        inner.tool == 'hub_list_rooms'
         inner.sizeLimitBytes == 120000
         inner.estimatedBytes instanceof Number
         inner.estimatedBytes > inner.sizeLimitBytes
@@ -279,7 +279,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         settingsMap.mcpLogLevel = 'debug'
         def padding = 'x' * 80
         script.metaClass.getRooms = { -> (0..<2000).collect { i -> [id: i as Long, name: "Room-${i}-${padding}"] } }
-        mcpDriver.pushBody([jsonrpc: '2.0', id: 110, method: 'tools/call', params: [name: 'list_rooms', arguments: [:]]])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 110, method: 'tools/call', params: [name: 'hub_list_rooms', arguments: [:]]])
 
         when:
         script.handleMcpRequest()
@@ -288,20 +288,20 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         def warn = (stateMap.debugLogs?.entries ?: []).find { it.message?.contains('response too large') }
         warn != null
         warn.level == 'warn'
-        warn.details.tool == 'list_rooms'
+        warn.details.tool == 'hub_list_rooms'
         warn.details.gateway == null  // direct call, not gateway-routed
         warn.details.bytes > 120000
         warn.details.limit == 120000
     }
 
     def "size guard surfaces the inner sub-tool name + gateway hint when called through a manage_* gateway (#174)"() {
-        given: 'a stubbed sub-tool (get_app_config) that returns a huge config'
+        given: 'a stubbed sub-tool (hub_get_app_config) that returns a huge config'
         settingsMap.enableBuiltinApp = true
         settingsMap.enableHubAdminRead = true
-        // useGateways=true so manage_installed_apps actually dispatches (PR #187/#191's
+        // useGateways=true so hub_manage_installed_apps actually dispatches (PR #187/#191's
         // flat-mode matrix would otherwise short-circuit gateway calls with isError).
         settingsMap.useGateways = true
-        // Build a get_app_config response large enough to trip the wire-byte guard once
+        // Build a hub_get_app_config response large enough to trip the wire-byte guard once
         // wrapped + escaped + envelope-encoded.
         def bigSettings = (0..<3000).collectEntries { i -> ["k${i}".toString(), ("v" * 50)] }
         script.metaClass.toolGetAppConfig = { Map args -> [success: true, app: [id: 99, label: 'X'], settings: bigSettings] }
@@ -310,10 +310,10 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
             config: [logLevel: 'debug', maxEntries: 1000]
         ]
         settingsMap.mcpLogLevel = 'debug'
-        // Gateway-routed call: name=manage_installed_apps, args carries tool+args.
+        // Gateway-routed call: name=hub_manage_installed_apps, args carries tool+args.
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 200, method: 'tools/call',
-            params: [name: 'manage_installed_apps', arguments: [tool: 'get_app_config', args: [appId: '99', includeSettings: true]]]
+            params: [name: 'hub_manage_installed_apps', arguments: [tool: 'hub_get_app_config', args: [appId: '99', includeSettings: true]]]
         ])
 
         when:
@@ -324,21 +324,21 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.error == null
         def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
         inner.response_too_large == true
-        inner.tool == 'get_app_config'
+        inner.tool == 'hub_get_app_config'
         inner.suggestion.contains('includeSettings')
 
-        and: 'debug-log details surface the gateway/sub-tool split for an operator running get_debug_logs'
+        and: 'debug-log details surface the gateway/sub-tool split for an operator running hub_get_debug_logs'
         def warn = (stateMap.debugLogs?.entries ?: []).find { it.message?.contains('response too large') }
-        warn.details.tool == 'get_app_config'
-        warn.details.gateway == 'manage_installed_apps'
+        warn.details.tool == 'hub_get_app_config'
+        warn.details.gateway == 'hub_manage_installed_apps'
     }
 
     def "non-gateway caller passing a stray `tool` arg does NOT route the suggestion to the wrong tool"() {
         // Defends against the would-be bug where a direct (non-gateway) caller with a
-        // stray args.tool='export_native_app' on list_devices would get an export_native_app
-        // suggestion ("use saveAs=..."), nonsensical for list_devices.
+        // stray args.tool='hub_export_native_app' on hub_list_devices would get an hub_export_native_app
+        // suggestion ("use saveAs=..."), nonsensical for hub_list_devices.
         given:
-        // Force list_devices to blow the cap by stubbing a giant selected-device list.
+        // Force hub_list_devices to blow the cap by stubbing a giant selected-device list.
         def padding = 'x' * 80
         def bigDevices = (0..<2000).collect { i ->
             def d = new TestDevice(id: i, name: "D${i}", label: "Device-${i}-${padding}")
@@ -348,7 +348,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         settingsMap.selectedDevices = bigDevices
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 201, method: 'tools/call',
-            params: [name: 'list_devices', arguments: [tool: 'export_native_app']]
+            params: [name: 'hub_list_devices', arguments: [tool: 'hub_export_native_app']]
         ])
 
         when:
@@ -357,9 +357,9 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         then:
         def inner = new groovy.json.JsonSlurper().parseText(mcpDriver.parseResponseJson().result.content[0].text)
         inner.response_too_large == true
-        inner.tool == 'list_devices'                       // NOT export_native_app
-        inner.suggestion.contains('filter')                // list_devices guidance
-        !inner.suggestion.contains('saveAs')               // not export_native_app guidance
+        inner.tool == 'hub_list_devices'                       // NOT hub_export_native_app
+        inner.suggestion.contains('filter')                // hub_list_devices guidance
+        !inner.suggestion.contains('saveAs')               // not hub_export_native_app guidance
     }
 
     def "tools/call passes small results through unchanged (size guard does not perturb normal traffic)"() {
@@ -367,7 +367,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         script.metaClass.getRooms = { -> [[id: 1L, name: 'Den']] }
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 101, method: 'tools/call',
-            params: [name: 'list_rooms', arguments: [:]]
+            params: [name: 'hub_list_rooms', arguments: [:]]
         ])
 
         when:
@@ -389,7 +389,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // intercepts cleanly.
         given:
         script.metaClass.toolListRooms = { ignored -> null }
-        mcpDriver.pushBody([jsonrpc: '2.0', id: 102, method: 'tools/call', params: [name: 'list_rooms', arguments: [:]]])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 102, method: 'tools/call', params: [name: 'hub_list_rooms', arguments: [:]]])
 
         when:
         script.handleMcpRequest()
@@ -400,8 +400,8 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.result.isError == true
         def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
         inner.isError == true
-        inner.error.contains('list_rooms')
-        inner.tool == 'list_rooms'
+        inner.error.contains('hub_list_rooms')
+        inner.tool == 'hub_list_rooms'
     }
 
     // The non-serializable-result branch in handleToolsCall is defensive: groovy.json.JsonOutput
@@ -420,29 +420,29 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         where:
         toolName              | expectedFragment
-        'list_devices'        | 'filter'
-        'list_installed_apps' | 'cursor'
-        'get_app_config'      | 'includeSettings'
-        'device_health_check' | 'includeHealthy'
-        'get_memory_history'  | 'limit'
-        'get_hub_logs'        | 'pattern'
-        'export_native_app'   | 'saveAs'
-        'get_hub_info'        | 'subsection'
-        'get_app_source'      | 'File Manager'
+        'hub_list_devices'        | 'filter'
+        'hub_list_installed_apps' | 'cursor'
+        'hub_get_app_config'      | 'includeSettings'
+        'hub_get_device_health' | 'includeHealthy'
+        'hub_get_memory_history'  | 'limit'
+        'hub_get_logs'        | 'pattern'
+        'hub_export_native_app'   | 'saveAs'
+        'hub_get_info'        | 'subsection'
+        'hub_get_source'      | 'File Manager'
         'unknown_tool_xyz'    | 'narrow your query'
     }
 
-    def "tools/call list_rooms flows through render with an MCP content envelope"() {
+    def "tools/call hub_list_rooms flows through render with an MCP content envelope"() {
         given: 'a stubbed getRooms returning a deterministic list'
         script.metaClass.getRooms = { ->
             [[id: 1L, name: 'Living Room'], [id: 2L, name: 'Kitchen']]
         }
-        // list_rooms lives behind the manage_rooms gateway in tools/list, but executeTool
+        // hub_list_rooms lives behind the hub_manage_rooms gateway in tools/list, but executeTool
         // still dispatches it directly by tool name at hubitat-mcp-server.groovy:1853 — the
         // gateway is a tools/list folding convention, not a dispatch barrier.
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 3, method: 'tools/call',
-            params: [name: 'list_rooms', arguments: [:]]
+            params: [name: 'hub_list_rooms', arguments: [:]]
         ])
 
         when:
@@ -467,7 +467,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         }
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 30, method: 'tools/call',
-            params: [name: 'list_rooms', arguments: [:]]
+            params: [name: 'hub_list_rooms', arguments: [:]]
         ])
 
         when:

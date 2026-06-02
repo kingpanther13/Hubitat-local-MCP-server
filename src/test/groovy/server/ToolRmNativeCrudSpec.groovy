@@ -12,10 +12,10 @@ import spock.lang.Shared
  *   toolUpdateRmRule          -> update_rm_rule
  *   toolDeleteRmRule          -> delete_rm_rule
  *
- * Reading is via the existing get_app_config (manage_installed_apps gateway).
- * Backup enumeration + restore is via the existing list_item_backups +
- * restore_item_backup (manage_apps_drivers gateway) — rule snapshots use
- * type="rm-rule" and restore_item_backup dispatches them through the private
+ * Reading is via the existing hub_get_app_config (hub_manage_installed_apps gateway).
+ * Backup enumeration + restore is via the existing hub_list_backups +
+ * hub_restore_backup (hub_manage_code_read gateway) — rule snapshots use
+ * type="rm-rule" and hub_restore_backup dispatches them through the private
  * _rmRestoreFromBackup helper. The cross-tool restore path is exercised
  * here too to guard the dispatch + replay shape.
  *
@@ -47,7 +47,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def setupSpec() {
         // Wire location reads to the shared TestLocation stub so code paths that
-        // call location.modes (addTrigger Mode, get_modes, toolSetMode) get
+        // call location.modes (addTrigger Mode, hub_list_modes, toolSetMode) get
         // deterministic results instead of NPE from the @AutoImplement null default.
         // HarnessSpec.setupSpec() runs first (Spock calls all setupSpec in hierarchy),
         // so appExecutor is already a Mock when this override runs.
@@ -232,7 +232,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         rawCalls.any { it == "/installedapp/forcedelete/975/quiet" }
     }
 
-    def "create_native_app caches RM parent id in state.parentAppIds.rule_machine"() {
+    def "hub_create_native_app caches RM parent id in state.parentAppIds.rule_machine"() {
         given:
         enableHubAdminWrite()
         def appsListCalls = 0
@@ -381,7 +381,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         result.configPageError?.contains("'size'")
         result.warning?.contains("rendering error")
-        result.restoreHint?.contains("restore_item_backup")
+        result.restoreHint?.contains("hub_restore_backup")
         result.health?.ok == false
         result.health?.configPageError?.contains("'size'")
     }
@@ -434,7 +434,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.backup?.backupKey?.startsWith("rm-rule_200_")
         result.backup?.type == "rm-rule"
 
-        and: "the snapshot is registered in the unified item-backup manifest so list_item_backups picks it up"
+        and: "the snapshot is registered in the unified item-backup manifest so hub_list_backups picks it up"
         atomicStateMap.itemBackupManifest?.values()?.any { it.type == "rm-rule" && it.ruleId == 200 }
     }
 
@@ -458,9 +458,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.backup != null
     }
 
-    // ---------- unified backup integration: list_item_backups + restore_item_backup ----------
+    // ---------- unified backup integration: hub_list_backups + hub_restore_backup ----------
 
-    def "list_item_backups surfaces rm-rule entries with rule-specific metadata alongside app/driver entries"() {
+    def "hub_list_backups surfaces rm-rule entries with rule-specific metadata alongside app/driver entries"() {
         given:
         enableReadOnly()
         atomicStateMap.itemBackupManifest = [
@@ -489,7 +489,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !result.backups[2].containsKey("ruleId")
     }
 
-    def "restore_item_backup dispatches rm-rule entries through the rule restore path (in-place when rule exists)"() {
+    def "hub_restore_backup dispatches rm-rule entries through the rule restore path (in-place when rule exists)"() {
         given:
         enableHubAdminWrite()
         def snapshot = [
@@ -543,7 +543,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsPost.body["tDev0.multiple"] == "true"
     }
 
-    def "restore_item_backup recreates the rule with a fresh id when the original was deleted"() {
+    def "hub_restore_backup recreates the rule with a fresh id when the original was deleted"() {
         given:
         enableHubAdminWrite()
         def snapshot = [
@@ -593,7 +593,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.originalRuleId == 400
     }
 
-    def "restore_item_backup uses rule_machine default when snapshot has no appType field (legacy snapshot)"() {
+    def "hub_restore_backup uses rule_machine default when snapshot has no appType field (legacy snapshot)"() {
         given: 'a legacy rm-rule snapshot captured before the appType field was added'
         enableHubAdminWrite()
         def snapshot = [
@@ -644,7 +644,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.originalRuleId == 350
     }
 
-    def "restore_item_backup surfaces success:false when settings replay throws mid-flow"() {
+    def "hub_restore_backup surfaces success:false when settings replay throws mid-flow"() {
         given: 'rule still exists in-place; _rmUpdateAppSettings will throw mid-replay'
         enableHubAdminWrite()
         def snapshot = [
@@ -1450,10 +1450,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
 
-        then: "the silent no-op is surfaced as success: false with the verify-via-get_app_config recovery hint"
+        then: "the silent no-op is surfaced as success: false with the verify-via-hub_get_app_config recovery hint"
         result.success == false
         result.error?.contains("still present in rule")
-        result.error?.contains("Verify via get_app_config")
+        result.error?.contains("Verify via hub_get_app_config")
     }
 
     def "removeAction succeeds immediately when deletion propagates on the first post-click fetch"() {
@@ -1509,7 +1509,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // restores the discard would leave these fields null even though
         // `removedIndices` and `note` continue to look correct. Pinning the
         // index-list diff lets callers detect post-delete state without an
-        // extra get_app_config round-trip.
+        // extra hub_get_app_config round-trip.
         // Both-ways pending (orchestrator).
         result.removedIndex == 1
         result.beforeIndices instanceof List
@@ -2150,9 +2150,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "retry loop fired at least 4 times (the budget) before throwing"
         verificationFetches >= 4
 
-        and: "error directs caller to verify via get_app_config and points at restore_item_backup for rollback"
-        result.error?.contains("get_app_config")
-        result.error?.contains("restore_item_backup")
+        and: "error directs caller to verify via hub_get_app_config and points at hub_restore_backup for rollback"
+        result.error?.contains("hub_get_app_config")
+        result.error?.contains("hub_restore_backup")
     }
 
     def "clearActions throws when trashActs never enters schema after trashAll click"() {
@@ -2309,16 +2309,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "safeRecovery.recommended steers to verify-then-decide, and safeRecovery.avoid lists cancelTrash"
         result.safeRecovery?.recommended == 'verify-then-decide'
         result.safeRecovery?.avoid == ['cancelTrash']
-        result.safeRecovery?.verifyVia == "get_app_config(appId: 100)"
+        result.safeRecovery?.verifyVia == "hub_get_app_config(appId: 100)"
         result.safeRecovery?.ifActionsAbsent == "treat as success -- clearActions committed post-response"
 
         and: "safeRecovery.ifActionsPresent gives an actionable wait-then-recheck path (NOT the misleading 'retry with longer wait'). Single anchored-phrase pin so a re-ordered wrong-impl can't satisfy three independent fragments out of sequence."
-        result.safeRecovery?.ifActionsPresent?.contains("wait 15s, then call get_app_config to re-check")
+        result.safeRecovery?.ifActionsPresent?.contains("wait 15s, then call hub_get_app_config to re-check")
         !result.safeRecovery?.ifActionsPresent?.contains("retry clearActions with longer wait")
 
         and: "the original diagnostic message is preserved in error (minus the internal marker)"
         result.error?.contains("after 10s of retries")
-        result.error?.contains("get_app_config")
+        result.error?.contains("hub_get_app_config")
         !result.error?.contains("[asyncCommitLikely]")
 
         and: "cancelTrash was NOT auto-fired -- doing so on the post-trashActs page can commit the pending delete (the exact data-loss vector this contract prevents)"
@@ -2340,7 +2340,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // the async-commit-likely retry-window-expired case, replaceActions
     // returns a partial response WITHOUT attempting the add half. The
     // pending-add specs are surfaced as `pendingActionsToAdd` so the caller
-    // can complete the replace if get_app_config confirms the clear committed.
+    // can complete the replace if hub_get_app_config confirms the clear committed.
     // Discriminator: `stage: 'replaceActions.clear_committed_late_no_add'`
     // + `pendingActionsToAdd` + `clearActionsResult.asyncCommitLikely`.
     def "replaceActions skips the add half when inner clearActions returns asyncCommitLikely"() {
@@ -2394,7 +2394,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.httpWriteStatus == 200
         result.wizardStuck == false
 
-        and: "pendingActionsToAdd carries every replacement spec verbatim so the caller can finish the replace via addAction if get_app_config confirms the clear"
+        and: "pendingActionsToAdd carries every replacement spec verbatim so the caller can finish the replace via addAction if hub_get_app_config confirms the clear"
         result.pendingActionsToAdd == replacements
 
         and: "the inner clearActionsResult exposes the async-commit fingerprint"
@@ -2419,9 +2419,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "safeRecovery still carries the verify-then-decide protocol on the replaceActions path"
         result.safeRecovery?.recommended == 'verify-then-decide'
         result.safeRecovery?.avoid == ['cancelTrash']
-        result.safeRecovery?.verifyVia == "get_app_config(appId: 100)"
+        result.safeRecovery?.verifyVia == "hub_get_app_config(appId: 100)"
         result.safeRecovery?.ifActionsAbsent == "treat as success -- clearActions committed post-response"
-        result.safeRecovery?.ifActionsPresent?.contains("wait 15s, then call get_app_config to re-check")
+        result.safeRecovery?.ifActionsPresent?.contains("wait 15s, then call hub_get_app_config to re-check")
 
         and: "cancelTrash was NOT auto-fired on the inner-clearActions async path (data-loss prevention)"
         posts.count { it.path == "/installedapp/btn" && it.body?.name == "cancelTrash" } == 0
@@ -2596,7 +2596,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("waited 10 seconds")
         result.restoreHint != null
         result.verifyHint != null
-        result.verifyHint?.contains("get_app_config")
+        result.verifyHint?.contains("hub_get_app_config")
 
         and: "the marker never appears in the user-visible error (_rmDeleteAction never appended it, so a regression that started passing the marker through here would surface immediately)"
         !result.error?.contains("[asyncCommitLikely]")
@@ -3224,7 +3224,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // Issue #178 pre-flight refusal tests — three layers that refuse the
     // call BEFORE RM is touched so the false-fail-with-post-commit race
     // can't leak through. Counterpart to the post-mutation detection in
-    // check_rule_health (defense-in-depth).
+    // hub_get_rule_health (defense-in-depth).
 
     private List nestedIfThenSettings() {
         // Reproduces the live BAT-178 rule structure (well-formed):
@@ -3749,11 +3749,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.body?.get("name") == "trashAll" }
     }
 
-    // Coverage for the auto-attached health field on update_native_app
+    // Coverage for the auto-attached health field on hub_update_native_app
     // mutation responses — the PR's tool description promises this surface
     // but no existing test pins it.
 
-    def "update_native_app attaches health.structuralIssues field on every mutation response"() {
+    def "hub_update_native_app attaches health.structuralIssues field on every mutation response"() {
         given:
         enableHubAdminWrite()
         def delActFired = false
@@ -4184,14 +4184,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false || result.partial == true
     }
 
-    def "check_rule_health surfaces ok=true with no broken markers on a clean rule"() {
+    def "hub_get_rule_health surfaces ok=true with no broken markers on a clean rule"() {
         given:
         enableReadOnly()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Healthy Rule", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == true
@@ -4200,14 +4200,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.multipleFlagPoison == [] || result.multipleFlagPoison?.isEmpty()
     }
 
-    def "check_rule_health flags BROKEN marker in label as ok=false"() {
+    def "hub_get_rule_health flags BROKEN marker in label as ok=false"() {
         given:
         enableReadOnly()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Some Rule *BROKEN*", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == false
@@ -4230,7 +4230,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         out
     }
 
-    def "check_rule_health flags structural imbalance when an IF has no closing END-IF (issue #178)"() {
+    def "hub_get_rule_health flags structural imbalance when an IF has no closing END-IF (issue #178)"() {
         given:
         enableReadOnly()
         // Three IFs + two END-IFs — reproduces the live state observed on the test hub
@@ -4248,7 +4248,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == false
@@ -4259,7 +4259,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.issues.any { it.toString().contains("structural imbalance") }
     }
 
-    def "check_rule_health flags an orphaned END-IF (more END-IFs than IFs)"() {
+    def "hub_get_rule_health flags an orphaned END-IF (more END-IFs than IFs)"() {
         given:
         enableReadOnly()
         def settings = ifStructureSettings([
@@ -4272,7 +4272,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == false
@@ -4280,7 +4280,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.structuralIssues.any { it.toString().contains("action 4") }
     }
 
-    def "check_rule_health flags an orphaned End-Repeat closing nothing"() {
+    def "hub_get_rule_health flags an orphaned End-Repeat closing nothing"() {
         given:
         enableReadOnly()
         def settings = ifStructureSettings([
@@ -4291,7 +4291,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == false
@@ -4299,7 +4299,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.structuralIssues.any { it.toString().contains("orphaned closer") }
     }
 
-    def "check_rule_health flags ELSE-IF outside any IF block"() {
+    def "hub_get_rule_health flags ELSE-IF outside any IF block"() {
         given:
         enableReadOnly()
         def settings = ifStructureSettings([
@@ -4310,7 +4310,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == false
@@ -4318,7 +4318,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.structuralIssues.any { it.toString().contains("outside any IF block") }
     }
 
-    def "check_rule_health flags END-IF closing a Repeat block (mismatched closer)"() {
+    def "hub_get_rule_health flags END-IF closing a Repeat block (mismatched closer)"() {
         given:
         enableReadOnly()
         // Repeat opens at action 1, but the closer at action 3 is END-IF (wrong kind).
@@ -4331,14 +4331,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == false
         result.structuralIssues.any { it.toString().contains("END-IF") && it.toString().contains("closes a Repeat block") }
     }
 
-    def "check_rule_health reports ok on a balanced nested IF / IF / END-IF / IF / END-IF / END-IF"() {
+    def "hub_get_rule_health reports ok on a balanced nested IF / IF / END-IF / IF / END-IF / END-IF"() {
         given:
         enableReadOnly()
         def settings = ifStructureSettings([
@@ -4355,14 +4355,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == true
         result.structuralIssues == [] || result.structuralIssues?.isEmpty()
     }
 
-    def "check_rule_health reports ok on IF / ELSE-IF / ELSE / END-IF sequence"() {
+    def "hub_get_rule_health reports ok on IF / ELSE-IF / ELSE / END-IF sequence"() {
         given:
         enableReadOnly()
         def settings = ifStructureSettings([
@@ -4378,14 +4378,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == true
         result.structuralIssues == [] || result.structuralIssues?.isEmpty()
     }
 
-    def "check_rule_health reports ok on Repeat / End-Repeat sequence"() {
+    def "hub_get_rule_health reports ok on Repeat / End-Repeat sequence"() {
         given:
         enableReadOnly()
         def settings = ifStructureSettings([
@@ -4397,14 +4397,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("manage_native_rules_and_apps", "check_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == true
         result.structuralIssues == [] || result.structuralIssues?.isEmpty()
     }
 
-    // ---------- clone / export / import_native_app (appCloner trio) ----------
+    // ---------- clone / export / hub_import_native_app (appCloner trio) ----------
     // These three tools share the appCloner system app's wire format. Wire
     // format captured live via Chrome XHR sniffing on firmware 2.5.0.x:
     //
@@ -4427,7 +4427,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
     }
 
-    def "clone_native_app requires confirm=true"() {
+    def "hub_clone_native_app requires confirm=true"() {
         given: enableHubAdminWrite()
 
         when: script.toolCloneNativeApp([sourceAppId: 100])
@@ -4437,7 +4437,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("SAFETY CHECK FAILED")
     }
 
-    def "clone_native_app throws when sourceAppId is missing"() {
+    def "hub_clone_native_app throws when sourceAppId is missing"() {
         given: enableHubAdminWrite()
 
         when: script.toolCloneNativeApp([confirm: true])
@@ -4447,7 +4447,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.toLowerCase().contains("sourceappid")
     }
 
-    def "clone_native_app throws when source app config fetch returns empty"() {
+    def "hub_clone_native_app throws when source app config fetch returns empty"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/installedapp/configure/json/999') { params -> "" }
@@ -4460,7 +4460,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.toLowerCase().contains("not found")
     }
 
-    def "clone_native_app drives the full appCloner wizard and returns the new appId"() {
+    def "hub_clone_native_app drives the full appCloner wizard and returns the new appId"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
@@ -4514,7 +4514,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         navPost != null
     }
 
-    def "clone_native_app surfaces isError + error when child discovery returns null (soft-failure shape)"() {
+    def "hub_clone_native_app surfaces isError + error when child discovery returns null (soft-failure shape)"() {
         // Cloner fires but _appClonerDiscoverNewChild can't find the new
         // child (race, parent re-fetch lag, etc.). Pre-fix the return was
         // {success: false, newAppId: null, note: "..."} with no isError/error
@@ -4551,7 +4551,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.note == result.error
     }
 
-    def "clone_native_app rename writes settings[newName<sourceId>] before importNow"() {
+    def "hub_clone_native_app rename writes settings[newName<sourceId>] before importNow"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Src", [], 21) }
@@ -4589,7 +4589,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         renamePost.body["settings[newName100]"] == "My Renamed"
     }
 
-    def "export_native_app pulls JSON from the cloner's form-refresh response"() {
+    def "hub_export_native_app pulls JSON from the cloner's form-refresh response"() {
         given:
         enableHubAdminWrite()
         def fakeJson = '{"deviceReplacements":{},"appReplacements":{"100":{"appLabel":"Source Rule"}}}'
@@ -4625,7 +4625,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.contentLength == fakeJson.length()
     }
 
-    def "export_native_app saveAs uploads to File Manager"() {
+    def "hub_export_native_app saveAs uploads to File Manager"() {
         given:
         enableHubAdminWrite()
         def fakeJson = '{"deviceReplacements":{},"appReplacements":{"100":{"appLabel":"X"}}}'
@@ -4660,7 +4660,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         uploaded[0].len == fakeJson.getBytes("UTF-8").length
     }
 
-    def "import_native_app requires parentHintAppId + confirm"() {
+    def "hub_import_native_app requires parentHintAppId + confirm"() {
         given: enableHubAdminWrite()
 
         when:
@@ -4671,7 +4671,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("SAFETY CHECK FAILED") || ex.message.toLowerCase().contains("parenthint")
     }
 
-    def "import_native_app rejects non-JSON content"() {
+    def "hub_import_native_app rejects non-JSON content"() {
         given: enableHubAdminWrite()
 
         when:
@@ -4682,7 +4682,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.toLowerCase().contains("not valid json") || ex.message.toLowerCase().contains("appreplacements")
     }
 
-    def "import_native_app rejects JSON without appReplacements"() {
+    def "hub_import_native_app rejects JSON without appReplacements"() {
         given: enableHubAdminWrite()
 
         when:
@@ -4693,7 +4693,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.toLowerCase().contains("appreplacements")
     }
 
-    def "import_native_app throws when neither jsonContent nor fromFile is provided"() {
+    def "hub_import_native_app throws when neither jsonContent nor fromFile is provided"() {
         // Pre-issue-#204, a top-level anyOf in the inputSchema rejected the
         // no-payload call at the MCP boundary. The anyOf was removed because
         // Anthropic's input_schema validator HTTP-400s on top-level
@@ -4709,7 +4709,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.toLowerCase().contains("jsoncontent or fromfile")
     }
 
-    def "import_native_app drives the cloner with settings[ruleUpload]= and finds the new appId"() {
+    def "hub_import_native_app drives the cloner with settings[ruleUpload]= and finds the new appId"() {
         given:
         enableHubAdminWrite()
         def importJson = '{"deviceReplacements":{},"appReplacements":{"42":{"appLabel":"Source Rule","appTypeName":"Rule-5.1"}}}'
@@ -4771,7 +4771,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !importRulePosts.any { it.body?.containsKey("settings[newName100]") }
     }
 
-    def "import_native_app surfaces isError + error when child discovery returns null (soft-failure shape)"() {
+    def "hub_import_native_app surfaces isError + error when child discovery returns null (soft-failure shape)"() {
         // Wizard fires but _appClonerDiscoverNewChild can't diff a new child
         // under the parent. Pre-fix this returned {success: false, newAppId:
         // null, note: "..."} with no isError/error fields. LLM callers that
@@ -4809,7 +4809,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.note == result.error
     }
 
-    def "import_native_app preserves backslash-escapes in settings[ruleUpload] (HTTPBuilder Map encoder mangles them)"() {
+    def "hub_import_native_app preserves backslash-escapes in settings[ruleUpload] (HTTPBuilder Map encoder mangles them)"() {
         given:
         enableHubAdminWrite()
         // Canonical exports embed multi-select enum values as JSON-encoded
@@ -4852,7 +4852,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         decodeForm(stagingBody)["settings[ruleUpload]"] == importJson
     }
 
-    def "export_native_app collapses appCloner's over-escaped multi-select values"() {
+    def "hub_export_native_app collapses appCloner's over-escaped multi-select values"() {
         given:
         enableHubAdminWrite()
         // Hubitat appCloner emits `\\"` (2 backslashes + quote) where canonical
@@ -4894,7 +4894,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         parsed.appData["100"].appSettings[0].value == '["Events"]'
     }
 
-    def "import_native_app refuses parentHintAppId that has no parent (no diff target -> would silently false-fail)"() {
+    def "hub_import_native_app refuses parentHintAppId that has no parent (no diff target -> would silently false-fail)"() {
         given:
         enableHubAdminWrite()
         // Top-level app (parentAppId == null) — we can't diff children to spot
@@ -5131,10 +5131,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         settingsMap.enableCustomRuleEngine = true
 
-        // All 10 custom_* renames split across dispatch paths:
+        // All 8 custom_* renames split across dispatch paths:
         //   - executeTool top-level switch: every custom_* has a case there
-        //   - manage_rules_admin gateway:    delete/test/export/import/clone
-        //   - manage_diagnostics gateway:    custom_get_rule_diagnostics
+        //   - hub_manage_rules gateway:    delete/test/export/import/clone
+        // (list + diagnostics folded into hub_get_custom_rule; diagnostics now
+        //  ride hub_get_custom_rule with detailed=true, not a hub_manage_diagnostics
+        //  sub-tool.)
         // The point of this test is the dispatch wiring: a regression that
         // typos a case label or drops a tool from a gateway tools[] list
         // would surface as "Unknown tool" — that's the failure we're guarding.
@@ -5143,42 +5145,30 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // requireHubAdminWrite, and the rule-engine state machine.
 
         when: "every renamed tool name is dispatched"
-        // Top-level executeTool has cases for all 10 renames including
-        // custom_get_rule_diagnostics (which is also a manage_diagnostics
-        // sub-tool but routes through the same top-level switch).
-        def topLevel = ["custom_list_rules", "custom_get_rule", "custom_create_rule",
-                        "custom_update_rule", "custom_delete_rule", "custom_test_rule",
-                        "custom_get_rule_diagnostics",
-                        "custom_export_rule", "custom_import_rule", "custom_clone_rule"]
+        // Top-level executeTool has cases for all 8 renames.
+        def topLevel = ["hub_get_custom_rule", "hub_create_custom_rule",
+                        "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule",
+                        "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"]
         def topLevelErrors = topLevel.collect { name ->
             try { script.executeTool(name, [:]); return null }
             catch (IllegalArgumentException e) { return e.message }
             catch (Exception ignored) { return null }
         }
 
-        // manage_rules_admin gateway lists 5 tools — verify gateway routes them.
-        def rulesAdminTools = ["custom_delete_rule", "custom_test_rule",
-                               "custom_export_rule", "custom_import_rule", "custom_clone_rule"]
+        // hub_manage_rules gateway lists 5 tools — verify gateway routes them.
+        def rulesAdminTools = ["hub_delete_custom_rule", "hub_test_custom_rule",
+                               "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"]
         def rulesAdminErrors = rulesAdminTools.collect { name ->
-            try { script.handleGateway("manage_rules_admin", name, [:]); return null }
+            try { script.handleGateway("hub_manage_rules", name, [:]); return null }
             catch (IllegalArgumentException e) { return e.message }
             catch (Exception ignored) { return null }
         }
 
-        // manage_diagnostics gateway exposes custom_get_rule_diagnostics.
-        def diagErrors
-        try { script.handleGateway("manage_diagnostics", "custom_get_rule_diagnostics", [:]); diagErrors = null }
-        catch (IllegalArgumentException e) { diagErrors = e.message }
-        catch (Exception ignored) { diagErrors = null }
-
-        then: "no top-level dispatch returns 'Unknown tool: custom_*' for any of the 10 renames"
+        then: "no top-level dispatch returns 'Unknown tool: custom_*' for any of the 8 renames"
         topLevelErrors.every { msg -> msg == null || !msg.contains("Unknown tool") }
 
-        and: "no manage_rules_admin gateway dispatch returns 'Unknown tool ... in manage_rules_admin'"
-        rulesAdminErrors.every { msg -> msg == null || !(msg.contains("Unknown tool") && msg.contains("manage_rules_admin")) }
-
-        and: "manage_diagnostics gateway routes custom_get_rule_diagnostics — no 'Unknown tool ... in manage_diagnostics'"
-        diagErrors == null || !(diagErrors.contains("Unknown tool") && diagErrors.contains("manage_diagnostics"))
+        and: "no hub_manage_rules gateway dispatch returns 'Unknown tool ... in hub_manage_rules'"
+        rulesAdminErrors.every { msg -> msg == null || !(msg.contains("Unknown tool") && msg.contains("hub_manage_rules")) }
     }
 
     // ---------- addTrigger/addAction discover mode ----------
@@ -5208,7 +5198,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "backup-before-write is a hard gate: a backup failure aborts the call BEFORE any write/click POST is issued"() {
-        // Every non-discover update_native_app path runs _rmBackupRuleSnapshot
+        // Every non-discover hub_update_native_app path runs _rmBackupRuleSnapshot
         // before dispatching to a write helper (settings/button/addTrigger/
         // addAction/removeAction/clearActions/moveAction/walkStep/etc.).
         // If the snapshot throws (config fetch fails, uploadHubFile fails,
@@ -5488,7 +5478,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // already broken (health check returns brokenMarkers=["**Broken Trigger**"]).
         // The new trigger commits successfully, but the overall rule is in a known-bad
         // state -- surface as partial=true so the LLM sees it without a separate
-        // check_rule_health call.
+        // hub_get_rule_health call.
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -7058,7 +7048,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // xVar<N> (variable picker enum) populated from hub variables, and
         // ReltDev<N> for the comparator. Verified live 2026-05-17: with no
         // typed `variable` field the request fails with a clear message,
-        // pointing the caller at list_variables.
+        // pointing the caller at hub_list_variables.
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -7118,9 +7108,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == true
     }
 
-    def "addTrigger Variable without `variable` field fails with a list_variables pointer"() {
+    def "addTrigger Variable without `variable` field fails with a hub_list_variables pointer"() {
         // Caller forgot the variable name. The helper should refuse with a
-        // clear error pointing at list_variables instead of letting the
+        // clear error pointing at hub_list_variables instead of letting the
         // wizard silently commit a half-baked broken trigger.
         given:
         enableHubAdminWrite()
@@ -7155,10 +7145,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "success=false with a pointer at list_variables in the error message"
+        then: "success=false with a pointer at hub_list_variables in the error message"
         result.success == false
         result.error?.toString()?.contains("variable")
-        result.error?.toString()?.contains("list_variables")
+        result.error?.toString()?.contains("hub_list_variables")
     }
 
     def "addTrigger Variable conditional A!=B writes xVar_<N>+RelrDev_<N>+isVar_<N>+xVarR_<N> via typed condition fields"() {
@@ -7568,7 +7558,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "condition.variable is required when condition.capability='Variable'"() {
         // Symmetric guard with the trigger-side missing-variable error.
         // The condition can't be built without a hub variable name on the
-        // left-hand side, so refuse early with a list_variables pointer.
+        // left-hand side, so refuse early with a hub_list_variables pointer.
         given:
         enableHubAdminWrite()
         def fetchSeq = 0
@@ -7611,10 +7601,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "success=false with an actionable error pointing at list_variables"
+        then: "success=false with an actionable error pointing at hub_list_variables"
         result.success == false
         result.error?.toString()?.contains("condition.variable")
-        result.error?.toString()?.contains("list_variables")
+        result.error?.toString()?.contains("hub_list_variables")
     }
 
     def "condition rawSettings expands @N to the condition index"() {
@@ -7829,7 +7819,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Both-ways pending (orchestrator).
         when:
         def tools = script.getAllToolDefinitions()
-        def updateNativeApp = tools.find { it.name == "update_native_app" }
+        def updateNativeApp = tools.find { it.name == "hub_update_native_app" }
         def schemaText = updateNativeApp?.inputSchema?.toString() ?: ""
 
         then: "the addAction property description carries the self-bakes truth-up"
@@ -9717,9 +9707,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- Custom Engine toggle visibility + source marker + read-only gate ----------
 
-    def "custom_* visibility: full mode (engine ON) shows all 10 custom_* tools"() {
-        // When enableCustomRuleEngine=true, all 10 custom_* tools must be present
+    def "custom_* visibility: full mode (engine ON) shows all 8 custom_* tools"() {
+        // When enableCustomRuleEngine=true, all 8 custom_* tools must be present
         // in getToolDefinitions() regardless of enableBuiltinApp state.
+        // (list + diagnostics folded into hub_get_custom_rule.)
         given:
         settingsMap.enableCustomRuleEngine = true
         settingsMap.enableBuiltinApp = false
@@ -9729,15 +9720,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def tools = script.getToolDefinitions()
         def names = tools*.name as Set
 
-        then: "all 10 custom_* tools are visible"
-        ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule",
-         "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics",
-         "custom_export_rule", "custom_import_rule", "custom_clone_rule"].every { names.contains(it) }
+        then: "all 8 custom_* tools are visible"
+        ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule",
+         "hub_delete_custom_rule", "hub_test_custom_rule",
+         "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].every { names.contains(it) }
     }
 
     def "custom_* visibility: read-only mode (engine OFF + builtinApp ON) shows read subset only"() {
-        // When enableCustomRuleEngine=false AND enableBuiltinApp=true, only the 5 read
+        // When enableCustomRuleEngine=false AND enableBuiltinApp=true, only the 3 read
         // tools should be visible; the 5 write/structural tools must be hidden.
+        // (list + diagnostics folded into hub_get_custom_rule, which stays visible.)
         given:
         settingsMap.enableCustomRuleEngine = false
         settingsMap.enableBuiltinApp = true
@@ -9748,15 +9740,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def names = tools*.name as Set
 
         then: "read subset is visible"
-        ["custom_list_rules", "custom_get_rule", "custom_update_rule",
-         "custom_test_rule", "custom_get_rule_diagnostics"].every { names.contains(it) }
+        ["hub_get_custom_rule", "hub_update_custom_rule",
+         "hub_test_custom_rule"].every { names.contains(it) }
 
         and: "write/structural subset is hidden"
-        ["custom_create_rule", "custom_delete_rule", "custom_export_rule",
-         "custom_import_rule", "custom_clone_rule"].every { !names.contains(it) }
+        ["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule",
+         "hub_import_custom_rule", "hub_clone_custom_rule"].every { !names.contains(it) }
     }
 
-    def "custom_* visibility: full-hide mode (engine OFF + builtinApp OFF) hides all 10 custom_* tools"() {
+    def "custom_* visibility: full-hide mode (engine OFF + builtinApp OFF) hides all 8 custom_* tools"() {
         // When both toggles are off, no custom_* tools should appear.
         given:
         settingsMap.enableCustomRuleEngine = false
@@ -9767,15 +9759,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def tools = script.getToolDefinitions()
         def names = tools*.name as Set
 
-        then: "all 10 custom_* tools are hidden"
-        ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule",
-         "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics",
-         "custom_export_rule", "custom_import_rule", "custom_clone_rule"].every { !names.contains(it) }
+        then: "all 8 custom_* tools are hidden"
+        ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule",
+         "hub_delete_custom_rule", "hub_test_custom_rule",
+         "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].every { !names.contains(it) }
     }
 
-    def "custom_list_rules includes source: mcp_custom_engine on every rule"() {
+    def "hub_get_custom_rule (list mode) includes source: mcp_custom_engine on every rule"() {
         // The source marker lets LLMs distinguish MCP-managed rules from
-        // native RM rules (list_rm_rules / manage_native_rules_and_apps).
+        // native RM rules (hub_list_rules / hub_manage_native_rules).
         given:
         settingsMap.enableCustomRuleEngine = true
         def app1 = new support.TestChildApp(id: 11L, label: "Rule One")
@@ -9792,7 +9784,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.rules.every { it.source == "mcp_custom_engine" }
     }
 
-    def "custom_get_rule includes source: mcp_custom_engine in response"() {
+    def "hub_get_custom_rule includes source: mcp_custom_engine in response"() {
         // get_rule must also carry the source marker so callers can identify
         // the rule type from a single-rule fetch.
         given:
@@ -9809,7 +9801,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.name == "My Rule"
     }
 
-    def "custom_update_rule read-only mode: enabled field allowed"() {
+    def "hub_update_custom_rule read-only mode: enabled field allowed"() {
         // In read-only mode, updating only the 'enabled' field must succeed.
         // The gate allows 'enabled' (and nothing else structural).
         given:
@@ -9825,7 +9817,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.ruleId == "55"
     }
 
-    def "custom_update_rule read-only mode: structural field rejected with legacy hint"() {
+    def "hub_update_custom_rule read-only mode: structural field rejected with legacy hint"() {
         // In read-only mode, passing triggers (or any non-enabled structural field)
         // must throw IllegalArgumentException that names the offending fields
         // and includes the legacy/redirect hint.
@@ -9841,7 +9833,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("read-only mode")
         ex.message.contains("triggers")
-        ex.message.contains("manage_native_rules_and_apps")
+        ex.message.contains("hub_manage_native_rules")
     }
 
     // ---------- runCommand parameter slot-allocation fix ----------
@@ -10159,7 +10151,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         moreParamsClicks == 0
     }
 
-    def "executeTool rejects write tool custom_create_rule when customEngineMode is readonly"() {
+    def "executeTool rejects write tool hub_create_custom_rule when customEngineMode is readonly"() {
         // Engine OFF + builtinApp ON => readonly mode. Write tools (create/delete/
         // export/import/clone) must be blocked at the executeTool dispatch gate,
         // not just inside toolCreateRule. This ensures the gate fires even when
@@ -10169,21 +10161,22 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.enableBuiltinApp = true
 
         when:
-        script.executeTool("custom_create_rule", [name: "x",
+        script.executeTool("hub_create_custom_rule", [name: "x",
             triggers: [[type: "time", time: "00:00"]],
             actions: [[type: "log", message: "y"]]])
 
         then: "write tool blocked with read-only mode message"
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("read-only mode")
-        ex.message.contains("manage_native_rules_and_apps")
+        ex.message.contains("hub_manage_native_rules")
     }
 
-    def "search_tools filters write custom_* tools in readonly mode"() {
-        // Engine OFF + builtinApp ON => readonly mode. search_tools must not
+    def "hub_search_tools filters write custom_* tools in readonly mode"() {
+        // Engine OFF + builtinApp ON => readonly mode. hub_search_tools must not
         // surface write/structural custom_* tools (create/delete/export/import/clone)
         // even though they live in the cached full corpus. Read-subset tools
-        // (list_rules, get_rule, etc.) must still appear in results.
+        // (hub_get_custom_rule, hub_update_custom_rule, hub_test_custom_rule) must
+        // still appear in results.
         given:
         settingsMap.enableCustomRuleEngine = false
         settingsMap.enableBuiltinApp = true
@@ -10194,36 +10187,36 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def resultNames = result.results*.tool as Set
 
         then: "write tools are filtered out of search results"
-        !resultNames.contains("custom_create_rule")
-        !resultNames.contains("custom_delete_rule")
-        !resultNames.contains("custom_export_rule")
-        !resultNames.contains("custom_import_rule")
-        !resultNames.contains("custom_clone_rule")
+        !resultNames.contains("hub_create_custom_rule")
+        !resultNames.contains("hub_delete_custom_rule")
+        !resultNames.contains("hub_export_custom_rule")
+        !resultNames.contains("hub_import_custom_rule")
+        !resultNames.contains("hub_clone_custom_rule")
 
         and: "only tools from the visible count are searched"
         result.totalToolsSearched < script.buildToolSearchCorpus().size()
     }
 
-    def "search_tools filters all custom_* tools in off mode"() {
-        // Engine OFF + builtinApp OFF => off mode. search_tools must not surface
-        // ANY custom_* tools -- the full set of 10 must be excluded from scoring.
+    def "hub_search_tools filters all custom_* tools in off mode"() {
+        // Engine OFF + builtinApp OFF => off mode. hub_search_tools must not surface
+        // ANY custom_* tools -- the full set of 8 must be excluded from scoring.
         given:
         settingsMap.enableCustomRuleEngine = false
         settingsMap.enableBuiltinApp = false
 
-        when: "searching for a query that would normally surface custom_list_rules"
+        when: "searching for a query that would normally surface hub_get_custom_rule (list mode)"
         def result = script.toolSearchTools([query: "custom list rules", maxResults: 10])
         def resultNames = result.results*.tool as Set
 
         then: "no custom_* tools appear in off-mode search results"
-        resultNames.every { !it.startsWith("custom_") }
+        resultNames.every { !it.contains("custom_rule") }
 
-        and: "visible corpus is smaller than full corpus by at least 10 (the hidden custom_* set)"
+        and: "visible corpus is smaller than full corpus by at least 8 (the hidden custom_* set)"
         def fullCorpusSize = script.buildToolSearchCorpus().size()
-        result.totalToolsSearched <= fullCorpusSize - 10
+        result.totalToolsSearched <= fullCorpusSize - 8
     }
 
-    def "executeTool rejects custom_create_rule when customEngineMode is off"() {
+    def "executeTool rejects hub_create_custom_rule when customEngineMode is off"() {
         // Engine OFF + builtinApp OFF => off mode. All custom_* tools must be
         // blocked at the executeTool gate with a message that names both toggles
         // and points to the recommended alternative (Built-in App Tools).
@@ -10232,7 +10225,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.enableBuiltinApp = false
 
         when:
-        script.executeTool("custom_create_rule", [name: "x",
+        script.executeTool("hub_create_custom_rule", [name: "x",
             triggers: [[type: "time", time: "00:00"]],
             actions: [[type: "log", message: "y"]]])
 
@@ -10243,7 +10236,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("Built-in App Tools")
     }
 
-    def "executeTool rejects custom_list_rules in off mode (read tools also blocked)"() {
+    def "executeTool rejects hub_get_custom_rule in off mode (read tools also blocked)"() {
         // In off mode even read-only custom_* tools are blocked -- the entire
         // engine is off. This is different from readonly mode where the read
         // subset is allowed.
@@ -10252,7 +10245,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.enableBuiltinApp = false
 
         when:
-        script.executeTool("custom_list_rules", [:])
+        script.executeTool("hub_get_custom_rule", [:])
 
         then: "read tool also blocked in full-off mode"
         def ex = thrown(IllegalArgumentException)
@@ -11309,8 +11302,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "returns success: false after retry budget exhausted"
         result.success == false
         result.error?.contains("waited 10s")
-        result.error?.contains("get_app_config")
-        result.error?.contains("restore_item_backup")
+        result.error?.contains("hub_get_app_config")
+        result.error?.contains("hub_restore_backup")
 
         and: "retry loop fired at least 4 times before exhausting"
         verificationFetches >= 4
@@ -11513,7 +11506,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // (see commit message + #187) we take SELECTIVE representative
     // coverage rather than full one-for-one parity. The coverage
     // matrix: one happy path per native_app tool (create / update /
-    // delete / clone / export / import / check_rule_health), plus
+    // delete / clone / export / import / hub_get_rule_health), plus
     // representative IAE (-32602) and runtime-exception (isError)
     // envelope shapes. The full per-tool internals are covered by
     // the direct-call features above; this block guards the
@@ -11521,16 +11514,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // executeTool) for both useGateways=true and useGateways=false.
     // ============================================================
 
-    // ---------- create_native_app dispatch ----------
+    // ---------- hub_create_native_app dispatch ----------
 
     @spock.lang.Unroll
-    def "create_native_app via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
+    def "hub_create_native_app via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('create_native_app', [name: "BAT-RM-demo"])
+        def response = mcpDriver.callTool('hub_create_native_app', [name: "BAT-RM-demo"])
 
         then:
         response.error.code == -32602
@@ -11541,13 +11534,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "create_native_app via dispatch returns -32602 envelope when name is missing (useGateways=#useGateways)"() {
+    def "hub_create_native_app via dispatch returns -32602 envelope when name is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('create_native_app', [confirm: true])
+        def response = mcpDriver.callTool('hub_create_native_app', [confirm: true])
 
         then:
         response.error.code == -32602
@@ -11558,7 +11551,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "create_native_app via dispatch discovers RM parent, creates child, returns new appId (useGateways=#useGateways)"() {
+    def "hub_create_native_app via dispatch discovers RM parent, creates child, returns new appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -11575,7 +11568,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('create_native_app', [name: "BAT-RM-demo", confirm: true])
+        def response = mcpDriver.callTool('hub_create_native_app', [name: "BAT-RM-demo", confirm: true])
 
         then:
         response.error == null
@@ -11592,16 +11585,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // ---------- update_native_app dispatch ----------
+    // ---------- hub_update_native_app dispatch ----------
 
     @spock.lang.Unroll
-    def "update_native_app via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
+    def "hub_update_native_app via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_native_app', [appId: 100, settings: [a: 1]])
+        def response = mcpDriver.callTool('hub_update_native_app', [appId: 100, settings: [a: 1]])
 
         then:
         response.error.code == -32602
@@ -11612,7 +11605,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_native_app via dispatch emits 3-field capability contract for multi-device inputs (useGateways=#useGateways)"() {
+    def "hub_update_native_app via dispatch emits 3-field capability contract for multi-device inputs (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -11630,7 +11623,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_native_app', [appId: 100, settings: [tDev0: [8, 9]], confirm: true])
+        def response = mcpDriver.callTool('hub_update_native_app', [appId: 100, settings: [tDev0: [8, 9]], confirm: true])
 
         then:
         response.error == null
@@ -11647,10 +11640,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // ---------- delete_native_app dispatch ----------
+    // ---------- hub_delete_native_app dispatch ----------
 
     @spock.lang.Unroll
-    def "delete_native_app via dispatch force-deletes with snapshot when force=true (useGateways=#useGateways)"() {
+    def "hub_delete_native_app via dispatch force-deletes with snapshot when force=true (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -11664,7 +11657,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('delete_native_app', [appId: 200, force: true, confirm: true])
+        def response = mcpDriver.callTool('hub_delete_native_app', [appId: 200, force: true, confirm: true])
 
         then:
         response.error == null
@@ -11679,16 +11672,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // ---------- clone_native_app dispatch ----------
+    // ---------- hub_clone_native_app dispatch ----------
 
     @spock.lang.Unroll
-    def "clone_native_app via dispatch returns -32602 envelope when sourceAppId is missing (useGateways=#useGateways)"() {
+    def "hub_clone_native_app via dispatch returns -32602 envelope when sourceAppId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('clone_native_app', [confirm: true])
+        def response = mcpDriver.callTool('hub_clone_native_app', [confirm: true])
 
         then:
         response.error.code == -32602
@@ -11699,7 +11692,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "clone_native_app via dispatch drives the full appCloner wizard and returns the new appId (useGateways=#useGateways)"() {
+    def "hub_clone_native_app via dispatch drives the full appCloner wizard and returns the new appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -11724,7 +11717,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('clone_native_app', [sourceAppId: 100, confirm: true])
+        def response = mcpDriver.callTool('hub_clone_native_app', [sourceAppId: 100, confirm: true])
 
         then:
         response.error == null
@@ -11739,10 +11732,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // ---------- export_native_app dispatch ----------
+    // ---------- hub_export_native_app dispatch ----------
 
     @spock.lang.Unroll
-    def "export_native_app via dispatch pulls JSON from the cloner's form-refresh response (useGateways=#useGateways)"() {
+    def "hub_export_native_app via dispatch pulls JSON from the cloner's form-refresh response (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -11766,7 +11759,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('export_native_app', [sourceAppId: 100])
+        def response = mcpDriver.callTool('hub_export_native_app', [sourceAppId: 100])
 
         then:
         response.error == null
@@ -11782,16 +11775,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // ---------- import_native_app dispatch ----------
+    // ---------- hub_import_native_app dispatch ----------
 
     @spock.lang.Unroll
-    def "import_native_app via dispatch returns -32602 envelope on non-JSON content (useGateways=#useGateways)"() {
+    def "hub_import_native_app via dispatch returns -32602 envelope on non-JSON content (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('import_native_app', [jsonContent: 'not-json', parentHintAppId: 100, confirm: true])
+        def response = mcpDriver.callTool('hub_import_native_app', [jsonContent: 'not-json', parentHintAppId: 100, confirm: true])
 
         then:
         response.error.code == -32602
@@ -11803,13 +11796,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "import_native_app via dispatch returns -32602 envelope on JSON without appReplacements (useGateways=#useGateways)"() {
+    def "hub_import_native_app via dispatch returns -32602 envelope on JSON without appReplacements (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('import_native_app', [jsonContent: '{"foo":"bar"}', parentHintAppId: 100, confirm: true])
+        def response = mcpDriver.callTool('hub_import_native_app', [jsonContent: '{"foo":"bar"}', parentHintAppId: 100, confirm: true])
 
         then:
         response.error.code == -32602
@@ -11820,7 +11813,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "import_native_app via dispatch drives the cloner with settings[ruleUpload] and finds the new appId (useGateways=#useGateways)"() {
+    def "hub_import_native_app via dispatch drives the cloner with settings[ruleUpload] and finds the new appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -11849,7 +11842,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('import_native_app', [jsonContent: importJson, parentHintAppId: 100, confirm: true])
+        def response = mcpDriver.callTool('hub_import_native_app', [jsonContent: importJson, parentHintAppId: 100, confirm: true])
 
         then:
         response.error == null
@@ -11864,10 +11857,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // ---------- check_rule_health dispatch ----------
+    // ---------- hub_get_rule_health dispatch ----------
 
     @spock.lang.Unroll
-    def "check_rule_health via dispatch surfaces ok=true on a clean rule (useGateways=#useGateways)"() {
+    def "hub_get_rule_health via dispatch surfaces ok=true on a clean rule (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableReadOnly()
@@ -11875,7 +11868,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def response = mcpDriver.callTool('check_rule_health', [appId: 100])
+        def response = mcpDriver.callTool('hub_get_rule_health', [appId: 100])
 
         then:
         response.error == null
@@ -11891,7 +11884,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "check_rule_health via dispatch flags BROKEN marker in label as ok=false (useGateways=#useGateways)"() {
+    def "hub_get_rule_health via dispatch flags BROKEN marker in label as ok=false (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableReadOnly()
@@ -11899,7 +11892,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def response = mcpDriver.callTool('check_rule_health', [appId: 100])
+        def response = mcpDriver.callTool('hub_get_rule_health', [appId: 100])
 
         then:
         response.error == null
@@ -20284,14 +20277,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- runtime-exception envelope (isError) coverage ----------
 
     @spock.lang.Unroll
-    def "clone_native_app via dispatch returns -32602 when source config fetch returns empty (useGateways=#useGateways)"() {
+    def "hub_clone_native_app via dispatch returns -32602 when source config fetch returns empty (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
         hubGet.register('/installedapp/configure/json/999') { params -> "" }
 
         when:
-        def response = mcpDriver.callTool('clone_native_app', [sourceAppId: 999, confirm: true])
+        def response = mcpDriver.callTool('hub_clone_native_app', [sourceAppId: 999, confirm: true])
 
         then: "empty config fetch surfaces as -32602 IAE (matches the direct-call test's IllegalArgumentException)"
         response.error.code == -32602
@@ -21074,7 +21067,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- tools/list inline schema description -- Tamper detected/clear vocabulary ----------
 
-    def "tools/list update_native_app description aligns Tamper with detected/clear vocabulary"() {
+    def "tools/list hub_update_native_app description aligns Tamper with detected/clear vocabulary"() {
         // The inline schema description served via tools/list pointed at 'tampered' for
         // Tamper (the capability actually emits 'detected') and 'not detected' as a
         // generic-wrong-form. Both shapes would have failed against the live walker's
@@ -21085,7 +21078,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // CO2 path.
         when:
         def tools = script.getAllToolDefinitions()
-        def updateNativeApp = tools.find { it.name == "update_native_app" }
+        def updateNativeApp = tools.find { it.name == "hub_update_native_app" }
         // The relevant text is inside the addRequiredExpression / addAction / addTrigger
         // condition state-name note (rendered into the description). Concatenate all
         // description-bearing fields so we catch the note wherever it lives.
@@ -21493,7 +21486,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- bulk addTriggers/addActions trailing-updateRule failure surfaces dedicated slots ----------
 
     @spock.lang.Unroll
-    def "update_native_app bulk #shape trailing-updateRule failure surfaces dedicated slots"() {
+    def "hub_update_native_app bulk #shape trailing-updateRule failure surfaces dedicated slots"() {
         // Sibling pattern from the patches trailing-updateRule failure spec and
         // the addLocalVariable / addRequiredExpression counterparts. When the
         // post-bulk updateRule click is rejected, the per-item adds landed but
@@ -21594,7 +21587,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_native_app bulk #shape trailing-updateRule SUCCESS leaves updateRuleFailed + subscriptionsNotLive falsy"() {
+    def "hub_update_native_app bulk #shape trailing-updateRule SUCCESS leaves updateRuleFailed + subscriptionsNotLive falsy"() {
         // Negative pin paired with the bulk-path failure spec above. A regression
         // that initializes updateRuleFailed=true or subscriptionsNotLive=true at
         // the wrong default (so callers see them true even on success) would
@@ -21670,7 +21663,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_native_app bulk #shape per-item partial with updateRule SUCCESS still flips partial:true (W7/W11)"() {
+    def "hub_update_native_app bulk #shape per-item partial with updateRule SUCCESS still flips partial:true (W7/W11)"() {
         // W7: pins the partial OR-branch (`itemsPartial || updateRuleFailed`) on the
         // SUCCESS path of the trailing updateRule. Sibling-coverage gap: the failure
         // @Unroll above always flips partial:true via updateRuleFailed; the success
@@ -22352,7 +22345,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !hints.any { it?.toString()?.contains("updateRule click was rejected") }
     }
 
-    def "update_native_app addLocalVariable inner-helper failure: outer envelope surfaces inner.partial / error / hubRenderError / merged repairHints (B2 propagation contract)"() {
+    def "hub_update_native_app addLocalVariable inner-helper failure: outer envelope surfaces inner.partial / error / hubRenderError / merged repairHints (B2 propagation contract)"() {
         // B2 propagation pin (C-W2). _rmAddLocalVariable's commit-verification path
         // returns {success:false, partial:true, hubRenderError:true, error:<msg>,
         // repairHints:[<inner hints>]} when state.allLocalVars never picks up the
@@ -22960,7 +22953,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.patches[0]?.op == "addRequiredExpression" || result.patches[0]?.success != false
     }
 
-    def "update_native_app patches with inner addRequiredExpression returning partial:true -- outer envelope partial:true even when trailing updateRule succeeds (B1 inner-op detection)"() {
+    def "hub_update_native_app patches with inner addRequiredExpression returning partial:true -- outer envelope partial:true even when trailing updateRule succeeds (B1 inner-op detection)"() {
         // B1 inner-op-partial detection pin (C-W3). The B1 fix adds the clause
         // `patchResults.any { it instanceof Map && (it.partial == true) }` to the
         // outer patches envelope's partial formula. Existing patches specs cover
@@ -23736,7 +23729,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Regression guard for the patches dispatcher capturing _rmMoveAction's
         // rich return on per-patch entries. The pre-fix path emitted a thin
         // {success, op, index, direction} entry, forcing callers to re-fetch via
-        // get_app_config to see where the action moved. A regression that
+        // hub_get_app_config to see where the action moved. A regression that
         // restores the thin entry would leave the rich slots null even though
         // the move itself succeeds.
         // Both-ways pending (orchestrator).
@@ -23797,7 +23790,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Regression guard for the patches dispatcher capturing _rmDeleteAction's
         // rich return on per-patch entries. The pre-fix path discarded the
         // helper return entirely (bare statement, then a thin {success, op,
-        // index} push), forcing callers to re-fetch via get_app_config to see
+        // index} push), forcing callers to re-fetch via hub_get_app_config to see
         // the index-list diff. A regression that restores the discard would
         // leave the rich slots null.
         // Both-ways pending (orchestrator).
@@ -24645,7 +24638,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // the I6 SUCCESS row does not assert `partial != true`). P2 class-fix
     // enforcement.
 
-    def "update_native_app modifyTrigger inner-helper settingsSkipped: outer partial:true bubbles even when trailing updateRule succeeds (C3 contract)"() {
+    def "hub_update_native_app modifyTrigger inner-helper settingsSkipped: outer partial:true bubbles even when trailing updateRule succeeds (C3 contract)"() {
         // Drive _rmModifyTrigger down its silent_rejection path by withholding
         // every per-write detection signal on selectTriggers:
         //   schemaShifted   -- keys equal pre/post + value field stays unset

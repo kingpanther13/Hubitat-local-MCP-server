@@ -5,14 +5,14 @@ import me.biocomp.hubitat_ci.app.HubitatAppScript
 import support.ToolSpecBase
 
 /**
- * Spec for manage_virtual_device (create path) in hubitat-mcp-server.groovy.
+ * Spec for hub_manage_virtual_device (create path) in hubitat-mcp-server.groovy.
  *
  * Covers:
  *   - Dispatch validation: mutually exclusive deviceType / customDriver, both missing
  *   - customDriver shape validation: non-Map, missing namespace, missing name
  *   - Built-in deviceType path: success + unsupported type rejection
  *   - customDriver path: success (addChildDevice gets correct namespace + name)
- *   - customDriver not-found error translates to list_hub_drivers hint
+ *   - customDriver not-found error translates to hub_list_drivers hint
  *   - Built-in path regression: still works after the dual-path refactor
  *
  * Mocking strategy for addChildDevice (5-arg form):
@@ -97,7 +97,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             deviceType: 'Virtual Switch',
             deviceLabel: 'Test',
@@ -139,7 +139,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             deviceType: 'Virtual Switch',
             customDriver: [namespace: 'x', name: 'y'],
@@ -178,7 +178,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             deviceLabel: 'Test',
             confirm: true
@@ -216,7 +216,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             deviceType: 'Virtual Switch',
             confirm: true
@@ -255,7 +255,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             customDriver: 'not-a-map',
             deviceLabel: 'Test',
@@ -294,7 +294,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             customDriver: [name: 'My Driver'],
             deviceLabel: 'Test',
@@ -334,7 +334,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             customDriver: [namespace: 'my-ns'],
             deviceLabel: 'Test',
@@ -381,7 +381,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             customDriver: [namespace: 'level99-vesync', name: 'Levoit Classic 200S Humidifier'],
             deviceLabel: 'Kitchen Humidifier Test',
@@ -450,7 +450,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         capturedArgs.hubId     == null  // always null per 5-arg form convention
         capturedArgs.props?.label == 'Kitchen Humidifier Test'  // label propagates to addChildDevice props map
         capturedArgs.props?.name  == 'Levoit Classic 200S Humidifier'  // driver type name propagates to props
-        // Verify namespace was persisted as a data value so list_virtual_devices can read it back
+        // Verify namespace was persisted as a data value so hub_list_devices(filter:'virtual') can read it back
         capturedDataValues['mcpDriverNamespace'] == 'level99-vesync'
         result.success == true
         result.device.id == '77'
@@ -488,7 +488,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDeviceFactoryStub = { ns, name, dni, hubId, props -> fakeDevice }
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             customDriver: [namespace: 'NiklasGustafsson', name: 'Levoit Classic 200S Humidifier'],
             deviceLabel: 'Persistence Failure Test',
@@ -553,7 +553,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     // -------- customDriver not-found error path --------
 
-    def "create with customDriver: UnknownDeviceTypeException translates to list_hub_drivers hint"() {
+    def "create with customDriver: UnknownDeviceTypeException translates to hub_list_drivers hint"() {
         given:
         enableHubAdminWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
@@ -570,11 +570,11 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('fake-namespace:fake-driver')
-        ex.message.contains('list_hub_drivers')
+        ex.message.contains('hub_list_drivers')
     }
 
     @spock.lang.Unroll
-    def "via dispatch: create with customDriver UnknownDeviceTypeException returns -32602 with list_hub_drivers hint (useGateways=#useGateways)"() {
+    def "via dispatch: create with customDriver UnknownDeviceTypeException returns -32602 with hub_list_drivers hint (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -583,7 +583,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             customDriver: [namespace: 'fake-namespace', name: 'fake-driver'],
             deviceLabel: 'Test Device',
@@ -593,7 +593,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         response.error.code == -32602
         response.error.message.contains('fake-namespace:fake-driver')
-        response.error.message.contains('list_hub_drivers')
+        response.error.message.contains('hub_list_drivers')
 
         where:
         useGateways << [true, false]
@@ -615,7 +615,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('list_hub_drivers')
+        ex.message.contains('hub_list_drivers')
         ex.message.contains('my-ns:My Driver')  // namespace:name echo present (parity with sibling specs)
     }
 
@@ -629,7 +629,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             customDriver: [namespace: 'my-ns', name: 'My Driver'],
             deviceLabel: 'Test',
@@ -638,16 +638,16 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
         then:
         response.error.code == -32602
-        response.error.message.contains('list_hub_drivers')
+        response.error.message.contains('hub_list_drivers')
         response.error.message.contains('my-ns:My Driver')
 
         where:
         useGateways << [true, false]
     }
 
-    def "create with customDriver: any hub exception always surfaces list_hub_drivers hint (fail-closed)"() {
+    def "create with customDriver: any hub exception always surfaces hub_list_drivers hint (fail-closed)"() {
         // Invariant: any addChildDevice exception on the customDriver path surfaces as IllegalArgumentException
-        // with the list_hub_drivers hint regardless of the exception class or message text.
+        // with the hub_list_drivers hint regardless of the exception class or message text.
         given:
         enableHubAdminWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
@@ -663,12 +663,12 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('list_hub_drivers')
+        ex.message.contains('hub_list_drivers')
         ex.message.contains('my-ns:My Driver')
     }
 
     @spock.lang.Unroll
-    def "via dispatch: create with customDriver any hub exception surfaces list_hub_drivers hint fail-closed (useGateways=#useGateways)"() {
+    def "via dispatch: create with customDriver any hub exception surfaces hub_list_drivers hint fail-closed (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -677,7 +677,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             customDriver: [namespace: 'my-ns', name: 'My Driver'],
             deviceLabel: 'Test',
@@ -686,7 +686,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
         then:
         response.error.code == -32602
-        response.error.message.contains('list_hub_drivers')
+        response.error.message.contains('hub_list_drivers')
         response.error.message.contains('my-ns:My Driver')
 
         where:
@@ -722,7 +722,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             deviceType: 'Virtual Switch',
             deviceLabel: 'BAT Test Switch',
@@ -784,7 +784,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         capturedArgs.name      == 'Virtual Switch'
         capturedArgs.props?.label == 'BAT Test Switch'  // label propagates to addChildDevice props map
         capturedArgs.props?.name  == 'Virtual Switch'   // driver type name propagates to props
-        // Verify namespace was persisted as a data value so list_virtual_devices can read it back
+        // Verify namespace was persisted as a data value so hub_list_devices(filter:'virtual') can read it back
         capturedDataValues['mcpDriverNamespace'] == 'hubitat'
         result.success == true
         result.device.id == '42'
@@ -818,7 +818,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             deviceType: 'Virtual Toaster',
             deviceLabel: 'Test',
@@ -867,7 +867,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             deviceType: 'Virtual Switch',
             deviceLabel: 'BAT Built-in Not-Found Test',
@@ -935,7 +935,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDevicesList << fakeDevice
 
         when:
-        def response = mcpDriver.callTool('list_virtual_devices', [:])
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'])
 
         then:
         response.error == null
@@ -1002,7 +1002,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDevicesList << fakeDevice
 
         when:
-        def response = mcpDriver.callTool('list_virtual_devices', [:])
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'])
 
         then:
         response.error == null
@@ -1069,7 +1069,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDevicesList << fakeDevice
 
         when:
-        def response = mcpDriver.callTool('list_virtual_devices', [:])
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'])
 
         then:
         response.error == null
@@ -1104,7 +1104,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDevicesList << fakeDevice
 
         when:
-        def response = mcpDriver.callTool('list_virtual_devices', [:])
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'])
 
         then:
         response.error == null
@@ -1175,7 +1175,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDevicesList << fakeDevice
 
         when:
-        def response = mcpDriver.callTool('list_virtual_devices', [:])
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'])
 
         then:
         response.error == null
@@ -1239,7 +1239,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDevicesList << fakeDevice
 
         when:
-        def response = mcpDriver.callTool('list_virtual_devices', [:])
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'])
 
         then:
         response.error == null
@@ -1302,7 +1302,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDevicesList << fakeDevice
 
         when:
-        def response = mcpDriver.callTool('list_virtual_devices', [:])
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'])
 
         then:
         response.error == null
@@ -1388,7 +1388,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDeviceFactoryStub = { ns, name, dni, hubId, props -> throw originalEx }
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             customDriver: [namespace: 'x-ns', name: 'X Driver'],
             deviceLabel: 'Cause Test',
@@ -1398,7 +1398,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         then:
         response.error.code == -32602
         response.error.message.contains('root cause message')
-        response.error.message.contains('list_hub_drivers')
+        response.error.message.contains('hub_list_drivers')
 
         where:
         useGateways << [true, false]
@@ -1435,7 +1435,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDeviceFactoryStub = { ns, name, dni, hubId, props -> throw originalEx }
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             deviceType: 'Virtual Switch',
             deviceLabel: 'Cause Test Built-in',
@@ -1482,7 +1482,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             deviceType: '   ',
             customDriver: [namespace: 'x', name: 'y'],
@@ -1524,7 +1524,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             deviceType: '   ',
             deviceLabel: 'Test',
@@ -1563,7 +1563,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             customDriver: [namespace: '   ', name: 'My Driver'],
             deviceLabel: 'Test',
@@ -1603,7 +1603,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             customDriver: [namespace: 'my-ns', name: '   '],
             deviceLabel: 'Test',
@@ -1680,7 +1680,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             customDriver: [namespace: 123, name: 'test-driver'],
             deviceLabel: 'Coerce Test',
@@ -1726,7 +1726,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         childDeviceFactoryStub = { ns, name, dni, hubId, props -> null }
 
         when:
-        def response = mcpDriver.callTool('manage_virtual_device', [
+        def response = mcpDriver.callTool('hub_manage_virtual_device', [
             action: 'create',
             deviceType: 'Virtual Switch',
             deviceLabel: 'Null Return Test',

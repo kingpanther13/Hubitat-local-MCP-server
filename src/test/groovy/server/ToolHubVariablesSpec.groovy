@@ -3,12 +3,12 @@ package server
 import support.ToolSpecBase
 
 /**
- * Spec for the manage_hub_variables gateway tools in hubitat-mcp-server.groovy:
+ * Spec for the hub_manage_variables gateway tools in hubitat-mcp-server.groovy:
  *
- * - toolListVariables    -> list_variables
- * - toolGetVariable      -> get_variable
- * - toolSetVariable      -> set_variable
- * - toolDeleteHubVariable -> delete_variable
+ * - toolListVariables    -> hub_list_variables
+ * - toolGetVariable      -> hub_get_variable
+ * - toolSetVariable      -> hub_set_variable
+ * - toolDeleteHubVariable -> hub_delete_variable
  *
  * Migrated to the modern Hub Variable API (issue #92): getAllGlobalVars /
  * getGlobalVar / setGlobalVar see ALL hub variables, not just the
@@ -22,7 +22,7 @@ import support.ToolSpecBase
  * per-test via script.metaClass in given: blocks. See docs/testing.md
  * "Which interception point to use" for the general pattern.
  *
- * delete_variable is gated by requireHubAdminWrite (3-layer: setting flag,
+ * hub_delete_variable is gated by requireHubAdminWrite (3-layer: setting flag,
  * args.confirm, 24h backup window). Helper enableHubAdminWrite() seeds those.
  */
 class ToolHubVariablesSpec extends ToolSpecBase {
@@ -34,7 +34,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     // -------- toolListVariables --------
 
-    def "list_variables returns both hub and rule-engine variables with correct total"() {
+    def "hub_list_variables returns both hub and rule-engine variables with correct total"() {
         given: 'hub exposes two variables — one connector-backed, one not'
         script.metaClass.getAllGlobalVars = { ->
             [
@@ -68,7 +68,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.total == 3
     }
 
-    def "list_variables falls back to rule variables when the hub API throws"() {
+    def "hub_list_variables falls back to rule variables when the hub API throws"() {
         given:
         script.metaClass.getAllGlobalVars = { ->
             throw new RuntimeException('Hub variable API not available')
@@ -84,7 +84,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.total == 1
     }
 
-    def "list_variables returns empty collections when no variables are defined"() {
+    def "hub_list_variables returns empty collections when no variables are defined"() {
         given:
         script.metaClass.getAllGlobalVars = { -> [:] }
 
@@ -101,7 +101,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.totalRuleVariables == 0
     }
 
-    def "list_variables cursor pages hubVariables while ruleVariables stays in full (#174)"() {
+    def "hub_list_variables cursor pages hubVariables while ruleVariables stays in full (#174)"() {
         given: '150 hub vars + 5 rule vars'
         def allVars = (0..<150).collectEntries { i -> ["var_${String.format('%03d', i)}".toString(), [name: "var_${i}".toString(), type: 'Number', value: i, deviceId: null, attribute: null]] }
         script.metaClass.getAllGlobalVars = { -> allVars }
@@ -127,7 +127,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         !page2.containsKey('nextCursor')
     }
 
-    def "list_variables surfaces a hubVariablesError field when getAllGlobalVars throws (not silent)"() {
+    def "hub_list_variables surfaces a hubVariablesError field when getAllGlobalVars throws (not silent)"() {
         // Pre-fix this exception was only logged via logDebug; a caller couldn't
         // distinguish "no hub variables" from "hub API broke".
         given:
@@ -145,7 +145,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     // -------- toolGetVariable --------
 
-    def "get_variable returns the modern shape with type and connector linkage"() {
+    def "hub_get_variable returns the modern shape with type and connector linkage"() {
         given:
         script.metaClass.getGlobalVar = { String name ->
             if (name != 'outdoor_temp') return null
@@ -164,7 +164,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.source == 'hub'
     }
 
-    def "get_variable returns hub var without connector linkage when no connector exists"() {
+    def "hub_get_variable returns hub var without connector linkage when no connector exists"() {
         given: 'a Boolean var without a connector — deviceId/attribute null'
         script.metaClass.getGlobalVar = { String name ->
             [name: 'vacation_mode', type: 'Boolean', value: true, deviceId: null, attribute: null]
@@ -182,7 +182,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.source == 'hub'
     }
 
-    def "get_variable falls back to rule-engine value when hub API throws"() {
+    def "hub_get_variable falls back to rule-engine value when hub API throws"() {
         given:
         script.metaClass.getGlobalVar = { String name ->
             throw new RuntimeException('Not supported')
@@ -198,7 +198,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.source == 'rule_engine'
     }
 
-    def "get_variable throws when variable exists in neither source"() {
+    def "hub_get_variable throws when variable exists in neither source"() {
         given:
         script.metaClass.getGlobalVar = { String name -> null }
         stateMap.ruleVariables = [:]
@@ -214,7 +214,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     // -------- toolSetVariable --------
 
-    def "set_variable writes via setGlobalVar and reports source 'hub' on success"() {
+    def "hub_set_variable writes via setGlobalVar and reports source 'hub' on success"() {
         given:
         def captured = [:]
         script.metaClass.setGlobalVar = { String name, Object value ->
@@ -233,7 +233,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.source == 'hub'
     }
 
-    def "set_variable falls back to rule engine when setGlobalVar returns false (var not found)"() {
+    def "hub_set_variable falls back to rule engine when setGlobalVar returns false (var not found)"() {
         given: 'setGlobalVar returns false when the hub var does not exist'
         script.metaClass.setGlobalVar = { String name, Object value -> false }
 
@@ -249,7 +249,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.value == 42
     }
 
-    def "set_variable falls back to rule engine when setGlobalVar throws"() {
+    def "hub_set_variable falls back to rule engine when setGlobalVar throws"() {
         given:
         script.metaClass.setGlobalVar = { String name, Object value ->
             throw new RuntimeException('Hub variable API unavailable')
@@ -265,7 +265,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.source == 'rule_engine'
     }
 
-    def "set_variable passes string values through to setGlobalVar unchanged"() {
+    def "hub_set_variable passes string values through to setGlobalVar unchanged"() {
         given:
         def captured = [:]
         script.metaClass.setGlobalVar = { String name, Object value ->
@@ -284,7 +284,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     // -------- toolDeleteHubVariable --------
 
-    def "delete_variable removes an existing rule_engine variable and reports the previous value"() {
+    def "hub_delete_variable removes an existing rule_engine variable and reports the previous value"() {
         given:
         enableHubAdminWrite()
         stateMap.ruleVariables = [scratch_var: 'to-be-removed', keep_me: 42]
@@ -303,7 +303,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stateMap.ruleVariables == [keep_me: 42]
     }
 
-    def "delete_variable throws when confirm is not provided"() {
+    def "hub_delete_variable throws when confirm is not provided"() {
         given:
         enableHubAdminWrite()
         stateMap.ruleVariables = [scratch_var: 'value']
@@ -317,7 +317,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stateMap.ruleVariables == [scratch_var: 'value']
     }
 
-    def "delete_variable throws when no recent backup exists (Hub Admin Write 24h gate)"() {
+    def "hub_delete_variable throws when no recent backup exists (Hub Admin Write 24h gate)"() {
         given: 'enableHubAdminWrite is true but no lastBackupTimestamp seeded'
         settingsMap.enableHubAdminWrite = true
         stateMap.ruleVariables = [scratch_var: 'value']
@@ -330,7 +330,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stateMap.ruleVariables == [scratch_var: 'value']
     }
 
-    def "delete_variable throws when enableHubAdminWrite setting is off"() {
+    def "hub_delete_variable throws when enableHubAdminWrite setting is off"() {
         given:
         // No settingsMap.enableHubAdminWrite seed — gate refuses on the first layer
         stateMap.ruleVariables = [scratch_var: 'value']
@@ -343,7 +343,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stateMap.ruleVariables == [scratch_var: 'value']
     }
 
-    def "delete_variable throws when name is missing"() {
+    def "hub_delete_variable throws when name is missing"() {
         given:
         enableHubAdminWrite()
 
@@ -355,7 +355,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('name is required')
     }
 
-    def "delete_variable throws when variable exists in neither hub nor rule_engine namespace"() {
+    def "hub_delete_variable throws when variable exists in neither hub nor rule_engine namespace"() {
         given:
         enableHubAdminWrite()
         script.metaClass.getGlobalVar = { String n -> null }
@@ -371,7 +371,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('rule_engine namespace')
     }
 
-    def "delete_variable throws when ruleVariables map is null and var is not a hub var"() {
+    def "hub_delete_variable throws when ruleVariables map is null and var is not a hub var"() {
         given:
         enableHubAdminWrite()
         script.metaClass.getGlobalVar = { String n -> null }
@@ -385,7 +385,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains("'never_set'")
     }
 
-    def "delete_variable reassigns the top-level state.ruleVariables map (Hubitat persistence quirk)"() {
+    def "hub_delete_variable reassigns the top-level state.ruleVariables map (Hubitat persistence quirk)"() {
         // Hubitat's state Map serialization only catches mutations when the top-level
         // key is reassigned — a bare .remove() on the nested Map silently fails to
         // persist across hub reboot / app restart. Asserts that toolDeleteHubVariable
@@ -405,9 +405,9 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         !stateMap.ruleVariables.is(originalMapRef)
     }
 
-    // -------- Reference-scan safety (delete_variable refuses to silently break consumers) --------
+    // -------- Reference-scan safety (hub_delete_variable refuses to silently break consumers) --------
 
-    def "delete_variable refuses when a child rule app references the variable (no force)"() {
+    def "hub_delete_variable refuses when a child rule app references the variable (no force)"() {
         // A child rule's serialized triggers/conditions/actions contains the variable
         // name. Without force=true, deletion would null-out the consumer's lookup and
         // silently break the rule. The tool must surface the breakage and require opt-in.
@@ -440,12 +440,12 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stateMap.ruleVariables == [shared_var: 'in-use']
     }
 
-    // W-spec-delete_variable-plural: the singular spec above only pins "1 rule:"; the
+    // W-spec-hub_delete_variable-plural: the singular spec above only pins "1 rule:"; the
     // count-aware ternary must also be exercised on the plural side or a regression
     // that drops the discrimination (always emits "rule:") would pass on 1 consumer
     // and silently break the 2+ case.
     // Both-ways pending (orchestrator).
-    def "delete_variable refuses when 2 child rule apps reference the variable (plural)"() {
+    def "hub_delete_variable refuses when 2 child rule apps reference the variable (plural)"() {
         given:
         enableHubAdminWrite()
         stateMap.ruleVariables = [shared_var: 'in-use']
@@ -480,7 +480,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('those rules')
     }
 
-    def "delete_variable proceeds with force=true and reports brokenConsumers"() {
+    def "hub_delete_variable proceeds with force=true and reports brokenConsumers"() {
         given:
         enableHubAdminWrite()
         stateMap.ruleVariables = [shared_var: 'in-use']
@@ -506,7 +506,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.brokenConsumers[0].label == 'Acknowledged Breakage'
     }
 
-    def "delete_variable proceeds normally when no child rules reference the variable"() {
+    def "hub_delete_variable proceeds normally when no child rules reference the variable"() {
         given: 'a child rule that does NOT mention the variable being deleted'
         enableHubAdminWrite()
         stateMap.ruleVariables = [orphan_var: 'safe-to-delete']
@@ -529,7 +529,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     // -------- toolCreateVariable validation (issue #92) --------
 
-    def "create_variable rejects forbidden characters in name"() {
+    def "hub_create_variable rejects forbidden characters in name"() {
         given:
         enableHubAdminWrite()
 
@@ -541,7 +541,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('forbidden character')
     }
 
-    def "create_variable rejects unknown type"() {
+    def "hub_create_variable rejects unknown type"() {
         given:
         enableHubAdminWrite()
 
@@ -554,7 +554,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('Number, Decimal, String, Boolean, DateTime')
     }
 
-    def "create_variable rejects null/missing initial value"() {
+    def "hub_create_variable rejects null/missing initial value"() {
         given:
         enableHubAdminWrite()
 
@@ -566,7 +566,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('Initial value is required')
     }
 
-    def "create_variable refuses to overwrite an existing hub variable"() {
+    def "hub_create_variable refuses to overwrite an existing hub variable"() {
         given:
         enableHubAdminWrite()
         script.metaClass.getGlobalVar = { String n ->
@@ -582,7 +582,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('set_variable')
     }
 
-    def "create_variable requires confirm"() {
+    def "hub_create_variable requires confirm"() {
         when:
         script.toolCreateVariable([name: 'goodName', type: 'String', value: 'x'])
 
@@ -592,7 +592,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     // -------- toolCreateConnector / toolRemoveConnector validation --------
 
-    def "create_connector throws when the variable does not exist"() {
+    def "hub_create_connector throws when the variable does not exist"() {
         given:
         enableHubAdminWrite()
         script.metaClass.getGlobalVar = { String n -> null }
@@ -605,7 +605,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('does not exist')
     }
 
-    def "create_connector is a no-op when a connector already exists"() {
+    def "hub_create_connector is a no-op when a connector already exists"() {
         given:
         enableHubAdminWrite()
         script.metaClass.getGlobalVar = { String n ->
@@ -621,7 +621,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.deviceId == 305
     }
 
-    def "remove_connector throws when the variable does not exist"() {
+    def "hub_delete_connector throws when the variable does not exist"() {
         given:
         enableHubAdminWrite()
         script.metaClass.getGlobalVar = { String n -> null }
@@ -634,7 +634,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('does not exist')
     }
 
-    def "remove_connector is a no-op when no connector exists"() {
+    def "hub_delete_connector is a no-op when no connector exists"() {
         given:
         enableHubAdminWrite()
         script.metaClass.getGlobalVar = { String n ->
@@ -665,7 +665,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     // post-write state — this is what the production code expects when the
     // wizard auto-commits on the final setting write / button click.
 
-    def "create_variable wizard sequence: one button click then three settings in order"() {
+    def "hub_create_variable wizard sequence: one button click then three settings in order"() {
         given:
         enableHubAdminWrite()
 
@@ -714,7 +714,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.value == 'hi'
     }
 
-    def "create_variable post-wizard verification fails when getGlobalVar still returns null"() {
+    def "hub_create_variable post-wizard verification fails when getGlobalVar still returns null"() {
         given:
         enableHubAdminWrite()
 
@@ -738,7 +738,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('ghostVar')
     }
 
-    def "delete_variable hub-namespace wizard sequence: deleteGV then delConfirm"() {
+    def "hub_delete_variable hub-namespace wizard sequence: deleteGV then delConfirm"() {
         given:
         enableHubAdminWrite()
 
@@ -774,7 +774,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.name == 'condemned'
     }
 
-    def "delete_variable hub-namespace post-wizard verification fails when var still exists"() {
+    def "hub_delete_variable hub-namespace post-wizard verification fails when var still exists"() {
         given:
         enableHubAdminWrite()
 
@@ -797,7 +797,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('stuck')
     }
 
-    def "create_connector wizard sequence: createCon click + capab commit via _rmWriteSettingOnPage"() {
+    def "hub_create_connector wizard sequence: createCon click + capab commit via _rmWriteSettingOnPage"() {
         given:
         enableHubAdminWrite()
 
@@ -889,7 +889,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         atomicStateMap.variableHistory == []
     }
 
-    def "get_variable_history returns most-recent-first capped at limit"() {
+    def "hub_list_variable_changes returns most-recent-first capped at limit"() {
         given:
         atomicStateMap.variableHistory = (1..10).collect { i -> [name: 'v', value: i, timestamp: i] }
 
@@ -905,7 +905,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.bufferCap == 200
     }
 
-    def "get_variable_history filters by name when provided"() {
+    def "hub_list_variable_changes filters by name when provided"() {
         given:
         atomicStateMap.variableHistory = [
             [name: 'foo', value: 1, timestamp: 1],
@@ -922,7 +922,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.entries[0].value == 3  // newest first
     }
 
-    def "get_variable_history filters by sinceMs when provided"() {
+    def "hub_list_variable_changes filters by sinceMs when provided"() {
         given:
         atomicStateMap.variableHistory = [
             [name: 'v', value: 1, timestamp: 100],
@@ -939,7 +939,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.entries[1].timestamp == 200
     }
 
-    def "get_variable_history returns empty entries when buffer is empty"() {
+    def "hub_list_variable_changes returns empty entries when buffer is empty"() {
         given:
         atomicStateMap.variableHistory = []
 
@@ -1075,11 +1075,11 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
     // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
     // verified end-to-end alongside the direct-call golden paths above. Tools
-    // live in the manage_hub_variables gateway; dispatched directly by snake-
+    // live in the hub_manage_variables gateway; dispatched directly by snake-
     // case name through executeTool() per hubitat-mcp-server.groovy:3098-3105.
 
     @spock.lang.Unroll
-    def "list_variables via dispatch returns hub + rule vars (useGateways=#useGateways)"() {
+    def "hub_list_variables via dispatch returns hub + rule vars (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         script.metaClass.getAllGlobalVars = { ->
@@ -1088,7 +1088,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stateMap.ruleVariables = [last_motion: '2026-04-21T10:00:00']
 
         when:
-        def response = mcpDriver.callTool('list_variables', [:])
+        def response = mcpDriver.callTool('hub_list_variables', [:])
 
         then:
         response.error == null
@@ -1104,13 +1104,13 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "list_variables via dispatch returns empty collections when no vars (useGateways=#useGateways)"() {
+    def "hub_list_variables via dispatch returns empty collections when no vars (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         script.metaClass.getAllGlobalVars = { -> [:] }
 
         when:
-        def response = mcpDriver.callTool('list_variables', [:])
+        def response = mcpDriver.callTool('hub_list_variables', [:])
 
         then:
         response.error == null
@@ -1125,7 +1125,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_variable via dispatch returns hub var (useGateways=#useGateways)"() {
+    def "hub_get_variable via dispatch returns hub var (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         script.metaClass.getGlobalVar = { String name ->
@@ -1133,7 +1133,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_variable', [name: 'outdoor_temp'])
+        def response = mcpDriver.callTool('hub_get_variable', [name: 'outdoor_temp'])
 
         then:
         response.error == null
@@ -1149,14 +1149,14 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_variable via dispatch maps unknown to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_variable via dispatch maps unknown to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         script.metaClass.getGlobalVar = { String n -> null }
         stateMap.ruleVariables = [:]
 
         when:
-        def response = mcpDriver.callTool('get_variable', [name: 'nonexistent'])
+        def response = mcpDriver.callTool('hub_get_variable', [name: 'nonexistent'])
 
         then:
         response.error?.code == -32602
@@ -1168,7 +1168,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_variable via dispatch writes hub var (useGateways=#useGateways)"() {
+    def "hub_set_variable via dispatch writes hub var (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def captured = [:]
@@ -1178,7 +1178,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('set_variable', [name: 'vacation_mode', value: true])
+        def response = mcpDriver.callTool('hub_set_variable', [name: 'vacation_mode', value: true])
 
         then:
         response.error == null
@@ -1195,13 +1195,13 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "set_variable via dispatch falls back to rule_engine when hub var missing (useGateways=#useGateways)"() {
+    def "hub_set_variable via dispatch falls back to rule_engine when hub var missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         script.metaClass.setGlobalVar = { String name, Object value -> false }
 
         when:
-        def response = mcpDriver.callTool('set_variable', [name: 'new_rule_var', value: 42])
+        def response = mcpDriver.callTool('hub_set_variable', [name: 'new_rule_var', value: 42])
 
         then:
         response.error == null
@@ -1217,14 +1217,14 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_variable via dispatch removes rule var (useGateways=#useGateways)"() {
+    def "hub_delete_variable via dispatch removes rule var (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
         stateMap.ruleVariables = [scratch_var: 'to-be-removed', keep_me: 42]
 
         when:
-        def response = mcpDriver.callTool('delete_variable', [name: 'scratch_var', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_variable', [name: 'scratch_var', confirm: true])
 
         then:
         response.error == null
@@ -1241,14 +1241,14 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_variable via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
+    def "hub_delete_variable via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
         stateMap.ruleVariables = [scratch_var: 'value']
 
         when:
-        def response = mcpDriver.callTool('delete_variable', [name: 'scratch_var'])
+        def response = mcpDriver.callTool('hub_delete_variable', [name: 'scratch_var'])
 
         then:
         response.error?.code == -32602
@@ -1259,13 +1259,13 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_variable via dispatch maps missing-name to -32602 (useGateways=#useGateways)"() {
+    def "hub_delete_variable via dispatch maps missing-name to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('delete_variable', [confirm: true])
+        def response = mcpDriver.callTool('hub_delete_variable', [confirm: true])
 
         then:
         response.error?.code == -32602
@@ -1276,7 +1276,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_variable via dispatch maps unknown var to -32602 (useGateways=#useGateways)"() {
+    def "hub_delete_variable via dispatch maps unknown var to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1284,7 +1284,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stateMap.ruleVariables = [:]
 
         when:
-        def response = mcpDriver.callTool('delete_variable', [name: 'nonexistent', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_variable', [name: 'nonexistent', confirm: true])
 
         then:
         response.error?.code == -32602
@@ -1295,7 +1295,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_variable via dispatch refuses on consumer ref without force (useGateways=#useGateways)"() {
+    def "hub_delete_variable via dispatch refuses on consumer ref without force (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1309,7 +1309,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         childAppsList << consumer
 
         when:
-        def response = mcpDriver.callTool('delete_variable', [name: 'shared_var', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_variable', [name: 'shared_var', confirm: true])
 
         then:
         response.error?.code == -32602
@@ -1322,13 +1322,13 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "create_variable via dispatch maps forbidden-character to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_variable via dispatch maps forbidden-character to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('create_variable', [name: 'has[brackets]', type: 'String', value: 'x', confirm: true])
+        def response = mcpDriver.callTool('hub_create_variable', [name: 'has[brackets]', type: 'String', value: 'x', confirm: true])
 
         then:
         response.error?.code == -32602
@@ -1339,13 +1339,13 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "create_variable via dispatch maps unknown-type to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_variable via dispatch maps unknown-type to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('create_variable', [name: 'goodName', type: 'NotAType', value: 'x', confirm: true])
+        def response = mcpDriver.callTool('hub_create_variable', [name: 'goodName', type: 'NotAType', value: 'x', confirm: true])
 
         then:
         response.error?.code == -32602
@@ -1356,12 +1356,12 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "create_variable via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_variable via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('create_variable', [name: 'goodName', type: 'String', value: 'x'])
+        def response = mcpDriver.callTool('hub_create_variable', [name: 'goodName', type: 'String', value: 'x'])
 
         then:
         response.error?.code == -32602
@@ -1371,7 +1371,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "create_variable via dispatch maps existing hub var to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_variable via dispatch maps existing hub var to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1380,7 +1380,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('create_variable', [name: 'taken', type: 'String', value: 'new', confirm: true])
+        def response = mcpDriver.callTool('hub_create_variable', [name: 'taken', type: 'String', value: 'new', confirm: true])
 
         then:
         response.error?.code == -32602
@@ -1391,13 +1391,13 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_variable_history via dispatch caps at limit (useGateways=#useGateways)"() {
+    def "hub_list_variable_changes via dispatch caps at limit (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         atomicStateMap.variableHistory = (1..10).collect { i -> [name: 'v', value: i, timestamp: i] }
 
         when:
-        def response = mcpDriver.callTool('get_variable_history', [limit: 3])
+        def response = mcpDriver.callTool('hub_list_variable_changes', [limit: 3])
 
         then:
         response.error == null
@@ -1412,7 +1412,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_variable_history via dispatch filters by name (useGateways=#useGateways)"() {
+    def "hub_list_variable_changes via dispatch filters by name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         atomicStateMap.variableHistory = [
@@ -1422,7 +1422,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('get_variable_history', [name: 'foo'])
+        def response = mcpDriver.callTool('hub_list_variable_changes', [name: 'foo'])
 
         then:
         response.error == null
@@ -1436,13 +1436,13 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_variable_history via dispatch returns empty when buffer is empty (useGateways=#useGateways)"() {
+    def "hub_list_variable_changes via dispatch returns empty when buffer is empty (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         atomicStateMap.variableHistory = []
 
         when:
-        def response = mcpDriver.callTool('get_variable_history', [:])
+        def response = mcpDriver.callTool('hub_list_variable_changes', [:])
 
         then:
         response.error == null

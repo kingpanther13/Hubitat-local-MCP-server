@@ -62,7 +62,7 @@ class TestLocation implements Location {
     /**
      * Mutable. Not declared on Location interface; resolved via Groovy property
      * dispatch. Tests that exercise Mode-related code (addTrigger Mode,
-     * get_modes, set_mode, rule-engine mode actions) assign a list of simple
+     * hub_list_modes, set_mode, rule-engine mode actions) assign a list of simple
      * Maps with {@code id} and {@code name} fields, e.g.:
      * {@code testLocation.modes = [[id: "1", name: "Home"], [id: "3", name: "Night"]]}
      * Defaults to an empty list so tests that don't care about modes get null-safe

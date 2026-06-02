@@ -72,22 +72,21 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         where:
         // Sample from each category in getReadOnlyToolNames() -- full set lives in source.
         name << [
-            'list_devices', 'get_device', 'get_attribute', 'poll_until_attribute',
-            'custom_list_rules', 'custom_test_rule', 'custom_export_rule',
-            'get_hub_info', 'get_modes', 'get_hsm_status',
-            'list_variables', 'get_variable', 'get_variable_history',
-            'list_captured_states',
-            'get_debug_logs', 'get_logging_status', 'generate_bug_report',
-            'get_hub_logs', 'get_device_history', 'get_performance_stats',
-            'get_zwave_details', 'get_zigbee_details', 'device_health_check',
-            'list_hub_apps', 'get_app_source', 'list_item_backups',
-            'list_virtual_devices',
-            'list_rooms', 'get_room',
-            'list_files', 'read_file',
-            'list_installed_apps', 'get_app_config',
-            'list_hpm_packages', 'get_hpm_drift',
-            'list_rm_rules', 'export_native_app', 'check_rule_health',
-            'get_tool_guide'
+            'hub_list_devices', 'hub_get_device', 'hub_get_device_attribute',
+            'hub_get_custom_rule', 'hub_test_custom_rule', 'hub_export_custom_rule',
+            'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status',
+            'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
+            'hub_list_captured_states',
+            'hub_get_debug_logs', 'hub_report_issue',
+            'hub_get_logs', 'hub_list_device_events', 'hub_get_performance_stats',
+            'hub_get_radio_details', 'hub_get_device_health',
+            'hub_list_apps', 'hub_get_source', 'hub_list_backups', 'hub_get_backup',
+            'hub_list_rooms', 'hub_get_room',
+            'hub_list_files', 'hub_read_file',
+            'hub_list_installed_apps', 'hub_get_app_config',
+            'hub_list_hpm_packages',
+            'hub_list_rules', 'hub_export_native_app', 'hub_get_rule_health',
+            'hub_get_tool_guide'
         ]
     }
 
@@ -113,28 +112,28 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         where:
         name << [
-            'send_command',
-            'custom_create_rule', 'custom_update_rule', 'custom_delete_rule',
-            'custom_import_rule', 'custom_clone_rule',
-            'set_mode',
-            'set_variable', 'create_variable', 'delete_variable',
-            'create_connector', 'remove_connector',
-            'set_hsm', 'set_log_level',
-            'update_mcp_settings',
-            'delete_captured_state', 'clear_captured_states',
-            'clear_debug_logs',
-            'create_hub_backup', 'force_garbage_collection', 'get_set_hub_metrics',
-            'reboot_hub', 'shutdown_hub', 'zwave_repair', 'delete_device',
-            'manage_virtual_device', 'update_device',
-            'create_room', 'delete_room', 'rename_room',
-            'install_app', 'install_driver', 'update_app_code', 'update_driver_code',
-            'delete_app', 'delete_driver',
-            'install_library', 'update_library_code', 'delete_library',
-            'restore_item_backup',
-            'write_file', 'delete_file',
-            'run_rm_rule', 'pause_rm_rule', 'resume_rm_rule', 'set_rm_rule_boolean',
-            'create_native_app', 'update_native_app', 'clone_native_app',
-            'import_native_app', 'delete_native_app'
+            'hub_call_device_command',
+            'hub_create_custom_rule', 'hub_update_custom_rule', 'hub_delete_custom_rule',
+            'hub_import_custom_rule', 'hub_clone_custom_rule',
+            'hub_set_mode',
+            'hub_set_variable', 'hub_create_variable', 'hub_delete_variable',
+            'hub_create_connector', 'hub_delete_connector',
+            'hub_set_hsm', 'hub_set_log_level',
+            'hub_update_mcp_settings',
+            'hub_delete_captured_state',
+            'hub_delete_debug_logs',
+            'hub_create_backup', 'hub_call_gc', 'hub_get_metrics',
+            'hub_reboot', 'hub_shutdown', 'hub_call_zwave_repair', 'hub_delete_device',
+            'hub_manage_virtual_device', 'hub_update_device',
+            'hub_create_room', 'hub_delete_room', 'hub_update_room',
+            'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
+            'hub_delete_item',
+            'hub_create_library', 'hub_update_library',
+            'hub_restore_backup',
+            'hub_write_file', 'hub_delete_file',
+            'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
+            'hub_create_native_app', 'hub_update_native_app', 'hub_clone_native_app',
+            'hub_import_native_app', 'hub_delete_native_app'
         ]
     }
 
@@ -148,7 +147,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         def tools = script.getToolDefinitions()
 
         then: 'gateways whose every sub-tool is in getReadOnlyToolNames()'
-        ['manage_apps_drivers', 'manage_installed_apps', 'manage_hpm'].each { gwName ->
+        ['hub_manage_code_read', 'hub_manage_installed_apps', 'hub_manage_hpm'].each { gwName ->
             def gw = tools.find { it.name == gwName }
             assert gw != null : "${gwName} missing from gateway-mode catalog"
             assert gw.annotations.readOnlyHint == true : "${gwName} should be read-only"
@@ -167,16 +166,16 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         then: 'every gateway with at least one write sub-tool is write+destructive'
         def writeGateways = [
-            'manage_rules_admin',        // custom_delete_rule + others
-            'manage_hub_variables',      // set/create/delete + others
-            'manage_rooms',              // create/delete/rename + others
-            'manage_destructive_hub_ops',// reboot/shutdown/delete_device
-            'manage_app_driver_code',    // install/update/delete code
-            'manage_logs',               // clear_debug_logs, set_log_level
-            'manage_diagnostics',        // zwave_repair, clear_captured_states
-            'manage_files',              // write_file, delete_file
-            'manage_native_rules_and_apps', // create/update/delete/run native rules
-            'manage_mcp_self'            // update_mcp_settings
+            'hub_manage_rules',        // hub_delete_custom_rule + others
+            'hub_manage_variables',      // set/create/delete + others
+            'hub_manage_rooms',              // create/delete/rename + others
+            'hub_manage_destructive_ops',// reboot/shutdown/hub_delete_device
+            'hub_manage_code_write',    // install/update/delete code
+            'hub_manage_logs',               // hub_delete_debug_logs, hub_set_log_level
+            'hub_manage_diagnostics',        // hub_call_zwave_repair, hub_delete_captured_state
+            'hub_manage_files',              // hub_write_file, hub_delete_file
+            'hub_manage_native_rules', // create/update/delete/run native rules
+            'hub_manage_mcp'            // hub_update_mcp_settings
         ]
         writeGateways.each { gwName ->
             def gw = tools.find { it.name == gwName }
@@ -190,8 +189,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         // Direct unit test of the helper -- catches regressions independently of
         // the larger getToolDefinitions() integration path.
         when:
-        def readOnly = ['list_rooms', 'get_room'] as Set
-        def ann = script.annotationsForLeaf('list_rooms', readOnly)
+        def readOnly = ['hub_list_rooms', 'hub_get_room'] as Set
+        def ann = script.annotationsForLeaf('hub_list_rooms', readOnly)
 
         then:
         ann.readOnlyHint == true
@@ -200,8 +199,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
     def "annotationsForLeaf: write name returns readOnlyHint=false and destructiveHint=true"() {
         when:
-        def readOnly = ['list_rooms'] as Set
-        def ann = script.annotationsForLeaf('delete_room', readOnly)
+        def readOnly = ['hub_list_rooms'] as Set
+        def ann = script.annotationsForLeaf('hub_delete_room', readOnly)
 
         then:
         ann.readOnlyHint == false
@@ -210,8 +209,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
     def "annotationsForGateway: all-read sub-tools roll up to read-only, no destructiveHint"() {
         when:
-        def readOnly = ['list_rooms', 'get_room', 'list_devices'] as Set
-        def ann = script.annotationsForGateway(['list_rooms', 'get_room'], readOnly)
+        def readOnly = ['hub_list_rooms', 'hub_get_room', 'hub_list_devices'] as Set
+        def ann = script.annotationsForGateway(['hub_list_rooms', 'hub_get_room'], readOnly)
 
         then:
         ann.readOnlyHint == true
@@ -220,8 +219,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
     def "annotationsForGateway: any write sub-tool flips gateway to write+destructive"() {
         when:
-        def readOnly = ['list_rooms', 'get_room'] as Set
-        def ann = script.annotationsForGateway(['list_rooms', 'delete_room'], readOnly)
+        def readOnly = ['hub_list_rooms', 'hub_get_room'] as Set
+        def ann = script.annotationsForGateway(['hub_list_rooms', 'hub_delete_room'], readOnly)
 
         then:
         ann.readOnlyHint == false
@@ -230,7 +229,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
     def "annotationsForGateway: empty visibleSubTools throws (precondition guard)"() {
         when:
-        script.annotationsForGateway([], ['list_rooms'] as Set)
+        script.annotationsForGateway([], ['hub_list_rooms'] as Set)
 
         then:
         thrown(IllegalArgumentException)
@@ -244,9 +243,9 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         // toggle-hidden while at least one read sub-tool stays visible), so this
         // unit-level test pins the helper contract directly.
         when:
-        def readOnly = ['list_rooms', 'get_room', 'list_devices'] as Set
-        def withWrites = script.annotationsForGateway(['list_rooms', 'delete_room'], readOnly)
-        def writesHidden = script.annotationsForGateway(['list_rooms', 'get_room'], readOnly)
+        def readOnly = ['hub_list_rooms', 'hub_get_room', 'hub_list_devices'] as Set
+        def withWrites = script.annotationsForGateway(['hub_list_rooms', 'hub_delete_room'], readOnly)
+        def writesHidden = script.annotationsForGateway(['hub_list_rooms', 'hub_get_room'], readOnly)
 
         then:
         withWrites.readOnlyHint == false
@@ -256,11 +255,11 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     }
 
     def "gateway aggregation survives toggle-driven sub-tool hiding"() {
-        // Smoke-tests the end-to-end path: customEngineMode=off adds
-        // custom_get_rule_diagnostics to hideByName, which now also filters
-        // gateway sub-tools, so manage_diagnostics's visibleSubTools is one
-        // shorter than its config. The remaining sub-tools still include
-        // writes (zwave_repair etc.), so the label stays write+destructive.
+        // Smoke-tests the end-to-end path: both toggles off (customEngineMode=off,
+        // Built-in App Tools off) feed hideByName, which also filters gateway
+        // sub-tools. hub_manage_diagnostics carries no toggle-hidden sub-tools, but
+        // it keeps writes (hub_call_zwave_repair, hub_delete_captured_state) that are
+        // always visible, so the gateway label stays write+destructive regardless.
         given:
         settingsMap.remove('useGateways')
         settingsMap.enableBuiltinApp = false
@@ -268,7 +267,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         when:
         def tools = script.getToolDefinitions()
-        def diag = tools.find { it.name == 'manage_diagnostics' }
+        def diag = tools.find { it.name == 'hub_manage_diagnostics' }
 
         then:
         diag != null
@@ -306,55 +305,52 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         def classifiedAsWrite = (allNames - readOnly)
 
         def expectedReadOnly = [
-            'list_devices', 'get_device', 'get_attribute', 'get_device_events',
-            'poll_until_attribute',
-            'custom_list_rules', 'custom_get_rule', 'custom_test_rule',
-            'custom_get_rule_diagnostics', 'custom_export_rule',
-            'get_hub_info', 'get_modes', 'get_hsm_status', 'check_for_update',
-            'list_variables', 'get_variable', 'get_variable_history',
-            'list_captured_states',
-            'get_debug_logs', 'get_logging_status', 'generate_bug_report',
-            'get_hub_logs', 'get_device_history', 'get_performance_stats',
-            'get_hub_jobs', 'get_memory_history',
-            'get_zwave_details', 'get_zigbee_details', 'device_health_check',
-            'list_hub_apps', 'list_hub_drivers',
-            'get_app_source', 'get_driver_source', 'get_library_source',
-            'list_item_backups', 'get_item_backup',
-            'list_virtual_devices',
-            'list_rooms', 'get_room',
-            'list_files', 'read_file',
-            'list_installed_apps', 'get_device_in_use_by', 'get_app_config',
-            'list_app_pages',
-            'list_hpm_packages', 'get_hpm_drift',
-            'list_rm_rules', 'export_native_app', 'check_rule_health',
-            'get_tool_guide'
-            // search_tools is in getReadOnlyToolNames() but suppressed in flat mode.
+            'hub_list_devices', 'hub_get_device', 'hub_get_device_attribute', 'hub_list_device_events',
+            'hub_get_custom_rule', 'hub_test_custom_rule', 'hub_export_custom_rule',
+            'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status', 'hub_get_update_status',
+            'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
+            'hub_list_captured_states',
+            'hub_get_debug_logs', 'hub_report_issue',
+            'hub_get_logs', 'hub_get_performance_stats',
+            'hub_get_jobs', 'hub_get_memory_history',
+            'hub_get_radio_details', 'hub_get_device_health',
+            'hub_list_apps', 'hub_list_drivers',
+            'hub_get_source',
+            'hub_list_backups', 'hub_get_backup',
+            'hub_list_rooms', 'hub_get_room',
+            'hub_list_files', 'hub_read_file',
+            'hub_list_installed_apps', 'hub_list_device_dependents', 'hub_get_app_config',
+            'hub_list_app_pages',
+            'hub_list_hpm_packages',
+            'hub_list_rules', 'hub_export_native_app', 'hub_get_rule_health',
+            'hub_get_tool_guide'
+            // hub_search_tools is in getReadOnlyToolNames() but suppressed in flat mode.
         ] as Set
 
         def expectedWrites = [
-            'send_command',
-            'custom_create_rule', 'custom_update_rule', 'custom_delete_rule',
-            'custom_import_rule', 'custom_clone_rule',
-            'set_mode',
-            'set_variable', 'create_variable', 'delete_variable',
-            'create_connector', 'remove_connector',
-            'update_mcp_settings',
-            'set_hsm',
-            'delete_captured_state', 'clear_captured_states',
-            'clear_debug_logs', 'set_log_level',
-            'create_hub_backup',
-            'reboot_hub', 'shutdown_hub', 'zwave_repair', 'delete_device',
-            'force_garbage_collection', 'get_set_hub_metrics',
-            'manage_virtual_device', 'update_device',
-            'create_room', 'delete_room', 'rename_room',
-            'install_app', 'install_driver', 'update_app_code', 'update_driver_code',
-            'delete_app', 'delete_driver',
-            'install_library', 'update_library_code', 'delete_library',
-            'restore_item_backup',
-            'write_file', 'delete_file',
-            'run_rm_rule', 'pause_rm_rule', 'resume_rm_rule', 'set_rm_rule_boolean',
-            'create_native_app', 'update_native_app', 'clone_native_app',
-            'import_native_app', 'delete_native_app'
+            'hub_call_device_command',
+            'hub_create_custom_rule', 'hub_update_custom_rule', 'hub_delete_custom_rule',
+            'hub_import_custom_rule', 'hub_clone_custom_rule',
+            'hub_set_mode',
+            'hub_set_variable', 'hub_create_variable', 'hub_delete_variable',
+            'hub_create_connector', 'hub_delete_connector',
+            'hub_update_mcp_settings',
+            'hub_set_hsm',
+            'hub_delete_captured_state',
+            'hub_delete_debug_logs', 'hub_set_log_level',
+            'hub_create_backup',
+            'hub_reboot', 'hub_shutdown', 'hub_call_zwave_repair', 'hub_delete_device',
+            'hub_call_gc', 'hub_get_metrics',
+            'hub_manage_virtual_device', 'hub_update_device',
+            'hub_create_room', 'hub_delete_room', 'hub_update_room',
+            'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
+            'hub_delete_item',
+            'hub_create_library', 'hub_update_library',
+            'hub_restore_backup',
+            'hub_write_file', 'hub_delete_file',
+            'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
+            'hub_create_native_app', 'hub_update_native_app', 'hub_clone_native_app',
+            'hub_import_native_app', 'hub_delete_native_app'
         ] as Set
 
         then:

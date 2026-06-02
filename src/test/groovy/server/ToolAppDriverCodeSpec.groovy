@@ -5,15 +5,15 @@ import support.TestChildApp
 import support.ToolSpecBase
 
 /**
- * Spec for the manage_app_driver_code gateway tools in hubitat-mcp-server.groovy:
+ * Spec for the hub_manage_code_write gateway tools in hubitat-mcp-server.groovy:
  *
- * - toolInstallApp          -> install_app         (source|sourceFile; post-install verification)
- * - toolInstallDriver       -> install_driver      (source|sourceFile; bulk installs[]; post-install verification)
- * - toolUpdateAppCode       -> update_app_code     (three source modes: source, sourceFile, resave)
- * - toolUpdateDriverCode    -> update_driver_code  (three source modes + bulk updates array)
- * - toolDeleteApp           -> delete_app
- * - toolDeleteDriver        -> delete_driver
- * - toolRestoreItemBackup   -> restore_item_backup
+ * - toolInstallApp          -> hub_create_app         (source|sourceFile; post-install verification)
+ * - toolInstallDriver       -> hub_create_driver      (source|sourceFile; bulk installs[]; post-install verification)
+ * - toolUpdateAppCode       -> hub_update_app     (three source modes: source, sourceFile, resave)
+ * - toolUpdateDriverCode    -> hub_update_driver  (three source modes + bulk updates array)
+ * - toolDeleteItem (type=app)    -> hub_delete_item
+ * - toolDeleteItem (type=driver) -> hub_delete_item
+ * - toolRestoreItemBackup   -> hub_restore_backup
  *
  * Every tool here runs through requireHubAdminWrite -- golden-path tests seed:
  *   settingsMap.enableHubAdminWrite = true
@@ -49,7 +49,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     // -------- toolInstallApp / toolInstallDriver --------
 
-    def "install_app throws when confirm is not provided"() {
+    def "hub_create_app throws when confirm is not provided"() {
         given:
         enableHubAdminWrite()
 
@@ -62,13 +62,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch returns -32602 envelope when confirm is not provided (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch returns -32602 envelope when confirm is not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "X")'])
+        def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "X")'])
 
         then:
         response.error.code == -32602
@@ -78,7 +78,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_app throws when Hub Admin Write is disabled"() {
+    def "hub_create_app throws when Hub Admin Write is disabled"() {
         when:
         script.toolInstallApp([source: 'definition(name: "X")', confirm: true])
 
@@ -88,12 +88,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "X")', confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "X")', confirm: true])
 
         then:
         response.error.code == -32602
@@ -103,7 +103,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_app throws when neither source nor sourceFile is provided"() {
+    def "hub_create_app throws when neither source nor sourceFile is provided"() {
         given:
         enableHubAdminWrite()
 
@@ -116,13 +116,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch returns -32602 envelope when neither source nor sourceFile (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch returns -32602 envelope when neither source nor sourceFile (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_app', [confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [confirm: true])
 
         then:
         response.error.code == -32602
@@ -132,7 +132,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_app throws when both source and sourceFile are provided"() {
+    def "hub_create_app throws when both source and sourceFile are provided"() {
         given:
         enableHubAdminWrite()
 
@@ -145,13 +145,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch returns -32602 envelope when both source and sourceFile (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch returns -32602 envelope when both source and sourceFile (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'code', sourceFile: 'app.groovy', confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [source: 'code', sourceFile: 'app.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -161,7 +161,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_app (source mode) POSTs to /app/save, verifies via ajax/code, and extracts the new appId"() {
+    def "hub_create_app (source mode) POSTs to /app/save, verifies via ajax/code, and extracts the new appId"() {
         given:
         enableHubAdminWrite()
         def captured = [:]
@@ -189,7 +189,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch (source mode) POSTs and extracts appId (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch (source mode) POSTs and extracts appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -204,7 +204,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "Hello")', confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "Hello")', confirm: true])
 
         then:
         captured.path == '/app/save'
@@ -223,7 +223,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_app (sourceFile mode) reads source from File Manager and installs it"() {
+    def "hub_create_app (sourceFile mode) reads source from File Manager and installs it"() {
         given:
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String fileName ->
@@ -247,7 +247,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch (sourceFile mode) reads source and installs (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch (sourceFile mode) reads source and installs (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -262,7 +262,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_app', [sourceFile: 'my-app.groovy', confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [sourceFile: 'my-app.groovy', confirm: true])
 
         then:
         response.error == null
@@ -277,7 +277,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_app (sourceFile mode) throws when the file is absent in File Manager"() {
+    def "hub_create_app (sourceFile mode) throws when the file is absent in File Manager"() {
         given:
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
@@ -291,14 +291,14 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch returns -32602 envelope when sourceFile is absent (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch returns -32602 envelope when sourceFile is absent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        def response = mcpDriver.callTool('install_app', [sourceFile: 'missing.groovy', confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [sourceFile: 'missing.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -308,7 +308,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_app returns success=false when Location header is absent (hub did not persist item)"() {
+    def "hub_create_app returns success=false when Location header is absent (hub did not persist item)"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -325,7 +325,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch returns success=false envelope when Location header is absent (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch returns success=false envelope when Location header is absent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -334,7 +334,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "NoLoc")', confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "NoLoc")', confirm: true])
 
         then:
         response.error == null
@@ -348,7 +348,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_app returns success=false when post-install verification shows an error state"() {
+    def "hub_create_app returns success=false when post-install verification shows an error state"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -369,7 +369,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch returns success=false envelope when post-install verification errors (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch returns success=false envelope when post-install verification errors (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -381,7 +381,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'bad source', confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [source: 'bad source', confirm: true])
 
         then:
         response.error == null
@@ -396,7 +396,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_app reports failure when the hub POST throws"() {
+    def "hub_create_app reports failure when the hub POST throws"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -414,7 +414,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch reports failure envelope when hub POST throws (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch reports failure envelope when hub POST throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -423,7 +423,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'bad', confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [source: 'bad', confirm: true])
 
         then:
         response.error == null
@@ -438,7 +438,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_app surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
+    def "hub_create_app surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -461,7 +461,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch surfaces qualified success envelope when verify fetch throws (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch surfaces qualified success envelope when verify fetch throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -473,7 +473,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "Test")', confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "Test")', confirm: true])
 
         then:
         response.error == null
@@ -490,7 +490,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_app returns success=false when verify endpoint returns an empty body"() {
+    def "hub_create_app returns success=false when verify endpoint returns an empty body"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -510,7 +510,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch returns success=false envelope when verify endpoint returns empty body (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch returns success=false envelope when verify endpoint returns empty body (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -520,7 +520,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params -> '' }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "Test")', confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "Test")', confirm: true])
 
         then:
         response.error == null
@@ -536,7 +536,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_app returns success=false when verify endpoint returns unparseable HTML"() {
+    def "hub_create_app returns success=false when verify endpoint returns unparseable HTML"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -557,7 +557,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch returns success=false envelope when verify returns unparseable HTML (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch returns success=false envelope when verify returns unparseable HTML (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -567,7 +567,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params -> '<html><body>Login required</body></html>' }
 
         when:
-        def response = mcpDriver.callTool('install_app', [source: 'definition(name: "Test")', confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "Test")', confirm: true])
 
         then:
         response.error == null
@@ -584,7 +584,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_app rejects bulk-mode args (installs[] not supported on apps)"() {
+    def "hub_create_app rejects bulk-mode args (installs[] not supported on apps)"() {
         given:
         enableHubAdminWrite()
 
@@ -594,28 +594,28 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("Bulk mode")
-        ex.message.contains("install_app")
+        ex.message.contains("hub_create_app")
     }
 
     @spock.lang.Unroll
-    def "install_app via dispatch returns -32602 envelope when bulk-mode installs[] (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch returns -32602 envelope when bulk-mode installs[] (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_app', [installs: [[source: 'a'], [source: 'b']], confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [installs: [[source: 'a'], [source: 'b']], confirm: true])
 
         then:
         response.error.code == -32602
         response.error.message.contains('Bulk mode')
-        response.error.message.contains('install_app')
+        response.error.message.contains('hub_create_app')
 
         where:
         useGateways << [true, false]
     }
 
-    def "install_driver (source mode) POSTs to /driver/save and returns the new driverId"() {
+    def "hub_create_driver (source mode) POSTs to /driver/save and returns the new driverId"() {
         given:
         enableHubAdminWrite()
         def postedPath = null
@@ -638,7 +638,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch (source mode) POSTs to /driver/save and returns driverId (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch (source mode) POSTs to /driver/save and returns driverId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -652,7 +652,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
 
         then:
         postedPath == '/driver/save'
@@ -667,7 +667,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver (sourceFile mode) reads source from File Manager and installs it"() {
+    def "hub_create_driver (sourceFile mode) reads source from File Manager and installs it"() {
         given:
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String fileName ->
@@ -691,7 +691,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch (sourceFile mode) reads source and installs (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch (sourceFile mode) reads source and installs (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -706,7 +706,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [sourceFile: 'my-driver.groovy', confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [sourceFile: 'my-driver.groovy', confirm: true])
 
         then:
         response.error == null
@@ -721,7 +721,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver returns success=false when post-install verification shows an error state"() {
+    def "hub_create_driver returns success=false when post-install verification shows an error state"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -741,7 +741,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch returns success=false envelope when verify shows error state (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch returns success=false envelope when verify shows error state (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -753,7 +753,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'bad driver', confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [source: 'bad driver', confirm: true])
 
         then:
         response.error == null
@@ -767,7 +767,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
+    def "hub_create_driver surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -790,7 +790,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch surfaces qualified success envelope when verify fetch throws (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch surfaces qualified success envelope when verify fetch throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -802,7 +802,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
 
         then:
         response.error == null
@@ -819,7 +819,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver returns success=false when verify endpoint returns an empty body"() {
+    def "hub_create_driver returns success=false when verify endpoint returns an empty body"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -838,7 +838,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch returns success=false envelope when verify returns empty body (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch returns success=false envelope when verify returns empty body (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -848,7 +848,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/driver/ajax/code') { params -> '' }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
 
         then:
         response.error == null
@@ -863,7 +863,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver returns success=false when verify endpoint returns unparseable HTML"() {
+    def "hub_create_driver returns success=false when verify endpoint returns unparseable HTML"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -882,7 +882,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch returns success=false envelope when verify returns unparseable HTML (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch returns success=false envelope when verify returns unparseable HTML (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -892,7 +892,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/driver/ajax/code') { params -> '<html>not json</html>' }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
 
         then:
         response.error == null
@@ -907,7 +907,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver throws when Hub Admin Write is disabled"() {
+    def "hub_create_driver throws when Hub Admin Write is disabled"() {
         when:
         script.toolInstallDriver([source: 'metadata { }', confirm: true])
 
@@ -917,12 +917,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
 
         then:
         response.error.code == -32602
@@ -932,7 +932,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver throws when confirm is not provided"() {
+    def "hub_create_driver throws when confirm is not provided"() {
         given:
         enableHubAdminWrite()
 
@@ -945,13 +945,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }'])
+        def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }'])
 
         then:
         response.error.code == -32602
@@ -961,7 +961,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver throws when neither source nor sourceFile is provided"() {
+    def "hub_create_driver throws when neither source nor sourceFile is provided"() {
         given:
         enableHubAdminWrite()
 
@@ -974,13 +974,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch returns -32602 envelope when neither source nor sourceFile (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch returns -32602 envelope when neither source nor sourceFile (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_driver', [confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [confirm: true])
 
         then:
         response.error.code == -32602
@@ -990,7 +990,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver throws when both source and sourceFile are provided"() {
+    def "hub_create_driver throws when both source and sourceFile are provided"() {
         given:
         enableHubAdminWrite()
 
@@ -1003,13 +1003,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch returns -32602 envelope when both source and sourceFile (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch returns -32602 envelope when both source and sourceFile (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', sourceFile: 'driver.groovy', confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', sourceFile: 'driver.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1019,7 +1019,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver throws when sourceFile is not found in File Manager"() {
+    def "hub_create_driver throws when sourceFile is not found in File Manager"() {
         given:
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
@@ -1033,14 +1033,14 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch returns -32602 envelope when sourceFile not found in File Manager (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch returns -32602 envelope when sourceFile not found in File Manager (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [sourceFile: 'missing.groovy', confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [sourceFile: 'missing.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1050,7 +1050,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver returns success=false when Location header is absent (hub did not persist item)"() {
+    def "hub_create_driver returns success=false when Location header is absent (hub did not persist item)"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -1067,7 +1067,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch returns success=false envelope when Location header absent (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch returns success=false envelope when Location header absent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1076,7 +1076,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
 
         then:
         response.error == null
@@ -1090,7 +1090,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver reports failure when the hub POST throws"() {
+    def "hub_create_driver reports failure when the hub POST throws"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -1108,7 +1108,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch reports failure envelope when hub POST throws (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch reports failure envelope when hub POST throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1117,7 +1117,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'bad', confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [source: 'bad', confirm: true])
 
         then:
         response.error == null
@@ -1132,9 +1132,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // -------- install_driver bulk mode --------
+    // -------- hub_create_driver bulk mode --------
 
-    def "install_driver bulk mode throws when Hub Admin Write is disabled"() {
+    def "hub_create_driver bulk mode throws when Hub Admin Write is disabled"() {
         when:
         script.toolInstallDriver([installs: [[sourceFile: 'f.groovy']], confirm: true])
 
@@ -1144,12 +1144,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver bulk via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_create_driver bulk via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('install_driver', [installs: [[sourceFile: 'f.groovy']], confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [installs: [[sourceFile: 'f.groovy']], confirm: true])
 
         then:
         response.error.code == -32602
@@ -1159,7 +1159,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver bulk mode throws when both installs and sourceFile are supplied"() {
+    def "hub_create_driver bulk mode throws when both installs and sourceFile are supplied"() {
         given:
         enableHubAdminWrite()
 
@@ -1173,13 +1173,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver bulk via dispatch returns -32602 envelope when both installs and sourceFile (useGateways=#useGateways)"() {
+    def "hub_create_driver bulk via dispatch returns -32602 envelope when both installs and sourceFile (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_driver', [sourceFile: 'x.groovy', installs: [[sourceFile: 'f.groovy']], confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [sourceFile: 'x.groovy', installs: [[sourceFile: 'f.groovy']], confirm: true])
 
         then:
         response.error.code == -32602
@@ -1190,7 +1190,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver bulk mode throws when installs is an empty array"() {
+    def "hub_create_driver bulk mode throws when installs is an empty array"() {
         given:
         enableHubAdminWrite()
 
@@ -1203,13 +1203,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver bulk via dispatch returns -32602 envelope when installs is empty array (useGateways=#useGateways)"() {
+    def "hub_create_driver bulk via dispatch returns -32602 envelope when installs is empty array (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('install_driver', [installs: [], confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [installs: [], confirm: true])
 
         then:
         response.error.code == -32602
@@ -1219,7 +1219,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver bulk mode happy path: 3 drivers all succeed, per-item driverIds returned"() {
+    def "hub_create_driver bulk mode happy path: 3 drivers all succeed, per-item driverIds returned"() {
         given:
         enableHubAdminWrite()
         def callNum = 0
@@ -1252,7 +1252,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver bulk via dispatch happy path 3 drivers all succeed (useGateways=#useGateways)"() {
+    def "hub_create_driver bulk via dispatch happy path 3 drivers all succeed (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1267,7 +1267,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('hub_create_driver', [
             installs: [
                 [sourceFile: 'driver-a.groovy'],
                 [sourceFile: 'driver-b.groovy'],
@@ -1291,7 +1291,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver bulk mode partial failure: middle item missing file, outer two installed"() {
+    def "hub_create_driver bulk mode partial failure: middle item missing file, outer two installed"() {
         given:
         enableHubAdminWrite()
         def callNum = 0
@@ -1332,7 +1332,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver bulk via dispatch partial failure middle item missing file (useGateways=#useGateways)"() {
+    def "hub_create_driver bulk via dispatch partial failure middle item missing file (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1349,7 +1349,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('hub_create_driver', [
             installs: [
                 [sourceFile: 'driver-a.groovy'],
                 [sourceFile: 'driver-b.groovy'],
@@ -1376,7 +1376,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver bulk mode: inline source items work alongside sourceFile items"() {
+    def "hub_create_driver bulk mode: inline source items work alongside sourceFile items"() {
         given:
         enableHubAdminWrite()
         def callNum = 0
@@ -1410,7 +1410,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver bulk via dispatch inline source items work alongside sourceFile items (useGateways=#useGateways)"() {
+    def "hub_create_driver bulk via dispatch inline source items work alongside sourceFile items (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1425,7 +1425,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('hub_create_driver', [
             installs: [
                 [source: 'metadata { name "inline-1" }'],
                 [sourceFile: 'driver-b.groovy'],
@@ -1448,7 +1448,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver bulk mode: single-element installs array works"() {
+    def "hub_create_driver bulk mode: single-element installs array works"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -1471,7 +1471,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver bulk via dispatch single-element installs array works (useGateways=#useGateways)"() {
+    def "hub_create_driver bulk via dispatch single-element installs array works (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1483,7 +1483,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('hub_create_driver', [
             installs: [[source: 'metadata { }']],
             confirm: true
         ])
@@ -1500,7 +1500,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver bulk mode: malformed entry (non-Map) yields per-item failure with index hint"() {
+    def "hub_create_driver bulk mode: malformed entry (non-Map) yields per-item failure with index hint"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -1531,7 +1531,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver bulk via dispatch malformed entry yields per-item failure (useGateways=#useGateways)"() {
+    def "hub_create_driver bulk via dispatch malformed entry yields per-item failure (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1543,7 +1543,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('hub_create_driver', [
             installs: [
                 [source: 'metadata { }'],
                 'not-a-map',
@@ -1568,7 +1568,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver bulk mode: per-item verify-throw surfaces verified=false and verifyError on the success entry"() {
+    def "hub_create_driver bulk mode: per-item verify-throw surfaces verified=false and verifyError on the success entry"() {
         given:
         enableHubAdminWrite()
         def callNum = 0
@@ -1610,7 +1610,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver bulk via dispatch per-item verify-throw surfaces verifyError on success entry (useGateways=#useGateways)"() {
+    def "hub_create_driver bulk via dispatch per-item verify-throw surfaces verifyError on success entry (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1627,7 +1627,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('hub_create_driver', [
             installs: [
                 [source: 'metadata { name "a" }'],
                 [source: 'metadata { name "b" }'],
@@ -1655,7 +1655,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver bulk mode: per-item verify status=error propagates error, note, and lastBackup on the failed entry"() {
+    def "hub_create_driver bulk mode: per-item verify status=error propagates error, note, and lastBackup on the failed entry"() {
         given:
         enableHubAdminWrite()
         def callNum = 0
@@ -1698,7 +1698,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver bulk via dispatch per-item verify status=error propagates note and lastBackup (useGateways=#useGateways)"() {
+    def "hub_create_driver bulk via dispatch per-item verify status=error propagates note and lastBackup (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1716,7 +1716,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [
+        def response = mcpDriver.callTool('hub_create_driver', [
             installs: [
                 [source: 'metadata { name "a" }'],
                 [source: 'metadata { name "b" }'],
@@ -1746,7 +1746,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     // -------- toolUpdateAppCode / toolUpdateDriverCode --------
 
-    def "update_app_code throws when confirm is not provided"() {
+    def "hub_update_app throws when confirm is not provided"() {
         given:
         enableHubAdminWrite()
 
@@ -1759,13 +1759,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_app_code via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '1', source: 'x'])
+        def response = mcpDriver.callTool('hub_update_app', [appId: '1', source: 'x'])
 
         then:
         response.error.code == -32602
@@ -1775,7 +1775,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_app_code throws when appId is missing"() {
+    def "hub_update_app throws when appId is missing"() {
         given:
         enableHubAdminWrite()
 
@@ -1788,13 +1788,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_app_code via dispatch returns -32602 envelope when appId missing (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch returns -32602 envelope when appId missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [source: 'x', confirm: true])
+        def response = mcpDriver.callTool('hub_update_app', [source: 'x', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1804,7 +1804,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_app_code throws when none of source, sourceFile, or resave are supplied"() {
+    def "hub_update_app throws when none of source, sourceFile, or resave are supplied"() {
         given:
         enableHubAdminWrite()
 
@@ -1819,13 +1819,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_app_code via dispatch returns -32602 envelope when none of source/sourceFile/resave supplied (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch returns -32602 envelope when none of source/sourceFile/resave supplied (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '1', confirm: true])
+        def response = mcpDriver.callTool('hub_update_app', [appId: '1', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1837,7 +1837,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_app_code (source mode) backs up, fetches version, POSTs to /app/ajax/update"() {
+    def "hub_update_app (source mode) backs up, fetches version, POSTs to /app/ajax/update"() {
         given:
         enableHubAdminWrite()
 
@@ -1878,12 +1878,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.appId == '50'
         result.previousVersion == 12
 
-        and: 'the pre-edit backup manifest entry is preserved so the user can still restore_item_backup to roll back the update'
+        and: 'the pre-edit backup manifest entry is preserved so the user can still hub_restore_backup to roll back the update'
         atomicStateMap.itemBackupManifest?.containsKey('app_50')
     }
 
     @spock.lang.Unroll
-    def "update_app_code via dispatch (source mode) backs up and POSTs to /app/ajax/update (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch (source mode) backs up and POSTs to /app/ajax/update (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1900,7 +1900,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '50', source: 'new source', confirm: true])
+        def response = mcpDriver.callTool('hub_update_app', [appId: '50', source: 'new source', confirm: true])
 
         then:
         captured.path == '/app/ajax/update'
@@ -1923,7 +1923,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_app_code (sourceFile mode) reads source from File Manager"() {
+    def "hub_update_app (sourceFile mode) reads source from File Manager"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -1950,7 +1950,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_app_code via dispatch (sourceFile mode) reads source from File Manager (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch (sourceFile mode) reads source from File Manager (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -1968,7 +1968,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '60', sourceFile: 'my-app.groovy', confirm: true])
+        def response = mcpDriver.callTool('hub_update_app', [appId: '60', sourceFile: 'my-app.groovy', confirm: true])
 
         then:
         captured.body.source == 'source from file'
@@ -1983,7 +1983,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_app_code (sourceFile mode) throws when the file is absent"() {
+    def "hub_update_app (sourceFile mode) throws when the file is absent"() {
         given:
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
@@ -1997,14 +1997,14 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_app_code via dispatch returns -32602 envelope when sourceFile absent (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch returns -32602 envelope when sourceFile absent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '60', sourceFile: 'missing.groovy', confirm: true])
+        def response = mcpDriver.callTool('hub_update_app', [appId: '60', sourceFile: 'missing.groovy', confirm: true])
 
         then:
         response.error.code == -32602
@@ -2014,7 +2014,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_app_code (resave mode) fetches the current source and re-saves it"() {
+    def "hub_update_app (resave mode) fetches the current source and re-saves it"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -2039,7 +2039,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_app_code via dispatch (resave mode) fetches current source and re-saves it (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch (resave mode) fetches current source and re-saves it (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -2054,7 +2054,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '70', resave: true, confirm: true])
+        def response = mcpDriver.callTool('hub_update_app', [appId: '70', resave: true, confirm: true])
 
         then:
         captured.body.source == 'current source'
@@ -2070,7 +2070,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_app_code reports failure when the hub response parses to status=error"() {
+    def "hub_update_app reports failure when the hub response parses to status=error"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -2091,7 +2091,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_app_code via dispatch reports failure envelope when hub response status=error (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch reports failure envelope when hub response status=error (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -2104,7 +2104,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '80', source: 'broken', confirm: true])
+        def response = mcpDriver.callTool('hub_update_app', [appId: '80', source: 'broken', confirm: true])
 
         then:
         response.error == null
@@ -2118,7 +2118,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_app_code rejects bulk-mode args (updates[] not supported on apps)"() {
+    def "hub_update_app rejects bulk-mode args (updates[] not supported on apps)"() {
         given:
         enableHubAdminWrite()
 
@@ -2131,17 +2131,17 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("Bulk mode")
-        ex.message.contains("update_app_code")
+        ex.message.contains("hub_update_app")
     }
 
     @spock.lang.Unroll
-    def "update_app_code via dispatch returns -32602 envelope when bulk-mode updates[] (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch returns -32602 envelope when bulk-mode updates[] (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [
+        def response = mcpDriver.callTool('hub_update_app', [
             updates: [[appId: '1', source: 'a'], [appId: '2', source: 'b']],
             confirm: true
         ])
@@ -2149,13 +2149,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         response.error.code == -32602
         response.error.message.contains('Bulk mode')
-        response.error.message.contains('update_app_code')
+        response.error.message.contains('hub_update_app')
 
         where:
         useGateways << [true, false]
     }
 
-    def "update_driver_code (single mode) delegates to toolUpdateItemCode with the driver paths"() {
+    def "hub_update_driver (single mode) delegates to toolUpdateItemCode with the driver paths"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/driver/ajax/code') { params ->
@@ -2179,7 +2179,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_driver_code via dispatch (single mode) delegates with driver paths (useGateways=#useGateways)"() {
+    def "hub_update_driver via dispatch (single mode) delegates with driver paths (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -2194,7 +2194,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [driverId: '55', source: 'metadata { v2 }', confirm: true])
+        def response = mcpDriver.callTool('hub_update_driver', [driverId: '55', source: 'metadata { v2 }', confirm: true])
 
         then:
         captured.path == '/driver/ajax/update'
@@ -2209,9 +2209,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // -------- update_driver_code bulk mode --------
+    // -------- hub_update_driver bulk mode --------
 
-    def "update_driver_code bulk mode throws when Hub Admin Write is disabled"() {
+    def "hub_update_driver bulk mode throws when Hub Admin Write is disabled"() {
         when:
         script.toolUpdateDriverCode([updates: [[driverId: '1', sourceFile: 'f.groovy']], confirm: true])
 
@@ -2221,12 +2221,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_driver_code bulk via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_update_driver bulk via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [updates: [[driverId: '1', sourceFile: 'f.groovy']], confirm: true])
+        def response = mcpDriver.callTool('hub_update_driver', [updates: [[driverId: '1', sourceFile: 'f.groovy']], confirm: true])
 
         then:
         response.error.code == -32602
@@ -2236,7 +2236,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_driver_code bulk mode throws when both updates and driverId are supplied"() {
+    def "hub_update_driver bulk mode throws when both updates and driverId are supplied"() {
         given:
         enableHubAdminWrite()
 
@@ -2250,13 +2250,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_driver_code bulk via dispatch returns -32602 envelope when both updates and driverId (useGateways=#useGateways)"() {
+    def "hub_update_driver bulk via dispatch returns -32602 envelope when both updates and driverId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [driverId: '10', updates: [[driverId: '20', sourceFile: 'f.groovy']], confirm: true])
+        def response = mcpDriver.callTool('hub_update_driver', [driverId: '10', updates: [[driverId: '20', sourceFile: 'f.groovy']], confirm: true])
 
         then:
         response.error.code == -32602
@@ -2267,7 +2267,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_driver_code bulk mode throws when updates is an empty array"() {
+    def "hub_update_driver bulk mode throws when updates is an empty array"() {
         given:
         enableHubAdminWrite()
 
@@ -2280,13 +2280,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_driver_code bulk via dispatch returns -32602 envelope when updates is empty array (useGateways=#useGateways)"() {
+    def "hub_update_driver bulk via dispatch returns -32602 envelope when updates is empty array (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [updates: [], confirm: true])
+        def response = mcpDriver.callTool('hub_update_driver', [updates: [], confirm: true])
 
         then:
         response.error.code == -32602
@@ -2296,7 +2296,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_driver_code bulk mode happy path: 3 drivers all succeed"() {
+    def "hub_update_driver bulk mode happy path: 3 drivers all succeed"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/driver/ajax/code') { params ->
@@ -2335,7 +2335,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_driver_code bulk via dispatch happy path 3 drivers all succeed (useGateways=#useGateways)"() {
+    def "hub_update_driver bulk via dispatch happy path 3 drivers all succeed (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -2353,7 +2353,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [
+        def response = mcpDriver.callTool('hub_update_driver', [
             updates: [
                 [driverId: '101', sourceFile: 'driver-101.groovy'],
                 [driverId: '102', sourceFile: 'driver-102.groovy'],
@@ -2378,7 +2378,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_driver_code bulk mode partial failure: middle driver fails, outer two still applied"() {
+    def "hub_update_driver bulk mode partial failure: middle driver fails, outer two still applied"() {
         given:
         enableHubAdminWrite()
         def callCount = 0
@@ -2425,7 +2425,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_driver_code bulk via dispatch partial failure middle driver fails (useGateways=#useGateways)"() {
+    def "hub_update_driver bulk via dispatch partial failure middle driver fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -2443,7 +2443,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [
+        def response = mcpDriver.callTool('hub_update_driver', [
             updates: [
                 [driverId: '201', sourceFile: 'driver-201.groovy'],
                 [driverId: '202', sourceFile: 'driver-202.groovy'],
@@ -2471,7 +2471,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_driver_code bulk mode: mixed resave and sourceFile entries dispatch correctly"() {
+    def "hub_update_driver bulk mode: mixed resave and sourceFile entries dispatch correctly"() {
         given:
         enableHubAdminWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
@@ -2512,7 +2512,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_driver_code bulk via dispatch mixed resave and sourceFile entries dispatch correctly (useGateways=#useGateways)"() {
+    def "hub_update_driver bulk via dispatch mixed resave and sourceFile entries dispatch correctly (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -2530,7 +2530,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [
+        def response = mcpDriver.callTool('hub_update_driver', [
             updates: [
                 [driverId: '301', resave: true],
                 [driverId: '302', sourceFile: 'driver-302.groovy'],
@@ -2557,7 +2557,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_driver_code bulk mode: per-item update failure propagates note and lastBackup on the failed entry"() {
+    def "hub_update_driver bulk mode: per-item update failure propagates note and lastBackup on the failed entry"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/driver/ajax/code') { params ->
@@ -2600,7 +2600,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_driver_code bulk via dispatch per-item failure propagates note and lastBackup (useGateways=#useGateways)"() {
+    def "hub_update_driver bulk via dispatch per-item failure propagates note and lastBackup (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -2617,7 +2617,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_driver_code', [
+        def response = mcpDriver.callTool('hub_update_driver', [
             updates: [
                 [driverId: '401', source: 'metadata { name "a" }'],
                 [driverId: '402', source: 'metadata { name "b" }'],
@@ -2645,7 +2645,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "install_driver returns success=false when verify endpoint returns clean JSON with empty source field"() {
+    def "hub_create_driver returns success=false when verify endpoint returns clean JSON with empty source field"() {
         given:
         enableHubAdminWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -2669,7 +2669,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "install_driver via dispatch returns success=false envelope when verify clean JSON has empty source (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch returns success=false envelope when verify clean JSON has empty source (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -2681,7 +2681,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('install_driver', [source: 'metadata { }', confirm: true])
+        def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
 
         then:
         response.error == null
@@ -2697,14 +2697,14 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // -------- toolDeleteApp / toolDeleteDriver --------
+    // -------- toolDeleteItem (app / driver) --------
 
-    def "delete_app throws when confirm is not provided"() {
+    def "hub_delete_item (app) throws when confirm is not provided"() {
         given:
         enableHubAdminWrite()
 
         when:
-        script.toolDeleteApp([appId: '1'])
+        script.toolDeleteItem([type: 'app', id: '1'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -2712,13 +2712,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_app via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
+    def "hub_delete_item (app) via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('delete_app', [appId: '1'])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '1'])
 
         then:
         response.error.code == -32602
@@ -2728,9 +2728,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "delete_app throws when Hub Admin Write is disabled"() {
+    def "hub_delete_item (app) throws when Hub Admin Write is disabled"() {
         when:
-        script.toolDeleteApp([appId: '1', confirm: true])
+        script.toolDeleteItem([type: 'app', id: '1', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -2738,12 +2738,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_app via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_delete_item (app) via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('delete_app', [appId: '1', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '1', confirm: true])
 
         then:
         response.error.code == -32602
@@ -2753,12 +2753,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "delete_app throws when appId is missing"() {
+    def "hub_delete_item (app) throws when appId is missing"() {
         given:
         enableHubAdminWrite()
 
         when:
-        script.toolDeleteApp([confirm: true])
+        script.toolDeleteItem([type: 'app', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -2766,13 +2766,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_app via dispatch returns -32602 envelope when appId missing (useGateways=#useGateways)"() {
+    def "hub_delete_item (app) via dispatch returns -32602 envelope when appId missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('delete_app', [confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', confirm: true])
 
         then:
         response.error.code == -32602
@@ -2782,7 +2782,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "delete_app backs up source, deletes via deleteJsonSafe, and reports the backup file"() {
+    def "hub_delete_item (app) backs up source, deletes via deleteJsonSafe, and reports the backup file"() {
         given:
         enableHubAdminWrite()
         def uploads = []
@@ -2799,18 +2799,18 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteApp([appId: '33', confirm: true])
+        def result = script.toolDeleteItem([type: 'app', id: '33', confirm: true])
 
         then:
         result.success == true
         result.appId == '33'
         result.backupFile == 'mcp-backup-app-33.groovy'
         uploads == ['mcp-backup-app-33.groovy']
-        result.restoreHint.contains('install_app')
+        result.restoreHint.contains('hub_create_app')
     }
 
     @spock.lang.Unroll
-    def "delete_app via dispatch backs up source and deletes via deleteJsonSafe (useGateways=#useGateways)"() {
+    def "hub_delete_item (app) via dispatch backs up source and deletes via deleteJsonSafe (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -2822,7 +2822,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/edit/deleteJsonSafe/33') { params -> '{"status": "true"}' }
 
         when:
-        def response = mcpDriver.callTool('delete_app', [appId: '33', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '33', confirm: true])
 
         then:
         response.error == null
@@ -2832,13 +2832,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.appId == '33'
         inner.backupFile == 'mcp-backup-app-33.groovy'
         uploads == ['mcp-backup-app-33.groovy']
-        inner.restoreHint.contains('install_app')
+        inner.restoreHint.contains('hub_create_app')
 
         where:
         useGateways << [true, false]
     }
 
-    def "delete_app proceeds with a warning when pre-delete backup fails"() {
+    def "hub_delete_item (app) proceeds with a warning when pre-delete backup fails"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -2849,7 +2849,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteApp([appId: '44', confirm: true])
+        def result = script.toolDeleteItem([type: 'app', id: '44', confirm: true])
 
         then: 'delete still succeeds, but the response flags that the backup could not be created'
         result.success == true
@@ -2858,7 +2858,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_app via dispatch proceeds with backupWarning when pre-delete backup fails (useGateways=#useGateways)"() {
+    def "hub_delete_item (app) via dispatch proceeds with backupWarning when pre-delete backup fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -2868,7 +2868,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/edit/deleteJsonSafe/44') { params -> '{"status": "true"}' }
 
         when:
-        def response = mcpDriver.callTool('delete_app', [appId: '44', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '44', confirm: true])
 
         then:
         response.error == null
@@ -2882,7 +2882,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "delete_app reports failure when the hub delete response signals error"() {
+    def "hub_delete_item (app) reports failure when the hub delete response signals error"() {
         given:
         enableHubAdminWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
@@ -2894,7 +2894,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteApp([appId: '55', confirm: true])
+        def result = script.toolDeleteItem([type: 'app', id: '55', confirm: true])
 
         then:
         result.success == false
@@ -2903,7 +2903,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_app via dispatch reports failure envelope when hub delete signals error (useGateways=#useGateways)"() {
+    def "hub_delete_item (app) via dispatch reports failure envelope when hub delete signals error (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -2916,7 +2916,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('delete_app', [appId: '55', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '55', confirm: true])
 
         then:
         response.error == null
@@ -2930,7 +2930,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "delete_driver hits /driver/editor/deleteJson/<id> and succeeds"() {
+    def "hub_delete_item (driver) hits /driver/editor/deleteJson/<id> and succeeds"() {
         given:
         enableHubAdminWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
@@ -2944,7 +2944,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteDriver([driverId: '77', confirm: true])
+        def result = script.toolDeleteItem([type: 'driver', id: '77', confirm: true])
 
         then:
         deletePath == '/driver/editor/deleteJson/77'
@@ -2954,7 +2954,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "delete_driver via dispatch hits /driver/editor/deleteJson and succeeds (useGateways=#useGateways)"() {
+    def "hub_delete_item (driver) via dispatch hits /driver/editor/deleteJson and succeeds (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -2969,7 +2969,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('delete_driver', [driverId: '77', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'driver', id: '77', confirm: true])
 
         then:
         deletePath == '/driver/editor/deleteJson/77'
@@ -2986,7 +2986,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     // -------- toolRestoreItemBackup --------
 
-    def "restore_item_backup throws when confirm is not provided"() {
+    def "hub_restore_backup throws when confirm is not provided"() {
         given:
         enableHubAdminWrite()
 
@@ -2999,13 +2999,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "restore_item_backup via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
+    def "hub_restore_backup via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('restore_item_backup', [backupKey: 'app_1'])
+        def response = mcpDriver.callTool('hub_restore_backup', [backupKey: 'app_1'])
 
         then:
         response.error.code == -32602
@@ -3015,7 +3015,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "restore_item_backup throws when backupKey is missing"() {
+    def "hub_restore_backup throws when backupKey is missing"() {
         given:
         enableHubAdminWrite()
 
@@ -3028,13 +3028,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "restore_item_backup via dispatch returns -32602 envelope when backupKey missing (useGateways=#useGateways)"() {
+    def "hub_restore_backup via dispatch returns -32602 envelope when backupKey missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('restore_item_backup', [confirm: true])
+        def response = mcpDriver.callTool('hub_restore_backup', [confirm: true])
 
         then:
         response.error.code == -32602
@@ -3044,7 +3044,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "restore_item_backup returns error response when the key is unknown"() {
+    def "hub_restore_backup returns error response when the key is unknown"() {
         given:
         enableHubAdminWrite()
         atomicStateMap.itemBackupManifest = [
@@ -3062,7 +3062,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "restore_item_backup via dispatch returns success=false envelope when key unknown (useGateways=#useGateways)"() {
+    def "hub_restore_backup via dispatch returns success=false envelope when key unknown (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -3072,7 +3072,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('restore_item_backup', [backupKey: 'app_missing', confirm: true])
+        def response = mcpDriver.callTool('hub_restore_backup', [backupKey: 'app_missing', confirm: true])
 
         then:
         response.error == null
@@ -3086,7 +3086,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "restore_item_backup reads backup, creates a pre-restore copy, and pushes source to the hub"() {
+    def "hub_restore_backup reads backup, creates a pre-restore copy, and pushes source to the hub"() {
         given:
         enableHubAdminWrite()
 
@@ -3146,7 +3146,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "restore_item_backup via dispatch reads backup creates pre-restore copy and pushes to hub (useGateways=#useGateways)"() {
+    def "hub_restore_backup via dispatch reads backup creates pre-restore copy and pushes to hub (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -3170,7 +3170,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('restore_item_backup', [backupKey: 'app_99', confirm: true])
+        def response = mcpDriver.callTool('hub_restore_backup', [backupKey: 'app_99', confirm: true])
 
         then:
         uploads == ['mcp-prerestore-app-99.groovy']
@@ -3194,7 +3194,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "restore_item_backup reports failure and preserves the backup when the hub POST fails"() {
+    def "hub_restore_backup reports failure and preserves the backup when the hub POST fails"() {
         given:
         enableHubAdminWrite()
         atomicStateMap.itemBackupManifest = [
@@ -3221,7 +3221,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "restore_item_backup via dispatch reports failure envelope and preserves backup when hub POST fails (useGateways=#useGateways)"() {
+    def "hub_restore_backup via dispatch reports failure envelope and preserves backup when hub POST fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -3239,7 +3239,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('restore_item_backup', [backupKey: 'driver_88', confirm: true])
+        def response = mcpDriver.callTool('hub_restore_backup', [backupKey: 'driver_88', confirm: true])
 
         then:
         response.error == null
@@ -3254,7 +3254,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "restore_item_backup returns clear error for library type and directs user to update_library_code"() {
+    def "hub_restore_backup returns clear error for library type and directs user to hub_update_library"() {
         given:
         enableHubAdminWrite()
         atomicStateMap.itemBackupManifest = [
@@ -3267,14 +3267,14 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         result.success == false
-        result.error.contains('use install_library or update_library_code')
+        result.error.contains('use hub_create_library or hub_update_library')
         result.backupFile == 'mcp-backup-library-42.groovy'
         result.type == 'library'
     }
 
-    // -------- update_app_code: expectedVersion optimistic-lock --------
+    // -------- hub_update_app: expectedVersion optimistic-lock --------
 
-    def "update_app_code with matching expectedVersion proceeds and POSTs to /app/ajax/update"() {
+    def "hub_update_app with matching expectedVersion proceeds and POSTs to /app/ajax/update"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -3298,7 +3298,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.previousVersion == 42
     }
 
-    def "update_app_code with mismatching expectedVersion aborts BEFORE POST and returns conflict"() {
+    def "hub_update_app with mismatching expectedVersion aborts BEFORE POST and returns conflict"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -3331,7 +3331,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_app_code via dispatch surfaces expectedVersion conflict inside result.content text (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch surfaces expectedVersion conflict inside result.content text (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -3346,7 +3346,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '50', source: 'stale', expectedVersion: 42, confirm: true])
+        def response = mcpDriver.callTool('hub_update_app', [appId: '50', source: 'stale', expectedVersion: 42, confirm: true])
 
         then: 'no hub-update POST happens; conflict is a non-error successful tool response, not a JSON-RPC error'
         postCount == 0
@@ -3364,7 +3364,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_app_code coerces a string expectedVersion to integer and detects mismatch (inequality-proves-coercion)"() {
+    def "hub_update_app coerces a string expectedVersion to integer and detects mismatch (inequality-proves-coercion)"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -3389,7 +3389,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.currentVersion.class == Integer
     }
 
-    def "update_app_code rejects unparseable expectedVersion with a clear message that preserves the original cause"() {
+    def "hub_update_app rejects unparseable expectedVersion with a clear message that preserves the original cause"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -3407,7 +3407,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         ex.message.contains('For input string')   // original NumberFormatException cause preserved
     }
 
-    def "update_app_code rejects explicit-null expectedVersion (silent-overwrite footgun)"() {
+    def "hub_update_app rejects explicit-null expectedVersion (silent-overwrite footgun)"() {
         given:
         enableHubAdminWrite()
 
@@ -3419,7 +3419,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         ex.message.contains('expectedVersion was supplied as null')
     }
 
-    def "update_app_code with expectedVersion:0 against hub version 0 succeeds (no Groovy truthy short-circuit)"() {
+    def "hub_update_app with expectedVersion:0 against hub version 0 succeeds (no Groovy truthy short-circuit)"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -3440,7 +3440,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         captured.body.version == 0
     }
 
-    def "update_app_code with expectedVersion:0 against hub version 1 returns conflict (proves containsKey is checked, not truthiness)"() {
+    def "hub_update_app with expectedVersion:0 against hub version 1 returns conflict (proves containsKey is checked, not truthiness)"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -3463,7 +3463,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.currentVersion == 1
     }
 
-    def "update_app_code with expectedVersion + resave fetches version from the resave parse (no second GET) and detects match/mismatch"() {
+    def "hub_update_app with expectedVersion + resave fetches version from the resave parse (no second GET) and detects match/mismatch"() {
         given:
         enableHubAdminWrite()
         def getCount = 0
@@ -3498,7 +3498,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         conflict.currentVersion == 7
     }
 
-    def "update_app_code with hub returning non-integer version aborts with a clear error (no silent unguarded write)"() {
+    def "hub_update_app with hub returning non-integer version aborts with a clear error (no silent unguarded write)"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -3520,7 +3520,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         postCount == 0
     }
 
-    def "update_app_code propagates POST failure with a clean envelope -- no conflict:true leakage on non-conflict failures"() {
+    def "hub_update_app propagates POST failure with a clean envelope -- no conflict:true leakage on non-conflict failures"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -3542,9 +3542,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         !result.containsKey('currentVersion')
     }
 
-    // -------- update_driver_code expectedVersion --------
+    // -------- hub_update_driver expectedVersion --------
 
-    def "update_driver_code single-mode expectedVersion conflict carries driverId (not appId)"() {
+    def "hub_update_driver single-mode expectedVersion conflict carries driverId (not appId)"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/driver/ajax/code') { params ->
@@ -3567,7 +3567,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         !result.containsKey('appId')
     }
 
-    def "update_driver_code bulk mode propagates per-item expectedVersion conflicts without aborting siblings"() {
+    def "hub_update_driver bulk mode propagates per-item expectedVersion conflicts without aborting siblings"() {
         given:
         enableHubAdminWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
@@ -3611,7 +3611,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.updates[2].success == true
     }
 
-    def "update_driver_code rejects bulk + top-level expectedVersion (schema-vs-mutex consistency)"() {
+    def "hub_update_driver rejects bulk + top-level expectedVersion (schema-vs-mutex consistency)"() {
         given:
         enableHubAdminWrite()
 
@@ -3628,7 +3628,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         ex.message.contains('updates[]')
     }
 
-    def "update_driver_code bulk per-item explicit-null expectedVersion is rejected (same footgun as single-mode)"() {
+    def "hub_update_driver bulk per-item explicit-null expectedVersion is rejected (same footgun as single-mode)"() {
         given:
         enableHubAdminWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
@@ -3661,7 +3661,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.updates[1].success == true
     }
 
-    def "update_driver_code bulk mode mixes a per-item conflict with a per-item thrown error in the same batch"() {
+    def "hub_update_driver bulk mode mixes a per-item conflict with a per-item thrown error in the same batch"() {
         given:
         enableHubAdminWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
@@ -3697,7 +3697,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.updates[2].success == true
     }
 
-    def "update_app_code accepts Long expectedVersion (common JSON parser output)"() {
+    def "hub_update_app accepts Long expectedVersion (common JSON parser output)"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -3718,7 +3718,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         captured.body.version == 5
     }
 
-    def "update_app_code rejects non-coercible Map expectedVersion (exercises ClassCastException leg of the union catch)"() {
+    def "hub_update_app rejects non-coercible Map expectedVersion (exercises ClassCastException leg of the union catch)"() {
         given:
         enableHubAdminWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -3735,9 +3735,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         ex.message.contains('Cannot coerce a map')   // ClassCastException cause preserved
     }
 
-    // -------- update_app_code: self-update guard --------
+    // -------- hub_update_app: self-update guard --------
 
-    def "update_app_code refuses self-update on the MCP server's own appId when Developer Mode is OFF"() {
+    def "hub_update_app refuses self-update on the MCP server's own appId when Developer Mode is OFF"() {
         given:
         enableHubAdminWrite()
         settingsMap.enableDeveloperMode = false
@@ -3760,14 +3760,14 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "update_app_code via dispatch returns -32602 envelope on self-update with Developer Mode off (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch returns -32602 envelope on self-update with Developer Mode off (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
         settingsMap.enableDeveloperMode = false
 
         when:
-        def response = mcpDriver.callTool('update_app_code', [appId: '1', source: 'self-overwrite', confirm: true])
+        def response = mcpDriver.callTool('hub_update_app', [appId: '1', source: 'self-overwrite', confirm: true])
 
         then:
         response.error.code == -32602
@@ -3778,7 +3778,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "update_app_code allows self-update on the MCP server's own appId when Developer Mode is ON and audit-logs it"() {
+    def "hub_update_app allows self-update on the MCP server's own appId when Developer Mode is ON and audit-logs it"() {
         given:
         enableHubAdminWrite()
         settingsMap.enableDeveloperMode = true
@@ -3807,7 +3807,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         warnLogs.any { it.contains('ALLOWED') && it.contains('id=1') }
     }
 
-    def "update_app_code self-update guard blocks resave mode (most-likely real-world brick scenario)"() {
+    def "hub_update_app self-update guard blocks resave mode (most-likely real-world brick scenario)"() {
         given:
         enableHubAdminWrite()
         settingsMap.enableDeveloperMode = false
@@ -3828,7 +3828,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         getCount == 0
     }
 
-    def "update_app_code self-update guard blocks sourceFile mode (no File Manager read happens)"() {
+    def "hub_update_app self-update guard blocks sourceFile mode (no File Manager read happens)"() {
         given:
         enableHubAdminWrite()
         settingsMap.enableDeveloperMode = false
@@ -3846,7 +3846,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         downloadCount == 0   // guard runs before File Manager read
     }
 
-    def "update_app_code self-update guard allows resave mode when Developer Mode is ON"() {
+    def "hub_update_app self-update guard allows resave mode when Developer Mode is ON"() {
         given:
         enableHubAdminWrite()
         settingsMap.enableDeveloperMode = true
@@ -3868,7 +3868,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         captured.body.source == 'current self src'
     }
 
-    def "update_app_code self-update guard does NOT fire on non-self appIds even when Developer Mode is OFF"() {
+    def "hub_update_app self-update guard does NOT fire on non-self appIds even when Developer Mode is OFF"() {
         given:
         enableHubAdminWrite()
         settingsMap.enableDeveloperMode = false
@@ -3887,7 +3887,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.success == true
     }
 
-    def "update_driver_code self-update guard does NOT fire (keyed on type=='app'; driverId 1 is unrelated)"() {
+    def "hub_update_driver self-update guard does NOT fire (keyed on type=='app'; driverId 1 is unrelated)"() {
         given:
         enableHubAdminWrite()
         settingsMap.enableDeveloperMode = false
@@ -3906,7 +3906,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.success == true
     }
 
-    def "update_app_code self-update guard fails closed when app context is unavailable (refuses + ERROR-logs)"() {
+    def "hub_update_app self-update guard fails closed when app context is unavailable (refuses + ERROR-logs)"() {
         given:
         enableHubAdminWrite()
         def originalId = sharedAppStub.id
@@ -3929,7 +3929,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         sharedAppStub.id = originalId
     }
 
-    def "update_driver_code bulk mode: a per-item driverId equal to app.id still succeeds (type=='app' guard does not fire on driver bulk)"() {
+    def "hub_update_driver bulk mode: a per-item driverId equal to app.id still succeeds (type=='app' guard does not fire on driver bulk)"() {
         given:
         enableHubAdminWrite()
         settingsMap.enableDeveloperMode = false
@@ -3958,7 +3958,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "restore_item_backup via dispatch returns success=false envelope for library type (useGateways=#useGateways)"() {
+    def "hub_restore_backup via dispatch returns success=false envelope for library type (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -3968,14 +3968,14 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         ]
 
         when:
-        def response = mcpDriver.callTool('restore_item_backup', [backupKey: 'library_42', confirm: true])
+        def response = mcpDriver.callTool('hub_restore_backup', [backupKey: 'library_42', confirm: true])
 
         then:
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == false
-        inner.error.contains('use install_library or update_library_code')
+        inner.error.contains('use hub_create_library or hub_update_library')
         inner.backupFile == 'mcp-backup-library-42.groovy'
         inner.type == 'library'
 

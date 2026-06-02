@@ -1249,10 +1249,10 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     // ---------------------------------------------------------------------------
     // Dispatch-envelope counterparts (issue #187)
     //
-    // poll_until_attribute is wired through the executeTool switch (no gateway
+    // hub_get_device_attribute poll mode is wired through the executeTool switch (no gateway
     // group), so useGateways doesn't change routing — the parameter is varied
     // here to assert the JSON-RPC envelope behaves identically in both modes.
-    // The set is intentionally selective: poll_until_attribute has 30+ direct
+    // The set is intentionally selective: hub_get_device_attribute poll mode has 30+ direct
     // features, and the dispatch path differs only by envelope shape per
     // outcome class. We cover one feature per distinct envelope:
     //   - success-immediate (success envelope with result body)
@@ -1265,7 +1265,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     // ---------------------------------------------------------------------------
 
     @spock.lang.Unroll
-    def "poll_until_attribute via dispatch returns success immediately when value already matches (useGateways=#useGateways)"() {
+    def "hub_get_device_attribute poll-mode via dispatch returns success immediately when value already matches (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def device = new TestDevice(
@@ -1278,7 +1278,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         childDevicesList << device
 
         when:
-        def response = mcpDriver.callTool('poll_until_attribute', [
+        def response = mcpDriver.callTool('hub_get_device_attribute', [
             deviceId      : '1010',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -1299,7 +1299,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "poll_until_attribute via dispatch returns success=false/timedOut=true when no match (useGateways=#useGateways)"() {
+    def "hub_get_device_attribute poll-mode via dispatch returns success=false/timedOut=true when no match (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def device = new TestDevice(
@@ -1311,7 +1311,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         childDevicesList << device
 
         when:
-        def response = mcpDriver.callTool('poll_until_attribute', [
+        def response = mcpDriver.callTool('hub_get_device_attribute', [
             deviceId      : '1020',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -1332,14 +1332,14 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "poll_until_attribute via dispatch returns -32602 when device is not found (useGateways=#useGateways)"() {
+    def "hub_get_device_attribute poll-mode via dispatch returns -32602 when device is not found (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         childDevicesList.clear()
         settingsMap.selectedDevices = []
 
         when:
-        def response = mcpDriver.callTool('poll_until_attribute', [
+        def response = mcpDriver.callTool('hub_get_device_attribute', [
             deviceId      : '9999',
             attribute     : 'switch',
             expectedValue : 'on'
@@ -1354,7 +1354,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "poll_until_attribute via dispatch returns -32602 when neither expectedValue nor expectedValues provided (useGateways=#useGateways)"() {
+    def "hub_get_device_attribute poll-mode via dispatch returns -32602 when neither expectedValue nor expectedValues provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def device = new TestDevice(
@@ -1366,7 +1366,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         childDevicesList << device
 
         when:
-        def response = mcpDriver.callTool('poll_until_attribute', [
+        def response = mcpDriver.callTool('hub_get_device_attribute', [
             deviceId : '1030',
             attribute: 'switch',
             timeoutMs: 1000
@@ -1381,7 +1381,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "poll_until_attribute via dispatch returns -32602 when unknown arg is passed (useGateways=#useGateways)"() {
+    def "hub_get_device_attribute poll-mode via dispatch returns -32602 when unknown arg is passed (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def device = new TestDevice(
@@ -1393,7 +1393,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         childDevicesList << device
 
         when:
-        def response = mcpDriver.callTool('poll_until_attribute', [
+        def response = mcpDriver.callTool('hub_get_device_attribute', [
             deviceId       : '1040',
             attribute      : 'switch',
             expectedValue  : 'on',
@@ -1410,7 +1410,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "poll_until_attribute via dispatch returns success envelope with interrupted=true when pauseExecution throws InterruptedException (useGateways=#useGateways)"() {
+    def "hub_get_device_attribute poll-mode via dispatch returns success envelope with interrupted=true when pauseExecution throws InterruptedException (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def device = new TestDevice(
@@ -1426,7 +1426,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('poll_until_attribute', [
+        def response = mcpDriver.callTool('hub_get_device_attribute', [
             deviceId      : '1050',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -1447,7 +1447,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "poll_until_attribute via dispatch returns isError envelope when pauseExecution throws RuntimeException (useGateways=#useGateways)"() {
+    def "hub_get_device_attribute poll-mode via dispatch returns isError envelope when pauseExecution throws RuntimeException (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def device = new TestDevice(
@@ -1463,7 +1463,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('poll_until_attribute', [
+        def response = mcpDriver.callTool('hub_get_device_attribute', [
             deviceId      : '1060',
             attribute     : 'switch',
             expectedValue : 'on',
@@ -1477,6 +1477,44 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         response.result.content[0].type == 'text'
         response.result.content[0].text.startsWith('Tool error:')
         response.result.content[0].text.contains('simulated bug')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ---------------------------------------------------------------------------
+    // One-shot read branch: with NO poll args (no expectedValue/expectedValues/
+    // timeoutMs/pollIntervalMs), executeTool routes hub_get_device_attribute to
+    // toolGetAttribute for a single read rather than the poll path -- assert the
+    // {device, attribute, value} envelope.
+    // ---------------------------------------------------------------------------
+
+    @spock.lang.Unroll
+    def "hub_get_device_attribute one-shot read via dispatch returns device/attribute/value when no poll args given (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def device = new TestDevice(
+            id: 1070,
+            name: 'DispatchReadSwitch',
+            label: 'Dispatch Read Switch',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'on']
+        )
+        childDevicesList << device
+
+        when:
+        def response = mcpDriver.callTool('hub_get_device_attribute', [
+            deviceId : '1070',
+            attribute: 'switch'
+        ])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.device == 'Dispatch Read Switch'
+        inner.attribute == 'switch'
+        inner.value == 'on'
 
         where:
         useGateways << [true, false]

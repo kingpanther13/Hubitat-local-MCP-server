@@ -133,7 +133,7 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
     // verified end-to-end alongside the direct-call golden paths above.
 
     @spock.lang.Unroll
-    def "custom_create_rule via dispatch creates rule (useGateways=#useGateways)"() {
+    def "hub_create_custom_rule via dispatch creates rule (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableCustomRuleEngine = true
@@ -143,7 +143,7 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
         mockChildAppForCreate = childApp
 
         when:
-        def response = mcpDriver.callTool('custom_create_rule', [
+        def response = mcpDriver.callTool('hub_create_custom_rule', [
             name: 'Test Rule',
             description: 'smoke test',
             triggers: [[type: 'time', time: '08:30']],
@@ -162,13 +162,13 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "custom_create_rule via dispatch maps missing rule name to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_custom_rule via dispatch maps missing rule name to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableCustomRuleEngine = true
 
         when:
-        def response = mcpDriver.callTool('custom_create_rule', [
+        def response = mcpDriver.callTool('hub_create_custom_rule', [
             triggers: [[type: 'time', time: '08:30']],
             actions: [[type: 'delay', seconds: 5]]
         ])
@@ -182,13 +182,13 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "custom_create_rule via dispatch maps empty triggers to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_custom_rule via dispatch maps empty triggers to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableCustomRuleEngine = true
 
         when:
-        def response = mcpDriver.callTool('custom_create_rule', [
+        def response = mcpDriver.callTool('hub_create_custom_rule', [
             name: 'Test Rule',
             triggers: [],
             actions: [[type: 'delay', seconds: 5]]
@@ -203,13 +203,13 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "custom_create_rule via dispatch maps empty actions to -32602 (useGateways=#useGateways)"() {
+    def "hub_create_custom_rule via dispatch maps empty actions to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableCustomRuleEngine = true
 
         when:
-        def response = mcpDriver.callTool('custom_create_rule', [
+        def response = mcpDriver.callTool('hub_create_custom_rule', [
             name: 'Test Rule',
             triggers: [[type: 'time', time: '08:30']],
             actions: []
@@ -224,7 +224,7 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "custom_update_rule via dispatch updates rule (useGateways=#useGateways)"() {
+    def "hub_update_custom_rule via dispatch updates rule (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableCustomRuleEngine = true
@@ -235,7 +235,7 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
         childAppsList << mockChildApp
 
         when:
-        def response = mcpDriver.callTool('custom_update_rule', [
+        def response = mcpDriver.callTool('hub_update_custom_rule', [
             ruleId: '42', name: 'Updated Name'
         ])
 
@@ -251,20 +251,108 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "custom_update_rule via dispatch maps unknown ruleId to -32602 (useGateways=#useGateways)"() {
+    def "hub_update_custom_rule via dispatch maps unknown ruleId to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableCustomRuleEngine = true
         childAppsList.clear()
 
         when:
-        def response = mcpDriver.callTool('custom_update_rule', [
+        def response = mcpDriver.callTool('hub_update_custom_rule', [
             ruleId: '999', name: 'x'
         ])
 
         then:
         response.error?.code == -32602
         response.error.message.contains('Rule not found: 999')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ---- hub_get_custom_rule list / single / detailed-guard dispatch ---------
+    // ruleId omitted -> toolListRules (list summary). ruleId present (no detailed)
+    // -> toolGetRule (single rule data). detailed=true without ruleId -> IAE
+    // ("detailed=true requires a ruleId") mapped to -32602 by handleToolsCall.
+    // hub_get_custom_rule isn't gated by the custom_* engine dispatch check (name
+    // doesn't startWith "custom_"); enableCustomRuleEngine is set for parity with
+    // the other custom-rule dispatch tests.
+
+    @spock.lang.Unroll
+    def "hub_get_custom_rule via dispatch lists rules when ruleId is omitted (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+        def rule = new TestChildApp(id: 42L, label: 'My Rule')
+        rule.ruleData = [
+            id: 42L, name: 'My Rule', description: 'desc', enabled: true,
+            triggers: [[type: 'device'], [type: 'time']],
+            conditions: [[op: '>']],
+            actions: [[cmd: 'on']],
+            executionCount: 5, lastTriggered: 3000L
+        ]
+        childAppsList << rule
+
+        when:
+        def response = mcpDriver.callTool('hub_get_custom_rule', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.count == 1
+        inner.rules[0].id == 42L
+        inner.rules[0].name == 'My Rule'
+        inner.rules[0].triggerCount == 2
+        inner.rules[0].actionCount == 1
+        inner.rules[0].source == 'mcp_custom_engine'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_custom_rule via dispatch returns single rule data when ruleId is supplied (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+        def rule = new TestChildApp(id: 42L, label: 'My Rule')
+        rule.ruleData = [
+            id: 42L, name: 'My Rule', description: 'desc', enabled: true,
+            triggers: [[type: 'device']],
+            conditions: [],
+            actions: [[cmd: 'on'], [cmd: 'off']]
+        ]
+        childAppsList << rule
+
+        when:
+        def response = mcpDriver.callTool('hub_get_custom_rule', [ruleId: '42'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.id == 42L
+        inner.name == 'My Rule'
+        inner.actions.size() == 2
+        inner.source == 'mcp_custom_engine'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_custom_rule via dispatch maps detailed=true without ruleId to -32602 (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableCustomRuleEngine = true
+
+        when: 'detailed=true requires a ruleId; the guard rejects rather than silently listing'
+        def response = mcpDriver.callTool('hub_get_custom_rule', [detailed: true])
+
+        then:
+        response.error?.code == -32602
+        response.error.message.contains('detailed=true requires a ruleId')
 
         where:
         useGateways << [true, false]

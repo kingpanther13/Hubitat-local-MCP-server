@@ -37,7 +37,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
         settingsMap.enableHubAdminRead = false
 
         when:
-        def response = mcpDriver.callTool('get_hub_logs', [:])
+        def response = mcpDriver.callTool('hub_get_logs', [:])
 
         then:
         response.jsonrpc == '2.0'
@@ -48,11 +48,11 @@ class HandleToolsCallSpec extends ToolSpecBase {
     }
 
     def "generic Exception from a tool returns isError success envelope (MCP spec)"() {
-        given: 'getRooms() throws a non-IAE so list_rooms hits the generic catch'
+        given: 'getRooms() throws a non-IAE so hub_list_rooms hits the generic catch'
         script.metaClass.getRooms = { throw new RuntimeException('boom') }
 
         when:
-        def response = mcpDriver.callTool('list_rooms', [:])
+        def response = mcpDriver.callTool('hub_list_rooms', [:])
 
         then: 'MCP spec: tool execution errors return a success envelope with isError flag'
         response.jsonrpc == '2.0'
@@ -73,7 +73,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('get_hub_logs', [:])
+        def response = mcpDriver.callTool('hub_get_logs', [:])
 
         then: 'JSON-RPC 2.0 success envelope shape'
         response.jsonrpc == '2.0'

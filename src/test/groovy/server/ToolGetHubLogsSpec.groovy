@@ -57,7 +57,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_hub_logs via dispatch returns most-recent-first log entries (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch returns most-recent-first log entries (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -68,7 +68,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         ])
 
         when:
-        def response = mcpDriver.callTool('get_hub_logs', [:])
+        def response = mcpDriver.callTool('hub_get_logs', [:])
 
         then:
         response.error == null
@@ -97,13 +97,13 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_hub_logs via dispatch maps Hub-Admin-Read-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch maps Hub-Admin-Read-disabled IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = false
 
         when:
-        def response = mcpDriver.callTool('get_hub_logs', [:])
+        def response = mcpDriver.callTool('hub_get_logs', [:])
 
         then:
         response.error != null
@@ -158,7 +158,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_hub_logs via dispatch applies pattern filter (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch applies pattern filter (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -169,7 +169,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         ])
 
         when:
-        def response = mcpDriver.callTool('get_hub_logs', [pattern: 'ERROR.*'])
+        def response = mcpDriver.callTool('hub_get_logs', [pattern: 'ERROR.*'])
 
         then:
         response.error == null
@@ -212,13 +212,13 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_hub_logs via dispatch maps invalid-regex IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch maps invalid-regex IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
 
         when:
-        def response = mcpDriver.callTool('get_hub_logs', [pattern: '[unclosed'])
+        def response = mcpDriver.callTool('hub_get_logs', [pattern: '[unclosed'])
 
         then:
         response.error != null
@@ -682,7 +682,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_hub_logs via dispatch applies kitchen-sink filter pipeline (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch applies kitchen-sink filter pipeline (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -702,7 +702,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         ])
 
         when:
-        def response = mcpDriver.callTool('get_hub_logs', [
+        def response = mcpDriver.callTool('hub_get_logs', [
             level      : 'warn',
             source     : 'testapp',
             pattern    : 'keyword',
@@ -1053,7 +1053,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "get_hub_logs via dispatch wraps IllegalStateException as isError=true envelope (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch wraps IllegalStateException as isError=true envelope (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableHubAdminRead = true
@@ -1061,7 +1061,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         // IllegalStateException. handleToolsCall maps non-IAE exceptions to isError=true.
 
         when:
-        def response = mcpDriver.callTool('get_hub_logs', [:])
+        def response = mcpDriver.callTool('hub_get_logs', [:])
 
         then:
         response.error == null
@@ -1125,7 +1125,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     }
 
     def "cursor pages within the limit-trimmed candidate pool (#174)"() {
-        // get_hub_logs composes three size controls: limit (trims candidate pool),
+        // hub_get_logs composes three size controls: limit (trims candidate pool),
         // cursor (pages within that), and per-entry message truncation. This spec
         // pins the limit-trims-first-then-cursor-pages ordering so a regression
         // that flipped the order surfaces.

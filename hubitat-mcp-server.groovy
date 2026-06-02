@@ -78,8 +78,8 @@ def mainPage() {
 
         section("Built-in App Integration (beta)") {
             paragraph "<b>Built-in App Tools</b> let your AI list, run, pause, resume, create, update, and delete Hubitat's built-in apps including Rule Machine rules. Required for native Rule Machine CRUD via your AI."
-            paragraph "<i>Creating, updating, and deleting rules (create_native_app / update_native_app / delete_native_app) ALSO requires Hub Admin Write -- both toggles must be on. Note: the separate Custom Rule Engine toggle below controls a legacy MCP-managed rule surface -- bug fixes only, no new features.</i>"
-            paragraph "<i><b>Beta status:</b> native rule CRUD is in active beta. Most rule patterns work cleanly: time/mode/event triggers, Run Custom Action with string and number params, nested IF/THEN, switch/dimmer/lock/log/delay/repeat/exitRule actions. Known cosmetic edge-cases under investigation: Custom Attribute conditions inside IF actions may not fully bake the attribute name + value (rule still creates structurally; the IF clause renders incomplete); Custom Attribute conditions in Required Expression and IF action contexts now throw a clear error if 'comparator' is omitted -- both 'attribute' and 'comparator' are required together; clearActions / replaceActions now commit the delete synchronously in the common case (full page-form submit), with a thin defensive verify-retry that only surfaces in the rare state.editAct / firmware-lag residual (response includes verifyHint to disambiguate that case). These should be mostly invisible during normal use -- if you hit any of these (or anything else), please run the <code>generate_bug_report</code> tool or open one directly at <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server/issues' target='_blank'>GitHub Issues</a> and we'll try to fix it.</i>"
+            paragraph "<i>Creating, updating, and deleting rules (hub_create_native_app / hub_update_native_app / hub_delete_native_app) ALSO requires Hub Admin Write -- both toggles must be on. Note: the separate Custom Rule Engine toggle below controls a legacy MCP-managed rule surface -- bug fixes only, no new features.</i>"
+            paragraph "<i><b>Beta status:</b> native rule CRUD is in active beta. Most rule patterns work cleanly: time/mode/event triggers, Run Custom Action with string and number params, nested IF/THEN, switch/dimmer/lock/log/delay/repeat/exitRule actions. Known cosmetic edge-cases under investigation: Custom Attribute conditions inside IF actions may not fully bake the attribute name + value (rule still creates structurally; the IF clause renders incomplete); Custom Attribute conditions in Required Expression and IF action contexts now throw a clear error if 'comparator' is omitted -- both 'attribute' and 'comparator' are required together; clearActions / replaceActions now commit the delete synchronously in the common case (full page-form submit), with a thin defensive verify-retry that only surfaces in the rare state.editAct / firmware-lag residual (response includes verifyHint to disambiguate that case). These should be mostly invisible during normal use -- if you hit any of these (or anything else), please run the <code>hub_report_issue</code> tool or open one directly at <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server/issues' target='_blank'>GitHub Issues</a> and we'll try to fix it.</i>"
             input "enableBuiltinApp", "bool", title: "Enable Built-in App Tools (read + write, beta)",
                   description: "Allows MCP to list all installed apps, find apps using a device, list/trigger/pause/resume Rule Machine rules, and create/update/delete native Rule Machine rules and other classic apps. Create/update/delete additionally requires Hub Admin Write.",
                   defaultValue: false, submitOnChange: true
@@ -158,17 +158,17 @@ def mainPage() {
             def customEngineExplicitlyOn = settings.enableCustomRuleEngine == true
             def builtinAppEnabled = settings.enableBuiltinApp == true
             if (existingRuleCount > 0 && !customEngineExplicitlyOn) {
-                def readonlyNote = builtinAppEnabled ? " your AI can still SEE these rules (<code>custom_list_rules</code>, <code>custom_get_rule</code>) and toggle them enabled/disabled, but cannot create, modify structure, or delete." : " With Built-in App Tools also OFF, all custom_* tools are hidden from your AI."
+                def readonlyNote = builtinAppEnabled ? " your AI can still SEE these rules (<code>hub_get_custom_rule</code>) and toggle them enabled/disabled, but cannot create, modify structure, or delete." : " With Built-in App Tools also OFF, all custom_* tools are hidden from your AI."
                 paragraph "<b>NOTICE: ${existingRuleCount} existing custom MCP rule(s)</b><br>" +
                           "Your ${existingRuleCount} custom MCP rule(s) still fire and work normally. The Custom Rule Engine setting used to be ON by default; it now defaults OFF because the custom MCP rule engine is legacy -- it will continue to receive bug fixes but new feature work goes to native Rule Machine.<br>" +
                           "<b>Current state (toggle OFF):</b>${readonlyNote} Recommended: leave OFF if you have migrated to native Rule Machine. Turn ON only if you actively use your AI to fully manage these rules.<br>" +
-                          "For new rule creation, prefer <code>manage_native_rules_and_apps</code> create_native_app -- those rules are visible in Hubitat's Rule Machine app list and web UI."
+                          "For new rule creation, prefer <code>hub_manage_native_rules</code> hub_create_native_app -- those rules are visible in Hubitat's Rule Machine app list and web UI."
             }
             input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine (legacy)",
-                  description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Built-in App Tools ON = read-only mode: custom_list_rules, custom_get_rule, custom_update_rule(enabled only), custom_test_rule, custom_get_rule_diagnostics are visible; create/delete/export/import/clone are hidden. OFF + Built-in App Tools OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
+                  description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Built-in App Tools ON = read-only mode: hub_get_custom_rule (list/get/diagnostics modes), hub_update_custom_rule(enabled only), hub_test_custom_rule are visible; create/delete/export/import/clone are hidden. OFF + Built-in App Tools OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
                   defaultValue: false, submitOnChange: true
             input "useGateways", "bool", title: "Consolidate tools behind category gateways",
-                  description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other toggles (Built-in App Tools, Custom Rule Engine) also add or remove entries from tools/list independently of this setting.",
+                  description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and hub_search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other toggles (Built-in App Tools, Custom Rule Engine) also add or remove entries from tools/list independently of this setting.",
                   defaultValue: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
@@ -322,7 +322,7 @@ def initialize() {
 
     // Issue #92: subscribe to every hub variable's location event
     // ("variable:NAME") so the AI can see what changed and when via
-    // get_variable_history. Re-runs on every updated() because Hubitat
+    // hub_list_variable_changes. Re-runs on every updated() because Hubitat
     // calls unsubscribe() implicitly between updated() invocations.
     _subscribeToAllHubVariables()
 
@@ -337,7 +337,7 @@ def initialize() {
 /**
  * Issue #96 gap 1: walk every child rule's serialized ruleData, collect
  * hub-variable names that appear in it (via the same heuristic
- * delete_variable's safety scan uses), then add/remove the in-use
+ * hub_delete_variable's safety scan uses), then add/remove the in-use
  * registration so Hubitat's UI surfaces a warning before a user can
  * delete/rename a variable a rule depends on.
  *
@@ -353,11 +353,11 @@ private void _refreshHubVarInUseRegistrations() {
         hubVarNames = (getAllGlobalVars()?.keySet() ?: []) as Set<String>
     } catch (Exception e) {
         // Surface as ERROR — when this fails the in-use safety net is stale,
-        // and delete_variable's pre-deletion warning won't fire. Users need
+        // and hub_delete_variable's pre-deletion warning won't fire. Users need
         // to know the safety registrations weren't refreshed.
         mcpLog("error", "hub-vars",
             "_refreshHubVarInUseRegistrations: getAllGlobalVars failed (${e.class.simpleName}: ${e.message}) -- " +
-            "in-use safety registrations are STALE. delete_variable's hub-side warning may not fire until " +
+            "in-use safety registrations are STALE. hub_delete_variable's hub-side warning may not fire until " +
             "this resolves and updated() runs again.")
         return
     }
@@ -439,10 +439,10 @@ private void _subscribeToAllHubVariables() {
             // sometimes rejects names with characters that getAllGlobalVars
             // returned but subscribe() refuses; log and continue. Catch
             // Throwable because hubitat_ci's validator throws AssertionError.
-            // ERROR level: a persistent failure here means get_variable_history
+            // ERROR level: a persistent failure here means hub_list_variable_changes
             // silently misses changes for this variable; warn-level would be
             // dropped at default mcpLogLevel="error".
-            mcpLog("error", "hub-vars", "subscribe to variable:${varName} failed: ${e.message} -- get_variable_history will not capture changes for this var")
+            mcpLog("error", "hub-vars", "subscribe to variable:${varName} failed: ${e.message} -- hub_list_variable_changes will not capture changes for this var")
         }
     }
 }
@@ -515,7 +515,7 @@ def handleHubVariableEvent(evt) {
 }
 
 /**
- * get_variable_history: return a window of recent hub-variable changes,
+ * hub_list_variable_changes: return a window of recent hub-variable changes,
  * optionally filtered by name and a since-timestamp. Issue #92: lets the
  * AI catch up on "what variables changed since I last looked" without
  * polling each one by name.
@@ -697,8 +697,8 @@ def handleToolsList(msg) {
     //
     // Stale clients that pass a `cursor` param get the full catalog regardless;
     // there is no longer a nextCursor in the response, so any iteration loop
-    // terminates after one call. Cursor pagination on tools/call (list_devices,
-    // list_installed_apps, list_rm_rules, etc. via _paginateList) is unchanged
+    // terminates after one call. Cursor pagination on tools/call (hub_list_devices,
+    // hub_list_installed_apps, hub_list_rules, etc. via _paginateList) is unchanged
     // -- that is opt-in and the size guard's "suggestion" hints already point
     // callers at it when needed.
     def all = getToolDefinitions()
@@ -805,29 +805,27 @@ def _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) 
 // to the default branch -- only add a case when the generic hint is misleading.
 def _responseTooLargeSuggestion(String toolName) {
     switch (toolName) {
-        case "list_devices":
+        case "hub_list_devices":
             return "Narrow with filter/labelFilter/capabilityFilter, project fields=['id','label',...], pass a smaller limit, or page with offset+limit. format='ids' is the cheapest shape."
-        case "list_installed_apps":
+        case "hub_list_installed_apps":
             return "Set includeHidden=false (the default), narrow via filter (builtin / user / disabled / parents / children), or pass cursor to page through the apps list."
-        case "get_app_config":
-            return "Omit includeSettings -- Room Lighting / RM 5.1 apps can have 500-1000 settings keys. For multi-page apps, call list_app_pages then get_app_config with a specific pageName."
-        case "device_health_check":
+        case "hub_get_app_config":
+            return "Omit includeSettings -- Room Lighting / RM 5.1 apps can have 500-1000 settings keys. For multi-page apps, call hub_list_app_pages then hub_get_app_config with a specific pageName."
+        case "hub_get_device_health":
             return "Set includeHealthy=false (the default), narrow staleHours, or pass cursor to page through staleDevices."
-        case "get_memory_history":
+        case "hub_get_memory_history":
             return "Pass a smaller limit (e.g. 100). limit=0 returns the entire hub ring buffer which can be thousands of entries."
-        case "get_hub_logs":
+        case "hub_get_logs":
             return "Narrow with deviceId/appId/level/source/pattern, set a smaller limit, or filter by time window (since/until). The tool already truncates per-entry messages but cannot trim the entry count below the requested limit."
-        case "export_native_app":
+        case "hub_export_native_app":
             return "Large app payloads can exceed the inline cap. Pass saveAs=<filename.json> to write the export to the hub File Manager instead of returning it inline."
-        case "get_hub_info":
-        case "get_hub_jobs":
-        case "get_performance_stats":
-        case "get_set_hub_metrics":
+        case "hub_get_info":
+        case "hub_get_jobs":
+        case "hub_get_performance_stats":
+        case "hub_get_metrics":
             return "Hub status payload is unusually large -- consider polling at a lower frequency or fetching a single subsection via the matching sub-tool if available."
-        case "get_app_source":
-        case "get_driver_source":
-        case "get_library_source":
-            return "Source file exceeds the inline cap. Use list_files / read_file via the File Manager bridge, or fetch the source from version control instead."
+        case "hub_get_source":
+            return "Source file exceeds the inline cap. Use offset/length to read it in chunks, use hub_list_files / hub_read_file via the File Manager bridge, or fetch the source from version control instead."
         default:
             // Default-branch hits are interesting telemetry -- they're the tools we should
             // be adding specific suggestions for. info level so it only surfaces when log
@@ -880,274 +878,252 @@ def _paginateList(List fullList, cursor, int pageSize, String toolName) {
 
 def getGatewayConfig() {
     return [
-        manage_rules_admin: [
+        hub_manage_rules: [
             description: "Rule administration: delete, test, export, import, and clone rules.",
-            tools: ["custom_delete_rule", "custom_test_rule", "custom_export_rule", "custom_import_rule", "custom_clone_rule"],
+            tools: ["hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"],
             summaries: [
-                custom_delete_rule: "Permanently delete a rule (auto-backs up first). Args: ruleId",
-                custom_test_rule: "Dry-run a rule without executing actions. Args: ruleId",
-                custom_export_rule: "Export rule to JSON for backup/sharing. Args: ruleId",
-                custom_import_rule: "Import rule from exported JSON. Args: exportData (JSON string)",
-                custom_clone_rule: "Clone an existing rule (starts disabled). Args: ruleId"
+                hub_delete_custom_rule: "Permanently delete a rule (auto-backs up first). Args: ruleId",
+                hub_test_custom_rule: "Dry-run a rule without executing actions. Args: ruleId",
+                hub_export_custom_rule: "Export rule to JSON for backup/sharing. Args: ruleId",
+                hub_import_custom_rule: "Import rule from exported JSON. Args: exportData (JSON string)",
+                hub_clone_custom_rule: "Clone an existing rule (starts disabled). Args: ruleId"
             ],
             // BM25 search hints — extra keywords that don't appear in summaries but help discovery
             searchHints: [
-                custom_delete_rule: "remove automation",
-                custom_test_rule: "simulate preview validate check automation",
-                custom_export_rule: "save download share automation",
-                custom_import_rule: "load upload restore automation",
-                custom_clone_rule: "copy duplicate automation"
+                hub_delete_custom_rule: "remove automation",
+                hub_test_custom_rule: "simulate preview validate check automation",
+                hub_export_custom_rule: "save download share automation",
+                hub_import_custom_rule: "load upload restore automation",
+                hub_clone_custom_rule: "copy duplicate automation"
             ]
         ],
-        manage_hub_variables: [
-            description: "Manage hub variables (every type: Number, Decimal, String, Boolean, DateTime), their connector devices, and rule-engine variables. Issue #92: full read/write CRUD via the modern Hub Variable API + wizard; observe changes via get_variable_history.",
-            tools: ["list_variables", "get_variable", "set_variable", "create_variable", "delete_variable", "create_connector", "remove_connector", "get_variable_history"],
+        hub_manage_variables: [
+            description: "Manage hub variables (every type: Number, Decimal, String, Boolean, DateTime), their connector devices, and rule-engine variables. Issue #92: full read/write CRUD via the modern Hub Variable API + wizard; observe changes via hub_list_variable_changes.",
+            tools: ["hub_list_variables", "hub_get_variable", "hub_set_variable", "hub_create_variable", "hub_delete_variable", "hub_create_connector", "hub_delete_connector", "hub_list_variable_changes"],
             summaries: [
-                list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables.",
-                get_variable: "Get a variable's value + metadata (type, deviceId, attribute). Args: name",
-                set_variable: "Set an existing variable's value. Falls back to rule_engine namespace when no hub var matches. Args: name, value",
-                create_variable: "Create a new hub variable. Args: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true",
-                delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if rules reference it]",
-                create_connector: "Create a virtual-device connector for an existing hub variable. Args: name, confirm=true",
-                remove_connector: "Remove the connector device for a hub variable (variable itself unchanged). Args: name, confirm=true",
-                get_variable_history: "Recent hub-variable changes since the MCP app last started. Args: name (optional filter), sinceMs (optional), limit (optional)"
+                hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables.",
+                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). Args: name",
+                hub_set_variable: "Set an existing variable's value. Falls back to rule_engine namespace when no hub var matches. Args: name, value",
+                hub_create_variable: "Create a new hub variable. Args: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true",
+                hub_delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if rules reference it]",
+                hub_create_connector: "Create a virtual-device connector for an existing hub variable. Args: name, confirm=true",
+                hub_delete_connector: "Remove the connector device for a hub variable (variable itself unchanged). Args: name, confirm=true",
+                hub_list_variable_changes: "Recent hub-variable changes since the MCP app last started. Args: name (optional filter), sinceMs (optional), limit (optional)"
             ],
             searchHints: [
-                list_variables: "show all global state connector",
-                get_variable: "read fetch lookup global state",
-                set_variable: "write update change store global state",
-                create_variable: "add new hub variable global",
-                delete_variable: "remove drop destroy purge cleanup orphan stranded BAT_ stale variable",
-                create_connector: "expose hub variable as virtual device switch dimmer",
-                remove_connector: "unlink delete connector device variable",
-                get_variable_history: "watch observe changes events recent variable timeline"
+                hub_list_variables: "show all global state connector",
+                hub_get_variable: "read fetch lookup global state",
+                hub_set_variable: "write update change store global state",
+                hub_create_variable: "add new hub variable global",
+                hub_delete_variable: "remove drop destroy purge cleanup orphan stranded BAT_ stale variable",
+                hub_create_connector: "expose hub variable as virtual device switch dimmer",
+                hub_delete_connector: "unlink delete connector device variable",
+                hub_list_variable_changes: "watch observe changes events recent variable timeline"
             ]
         ],
-        manage_rooms: [
+        hub_manage_rooms: [
             description: "Manage hub rooms: list, view details, create, delete, and rename rooms.",
-            tools: ["list_rooms", "get_room", "create_room", "delete_room", "rename_room"],
+            tools: ["hub_list_rooms", "hub_get_room", "hub_create_room", "hub_delete_room", "hub_update_room"],
             summaries: [
-                list_rooms: "List all rooms with IDs, names, and device counts",
-                get_room: "Get room details with assigned devices. Args: room (name or ID)",
-                create_room: "Create a new room. Args: name, confirm=true",
-                delete_room: "Permanently delete a room. Args: room (name or ID), confirm=true",
-                rename_room: "Rename a room. Args: room (name or ID), newName, confirm=true"
+                hub_list_rooms: "List all rooms with IDs, names, and device counts",
+                hub_get_room: "Get room details with assigned devices. Args: room (name or ID)",
+                hub_create_room: "Create a new room. Args: name, confirm=true",
+                hub_delete_room: "Permanently delete a room. Args: room (name or ID), confirm=true",
+                hub_update_room: "Rename a room. Args: room (name or ID), newName, confirm=true"
             ],
             searchHints: [
-                list_rooms: "show all locations areas groups",
-                get_room: "view location area group",
-                create_room: "add new location area group",
-                delete_room: "remove location area group",
-                rename_room: "change name location area group"
+                hub_list_rooms: "show all locations areas groups",
+                hub_get_room: "view location area group",
+                hub_create_room: "add new location area group",
+                hub_delete_room: "remove location area group",
+                hub_update_room: "change name location area group"
             ]
         ],
         // Option A: Virtual device tools moved to core tools/list (full inputSchema visible)
-        // manage_hub_info dissolved — zwave/zigbee moved to manage_diagnostics, check_for_update promoted to core
-        // create_hub_backup promoted to core, zwave_repair moved to manage_diagnostics
-        manage_destructive_hub_ops: [
+        // manage_hub_info dissolved — zwave/zigbee moved to hub_manage_diagnostics, hub_get_update_status promoted to core
+        // hub_create_backup promoted to core, hub_call_zwave_repair moved to hub_manage_diagnostics
+        hub_manage_destructive_ops: [
             description: "DESTRUCTIVE hub operations: reboot, shutdown, and permanent device deletion. All operations are irreversible or cause significant downtime — confirm with user first.",
-            tools: ["reboot_hub", "shutdown_hub", "delete_device"],
+            tools: ["hub_reboot", "hub_shutdown", "hub_delete_device"],
             summaries: [
-                reboot_hub: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). Args: confirm=true",
-                shutdown_hub: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
-                delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true"
+                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). Args: confirm=true",
+                hub_shutdown: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
+                hub_delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true"
             ],
             searchHints: [
-                reboot_hub: "restart reset power cycle",
-                shutdown_hub: "power off turn off stop halt",
-                delete_device: "remove ghost orphan zwave zigbee stuck failed pairing"
+                hub_reboot: "restart reset power cycle",
+                hub_shutdown: "power off turn off stop halt",
+                hub_delete_device: "remove ghost orphan zwave zigbee stuck failed pairing"
             ]
         ],
-        // Option B: manage_apps_drivers split into browse (read) + changes (write)
-        manage_apps_drivers: [
-            description: "Browse installed apps, drivers, and libraries: list, view source code, and view code backups. All operations are read-only. Write operations (install, update, delete) live in the manage_app_driver_code gateway.",
-            tools: ["list_hub_apps", "list_hub_drivers", "get_app_source", "get_driver_source", "get_library_source", "list_item_backups", "get_item_backup"],
+        // Option B: hub_manage_code_read split into browse (read) + changes (write)
+        hub_manage_code_read: [
+            description: "Browse installed apps, drivers, and libraries: list, view source code, and view code backups. All operations are read-only. Write operations (install, update, delete) live in the hub_manage_code_write gateway.",
+            tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_backups", "hub_get_backup"],
             summaries: [
-                list_hub_apps: "List all installed apps on the hub",
-                list_hub_drivers: "List all installed drivers on the hub",
-                get_app_source: "Get app Groovy source code. Args: appId",
-                get_driver_source: "Get driver Groovy source code. Args: driverId",
-                get_library_source: "Get library Groovy source with chunked reading support. Args: libraryId, offset?, length?",
-                list_item_backups: "List auto-created source code backups",
-                get_item_backup: "Get source from a backup. Args: backupId"
+                hub_list_apps: "List all installed apps on the hub",
+                hub_list_drivers: "List all installed drivers on the hub",
+                hub_get_source: "Get app/driver/library Groovy source with chunked reading. Args: type (app|driver|library), id, offset?, length?",
+                hub_list_backups: "List auto-created source code backups",
+                hub_get_backup: "Get source from a backup. Args: backupId"
             ],
             searchHints: [
-                list_hub_apps: "show installed applications integrations",
-                list_hub_drivers: "show installed device handlers types",
-                get_app_source: "view read application groovy code",
-                get_driver_source: "view read device handler type groovy code",
-                get_library_source: "view read groovy library shared code namespace include",
-                list_item_backups: "show saved previous versions revisions",
-                get_item_backup: "view read saved previous version revision"
+                hub_list_apps: "show installed applications integrations",
+                hub_list_drivers: "show installed device handlers types",
+                hub_get_source: "view read application driver library groovy code namespace include",
+                hub_list_backups: "show saved previous versions revisions",
+                hub_get_backup: "view read saved previous version revision"
             ]
         ],
-        manage_app_driver_code: [
-            description: "Install, update, and delete hub apps, drivers, and libraries. All operations modify hub code and require Hub Admin Write. Read-only counterparts (get_app_source, get_driver_source, get_library_source, list_*) live in the manage_apps_drivers gateway.",
-            tools: ["install_app", "install_driver", "update_app_code", "update_driver_code", "delete_app", "delete_driver", "restore_item_backup", "install_library", "update_library_code", "delete_library"],
+        hub_manage_code_write: [
+            description: "Install, update, and delete hub apps, drivers, and libraries. All operations modify hub code and require Hub Admin Write. Read-only counterparts (hub_get_source, list_*) live in the hub_manage_code_read gateway.",
+            tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_restore_backup", "hub_create_library", "hub_update_library"],
             summaries: [
-                install_app: "Install new app. PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
-                install_driver: "Install new driver. PREFER curl-upload + sourceFile. For 1: source|sourceFile. For >1: USE BULK (single round-trip: installs=[{source|sourceFile},...]). confirm=true",
-                update_app_code: "Modify existing app code (CRITICAL). PREFER curl-upload + sourceFile. Args: appId, source|sourceFile|resave, confirm=true",
-                update_driver_code: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile},...]). PREFER sourceFile + curl-upload over inline. confirm=true",
-                delete_app: "Permanently delete an app (DESTRUCTIVE). Args: appId, confirm=true",
-                delete_driver: "Permanently delete a driver (DESTRUCTIVE). Args: driverId, confirm=true",
-                restore_item_backup: "Restore app/driver to backed-up version. Args: backupId, confirm=true",
-                install_library: "Install new Groovy library (#include namespace.Name). PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
-                update_library_code: "Modify existing library code. PREFER curl-upload + sourceFile. Args: libraryId, source|sourceFile|resave, confirm=true",
-                delete_library: "Permanently delete a library (DESTRUCTIVE). Args: libraryId, confirm=true"
+                hub_create_app: "Install new app. PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
+                hub_create_driver: "Install new driver. PREFER curl-upload + sourceFile. For 1: source|sourceFile. For >1: USE BULK (single round-trip: installs=[{source|sourceFile},...]). confirm=true",
+                hub_update_app: "Modify existing app code (CRITICAL). PREFER curl-upload + sourceFile. Args: appId, source|sourceFile|resave, confirm=true",
+                hub_update_driver: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile},...]). PREFER sourceFile + curl-upload over inline. confirm=true",
+                hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), id, confirm=true",
+                hub_restore_backup: "Restore app/driver to backed-up version. Args: backupId, confirm=true",
+                hub_create_library: "Install new Groovy library (#include namespace.Name). PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
+                hub_update_library: "Modify existing library code. PREFER curl-upload + sourceFile. Args: libraryId, source|sourceFile|resave, confirm=true"
             ],
             searchHints: [
-                install_app: "add new application integration groovy",
-                install_driver: "add new device handler type groovy",
-                update_app_code: "modify change edit application groovy push deploy",
-                update_driver_code: "modify change edit device handler type groovy push deploy",
-                delete_app: "remove uninstall application integration",
-                delete_driver: "remove uninstall device handler type",
-                restore_item_backup: "rollback revert undo previous version",
-                install_library: "add new shared groovy library include namespace",
-                update_library_code: "modify change edit groovy library shared code push deploy",
-                delete_library: "remove uninstall groovy library shared"
+                hub_create_app: "add new application integration groovy",
+                hub_create_driver: "add new device handler type groovy",
+                hub_update_app: "modify change edit application groovy push deploy",
+                hub_update_driver: "modify change edit device handler type groovy push deploy",
+                hub_delete_item: "remove uninstall application integration device handler driver type groovy library shared",
+                hub_restore_backup: "rollback revert undo previous version",
+                hub_create_library: "add new shared groovy library include namespace",
+                hub_update_library: "modify change edit groovy library shared code push deploy"
             ]
         ],
         // Option B: manage_logs_diagnostics split into logs + diagnostics
-        manage_logs: [
-            description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, device event history, MCP debug logs, and log level configuration.",
-            tools: ["get_hub_logs", "get_device_history", "get_performance_stats", "get_hub_jobs", "get_debug_logs", "clear_debug_logs", "set_log_level", "get_logging_status"],
+        hub_manage_logs: [
+            description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, MCP debug logs, and log level configuration. (Device/location event history: use the core hub_list_device_events tool.)",
+            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_debug_logs", "hub_delete_debug_logs", "hub_set_log_level"],
             summaries: [
-                get_hub_logs: "Get Hubitat system logs, most recent first. Args: level (debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex AND/OR), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
-                get_device_history: "Get device or location event history (up to 7 days). Omit deviceId for location events. Args: deviceId (optional), hoursBack, attribute, limit",
-                get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
-                get_hub_jobs: "Get scheduled jobs, running jobs, and hub actions",
-                get_debug_logs: "Get MCP internal debug logs. Args: level, limit",
-                clear_debug_logs: "Clear all MCP debug log entries",
-                set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)",
-                get_logging_status: "Get logging system status and capacity"
+                hub_get_logs: "Get Hubitat system logs, most recent first. Args: level (debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex AND/OR), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
+                hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
+                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions",
+                hub_get_debug_logs: "Get MCP internal debug logs (mode='logs', default) or logging status (mode='status'). Args: mode, level, limit",
+                hub_delete_debug_logs: "Clear all MCP debug log entries",
+                hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
             searchHints: [
-                get_hub_logs: "errors warnings messages trace syslog output print recent latest newest device app scope regex pattern filter time window since until last hour minute",
-                get_device_history: "events timeline past activity what happened sensor mode hsm location hub variable",
-                get_performance_stats: "slow cpu busy resource usage hog bottleneck",
-                get_hub_jobs: "scheduled cron timer recurring what is running next automation",
-                get_debug_logs: "mcp internal troubleshoot trace",
-                clear_debug_logs: "wipe reset mcp internal",
-                set_log_level: "verbosity debug trace quiet",
-                get_logging_status: "buffer capacity how many"
+                hub_get_logs: "errors warnings messages trace syslog output print recent latest newest device app scope regex pattern filter time window since until last hour minute",
+                hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
+                hub_get_jobs: "scheduled cron timer recurring what is running next automation",
+                hub_get_debug_logs: "mcp internal troubleshoot trace logging status buffer capacity how many level",
+                hub_delete_debug_logs: "wipe reset mcp internal",
+                hub_set_log_level: "verbosity debug trace quiet"
             ]
         ],
-        manage_diagnostics: [
-            description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, rule diagnostics, radio info, Z-Wave repair, and state snapshots.",
-            tools: ["get_set_hub_metrics", "get_memory_history", "force_garbage_collection", "device_health_check", "custom_get_rule_diagnostics", "get_zwave_details", "get_zigbee_details", "zwave_repair", "list_captured_states", "delete_captured_state", "clear_captured_states"],
+        hub_manage_diagnostics: [
+            description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, radio info, Z-Wave repair, and state snapshots. (Custom-rule diagnostics: use hub_get_custom_rule with detailed=true.)",
+            tools: ["hub_get_metrics", "hub_get_memory_history", "hub_call_gc", "hub_get_device_health", "hub_get_radio_details", "hub_call_zwave_repair", "hub_list_captured_states", "hub_delete_captured_state"],
             summaries: [
-                get_set_hub_metrics: "Record/retrieve hub metrics (memory, temp, DB) with CSV trend history. Args: recordSnapshot, trendPoints",
-                get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Hub Admin Read",
-                force_garbage_collection: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires Hub Admin Read",
-                device_health_check: "Check device staleness, ICMP-ping arbitrary IPs (router, NAS, server), and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), identifyHub",
-                custom_get_rule_diagnostics: "Comprehensive rule diagnostics. Args: ruleId",
-                get_zwave_details: "Z-Wave radio info (firmware, SDK, device count). Requires Hub Admin Read",
-                get_zigbee_details: "Zigbee radio info (channel, PAN ID, device count). Requires Hub Admin Read",
-                zwave_repair: "Z-Wave network repair (⚠️ DISRUPTIVE, 5-30 min, devices unresponsive). Args: confirm=true",
-                list_captured_states: "List saved device state snapshots",
-                delete_captured_state: "Delete a specific captured state. Args: stateId",
-                clear_captured_states: "Clear all captured device states"
+                hub_get_metrics: "Record/retrieve hub metrics (memory, temp, DB) with CSV trend history. Args: recordSnapshot, trendPoints",
+                hub_get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Hub Admin Read",
+                hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires Hub Admin Read",
+                hub_get_device_health: "Check device staleness, ICMP-ping arbitrary IPs (router, NAS, server), and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), identifyHub",
+                hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count). Args: radio (zwave|zigbee, omit for both). Requires Hub Admin Read",
+                hub_call_zwave_repair: "Z-Wave network repair (⚠️ DISRUPTIVE, 5-30 min, devices unresponsive). Args: confirm=true",
+                hub_list_captured_states: "List saved device state snapshots",
+                hub_delete_captured_state: "Delete a captured state by stateId, or ALL captured states when stateId is omitted. Args: stateId (optional)"
             ],
             searchHints: [
-                get_set_hub_metrics: "temperature database size trending monitoring over time",
-                get_memory_history: "ram free used leak trending over time java heap nio",
-                force_garbage_collection: "free reclaim ram cleanup java heap",
-                device_health_check: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router gateway identify led blink locate physical hub",
-                custom_get_rule_diagnostics: "automation troubleshoot broken not working debug why",
-                get_zwave_details: "zwave mesh network frequency firmware 908mhz 700 800 series",
-                get_zigbee_details: "zigbee mesh network channel pan coordinator 2400mhz",
-                zwave_repair: "fix heal network mesh routing neighbor rebuild",
-                list_captured_states: "saved snapshot bookmark remember device values",
-                delete_captured_state: "remove saved snapshot bookmark",
-                clear_captured_states: "remove all saved snapshots bookmarks"
+                hub_get_metrics: "temperature database size trending monitoring over time",
+                hub_get_memory_history: "ram free used leak trending over time java heap nio",
+                hub_call_gc: "gc garbage collection free reclaim ram cleanup java heap memory",
+                hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router gateway identify led blink locate physical hub",
+                hub_get_radio_details: "zwave zigbee mesh network frequency firmware 908mhz 700 800 series channel pan coordinator 2400mhz radio",
+                hub_call_zwave_repair: "fix heal network mesh routing neighbor rebuild",
+                hub_list_captured_states: "saved snapshot bookmark remember device values",
+                hub_delete_captured_state: "remove delete clear saved snapshot bookmark all"
             ]
         ],
-        manage_files: [
+        hub_manage_files: [
             description: "Manage hub File Manager: list, read, write, and delete files stored on the hub.",
-            tools: ["list_files", "read_file", "write_file", "delete_file"],
+            tools: ["hub_list_files", "hub_read_file", "hub_write_file", "hub_delete_file"],
             summaries: [
-                list_files: "List files in File Manager (names, sizes, URLs)",
-                read_file: "Read file content. Args: fileName, offset, limit",
-                write_file: "Write file to File Manager. Args: fileName, content, confirm=true",
-                delete_file: "Delete file from File Manager. Args: fileName, confirm=true"
+                hub_list_files: "List files in File Manager (names, sizes, URLs)",
+                hub_read_file: "Read file content. Args: fileName, offset, limit",
+                hub_write_file: "Write file to File Manager. Args: fileName, content, confirm=true",
+                hub_delete_file: "Delete file from File Manager. Args: fileName, confirm=true"
             ],
             searchHints: [
-                list_files: "show uploaded stored csv json text data",
-                read_file: "view open contents download stored data",
-                write_file: "upload save store create csv json text data",
-                delete_file: "remove clean up stored data"
+                hub_list_files: "show uploaded stored csv json text data",
+                hub_read_file: "view open contents download stored data",
+                hub_write_file: "upload save store create csv json text data",
+                hub_delete_file: "remove clean up stored data"
             ]
         ],
-        manage_installed_apps: [
-            description: "Read-only visibility into all installed apps (built-in + user): enumerate apps with parent/child tree, find apps using a device, inspect an app's configuration page, list page names for multi-page apps. Requires Built-in App Tools enabled in MCP app settings (list/device-in-use-by); get_app_config and list_app_pages require Hub Admin Read.",
-            tools: ["list_installed_apps", "get_device_in_use_by", "get_app_config", "list_app_pages"],
+        hub_manage_installed_apps: [
+            description: "Read-only visibility into all installed apps (built-in + user): enumerate apps with parent/child tree, find apps using a device, inspect an app's configuration page, list page names for multi-page apps. Requires Built-in App Tools enabled in MCP app settings (list/device-in-use-by); hub_get_app_config and hub_list_app_pages require Hub Admin Read.",
+            tools: ["hub_list_installed_apps", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages"],
             summaries: [
-                list_installed_apps: "List all installed apps with parent/child tree. Args: filter (all/builtin/user/disabled/parents/children), includeHidden",
-                get_device_in_use_by: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
-                get_app_config: "Read an installed app's configuration page (sections, inputs, current values). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName (optional), includeSettings (optional)",
-                list_app_pages: "List known page names for a multi-page app (HPM, Room Lighting, etc.). Curated directory + live primary page. Args: appId"
+                hub_list_installed_apps: "List all installed apps with parent/child tree. Args: filter (all/builtin/user/disabled/parents/children), includeHidden",
+                hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
+                hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName (optional), includeSettings (optional)",
+                hub_list_app_pages: "List known page names for a multi-page app (HPM, Room Lighting, etc.). Curated directory + live primary page. Args: appId"
             ],
             searchHints: [
-                list_installed_apps: "rule machine room lighting scenes mode manager hsm dashboards groups button controllers native builtin",
-                get_device_in_use_by: "which apps use device reference inUseBy appsUsing dependencies affected by",
-                get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager",
-                list_app_pages: "page names sub-pages pageName multi-page hpm prefPkgUninstall prefPkgModify prefOptions navigation discover"
+                hub_list_installed_apps: "rule machine room lighting scenes mode manager hsm dashboards groups button controllers native builtin",
+                hub_list_device_dependents: "which apps use device reference inUseBy appsUsing dependencies affected by",
+                hub_get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager",
+                hub_list_app_pages: "page names sub-pages pageName multi-page hpm prefPkgUninstall prefPkgModify prefOptions navigation discover"
             ]
         ],
-        manage_hpm: [
-            description: "Hubitat Package Manager (HPM) state introspection -- read-only. Tracks installed packages, their manifest versions, and per-component drift signals (missing-required, orphan-app, orphan-driver). HPM-managed code lives in the same Apps/Drivers registries as everything else, but its lifecycle is owned by HPM; this gateway surfaces that ownership state for diagnostic and drift-detection purposes without write side-effects. Requires Hub Admin Read.",
-            tools: ["list_hpm_packages", "get_hpm_drift"],
+        hub_manage_hpm: [
+            description: "Hubitat Package Manager (HPM) state introspection -- read-only. Tracks installed packages, their manifest versions, and (with includeDrift=true) per-component drift signals (missing-required, orphan-app, orphan-driver). HPM-managed code lives in the same Apps/Drivers registries as everything else, but its lifecycle is owned by HPM; this gateway surfaces that ownership state for diagnostic and drift-detection purposes without write side-effects. Requires Hub Admin Read.",
+            tools: ["hub_list_hpm_packages"],
             summaries: [
-                list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). Args: hpmAppId (optional -- auto-discovered if omitted). Hub Admin Read.",
-                get_hpm_drift: "Cross-reference HPM-tracked packages against installed apps and drivers to surface missing-required components, orphan apps, and orphan drivers. Args: hpmAppId (optional), packageFilter (optional substring match). Hub Admin Read."
+                hub_list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). includeDrift=true also cross-references installed apps/drivers to surface missing-required/orphan components. Args: hpmAppId (optional), includeDrift, packageFilter. Hub Admin Read."
             ],
             searchHints: [
-                list_hpm_packages: "package manager HPM tracked installed manifest version inventory dcmeglio community apps drivers",
-                get_hpm_drift: "package manager HPM drift orphan missing required manifest divergence inconsistency check verify driver drivers"
+                hub_list_hpm_packages: "package manager HPM tracked installed manifest version inventory dcmeglio community apps drivers drift orphan missing required divergence inconsistency check verify"
             ]
         ],
-        manage_native_rules_and_apps: [
-            description: "WHEN TO USE: this is the right path for any user who says 'create a rule machine rule,' 'make a Hubitat rule,' or wants the rule visible in Hubitat's Rule Machine app list / web UI. Use this for default rule-creation requests. The custom_* MCP rule engine (separate surface) is only appropriate when the user EXPLICITLY wants a sandbox MCP-managed rule that does not appear in Hubitat's UI -- uncommon outside power-user / testing scenarios. QUICK FLOW for a default rule create: (1) create_native_app(appType='rule_machine', name='...', confirm=true) returns appId. (2) update_native_app(appId=N, addTrigger={capability:'Certain Time (and optional date)', time:'A specific time', atTime:'17:00'}, confirm=true). (3) update_native_app(appId=N, addAction={capability:'log', message:'...'}, confirm=true). Three calls. Each call returns settingsApplied so you can confirm the rule baked. Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules -- any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified list_item_backups + restore_item_backup tools in manage_apps_drivers. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via get_app_config(appId=N) and inspect persisted settings before retrying.",
-            tools: ["list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "export_native_app", "import_native_app", "check_rule_health"],
+        hub_manage_native_rules: [
+            description: "WHEN TO USE: this is the right path for any user who says 'create a rule machine rule,' 'make a Hubitat rule,' or wants the rule visible in Hubitat's Rule Machine app list / web UI. Use this for default rule-creation requests. The custom_* MCP rule engine (separate surface) is only appropriate when the user EXPLICITLY wants a sandbox MCP-managed rule that does not appear in Hubitat's UI -- uncommon outside power-user / testing scenarios. QUICK FLOW for a default rule create: (1) hub_create_native_app(appType='rule_machine', name='...', confirm=true) returns appId. (2) hub_update_native_app(appId=N, addTrigger={capability:'Certain Time (and optional date)', time:'A specific time', atTime:'17:00'}, confirm=true). (3) hub_update_native_app(appId=N, addAction={capability:'log', message:'...'}, confirm=true). Three calls. Each call returns settingsApplied so you can confirm the rule baked. Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules -- any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified hub_list_backups (in hub_manage_code_read) + hub_restore_backup (in hub_manage_code_write) tools. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via hub_get_app_config(appId=N) and inspect persisted settings before retrying.",
+            tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_create_native_app", "hub_update_native_app", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
-                list_rm_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
-                run_rm_rule: "Trigger an RM rule lifecycle verb. Args: ruleId, action (rule/actions/stop/start, default rule). rule/actions use RMUtils; stop/start toggle the stopRule button (start also resets private boolean).",
-                pause_rm_rule: "Pause an RM rule (RMUtils). Args: ruleId",
-                resume_rm_rule: "Resume a paused RM rule (RMUtils). Args: ruleId",
-                set_rm_rule_boolean: "Set an RM rule's private boolean (RMUtils). Args: ruleId, value (bool)",
-                create_native_app: "Create a new empty native automation app (RM rule by default; expand via _appTypeRegistry for Room Lighting / Button Controllers / etc.). Args: appType (default rule_machine), name, confirm. Returns appId — use update_native_app next to populate.",
-                update_native_app: "Modify any classic native app: write settings (multiple=true contract automatic), click a page-transition button, or use a high-level structured shortcut (addTrigger / addAction / addRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / walkStep). Auto-backs-up first. Args: appId, settings|button|<shortcut>, pageName (opt), stateAttribute (opt), confirm",
-                delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
-                clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner. Cheaper than rebuilding from scratch via the wizard. Args: sourceAppId, newName (opt), confirm. Returns newAppId.",
-                export_native_app: "Export a rule/app to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns the JSON content (and writes to File Manager if saveAs given).",
-                import_native_app: "Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Args: jsonContent | fromFile, parentHintAppId (existing rule under the target parent — used to seed the cloner), newName (opt), confirm. Returns newAppId.",
-                check_rule_health: "Inspect a rule for broken state (label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption). Args: appId. Returns {ok, issues, ...}. Auto-attached to update_native_app responses too."
+                hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
+                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId, action (rule/actions/stop/start, default rule). rule/actions use RMUtils; stop/start toggle the stopRule button (start also resets private boolean).",
+                hub_set_rule_paused: "Pause or resume an RM rule (RMUtils). Args: ruleId, value (true=pause, false=resume)",
+                hub_set_rule_private_boolean: "Set an RM rule's private boolean (RMUtils). Args: ruleId, value (bool)",
+                hub_create_native_app: "Create a new empty native automation app (RM rule by default; expand via _appTypeRegistry for Room Lighting / Button Controllers / etc.). Args: appType (default rule_machine), name, confirm. Returns appId — use hub_update_native_app next to populate.",
+                hub_update_native_app: "Modify any classic native app: write settings (multiple=true contract automatic), click a page-transition button, or use a high-level structured shortcut (addTrigger / addAction / addRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / walkStep). Auto-backs-up first. Args: appId, settings|button|<shortcut>, pageName (opt), stateAttribute (opt), confirm",
+                hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
+                hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner. Cheaper than rebuilding from scratch via the wizard. Args: sourceAppId, newName (opt), confirm. Returns newAppId.",
+                hub_export_native_app: "Export a rule/app to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns the JSON content (and writes to File Manager if saveAs given).",
+                hub_import_native_app: "Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Args: jsonContent | fromFile, parentHintAppId (existing rule under the target parent — used to seed the cloner), newName (opt), confirm. Returns newAppId.",
+                hub_get_rule_health: "Inspect a rule for broken state (label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption). Args: appId. Returns {ok, issues, ...}. Auto-attached to hub_update_native_app responses too."
             ],
             searchHints: [
-                list_rm_rules: "rule machine rules native builtin automation list enumerate",
-                run_rm_rule: "trigger fire execute native rule machine rule",
-                pause_rm_rule: "disable stop temporarily rule machine rule",
-                resume_rm_rule: "enable unpause restart rule machine rule",
-                set_rm_rule_boolean: "private boolean flag rule machine rule condition",
-                create_native_app: "create new native rule machine room lighting button controller basic rule notifier scene group automation app",
-                update_native_app: "modify edit change native rule machine room lighting button controller basic rule notifier app trigger action condition setting",
-                delete_native_app: "remove delete destroy native rule machine room lighting button controller basic rule notifier app",
-                clone_native_app: "copy duplicate clone existing rule app appCloner template surgical edit",
-                export_native_app: "export serialize download rule app json appCloner backup transfer canonical shape",
-                import_native_app: "import restore upload create rule app from json appCloner backup transfer round trip",
-                check_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption"
+                hub_list_rules: "rule machine rules native builtin automation list enumerate",
+                hub_call_rule: "trigger fire execute native rule machine rule",
+                hub_set_rule_paused: "pause resume disable enable stop unpause temporarily rule machine rule",
+                hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
+                hub_create_native_app: "create new native rule machine room lighting button controller basic rule notifier scene group automation app",
+                hub_update_native_app: "modify edit change native rule machine room lighting button controller basic rule notifier app trigger action condition setting",
+                hub_delete_native_app: "remove delete destroy native rule machine room lighting button controller basic rule notifier app",
+                hub_clone_native_app: "copy duplicate clone existing rule app appCloner template surgical edit",
+                hub_export_native_app: "export serialize download rule app json appCloner backup transfer canonical shape",
+                hub_import_native_app: "import restore upload create rule app from json appCloner backup transfer round trip",
+                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption"
             ]
         ],
-        manage_mcp_self: [
+        hub_manage_mcp: [
             description: "Developer Mode self-administration: tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration, scope, and operational state without manual UI intervention. Requires `enableDeveloperMode` toggle in the MCP rule app settings (default OFF). Each write is logged at WARN level for audit. First gateway under the Developer Mode pattern — additional self-admin tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle.",
-            tools: ["update_mcp_settings"],
+            tools: ["hub_update_mcp_settings"],
             summaries: [
-                update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Args: settings (map of key→value), confirm=true. Allowlist-gated."
+                hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Args: settings (map of key→value), confirm=true. Allowlist-gated."
             ],
             searchHints: [
-                update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableHubAdminRead enableBuiltinApp enableCustomRuleEngine ci automation"
+                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableHubAdminRead enableBuiltinApp enableCustomRuleEngine ci automation"
             ]
         ]
     ]
@@ -1175,47 +1151,43 @@ def getGatewayConfig() {
 def getReadOnlyToolNames() {
     return [
         // Device introspection
-        "list_devices", "get_device", "get_attribute", "get_device_events",
-        "poll_until_attribute",
+        "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
         // Custom rule reads (legacy MCP engine) -- test_rule is dry-run, no
         // actions fire; export is a serialization read.
-        "custom_list_rules", "custom_get_rule", "custom_test_rule",
-        "custom_get_rule_diagnostics", "custom_export_rule",
+        "hub_get_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule",
         // Hub state reads
-        "get_hub_info", "get_modes", "get_hsm_status", "check_for_update",
+        "hub_get_info", "hub_list_modes", "hub_get_hsm_status", "hub_get_update_status",
         // Variables (reads)
-        "list_variables", "get_variable", "get_variable_history",
+        "hub_list_variables", "hub_get_variable", "hub_list_variable_changes",
         // Captured states (read)
-        "list_captured_states",
+        "hub_list_captured_states",
         // Diagnostics + logs (read)
-        "get_debug_logs", "get_logging_status", "generate_bug_report",
-        "get_hub_logs", "get_device_history", "get_performance_stats",
-        "get_hub_jobs", "get_memory_history",
-        "get_zwave_details", "get_zigbee_details",
-        // device_health_check has an optional identifyHub LED blink, but its
+        "hub_get_debug_logs", "hub_report_issue",
+        "hub_get_logs", "hub_get_performance_stats",
+        "hub_get_jobs", "hub_get_memory_history",
+        "hub_get_radio_details",
+        // hub_get_device_health has an optional identifyHub LED blink, but its
         // primary mode is staleness + ICMP-ping observation; treating as read
         // matches user expectation for a "health check" tool.
-        "device_health_check",
+        "hub_get_device_health",
         // Apps/drivers (read)
-        "list_hub_apps", "list_hub_drivers",
-        "get_app_source", "get_driver_source", "get_library_source",
-        "list_item_backups", "get_item_backup",
-        // Virtual devices (read)
-        "list_virtual_devices",
+        "hub_list_apps", "hub_list_drivers",
+        "hub_get_source",
+        "hub_list_backups", "hub_get_backup",
         // Rooms (read)
-        "list_rooms", "get_room",
+        "hub_list_rooms", "hub_get_room",
         // Files (read)
-        "list_files", "read_file",
+        "hub_list_files", "hub_read_file",
         // Installed apps (read)
-        "list_installed_apps", "get_device_in_use_by", "get_app_config",
-        "list_app_pages",
+        "hub_list_installed_apps", "hub_list_device_dependents", "hub_get_app_config",
+        "hub_list_app_pages",
         // HPM (read)
-        "list_hpm_packages", "get_hpm_drift",
-        // Native rules (read) -- export is appCloner serialization; check_rule_health
+        "hub_list_hpm_packages",
+        // Native rules (read) -- export is appCloner serialization; hub_get_rule_health
         // inspects only.
-        "list_rm_rules", "export_native_app", "check_rule_health",
+        "hub_list_rules", "hub_export_native_app", "hub_get_rule_health",
         // Meta
-        "get_tool_guide", "search_tools"
+        "hub_get_tool_guide", "hub_search_tools"
     ] as Set
 }
 
@@ -1352,7 +1324,7 @@ def handleGateway(gatewayName, toolName, toolArgs) {
 // mode, keep it everywhere else". Flat `tools/list` (useGateways=false) emits
 // every tool individually and pushes against the hub's 124,000-byte cap; we
 // recover headroom by stripping the marker BLOCKS in that one path. All other
-// emission surfaces (gateway-catalog mode via `handleGateway`, the search_tools
+// emission surfaces (gateway-catalog mode via `handleGateway`, the hub_search_tools
 // corpus, missing-param error hints) strip just the marker TOKENS so the
 // content stays available where size isn't the constraint.
 //
@@ -1418,7 +1390,7 @@ def applyDescriptionTransform(List tools, boolean dropContent) {
 // When a feature toggle is off, its tools are REMOVED from tools/list — not just gated
 // at call time. The hide rules live in the biTools / customEngineMode blocks below;
 // useGateways=false additionally flattens the catalog (every tool individually) and
-// hides search_tools, whose only purpose is finding gateway-hidden tools. Null/unset
+// hides hub_search_tools, whose only purpose is finding gateway-hidden tools. Null/unset
 // useGateways preserves gateway behavior so existing installs are unaffected on update.
 def getToolDefinitions() {
     def builtinAppOn = settings.enableBuiltinApp == true
@@ -1437,27 +1409,27 @@ def getToolDefinitions() {
 
     if (!builtinAppOn) {
         // All 14 of these tools require enableBuiltinApp.
-        //   manage_native_rules_and_apps: ALL 12 sub-tools require it → that
+        //   hub_manage_native_rules: ALL 12 sub-tools require it → that
         //     gateway empties out and drops entirely.
-        //   manage_installed_apps: 2/4 sub-tools require it (list_installed_apps,
-        //     get_device_in_use_by); the other 2 (get_app_config, list_app_pages)
+        //   hub_manage_installed_apps: 2/4 sub-tools require it (hub_list_installed_apps,
+        //     hub_list_device_dependents); the other 2 (hub_get_app_config, hub_list_app_pages)
         //     only need Hub Admin Read and stay visible.
-        ["list_installed_apps", "get_device_in_use_by", "list_rm_rules", "run_rm_rule", "pause_rm_rule", "resume_rm_rule", "set_rm_rule_boolean", "create_native_app", "update_native_app", "delete_native_app", "clone_native_app", "export_native_app", "import_native_app", "check_rule_health"].each {
+        ["hub_list_installed_apps", "hub_list_device_dependents", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_create_native_app", "hub_update_native_app", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"].each {
             hideByName << it
         }
     }
     if (customEngineMode == "off") {
         // Both toggles off: hide all custom_* tools everywhere they could appear
-        // (base tools in flat mode, sub-tools of manage_rules_admin and manage_diagnostics
+        // (base tools in flat mode, sub-tools of hub_manage_rules and hub_manage_diagnostics
         // in gateway mode).
-        ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule", "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics", "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
+        ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each {
             hideByName << it
         }
     } else if (customEngineMode == "readonly") {
         // Engine OFF but builtinApp ON: hide write/structural custom_* tools,
-        // keep the read tools. custom_get_rule_diagnostics is a read tool and
-        // stays visible (inside manage_diagnostics) -- not added here.
-        ["custom_create_rule", "custom_delete_rule", "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
+        // keep the read tools. hub_get_custom_rule (which now also serves list +
+        // diagnostics modes) is a read tool and stays visible -- not added here.
+        ["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each {
             hideByName << it
         }
     }
@@ -1466,16 +1438,16 @@ def getToolDefinitions() {
     // Hoist annotation source-of-truth once per call.
     def readOnlyNames = getReadOnlyToolNames()
 
-    // Flat mode: every tool advertised individually under its real name; search_tools
+    // Flat mode: every tool advertised individually under its real name; hub_search_tools
     // is dropped because it only helps navigate gateway-hidden tools.
     if (settings.useGateways == false) {
         def all = getAllToolDefinitions()
-        def filtered = all.findAll { it.name != 'search_tools' && !hideByName.contains(it.name) }
-        // Loud guard: if search_tools is ever renamed/removed, the prose ("search_tools is
+        def filtered = all.findAll { it.name != 'hub_search_tools' && !hideByName.contains(it.name) }
+        // Loud guard: if hub_search_tools is ever renamed/removed, the prose ("hub_search_tools is
         // hidden in flat mode") becomes a lie and the filter silently no-ops. Fail visibly.
-        if (!all.any { it.name == 'search_tools' }) {
+        if (!all.any { it.name == 'hub_search_tools' }) {
             throw new IllegalStateException(
-                "Flat-mode filter expected to drop 'search_tools' but it was not found in " +
+                "Flat-mode filter expected to drop 'hub_search_tools' but it was not found in " +
                 "getAllToolDefinitions(). Update getToolDefinitions() if the tool was renamed."
             )
         }
@@ -1540,7 +1512,7 @@ def getAllToolDefinitions() {
     return [
         // Device Tools
         [
-            name: "list_devices",
+            name: "hub_list_devices",
             description: """List all devices available to MCP with current states.
 
 DEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don't silently fall back to existing devices.
@@ -1552,58 +1524,64 @@ Summary response always includes: id, name (driver type), label (user name), roo
 
 Server-side filtering (all applied before pagination): filter for enabled/disabled/stale; labelFilter for case-insensitive substring match on device label; capabilityFilter for case-insensitive exact match on capability name (e.g. 'Switch'). Use format='ids' for a flat ID array (cheapest shape). Use fields=[...] to project only named fields and skip expensive hub reads (e.g. fields=['id','label'] skips currentStates). To count children of a parent device, group the response by parentDeviceId.
 [[/FLAT_TRIM]]
-Call `get_tool_guide(section='performance')` for response-shape details, filter/projection semantics, and field-name reference.""",
+Call `hub_get_tool_guide(section='performance')` for response-shape details, filter/projection semantics, and field-name reference.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands). WARNING: Resource-intensive for large device counts. Use with pagination (limit parameter) for best performance."],
                     offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
                     limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true, higher values may slow hub.", default: 0],
-                    filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' (e.g. 'stale:24' for devices with no activity in the last 24 hours; never-reported devices count as stale)."],
+                    filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' (e.g. 'stale:24' for devices with no activity in the last 24 hours; never-reported devices count as stale) | 'virtual' (lists only this MCP app's own virtual/child devices, with driver namespace/type -- a different population and shape from the other filters; use to find virtual-device IDs/DNIs)."],
                     labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set. Applied after filter, before pagination."],
                     capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl', 'TemperatureMeasurement'). Applied after labelFilter, before pagination. When count=0, response includes `capabilityFilterMatchedKnownCapability` to distinguish 'no devices have this capability' from a typo."],
                     format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands (same as detailed=true). 'ids' = flat array of device ID integers (cheapest, ignores fields arg). detailed=true overrides format='summary'."],
-                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object.[[FLAT_TRIM]] Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap.[[/FLAT_TRIM]] Call `get_tool_guide(section='performance')` for valid field names and projection semantics."],
+                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object.[[FLAT_TRIM]] Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section='performance')` for valid field names and projection semantics."],
                     cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor returned alongside nextOffset."]
                 ]
             ]
         ],
         [
-            name: "get_device",
+            name: "hub_get_device",
             description: """Get detailed information about a specific device.
 
 Only query devices the user has mentioned or that are relevant to their request. Do not probe random devices.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from list_devices"]
+                    deviceId: [type: "string", description: "Device ID from hub_list_devices"]
                 ],
                 required: ["deviceId"]
             ]
         ],
         [
-            name: "get_attribute",
-            description: """Get a specific attribute value from a device.
+            name: "hub_get_device_attribute",
+            description: """Get a device attribute's current value, or block-poll until it reaches an expected value.
+
+One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches (OR semantics), returning immediately on match or when timeoutMs elapses — a single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished). Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.
 
 Only query devices the user has mentioned or that are relevant to their request.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from list_devices"],
-                    attribute: [type: "string", description: "Attribute name"]
+                    deviceId: [type: "string", description: "Device ID from hub_list_devices"],
+                    attribute: [type: "string", description: "Attribute name"],
+                    expectedValue: [type: "string", description: "If set, block-poll until currentValue equals this string. Enables poll mode. At least one of expectedValue/expectedValues enables polling."],
+                    expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue is any of these strings (OR with expectedValue). Enables poll mode."],
+                    timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000],
+                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.", default: 200]
                 ],
                 required: ["deviceId", "attribute"]
             ]
         ],
         [
-            name: "send_command",
+            name: "hub_call_device_command",
             description: """Send a command to a device. Always verify state changed after.
 
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from list_devices - must be confirmed by user if not an exact match"],
+                    deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match"],
                     command: [type: "string", description: "Command name"],
                     parameters: [type: "array", description: "Command parameters", items: [type: "string"]]
                 ],
@@ -1611,68 +1589,38 @@ If no exact device match: suggest similar devices and get user confirmation befo
             ]
         ],
         [
-            name: "get_device_events",
-            description: "Get recent events for a device. Default limit 10; higher values (50+) may slow hub.",
+            name: "hub_list_device_events",
+            description: """Get a device's recent events, a time-windowed history, or location-level events.
+
+Default: most-recent events for a device (deviceId + optional limit). Add hoursBack to pull a time window instead (up to 168h / 7 days). Omit deviceId to get location-level events (mode/HSM/hub-variable/sendLocationEvent). attribute filters by event name. Higher limits (50+) may slow the hub.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID"],
-                    limit: [type: "integer", description: "Max events to return. Recommended: 10-50 for best performance. Higher values may slow hub.", default: 10]
-                ],
-                required: ["deviceId"]
-            ]
-        ],
-        [
-            name: "poll_until_attribute",
-            description: """Block-poll a device attribute until it matches an expected value (or one of a set of values), or a timeout elapses. Returns immediately when the match condition is satisfied.
-
-Single MCP round-trip replaces N client-side get_attribute polls + sleep loops. Common use: verify a send_command actually took effect (e.g. switch turned on), wait for a sensor reading to cross a threshold, or detect when a Z-Wave inclusion finished.
-
-Cost profile: this tool BLOCKS up to timeoutMs (default 5000ms, max 60000ms = 60 seconds). Use sparingly and prefer event-driven flows when possible. For passive one-shot observation use get_attribute instead. Concurrent MCP requests will queue while this call blocks; avoid parallel poll_until_attribute calls.
-
-First read fires immediately (no upfront delay); subsequent reads are spaced by pollIntervalMs.
-
-At least one of expectedValue or expectedValues must be provided. If both are provided, the poll succeeds when currentValue matches either (OR semantics).""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceId: [type: "string", description: "Device ID from list_devices"],
-                    attribute: [type: "string", description: "Attribute name to poll"],
-                    expectedValue: [type: "string", description: "Match when currentValue equals this string. At least one of expectedValue or expectedValues is required."],
-                    expectedValues: [type: "array", items: [type: "string"], description: "Match when currentValue is any of these strings. Compatible with expectedValue (OR semantics if both set)."],
-                    timeoutMs: [type: "integer", description: "Max wait time in MILLISECONDS (e.g., 5000 = 5 seconds). Default 5000ms, min 100ms, max 60000ms (60 seconds).", default: 5000],
-                    pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS (e.g., 200 = 0.2 seconds). Default 200ms, min 50ms, max 5000ms (5 seconds). Clamped to timeoutMs if larger.", default: 200]
-                ],
-                required: ["deviceId", "attribute"]
+                    deviceId: [type: "string", description: "Device ID. Omit for location-level events (mode/HSM/hub variable)."],
+                    hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events."],
+                    attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch'). Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name."],
+                    limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500). Higher values may slow hub.", default: 10]
+                ]
             ]
         ],
         // Rule Management
         [
-            name: "custom_list_rules",
-            description: "List all MCP automation rules. Returns summary; use custom_get_rule for details. NOTE: when the Custom Rule Engine toggle is OFF, this tool operates in read-only mode -- you can list/inspect existing custom rules, but creation/structural-modification/deletion are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via manage_native_rules_and_apps.",
+            name: "hub_get_custom_rule",
+            description: "Read MCP custom-engine automation rules. Omit ruleId to LIST all rules (summaries; supports cursor pagination). Provide ruleId for one rule's full detail. Add detailed=true (requires ruleId) for comprehensive diagnostics (config + execution history + recent logs + errors). NOTE: when the Custom Rule Engine toggle is OFF, this operates read-only -- you can list/inspect existing custom rules, but create/modify/delete are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via hub_manage_native_rules.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit to get the full rules list. Pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                    ruleId: [type: "string", description: "Rule ID. Omit to list all rules; provide for one rule's detail."],
+                    detailed: [type: "boolean", description: "Requires ruleId. Returns comprehensive diagnostics (execution history, recent logs, errors) instead of plain rule data. Rejected if set without a ruleId.", default: false],
+                    cursor: [type: "string", description: "List mode only (ruleId omitted): opt-in pagination cursor. Pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ]
         ],
         [
-            name: "custom_get_rule",
-            description: "Get detailed information about a specific rule. NOTE: when the Custom Rule Engine toggle is OFF, this tool operates in read-only mode -- you can list/inspect existing custom rules, but creation/structural-modification/deletion are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via manage_native_rules_and_apps.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID"]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-        [
-            name: "custom_create_rule",
-            description: """*** LEGACY: the custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. For default rule creation requests ("create a Rule Machine rule," "Hubitat rule," anything the user wants visible in Hubitat's RM app list / web UI), use manage_native_rules_and_apps create_native_app instead. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. ***
+            name: "hub_create_custom_rule",
+            description: """*** LEGACY: the custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. For default rule creation requests ("create a Rule Machine rule," "Hubitat rule," anything the user wants visible in Hubitat's RM app list / web UI), use hub_manage_native_rules hub_create_native_app instead. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. ***
 
-Create a new automation rule (MCP sandbox engine). Call `get_tool_guide(section='rules')` for structure, syntax, and examples.
+Create a new automation rule (MCP sandbox engine). Call `hub_get_tool_guide(section='rules')` for structure, syntax, and examples.
 
 Trigger types: device_event (supports duration, multi-device), button_event, time (HH:mm/sunrise/sunset+offset), periodic, mode_change, hsm_change
 Condition types: device_state, device_was, time_range, mode, variable, days_of_week, sun_position, hsm_status
@@ -1695,7 +1643,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "custom_update_rule",
+            name: "hub_update_custom_rule",
             description: "Update an existing rule. Use enabled=true/false to enable/disable. Always verify changes after. NOTE: when the Custom Rule Engine toggle is OFF (read-only mode), only the 'enabled' field is accepted -- structural changes (triggers/conditions/actions/name) require the toggle to be ON.",
             inputSchema: [
                 type: "object",
@@ -1714,7 +1662,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "custom_delete_rule",
+            name: "hub_delete_custom_rule",
             description: "DESTRUCTIVE: Permanently delete a rule. Automatically saves a backup to File Manager (mcp_rule_backup_*.json) before deletion. Rules marked as testRule=true skip backup automatically.",
             inputSchema: [
                 type: "object",
@@ -1726,9 +1674,9 @@ Verify rule after creation.""",
                 required: ["ruleId", "confirm"]
             ]
         ],
-        // enable_rule and disable_rule merged into custom_update_rule (use enabled=true/false)
+        // enable_rule and disable_rule merged into hub_update_custom_rule (use enabled=true/false)
         [
-            name: "custom_test_rule",
+            name: "hub_test_custom_rule",
             description: "Test a rule without executing actions (dry run)",
             inputSchema: [
                 type: "object",
@@ -1740,7 +1688,7 @@ Verify rule after creation.""",
         ],
         // System Tools
         [
-            name: "get_hub_info",
+            name: "hub_get_info",
             description: "Get comprehensive hub info: model, firmware, uptime, memory, temperature, database size, MCP stats, and settings. Location/PII data (name, IP, timezone, coordinates, zip code) requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
@@ -1750,12 +1698,12 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_modes",
+            name: "hub_list_modes",
             description: "Get available location modes and current mode",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
-            name: "set_mode",
+            name: "hub_set_mode",
             description: "Set the location mode. Always verify mode changed after.",
             inputSchema: [
                 type: "object",
@@ -1766,7 +1714,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "list_variables",
+            name: "hub_list_variables",
             description: "List all hub variables (every type, including ones without connectors) and rule-engine variables. Each hub-variable entry includes type (Number/Decimal/String/Boolean/DateTime), value, and connector linkage (deviceId/attribute) when present.",
             inputSchema: [
                 type: "object",
@@ -1776,7 +1724,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_variable",
+            name: "hub_get_variable",
             description: "Get a variable's current value plus metadata (type, deviceId, attribute) if it's a hub variable.",
             inputSchema: [
                 type: "object",
@@ -1787,8 +1735,8 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "set_variable",
-            description: "Set an existing variable's value. For hub variables, value type must match the variable's declared type (creating new hub variables requires create_variable — Hubitat does not allow setGlobalVar to create). Falls back to the rule_engine namespace when no hub variable matches.",
+            name: "hub_set_variable",
+            description: "Set an existing variable's value. For hub variables, value type must match the variable's declared type (creating new hub variables requires hub_create_variable — Hubitat does not allow setGlobalVar to create). Falls back to the rule_engine namespace when no hub variable matches.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1799,7 +1747,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "create_variable",
+            name: "hub_create_variable",
             description: "Create a new hub variable. Args: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm. Drives Settings → Hub Variables wizard (Hubitat does not expose creation via the public app API). Forbidden chars in name: ' \" \\ ~ [ : ] < >.",
             inputSchema: [
                 type: "object",
@@ -1813,7 +1761,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "create_connector",
+            name: "hub_create_connector",
             description: "Create a virtual-device connector for an existing hub variable so apps that only consume devices can read/write it. For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass connectorType to pick, default 'Variable'. For String/Boolean/DateTime vars, the chooser is skipped. No-op if a connector already exists.",
             inputSchema: [
                 type: "object",
@@ -1826,7 +1774,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "remove_connector",
+            name: "hub_delete_connector",
             description: "Delete the connector device backing a hub variable. The variable itself is unchanged. No-op if no connector exists.",
             inputSchema: [
                 type: "object",
@@ -1838,7 +1786,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_variable_history",
+            name: "hub_list_variable_changes",
             description: "Recent hub-variable changes captured by the MCP app's location-event subscription. Buffer caps at 200 most recent changes (oldest dropped). Cleared on app restart.",
             inputSchema: [
                 type: "object",
@@ -1850,7 +1798,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "delete_variable",
+            name: "hub_delete_variable",
             description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (drives Settings → Hub Variables wizard; also deletes the connector device if one exists) or a rule_engine variable (rewrites state). Throws if the name resolves to neither.\n\nGated on requireHubAdminWrite + recent backup. Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found — deletion would silently break those rules (null lookups → false conditions, literal `%varname%` left in substitutions). To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.",
             inputSchema: [
                 type: "object",
@@ -1863,7 +1811,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "update_mcp_settings",
+            name: "hub_update_mcp_settings",
             description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters). First tool under the Developer Mode self-administration surface — additional Developer Mode tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same `enableDeveloperMode` gate.\n\nGated on `enableDeveloperMode` + requireHubAdminWrite + recent backup. Every successful write is logged at WARN level for audit.\n\nAllowlisted settings (intentionally conservative for v1): mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableHubAdminRead, enableBuiltinApp, enableCustomRuleEngine.\n\nExcluded from v1 allowlist (require future explicit security-model discussion): enableHubAdminWrite (footgun: would disable own write path mid-session), enableDeveloperMode (lockout protection — must remain UI-only to disable), selectedDevices (different wire format, will get its own tool).\n\nAfter changing any enable* toggle, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema.",
             inputSchema: [
                 type: "object",
@@ -1875,12 +1823,12 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_hsm_status",
+            name: "hub_get_hsm_status",
             description: "Get the current HSM (Hubitat Safety Monitor) status",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
-            name: "set_hsm",
+            name: "hub_set_hsm",
             description: "Set HSM mode (armAway, armHome, armNight, disarm). Always verify HSM changed after.",
             inputSchema: [
                 type: "object",
@@ -1892,7 +1840,7 @@ Verify rule after creation.""",
         ],
         // Captured State Management
         [
-            name: "list_captured_states",
+            name: "hub_list_captured_states",
             description: "List captured device states. Storage limit configurable (default 20); oldest auto-deleted when full.",
             inputSchema: [
                 type: "object",
@@ -1902,55 +1850,39 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "delete_captured_state",
-            description: "Delete a specific captured device state by its stateId.",
+            name: "hub_delete_captured_state",
+            description: "Delete a captured device state by its stateId, OR delete ALL captured states when stateId is omitted (use the all-delete with caution).",
             inputSchema: [
                 type: "object",
                 properties: [
-                    stateId: [type: "string", description: "The ID of the captured state to delete"]
-                ],
-                required: ["stateId"]
+                    stateId: [type: "string", description: "The ID of the captured state to delete. Omit to delete ALL captured states."]
+                ]
             ]
-        ],
-        [
-            name: "clear_captured_states",
-            description: "Clear all captured device states. Use with caution.",
-            inputSchema: [type: "object", properties: [:]]
         ],
 
         // Debug Logging Tools
         [
-            name: "get_debug_logs",
-            description: "Get MCP debug logs (stored in app state). Useful for debugging rule issues.",
+            name: "hub_get_debug_logs",
+            description: "Read the MCP debug-log system (stored in app state). mode='logs' (default) returns stored entries with level/component/ruleId filters + pagination; mode='status' returns the logging system's status: current log level, per-severity entry counts, and capacity.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    limit: [type: "integer", description: "Max entries to return (default: 50, max: 200)"],
-                    level: [type: "string", enum: ["debug", "info", "warn", "error", "all"], description: "Filter by log level (default: all)"],
-                    component: [type: "string", description: "Filter by component (e.g., 'server', 'rule')"],
-                    ruleId: [type: "string", description: "Filter by specific rule ID"],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Filters and limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                    mode: [type: "string", enum: ["logs", "status"], description: "logs = stored entries (default); status = current log level + counts + capacity.", default: "logs"],
+                    limit: [type: "integer", description: "logs mode: max entries to return (default: 50, max: 200)"],
+                    level: [type: "string", enum: ["debug", "info", "warn", "error", "all"], description: "logs mode: filter by log level (default: all)"],
+                    component: [type: "string", description: "logs mode: filter by component (e.g., 'server', 'rule')"],
+                    ruleId: [type: "string", description: "logs mode: filter by specific rule ID"],
+                    cursor: [type: "string", description: "logs mode: opt-in pagination cursor. Filters and limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
             ]
         ],
         [
-            name: "clear_debug_logs",
+            name: "hub_delete_debug_logs",
             description: "Clear all stored debug log entries. Cannot be undone.",
             inputSchema: [type: "object", properties: [:]]
         ],
         [
-            name: "custom_get_rule_diagnostics",
-            description: "Get comprehensive diagnostics for a rule: config, execution history, triggers/conditions/actions, logs, errors.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID to diagnose"]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-        [
-            name: "set_log_level",
+            name: "hub_set_log_level",
             description: "Set the minimum log level threshold. Logs below this level won't be stored. Levels in order: debug < info < warn < error",
             inputSchema: [
                 type: "object",
@@ -1961,12 +1893,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_logging_status",
-            description: "Get status of the debug logging system including current log level, entry counts by severity, and capacity information.",
-            inputSchema: [type: "object", properties: [:]]
-        ],
-        [
-            name: "generate_bug_report",
+            name: "hub_report_issue",
             description: "File a bug, report a bug, open an issue, open a github issue, request a feature/enhancement, or flag agent-behavior issues. Returns a prefilled GitHub issue link (template + title).",
             inputSchema: [
                 type: "object",
@@ -1990,7 +1917,7 @@ Verify rule after creation.""",
         ],
         // Rule Export/Import/Clone Tools
         [
-            name: "custom_export_rule",
+            name: "hub_export_custom_rule",
             description: "Export a rule to JSON for backup or sharing. Returns full rule data plus a device manifest listing all referenced devices.",
             inputSchema: [
                 type: "object",
@@ -2001,12 +1928,12 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "custom_import_rule",
-            description: """Import a rule from exported JSON (from custom_export_rule). Optional deviceMapping remaps old device IDs to new: {"oldId": "newId"}.""",
+            name: "hub_import_custom_rule",
+            description: """Import a rule from exported JSON (from hub_export_custom_rule). Optional deviceMapping remaps old device IDs to new: {"oldId": "newId"}.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    exportData: [type: "object", description: "The full export JSON object from custom_export_rule"],
+                    exportData: [type: "object", description: "The full export JSON object from hub_export_custom_rule"],
                     name: [type: "string", description: "Override the rule name (optional)"],
                     deviceMapping: [type: "object", description: "Map old device IDs to new ones: {\"old_id\": \"new_id\"} (optional)"]
                 ],
@@ -2014,7 +1941,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "custom_clone_rule",
+            name: "hub_clone_custom_rule",
             description: "Clone an existing rule. The cloned rule starts disabled to allow review before activation.",
             inputSchema: [
                 type: "object",
@@ -2026,7 +1953,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "check_for_update",
+            name: "hub_get_update_status",
             description: "Check if a newer version of MCP Rule Server is available on GitHub",
             inputSchema: [
                 type: "object",
@@ -2035,9 +1962,9 @@ Verify rule after creation.""",
         ],
 
         // ==================== HUB ADMIN READ TOOLS ====================
-        // get_hub_details merged into get_hub_info (core tool)
+        // get_hub_details merged into hub_get_info (core tool)
         [
-            name: "list_hub_apps",
+            name: "hub_list_apps",
             description: "List all installed apps on the hub (not just MCP rules). Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
@@ -2047,7 +1974,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "list_hub_drivers",
+            name: "hub_list_drivers",
             description: "List all installed drivers on the hub. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
@@ -2057,24 +1984,18 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_zwave_details",
-            description: "Get Z-Wave radio info: firmware, home ID, device nodes. Requires Hub Admin Read.",
+            name: "hub_get_radio_details",
+            description: "Get Z-Wave and/or Zigbee radio info (firmware, home/PAN ID, channel, device nodes). radio='zwave' or 'zigbee' for one radio; omit to return both. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
-                properties: [:]
-            ]
-        ],
-        [
-            name: "get_zigbee_details",
-            description: "Get Zigbee radio info: channel, PAN ID, firmware, devices. Requires Hub Admin Read.",
-            inputSchema: [
-                type: "object",
-                properties: [:]
+                properties: [
+                    radio: [type: "string", enum: ["zwave", "zigbee"], description: "Which radio to query. Omit to return both."]
+                ]
             ]
         ],
         // ==================== MONITORING TOOLS ====================
         [
-            name: "get_performance_stats",
+            name: "hub_get_performance_stats",
             description: "Get device and/or app performance stats from the hub's logs page. Shows method call counts, % busy, state size, events, states, hub actions, pending events per device/app. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
@@ -2086,7 +2007,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_hub_jobs",
+            name: "hub_get_jobs",
             description: "Get scheduled jobs, running jobs, and hub actions from the hub's logs page. Shows what's scheduled to run and when. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
@@ -2094,7 +2015,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_hub_logs",
+            name: "hub_get_logs",
             description: "Get Hubitat system logs, most recent first. Filter pipeline (in order): scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit. Default 100 entries, max 500. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
@@ -2114,20 +2035,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_device_history",
-            description: "Get device or location event history (up to 7 days). Omit deviceId for location events (mode/HSM/hub variable/sendLocationEvent). Supports attribute filtering.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceId: [type: "string", description: "Device ID. Omit for location-level events."],
-                    hoursBack: [type: "integer", description: "How many hours of history to retrieve. Default: 24, max: 168 (7 days).", default: 24],
-                    attribute: [type: "string", description: "Event name filter. Device: an attribute (e.g. 'switch'). Location: 'mode', 'hsmStatus', 'hsmAlert', or hub-variable name."],
-                    limit: [type: "integer", description: "Max events to return. Default: 100, max: 500.", default: 100]
-                ]
-            ]
-        ],
-        [
-            name: "get_set_hub_metrics",
+            name: "hub_get_metrics",
             description: "Record and retrieve hub metrics (memory, temp, DB size) with CSV trend history. Use recordSnapshot=false to read without recording. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
@@ -2138,7 +2046,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "device_health_check",
+            name: "hub_get_device_health",
             description: "Check device staleness and (optionally) ICMP-ping arbitrary hosts. Stale check flags MCP devices with no activity in staleHours. Ping check uses hubitat.helper.NetworkUtils.ping() to verify network reachability of any IPs in pingHosts (router, NAS, server, LAN-attached devices). Either or both may be used in a single call. Pass cursor (opaque string from a prior nextCursor) to page the staleDevices list at 100 per page when the full response would be too large.",
             inputSchema: [
                 type: "object",
@@ -2153,7 +2061,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "get_memory_history",
+            name: "hub_get_memory_history",
             description: "Get free OS memory and CPU load history. Returns timestamped entries with freeMemoryKB and cpuLoad5min. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
@@ -2164,7 +2072,7 @@ Verify rule after creation.""",
             ]
         ],
         [
-            name: "force_garbage_collection",
+            name: "hub_call_gc",
             description: "Force JVM garbage collection to reclaim memory. Returns before/after free memory and delta. Non-destructive but may cause a brief pause. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
@@ -2174,7 +2082,7 @@ Verify rule after creation.""",
 
         // ==================== HUB ADMIN WRITE TOOLS ====================
         [
-            name: "create_hub_backup",
+            name: "hub_create_backup",
             description: """Create a full hub backup. REQUIRED before any Hub Admin Write operation (24h validity).
 
 Requires Hub Admin Write + confirm. This is the only write tool that doesn't require a prior backup.""",
@@ -2187,7 +2095,7 @@ Requires Hub Admin Write + confirm. This is the only write tool that doesn't req
             ]
         ],
         [
-            name: "reboot_hub",
+            name: "hub_reboot",
             description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop).
 
 PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true
@@ -2201,7 +2109,7 @@ Requires Hub Admin Write.""",
             ]
         ],
         [
-            name: "shutdown_hub",
+            name: "hub_shutdown",
             description: """⚠️ EXTREME: Powers OFF the hub (requires physical restart). NOT a reboot.
 
 PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automatically 3) Get explicit confirmation 4) Set confirm=true
@@ -2215,7 +2123,7 @@ Requires Hub Admin Write.""",
             ]
         ],
         [
-            name: "zwave_repair",
+            name: "hub_call_zwave_repair",
             description: """⚠️ DISRUPTIVE: Z-Wave network repair. All Z-Wave devices may become unresponsive for 5-30 minutes.
 
 WARNING: During repair, Z-Wave automations will be unreliable. Locks, garage doors, and security devices on Z-Wave may not respond. Schedule during off-peak hours when critical Z-Wave devices are not actively needed.
@@ -2232,10 +2140,10 @@ Requires Hub Admin Write.""",
         ],
         // Device Admin
         [
-            name: "delete_device",
+            name: "hub_delete_device",
             description: """⚠️ MOST DESTRUCTIVE: Permanently delete a device. NO UNDO. For ghost/orphaned/stuck devices only.
 
-PRE-FLIGHT: 1) Backup <24h 2) get_device to verify 3) Warn user 4) Z-Wave/Zigbee → exclusion first 5) Get confirmation
+PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zigbee → exclusion first 5) Get confirmation
 Device + history lost, automations break. Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
@@ -2249,18 +2157,18 @@ Device + history lost, automations break. Requires Hub Admin Write.""",
 
         // Virtual Device Management
         [
-            name: "manage_virtual_device",
+            name: "hub_manage_virtual_device",
             description: """Create or delete MCP-managed virtual devices. Requires Hub Admin Write + confirm.
 
-action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId. The two are mutually exclusive -- supplying both (including a blank/whitespace deviceType alongside customDriver) is an error. Create response shape: {success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, attributes}}. Built-in deviceType not-found surfaces as a platform error (isError); customDriver not-found surfaces as an input error (-32602) with a list_hub_drivers hint.
-action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_devices to find DNIs. Delete response: {success, deviceId, deviceNetworkId, deviceLabel, message}.""",
+action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId. The two are mutually exclusive -- supplying both (including a blank/whitespace deviceType alongside customDriver) is an error. Create response shape: {success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, attributes}}. Built-in deviceType not-found surfaces as a platform error (isError); customDriver not-found surfaces as an input error (-32602) with a hub_list_drivers hint.
+action="delete": Provide deviceNetworkId of device to delete. Use hub_list_devices(filter='virtual') to find DNIs. Delete response: {success, deviceId, deviceNetworkId, deviceLabel, message}.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     action: [type: "string", description: "Operation to perform", enum: ["create", "delete"]],
                     deviceType: [type: "string", description: "Built-in virtual device driver type (for create). Mutually exclusive with customDriver -- provide exactly one.",
                         enum: getSupportedVirtualDeviceTypes()],
-                    customDriver: [type: "object", description: "Alternative to deviceType: instantiate using a user-installed custom driver. Mutually exclusive with deviceType -- provide exactly one. Both fields required. Use list_hub_drivers to find available drivers.",
+                    customDriver: [type: "object", description: "Alternative to deviceType: instantiate using a user-installed custom driver. Mutually exclusive with deviceType -- provide exactly one. Both fields required. Use hub_list_drivers to find available drivers.",
                         properties: [
                             namespace: [type: "string", description: "Driver namespace (e.g., 'level99-vesync')."],
                             name: [type: "string", description: "Driver type name as registered on the hub (e.g., 'Levoit Classic 200S Humidifier')."]
@@ -2280,24 +2188,14 @@ action="delete": Provide deviceNetworkId of device to delete. Use list_virtual_d
             ]
         ],
         [
-            name: "list_virtual_devices",
-            description: "List MCP-managed virtual devices (children of this app). Response: {devices: [...], count, message}. Per-device fields: id, name, label, deviceNetworkId, driverNamespace (authoritative for devices created by this tool -- the namespace is persisted at create time; for devices created before this version or by other means it falls back to a best-effort derivation that may report 'hubitat'), driverType (driver type name), typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, currentStates (map of attribute-name to current-value -- note: create uses attributes as a list while list uses currentStates as a map; both expose device state but under different shapes because create returns the freshly-read attribute list and list returns a compact state map).",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
-        [
-            name: "update_device",
+            name: "hub_update_device",
             description: """Update device properties: label, name, deviceNetworkId, room, enabled, dataValues, preferences.
 
-Only modify devices user explicitly requested. Room/enabled require Hub Admin Write. Call `get_tool_guide(section='update_device')` for preferences format.""",
+Only modify devices user explicitly requested. Room/enabled require Hub Admin Write. Call `hub_get_tool_guide(section='update_device')` for preferences format.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "The device ID to update (from list_devices or list_virtual_devices)"],
+                    deviceId: [type: "string", description: "The device ID to update (from hub_list_devices or hub_list_devices(filter='virtual'))"],
                     label: [type: "string", description: "New display label for the device"],
                     name: [type: "string", description: "New device name"],
                     deviceNetworkId: [type: "string", description: "New device network ID (must be unique across all hub devices)"],
@@ -2313,7 +2211,7 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
 
         // Room Management Tools
         [
-            name: "list_rooms",
+            name: "hub_list_rooms",
             description: "List all rooms with IDs, names, and device counts.",
             inputSchema: [
                 type: "object",
@@ -2323,7 +2221,7 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
             ]
         ],
         [
-            name: "get_room",
+            name: "hub_get_room",
             description: "Get room details with assigned devices and their states. Specify by name or ID.",
             inputSchema: [
                 type: "object",
@@ -2334,7 +2232,7 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
             ]
         ],
         [
-            name: "create_room",
+            name: "hub_create_room",
             description: "Create a new room. Optionally assign devices at creation. Requires Hub Admin Write + confirm + backup <24h.",
             inputSchema: [
                 type: "object",
@@ -2347,7 +2245,7 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
             ]
         ],
         [
-            name: "delete_room",
+            name: "hub_delete_room",
             description: """⚠️ DESTRUCTIVE: Permanently deletes a room. Devices become unassigned (not deleted).
 
 PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true
@@ -2362,7 +2260,7 @@ Requires Hub Admin Write.""",
             ]
         ],
         [
-            name: "rename_room",
+            name: "hub_update_room",
             description: "Rename a room. Device assignments preserved. Automations/dashboards referencing room by name may need updating. Requires Hub Admin Write + confirm + backup <24h.",
             inputSchema: [
                 type: "object",
@@ -2377,34 +2275,22 @@ Requires Hub Admin Write.""",
 
         // Hub Admin App/Driver Source Read Tools
         [
-            name: "get_app_source",
-            description: "Get app Groovy source. Supports chunked reading (offset/length). Large files auto-saved to File Manager for use with update_app_code sourceFile mode. Requires Hub Admin Read.",
+            name: "hub_get_source",
+            description: "Get the Groovy source of an installed app, driver, or library. Pass type and id. Supports chunked reading (offset/length); large files are auto-saved to the File Manager for use with the matching update tool's sourceFile mode. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "string", description: "The app ID (from list_hub_apps)"],
+                    type: [type: "string", enum: ["app", "driver", "library"], description: "What kind of code to read."],
+                    id: [type: "string", description: "The app/driver/library ID (positive integer). App IDs from hub_list_apps, driver IDs from hub_list_drivers, library IDs from hub_create_library response or the Hubitat Libraries code page."],
                     offset: [type: "integer", description: "Character offset to start reading from (for chunked reading of large sources). Default: 0"],
                     length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
                 ],
-                required: ["appId"]
-            ]
-        ],
-        [
-            name: "get_driver_source",
-            description: "Get driver Groovy source. Supports chunked reading (offset/length). Large files auto-saved to File Manager for use with update_driver_code sourceFile mode. Requires Hub Admin Read.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    driverId: [type: "string", description: "The driver ID (from list_hub_drivers)"],
-                    offset: [type: "integer", description: "Character offset to start reading from (for chunked reading of large sources). Default: 0"],
-                    length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
-                ],
-                required: ["driverId"]
+                required: ["type", "id"]
             ]
         ],
         // Hub Admin App/Driver Management Write Tools
         [
-            name: "install_app",
+            name: "hub_create_app",
             description: """⚠️ Install new app. Show code to user and get confirmation first.
 
 Three source modes (mutually exclusive):
@@ -2412,23 +2298,23 @@ Three source modes (mutually exclusive):
 - sourceFile -- read from File Manager (upload first via curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload; Hub Security: prefix with curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login then add -b cookies.txt)
 - importUrl -- hub fetches the URL directly (mirrors UI's "Import Code from Website" then Save flow)
 
-After installing the code, create a running instance with a SECOND call: install_app(installAsUserApp: <newAppId>, confirm: true). Mutually exclusive with code-install args.
+After installing the code, create a running instance with a SECOND call: hub_create_app(installAsUserApp: <newAppId>, confirm: true). Mutually exclusive with code-install args.
 
-Verifies install succeeded: if the hub accepted the request but the app failed to compile, install_app returns success=false with the error. Requires Hub Admin Write + confirm + backup <24h. Returns new app ID.""",
+Verifies install succeeded: if the hub accepted the request but the app failed to compile, hub_create_app returns success=false with the error. Requires Hub Admin Write + confirm + backup <24h. Returns new app ID.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     source: [type: "string", description: "Inline Groovy source. Stubs only -- fills agent transcript. For non-trivial apps prefer sourceFile or importUrl."],
                     sourceFile: [type: "string", description: "File Manager filename (upload first via curl per tool description; bypasses agent transcript)."],
                     importUrl: [type: "string", description: "URL the hub fetches directly. Mirrors the editor's Import Code from Website + Save. http:// or https://. Mutually exclusive with source/sourceFile."],
-                    installAsUserApp: [type: "integer", description: "Second-step mode: create a running instance from already-installed code (the codeAppId returned by a prior install_app call). Mutually exclusive with code-install args (source/sourceFile/importUrl). Fires installed() on the new instance."],
+                    installAsUserApp: [type: "integer", description: "Second-step mode: create a running instance from already-installed code (the codeAppId returned by a prior hub_create_app call). Mutually exclusive with code-install args (source/sourceFile/importUrl). Fires installed() on the new instance."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
             ]
         ],
         [
-            name: "install_driver",
+            name: "hub_create_driver",
             description: """⚠️ Install new driver. Show code to user and get confirmation first.
 
 Three source modes (mutually exclusive per item):
@@ -2438,7 +2324,7 @@ Three source modes (mutually exclusive per item):
 
 For >1 driver: USE BULK mode (single round-trip, not N separate calls): installs=[{source|sourceFile|importUrl}, ...]. Cannot mix bulk and single-driver fields.
 
-Verifies install succeeded: if the hub accepted the request but the driver failed to compile, install_driver returns success=false with the error. Requires Hub Admin Write + confirm + backup <24h. Returns new driver ID(s).""",
+Verifies install succeeded: if the hub accepted the request but the driver failed to compile, hub_create_driver returns success=false with the error. Requires Hub Admin Write + confirm + backup <24h. Returns new driver ID(s).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2463,7 +2349,7 @@ Verifies install succeeded: if the hub accepted the request but the driver faile
             ]
         ],
         [
-            name: "update_app_code",
+            name: "hub_update_app",
             description: """⚠️ CRITICAL: Modify existing app code. Read current source first, explain changes, get confirmation.
 
 Four source modes (mutually exclusive):
@@ -2491,7 +2377,7 @@ Self-update guard: refuses to overwrite the MCP server's own app source unless D
             ]
         ],
         [
-            name: "update_driver_code",
+            name: "hub_update_driver",
             description: """⚠️ CRITICAL: Modify existing driver code. Read current source first, explain changes, get confirmation.
 
 Four source modes (mutually exclusive per item):
@@ -2534,50 +2420,26 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
             ]
         ],
         [
-            name: "delete_app",
-            description: """⚠️ DESTRUCTIVE: Permanently delete an app. Auto-backs up before deletion. Remove app instances via Hubitat UI first.
+            name: "hub_delete_item",
+            description: """⚠️ DESTRUCTIVE: Permanently delete an app, driver, or library. Auto-backs up the source before deletion.
 
-Tell user app name/ID, warn it's permanent, get confirmation. Requires Hub Admin Write + confirm + backup <24h.""",
+Pre-flight by type: apps -- remove app instances via the Hubitat UI first; drivers -- switch any devices to a different driver first; libraries -- ensure no apps/drivers still #include it (deleting an included library causes compile errors).
+
+Tell the user the item name/ID, warn it's permanent, get confirmation. Requires Hub Admin Write + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "string", description: "The app ID to delete"],
+                    type: [type: "string", enum: ["app", "driver", "library"], description: "What to delete."],
+                    id: [type: "string", description: "The app/driver/library ID to delete."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
-                required: ["appId", "confirm"]
-            ]
-        ],
-        [
-            name: "delete_driver",
-            description: """⚠️ DESTRUCTIVE: Permanently delete a driver. Auto-backs up before deletion. Devices using it must change drivers first.
-
-Tell user driver name/ID, warn it's permanent, get confirmation. Requires Hub Admin Write + confirm + backup <24h.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    driverId: [type: "string", description: "The driver ID to delete"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
-                ],
-                required: ["driverId", "confirm"]
+                required: ["type", "id", "confirm"]
             ]
         ],
 
         // Hub Admin Library Management Tools
         [
-            name: "get_library_source",
-            description: "Get library Groovy source. Supports chunked reading (offset/length). Large files auto-saved to File Manager for use with update_library_code sourceFile mode. Requires Hub Admin Read.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    libraryId: [type: "string", description: "The library ID (from install_library response, or check Hubitat web UI > FOR DEVELOPERS > Libraries code for installed library IDs)"],
-                    offset: [type: "integer", description: "Character offset to start reading from (for chunked reading of large sources). Default: 0"],
-                    length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
-                ],
-                required: ["libraryId"]
-            ]
-        ],
-        [
-            name: "install_library",
+            name: "hub_create_library",
             description: """⚠️ Install new Groovy library code. Libraries are #include'd by drivers/apps. Show code to user and get confirmation first.
 
 Three source modes (mutually exclusive):
@@ -2598,7 +2460,7 @@ Library source must include a library() definition block with 4 required fields:
             ]
         ],
         [
-            name: "update_library_code",
+            name: "hub_update_library",
             description: """⚠️ CRITICAL: Modify existing library code. Read current source first, explain changes, get confirmation.
 
 Four source modes (mutually exclusive):
@@ -2621,26 +2483,9 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                 required: ["libraryId", "confirm"]
             ]
         ],
-        [
-            name: "delete_library",
-            description: """⚠️ DESTRUCTIVE: Permanently delete a library. Auto-backs up source before deletion.
-
-Ensure no drivers or apps include this library before deleting (#include namespace.LibraryName references). Deleting a library used by installed code causes compilation errors.
-
-Tell user library name/ID, warn it's permanent, get confirmation. Requires Hub Admin Write + confirm + backup <24h.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    libraryId: [type: "string", description: "The library ID to delete"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
-                ],
-                required: ["libraryId", "confirm"]
-            ]
-        ],
-
         // ==================== Item Backup Tools ====================
         [
-            name: "list_item_backups",
+            name: "hub_list_backups",
             description: "List auto-created source backups from app/driver modifications. Stored in File Manager, max 20 kept.",
             inputSchema: [
                 type: "object",
@@ -2651,23 +2496,23 @@ Tell user library name/ID, warn it's permanent, get confirmation. Requires Hub A
             ]
         ],
         [
-            name: "get_item_backup",
-            description: "Get source code from a backup. Use list_item_backups to find backup keys (e.g., 'app_123').",
+            name: "hub_get_backup",
+            description: "Get source code from a backup. Use hub_list_backups to find backup keys (e.g., 'app_123').",
             inputSchema: [
                 type: "object",
                 properties: [
-                    backupKey: [type: "string", description: "The backup key from list_item_backups (e.g., 'app_123', 'driver_456', or 'library_42')"]
+                    backupKey: [type: "string", description: "The backup key from hub_list_backups (e.g., 'app_123', 'driver_456', or 'library_42')"]
                 ],
                 required: ["backupKey"]
             ]
         ],
         [
-            name: "restore_item_backup",
-            description: "⚠️ Restore app/driver to backed-up version. Tell user first. If item was DELETED, use install_app/install_driver/install_library instead. Library backups return a clear error directing you to update_library_code. Requires Hub Admin Write + confirm.",
+            name: "hub_restore_backup",
+            description: "⚠️ Restore app/driver to backed-up version. Tell user first. If item was DELETED, use hub_create_app/hub_create_driver/hub_create_library instead. Library backups return a clear error directing you to hub_update_library. Requires Hub Admin Write + confirm.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    backupKey: [type: "string", description: "The backup key from list_item_backups (e.g., 'app_123', 'driver_456', or 'library_42')"],
+                    backupKey: [type: "string", description: "The backup key from hub_list_backups (e.g., 'app_123', 'driver_456', or 'library_42')"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the restore."]
                 ],
                 required: ["backupKey", "confirm"]
@@ -2675,7 +2520,7 @@ Tell user library name/ID, warn it's permanent, get confirmation. Requires Hub A
         ],
         // File Manager Tools
         [
-            name: "list_files",
+            name: "hub_list_files",
             description: "List files in hub's File Manager. Returns names, sizes, download URLs.",
             inputSchema: [
                 type: "object",
@@ -2685,7 +2530,7 @@ Tell user library name/ID, warn it's permanent, get confirmation. Requires Hub A
             ]
         ],
         [
-            name: "read_file",
+            name: "hub_read_file",
             description: "Read file from File Manager. Supports chunked reading (offset/length) for large files.",
             inputSchema: [
                 type: "object",
@@ -2698,7 +2543,7 @@ Tell user library name/ID, warn it's permanent, get confirmation. Requires Hub A
             ]
         ],
         [
-            name: "write_file",
+            name: "hub_write_file",
             description: "⚠️ Write file to File Manager. Auto-backs up existing files. Requires Hub Admin Write + confirm.",
             inputSchema: [
                 type: "object",
@@ -2711,7 +2556,7 @@ Tell user library name/ID, warn it's permanent, get confirmation. Requires Hub A
             ]
         ],
         [
-            name: "delete_file",
+            name: "hub_delete_file",
             description: "⚠️ Delete file from File Manager. Auto-backs up before deletion. Tell user first. Requires Hub Admin Write + confirm.",
             inputSchema: [
                 type: "object",
@@ -2724,7 +2569,7 @@ Tell user library name/ID, warn it's permanent, get confirmation. Requires Hub A
         ],
         // Installed Apps Integration (built-in + user app visibility)
         [
-            name: "list_installed_apps",
+            name: "hub_list_installed_apps",
             description: """List all installed apps on the hub (built-in + user) with parent/child tree. Requires Built-in App Tools enabled.
 
 Each app entry returns: id, name, type, disabled, user (true=user-installed Groovy app, false=built-in), hidden, parentId (null for top-level), hasChildren, childCount.
@@ -2742,7 +2587,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the a
             ]
         ],
         [
-            name: "get_device_in_use_by",
+            name: "hub_list_device_dependents",
             description: """List all apps that reference a specific device (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.). Requires Built-in App Tools enabled.
 
 Answers \"which apps would break or change behavior if I disable/delete this device?\" — critical before device cleanup, troubleshooting, or reassignment.
@@ -2751,7 +2596,7 @@ Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, l
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from list_devices"],
+                    deviceId: [type: "string", description: "Device ID from hub_list_devices"],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the appsUsing list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ],
                 required: ["deviceId"]
@@ -2759,21 +2604,21 @@ Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, l
         ],
         // Hub Admin App Configuration Read (grouped with installed-apps peers)
         [
-            name: "get_app_config",
+            name: "hub_get_app_config",
             description: """Read an installed app's configuration — the same structured data the Hubitat Web UI shows on each app's settings page. Works for Rule Machine rules, Room Lighting instances, Basic Rules, Button Controllers, Hubitat Package Manager, Mode Manager, and any other legacy SmartApp.
 
-Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value), and `embeddedActions` — clickable button affordances embedded in paragraph HTML (RM 5.1 wizards expose "Create New Trigger", "Edit Trigger", "Delete Trigger" etc. as `<div class='submitOnChange'>` elements rather than schema inputs; this field surfaces them with their button name + stateAttribute so update_native_app can drive them). Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything.
+Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value), and `embeddedActions` — clickable button affordances embedded in paragraph HTML (RM 5.1 wizards expose "Create New Trigger", "Edit Trigger", "Delete Trigger" etc. as `<div class='submitOnChange'>` elements rather than schema inputs; this field surfaces them with their button name + stateAttribute so hub_update_native_app can drive them). Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything.
 
-Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after list_installed_apps / get_device_in_use_by narrows the field.
+Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after hub_list_installed_apps / hub_list_device_dependents narrows the field.
 
-Workflow: (1) Get the appId from list_installed_apps (all apps), list_rm_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not custom_list_rules / custom_get_rule, which only handle MCP-native rules), or list_installed_apps with filter=parents to explore app hierarchy. (2) Call get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call list_app_pages first to discover available page names. Common multi-page names: HPM uses prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset only), prefOptions (main menu / navigation); RM and Room Lighting use a single mainPage (no pageName needed).
+Workflow: (1) Get the appId from hub_list_installed_apps (all apps), hub_list_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not hub_get_custom_rule, which only handles MCP-native rules), or hub_list_installed_apps with filter=parents to explore app hierarchy. (2) Call hub_get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call hub_list_app_pages first to discover available page names. Common multi-page names: HPM uses prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset only), prefOptions (main menu / navigation); RM and Room Lighting use a single mainPage (no pageName needed).
 
 Requires Hub Admin Read.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "string", description: "Installed-app ID (decimal). From list_installed_apps, list_rm_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
-                    pageName: [type: "string", description: "Optional sub-page name for multi-page apps. Main page is used when omitted. Call list_app_pages to discover available pages. HPM: prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefOptions (main menu). RM / Room Lighting: mainPage only."],
+                    appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_installed_apps, hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
+                    pageName: [type: "string", description: "Optional sub-page name for multi-page apps. Main page is used when omitted. Call hub_list_app_pages to discover available pages. HPM: prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefOptions (main menu). RM / Room Lighting: mainPage only."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map. Default false -- large apps can have 500-1000 keys with app-specific encoding (e.g. Room Lighting's dm~<deviceId>~<scene>). Set true only for power-user inspection.", default: false]
                 ],
                 required: ["appId"]
@@ -2781,27 +2626,27 @@ Requires Hub Admin Read.""",
         ],
         // Hub Admin App Pages Directory
         [
-            name: "list_app_pages",
+            name: "hub_list_app_pages",
             description: """List known page names for a multi-page installed app. Returns the primary page (introspected live from the hub) plus a curated directory of known sub-pages for well-known app types.
 
 Curated directories: HPM (prefOptions main menu, prefPkgUninstall full installed-package list, prefPkgModify modifiable subset, prefPkgInstall install flow, prefPkgMatchUp match-up flow); Rule Machine rules (mainPage only -- rules are single-page); Room Lighting (mainPage); Mode Manager (mainPage).
 
 Unknown app types return the primary page only, plus a note directing you to consult the app's source or Web UI navigation for additional page names.
 
-Use this before get_app_config on multi-page apps to avoid guessing page names.
+Use this before hub_get_app_config on multi-page apps to avoid guessing page names.
 
 Requires Hub Admin Read.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "string", description: "Installed-app ID (decimal). From list_installed_apps, list_rm_rules, or the Hubitat UI URL (/installedapp/configure/<id>)."]
+                    appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_installed_apps, hub_list_rules, or the Hubitat UI URL (/installedapp/configure/<id>)."]
                 ],
                 required: ["appId"]
             ]
         ],
         // HPM Package State Tools
         [
-            name: "list_hpm_packages",
+            name: "hub_list_hpm_packages",
             description: """List all packages tracked by Hubitat Package Manager (HPM). Returns the installed name, version, beta flag, author, and the full component inventory (apps, drivers, files) as HPM last recorded at install or update time.
 
 App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). If a component's heID value is an empty/whitespace-only string, heID is cleared to null and a _warning field is added to that component entry (e.g. "empty heID string '' normalized to null" for an empty string, or "empty heID string '  ' normalized to null" for a whitespace-only string). If heID is a whitespace-padded string (e.g. ' 142 '), it is normalized to the trimmed value and _warning records the normalization (e.g. "whitespace-padded heID ' 142 ' normalized to '142'"); heID remains non-null. If heID is a non-scalar type (not Number or String), heID is cleared to null and a _warning field is added.
@@ -2812,56 +2657,23 @@ Response also includes: count (number of packages returned); hpmAppId (HPM's ins
 
 If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app instance tree for an entry whose type is 'Hubitat Package Manager'. Pass hpmAppId explicitly to skip the discovery call. When multiple HPM instances are found, throws IllegalArgumentException listing up to 10 instance IDs in bracket notation (e.g. [37, 99]) with a "and N more (total M)" suffix when more than 10 exist. When hpmAppId is supplied explicitly but points at an app that is not Hubitat Package Manager, the tool throws IllegalArgumentException with the actual type disclosed (e.g. "hpmAppId N is not Hubitat Package Manager (actual type: Simple Automation Rules) -- verify the ID or omit hpmAppId to use auto-discovery"). All IllegalArgumentExceptions surface to the wire as JSON-RPC error -32602, not a success=false map.
 
+Set includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan-app / orphan-driver signals; optional packageFilter narrows which packages are analyzed). Off by default (adds 1-2 hub calls). Drift is heID-presence-only -- post-install source edits are NOT surfaced. Call `hub_get_tool_guide(section='builtin_app_tools')` for the full drift-signal taxonomy, response-field reference, and under-count caveats.
+
 Requires Hub Admin Read. HPM itself must be installed.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     hpmAppId: [type: "string", description: "HPM's installed-app ID (decimal). Auto-discovered if omitted by scanning installed apps for type='Hubitat Package Manager'. Pass explicitly to skip the discovery call."],
+                    includeDrift: [type: "boolean", description: "Also attach a drift cross-reference under a `drift` key (missing-required/orphan-app/orphan-driver). Default false; adds 1-2 hub calls.", default: false],
+                    packageFilter: [type: "string", description: "Drift mode only (includeDrift=true): case-insensitive substring filter on packageName; only matching packages are analyzed for drift."],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the packages list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 25 -- HPM entries carry full app/driver/file inventories so each entry can be large)."]
-                ]
-            ]
-        ],
-        [
-            name: "get_hpm_drift",
-            description: """Cross-reference HPM's tracked package state against what is actually installed on the hub. Surfaces actionable drift signals (missing-required, orphan-app, orphan-driver) plus a separate `dataQualityWarnings[]` stream for manifest-shape issues.
-
-Drift detection is heID-presence-only. HPM stores no source hashes so post-install edits (e.g. via update_app_code) are NOT surfaced.
-
-If hpmAppId is omitted, the tool auto-discovers HPM (same as list_hpm_packages, including the multi-instance throw with up to 10 ids and an "and N more (total M)" suffix). If packageFilter is supplied, only packages whose packageName contains the filter string (case-insensitive) are checked. When hpmAppId is supplied explicitly but points at an app that is not Hubitat Package Manager, the tool throws IllegalArgumentException with the actual type disclosed. All IllegalArgumentExceptions surface to the wire as JSON-RPC error -32602, not a success=false map.
-
-[[FLAT_TRIM]]
-Drift signal types:
-- missing-required: a component is marked required=true in the HPM manifest but its heID is null/absent -- the install never completed or the component was later removed outside HPM.
-- orphan-app: HPM records a heID for an app component, but that app code definition is no longer in Apps Code (i.e., was deleted outside HPM Uninstall).
-- orphan-driver: HPM records a heID for a driver component, but that driver code definition is no longer in Drivers Code.
-
-Response fields: hpmAppId (echoed for caching); packagesChecked (filtered population if packageFilter narrowed); packagesWithActionableDrift (packages with at least one actionable signal -- excludes data-quality-only); totalDriftSignals (count of actionable signals only); drift[] (per-package: manifestUrl, packageName, version, signals[], optional dataQualityWarnings[]/skippedAppCount/skippedDriverCount); summary; orphanDetection ({enabled, reason?}); orphanDriverDetection (same shape for /hub2/userDeviceTypes); optional top-level dataQualityWarnings[]; optional skippedMalformed[]. On zero-match filter: filterMatchedZero=true + availablePackages[]; packagesChecked == 0 and summary reads "No drift detected across 0 tracked packages."
-
-drift[].length may exceed packagesWithActionableDrift when data-quality-only packages exist (they appear for visibility, not counted in summary).
-
-signals[] entry shape: type, componentType, componentName, componentId, note. orphan-app/orphan-driver entries additionally carry heID (the orphaned id); missing-required omits heID (null by definition). If a manifest carried a non-null but invalid heID that was normalized to null, the original raw value is recoverable from the sibling dataQualityWarnings[] entry (join on componentType+componentName+componentId).
-
-Data-quality warning types in dataQualityWarnings[] (do NOT inflate totalDriftSignals): heid-whitespace-normalized (padded heID normalized to trimmed value; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid (blank heID normalized to null), skipped-malformed-component (non-Map component entry; lacks componentName/componentId because the source was not a Map).
-
-Partial-detection summary suffix: when one detection is disabled, summary appends "(partial: <name> disabled this call -- see <name> reason)"; when both, "reasons" (plural) with both names.
-
-Under-count caveats. (1) When orphanDetection.enabled or orphanDriverDetection.enabled is false, the corresponding orphan-* signals cannot fire and packagesWithActionableDrift reflects only packages with a missing-required signal -- inspect both detection fields before treating zero as 'clean'. (2) A required=true component with non-scalar heID emits heid-non-scalar-dropped and is dropped before the required check, so it does NOT contribute a missing-required signal -- inspect dataQualityWarnings[] for these entries on required components before treating zero as fully clean.
-[[/FLAT_TRIM]]
-Call `get_tool_guide(section='builtin_app_tools')` for the full drift-signal taxonomy, response-field reference, data-quality warning types, and under-count caveats.
-
-Requires Hub Admin Read. HPM itself must be installed.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    hpmAppId: [type: "string", description: "HPM's installed-app ID (decimal). Auto-discovered if omitted."],
-                    packageFilter: [type: "string", description: "Optional case-insensitive substring filter on packageName. When supplied, only matching packages are analyzed. Omit to check all tracked packages."]
                 ]
             ]
         ],
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
         [
-            name: "list_rm_rules",
-            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Returns rule IDs and labels. Requires Built-in App Tools enabled. Call `get_tool_guide(section='builtin_app_tools')` for details and platform limitations on RM rule internals.",
+            name: "hub_list_rules",
+            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Returns rule IDs and labels. Requires Built-in App Tools enabled. Call `hub_get_tool_guide(section='builtin_app_tools')` for details and platform limitations on RM rule internals.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2870,46 +2682,36 @@ Requires Hub Admin Read. HPM itself must be installed.""",
             ]
         ],
         [
-            name: "run_rm_rule",
-            description: "Trigger a Rule Machine rule. Not destructive (invokes existing user-configured automation). Requires Built-in App Tools enabled. Call `get_tool_guide(section='builtin_app_tools')` for action semantics.",
+            name: "hub_call_rule",
+            description: "Trigger a Rule Machine rule. Not destructive (invokes existing user-configured automation). Requires Built-in App Tools enabled. Call `hub_get_tool_guide(section='builtin_app_tools')` for action semantics.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "integer", description: "Rule ID from list_rm_rules"],
+                    ruleId: [type: "integer", description: "Rule ID from hub_list_rules"],
                     action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. 'rule'=runRule, 'actions'=runRuleAct, 'stop'/'start'=toggle stopRule button (routes through the RM UI button, not RMUtils, because RMUtils has no startRule verb; 'start' also resets the private boolean). Default: rule"]
                 ],
                 required: ["ruleId"]
             ]
         ],
         [
-            name: "pause_rm_rule",
-            description: "Pause a Rule Machine rule (paused rules don't fire on triggers). Reversible via resume_rm_rule. Requires Built-in App Tools enabled.",
+            name: "hub_set_rule_paused",
+            description: "Pause or resume a Rule Machine rule (paused rules don't fire on triggers). value=true pauses, value=false resumes (idempotent on the hub). Requires Built-in App Tools enabled.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "integer", description: "Rule ID from list_rm_rules"]
+                    ruleId: [type: "integer", description: "Rule ID from hub_list_rules"],
+                    value: [type: "boolean", description: "true = pause the rule; false = resume it."]
                 ],
-                required: ["ruleId"]
+                required: ["ruleId", "value"]
             ]
         ],
         [
-            name: "resume_rm_rule",
-            description: "Resume a paused Rule Machine rule. Requires Built-in App Tools enabled.",
+            name: "hub_set_rule_private_boolean",
+            description: "Set a Rule Machine rule's private boolean to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires Built-in App Tools enabled. Call `hub_get_tool_guide(section='builtin_app_tools')` for pattern and coercion policy.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "integer", description: "Rule ID from list_rm_rules"]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-        [
-            name: "set_rm_rule_boolean",
-            description: "Set a Rule Machine rule's private boolean to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires Built-in App Tools enabled. Call `get_tool_guide(section='builtin_app_tools')` for pattern and coercion policy.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "integer", description: "Rule ID from list_rm_rules"],
+                    ruleId: [type: "integer", description: "Rule ID from hub_list_rules"],
                     value: [type: "boolean", description: "true sets the boolean to TRUE, false sets it to FALSE"]
                 ],
                 required: ["ruleId", "value"]
@@ -2921,31 +2723,31 @@ Requires Hub Admin Read. HPM itself must be installed.""",
         // for update + delete today (any classic-app appId), and join create as their entries
         // get added to _appTypeRegistry().
         [
-            name: "create_native_app",
+            name: "hub_create_native_app",
             description: """Create a NEW empty native automation app of the given appType. The shell is created via the hub's admin-layer createchild endpoint, which bypasses the SmartApp parent-type check that blocks third-party `addChildApp('hubitat', ...)` calls. The new app appears under Apps / Automations exactly as if created via the native UI.
 
 [[FLAT_TRIM]]
 appType (default: rule_machine): which class of native app to create.
   - "rule_machine" — Rule Machine 5.1 (the only registered type today; verified live)
-  - Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in _appTypeRegistry to enable creation. Update and delete already work on them via update_native_app / delete_native_app with their appId.
+  - Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in _appTypeRegistry to enable creation. Update and delete already work on them via hub_update_native_app / hub_delete_native_app with their appId.
 [[/FLAT_TRIM]]
 
-This is COMPLETELY SEPARATE from the MCP custom rule engine (custom_list_rules / custom_create_rule). Use create_native_app for native automations that show up in the hub UI; use custom_create_rule for MCP-managed rules.
+This is COMPLETELY SEPARATE from the MCP custom rule engine (hub_get_custom_rule / hub_create_custom_rule). Use hub_create_native_app for native automations that show up in the hub UI; use hub_create_custom_rule for MCP-managed rules.
 
-Workflow: create_native_app(appType=\"rule_machine\", name=\"...\") → get_app_config(appId) to read the page schema → update_native_app(appId, settings={...}) to add triggers/conditions/actions. Each update_native_app call auto-backs-up first, enforces the multiple=true capability contract, and verifies post-write that the app still renders cleanly.
+Workflow: hub_create_native_app(appType=\"rule_machine\", name=\"...\") → hub_get_app_config(appId) to read the page schema → hub_update_native_app(appId, settings={...}) to add triggers/conditions/actions. Each hub_update_native_app call auto-backs-up first, enforces the multiple=true capability contract, and verifies post-write that the app still renders cleanly.
 
-Optional `triggers` array: pass a list of trigger specs and the tool creates the rule + adds every trigger + fires updateRule in a single call. Each trigger spec follows the same shape update_native_app's `addTrigger` parameter accepts. Use this when you know all the triggers up-front; for incremental editing use update_native_app(addTrigger=…) instead.
+Optional `triggers` array: pass a list of trigger specs and the tool creates the rule + adds every trigger + fires updateRule in a single call. Each trigger spec follows the same shape hub_update_native_app's `addTrigger` parameter accepts. Use this when you know all the triggers up-front; for incremental editing use hub_update_native_app(addTrigger=…) instead.
 
-Optional `actions` array: same pattern but for actions (each item shaped like update_native_app's `addAction` parameter).
+Optional `actions` array: same pattern but for actions (each item shaped like hub_update_native_app's `addAction` parameter).
 
 [[FLAT_TRIM]]
 PARTIAL-SUCCESS HANDLING (important for LLM drivers): the tool ALWAYS creates the rule shell (you get an `appId` back) even if some triggers/actions fail to fully bake. Inspect the result:
   - `partial: true` + `partialTriggers: [N, ...]` / `partialActions: [N, ...]` → some pieces are incomplete (this includes any per-item result with `partial: true` OR `success: false`)
   - `repairHints: [...]` → concrete next-step instructions
   - Each per-trigger / per-action result has its own `success`, `partial`, `settingsSkipped`, `repairHints`, and `health` block. `success: true, partial: true` on an inner result means the row was written but needs repair.
-The right move when `partial: true` is to follow the repairHints, NOT to delete the rule and retry from scratch. Tool-only repair via update_native_app(walkStep={...}) / replaceActions / removeAction can usually finish the job. Only declare failure after exhausting those repair attempts.
+The right move when `partial: true` is to follow the repairHints, NOT to delete the rule and retry from scratch. Tool-only repair via hub_update_native_app(walkStep={...}) / replaceActions / removeAction can usually finish the job. Only declare failure after exhausting those repair attempts.
 [[/FLAT_TRIM]]
-Partial-success: triggers/actions can land with `partial: true` -- inspect `partialTriggers`/`partialActions`/`repairHints` in the result. Call `get_tool_guide(section='create_native_app_reference')` for the full repair protocol.
+Partial-success: triggers/actions can land with `partial: true` -- inspect `partialTriggers`/`partialActions`/`repairHints` in the result. Call `hub_get_tool_guide(section='create_native_app_reference')` for the full repair protocol.
 
 Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
             inputSchema: [
@@ -2955,12 +2757,12 @@ Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
                     name: [type: "string", description: "Human-readable label for the new app (shown in the hub's app list). Required."],
                     triggers: [
                         type: "array",
-                        description: "Optional list of trigger specs to populate after creating the empty rule. Each spec follows the same shape as update_native_app(addTrigger=…). When provided, the tool creates the rule, adds every trigger sequentially (1 wizard run per spec), and fires updateRule once at the end. Returns triggerIndices in the response. Empty/omitted = create-only behavior, same as before.",
+                        description: "Optional list of trigger specs to populate after creating the empty rule. Each spec follows the same shape as hub_update_native_app(addTrigger=…). When provided, the tool creates the rule, adds every trigger sequentially (1 wizard run per spec), and fires updateRule once at the end. Returns triggerIndices in the response. Empty/omitted = create-only behavior, same as before.",
                         items: [type: "object"]
                     ],
                     actions: [
                         type: "array",
-                        description: "Optional list of action specs to populate after creating the rule (and any bundled triggers). Each spec follows the same shape as update_native_app(addAction=…). The tool creates the rule, adds every trigger, then every action sequentially (actions self-bake via doActPage->selectActions per-item), then fires updateRule once at the end so subscriptions populate from a fully-loaded rule. Pairs naturally with the triggers array -- pass both to build a complete rule (trigger + actions) in a single call. Empty/omitted = no actions added.",
+                        description: "Optional list of action specs to populate after creating the rule (and any bundled triggers). Each spec follows the same shape as hub_update_native_app(addAction=…). The tool creates the rule, adds every trigger, then every action sequentially (actions self-bake via doActPage->selectActions per-item), then fires updateRule once at the end so subscriptions populate from a fully-loaded rule. Pairs naturally with the triggers array -- pass both to build a complete rule (trigger + actions) in a single call. Empty/omitted = no actions added.",
                         items: [type: "object"]
                     ],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Hub Admin Write operations."]
@@ -2969,30 +2771,30 @@ Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
             ]
         ],
         [
-            name: "update_native_app",
+            name: "hub_update_native_app",
             description: """Modify any classic native automation app on the hub (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them, so this one tool covers writes to any classic SmartApp instance addressed by appId. Two modes (provide settings, button, or both):
 
 settings: Map of {inputName: value}. Values: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs. The multiple=true 3-field contract (settings[name]=csv + name.type=capability.X + name.multiple=true) is emitted automatically — you don't need to think about it. Post-write verification checks that the multiple flag survived; one automatic retry on divergence.
 
-button: page-transition button name (e.g. \"editCond\", \"editAct\", \"pausRule\", \"updateRule\", \"refreshActions\" for RM; equivalent buttons exist for other app types — discover via get_app_config).
+button: page-transition button name (e.g. \"editCond\", \"editAct\", \"pausRule\", \"updateRule\", \"refreshActions\" for RM; equivalent buttons exist for other app types — discover via hub_get_app_config).
 
 pageName: optional — target a specific sub-page whose schema drives the settings marshaling. Defaults to the app's main page.
 
 stateAttribute: optional string passed with the button click (e.g., RM uses this for editCond/editAct to identify which trigger/action).
 
-BEFORE EVERY WRITE: a full snapshot (configure/json + statusJson) is saved to File Manager. Response includes backup.backupKey for use with restore_item_backup (in manage_apps_drivers) if the write goes wrong.
+BEFORE EVERY WRITE: a full snapshot (configure/json + statusJson) is saved to File Manager. Response includes backup.backupKey for use with hub_restore_backup (in hub_manage_code_write) if the write goes wrong.
 
-Auto-updateRule: main-page settings writes are followed by an implicit updateRule button click so initialize() re-fires. Sub-page writes (pageName=selectTriggers, selectActions, etc.) skip the auto-click so the wizard's stateAttribute (moreCond, editCond, editAct, ...) survives — commit the wizard via its own Done button (RM triggers: hasAll; RM actions: actionDone) and issue a final update_native_app(button='updateRule') to re-initialize.
+Auto-updateRule: main-page settings writes are followed by an implicit updateRule button click so initialize() re-fires. Sub-page writes (pageName=selectTriggers, selectActions, etc.) skip the auto-click so the wizard's stateAttribute (moreCond, editCond, editAct, ...) survives — commit the wizard via its own Done button (RM triggers: hasAll; RM actions: actionDone) and issue a final hub_update_native_app(button='updateRule') to re-initialize.
 
 Wizard-Done auto-finalize: clicking hasAll on selectTriggers commits the trigger to the rule's summary row but RM 5.1 leaves a single residual `isCondTrig.<N>` ("Conditional Trigger?") prompt on the page. This tool auto-writes `isCondTrig.<N>=false` after the click to clear the prompt without consuming an extra trigger index. Reported in the response as wizardDoneAutoRetry: 'OK' / 'OK after finalize ...' / 'WARN: ...'. (Earlier versions clicked hasAll twice instead, which inadvertently allocated phantom "**Broken Trigger**" rows; the finalize-via-isCondTrig path keeps trigger indices contiguous: 1, 2, 3 instead of 1, 3, 5.)
 
 RM 5.1 trigger flow (example — adding a multi-device switch trigger via raw settings/button mode):
-  1. update_native_app(appId, button='true', stateAttribute='moreCond', pageName='selectTriggers') — opens the trigger editor.
-  2. update_native_app(appId, settings={tCapab1: 'Switch'}, pageName='selectTriggers') — picks the capability; page re-renders with the device picker.
-  3. update_native_app(appId, settings={tDev1: [<deviceId>, ...]}, pageName='selectTriggers') — writes devices (multi-device 3-field contract is automatic).
-  4. update_native_app(appId, settings={tstate1: 'on'}, pageName='selectTriggers') — sets the attribute/value.
-  5. update_native_app(appId, button='hasAll', pageName='selectTriggers') — commits the trigger; the residual Conditional? prompt is auto-finalized.
-  6. update_native_app(appId, button='updateRule') — re-initialize so subscriptions populate.
+  1. hub_update_native_app(appId, button='true', stateAttribute='moreCond', pageName='selectTriggers') — opens the trigger editor.
+  2. hub_update_native_app(appId, settings={tCapab1: 'Switch'}, pageName='selectTriggers') — picks the capability; page re-renders with the device picker.
+  3. hub_update_native_app(appId, settings={tDev1: [<deviceId>, ...]}, pageName='selectTriggers') — writes devices (multi-device 3-field contract is automatic).
+  4. hub_update_native_app(appId, settings={tstate1: 'on'}, pageName='selectTriggers') — sets the attribute/value.
+  5. hub_update_native_app(appId, button='hasAll', pageName='selectTriggers') — commits the trigger; the residual Conditional? prompt is auto-finalized.
+  6. hub_update_native_app(appId, button='updateRule') — re-initialize so subscriptions populate.
 
 NOTE: the addTrigger={...} shortcut handles steps 1-6 automatically (including the updateRule at the end). Only the raw settings/button flow above requires the explicit step 6 call.
 
@@ -3002,14 +2804,14 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "integer", description: "Installed-app ID (for RM rules, this is the rule ID; for any other classic app, it's the app's id from list_installed_apps)."],
+                    appId: [type: "integer", description: "Installed-app ID (for RM rules, this is the rule ID; for any other classic app, it's the app's id from hub_list_installed_apps)."],
                     settings: [type: "object", description: "Map {inputName: value}. Use List for multi-device capability inputs — CSV marshaling is automatic."],
                     button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule, refreshActions for RM; analogous buttons for other app types)."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or call `get_tool_guide(section='update_native_app_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed.[[FLAT_TRIM]] (Exception: if updateRule itself is rejected the response carries `subscriptionsNotLive: true` -- see PARTIAL-SUCCESS HANDLING for the recovery path.)[[/FLAT_TRIM]] (Bulk addTriggers[] fires updateRule once at the end of the batch.)
+                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or call `hub_get_tool_guide(section='update_native_app_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed.[[FLAT_TRIM]] (Exception: if updateRule itself is rejected the response carries `subscriptionsNotLive: true` -- see PARTIAL-SUCCESS HANDLING for the recovery path.)[[/FLAT_TRIM]] (Bulk addTriggers[] fires updateRule once at the end of the batch.)
 
 [[FLAT_TRIM]]
 Capability families and the spec fields each accepts:
@@ -3029,8 +2831,8 @@ Capability families and the spec fields each accepts:
        atTime SEMANTIC: 'HH:mm' form (e.g. '17:00') = DAILY-recurring trigger that fires every day at that wall-clock time; full ISO datetime (e.g. '2026-04-29T17:00:00' or '2026-04-29T17:00:00.000-0500') = ONE-SHOT dated trigger that fires once on that specific date. Forms without timezone are auto-normalized to hub local tz; explicit-offset and Zulu forms are normalized to UTC equivalent.
   - Mode (hub mode change trigger):
     capability='Mode', state='Night' OR state=['Away','Night'] (mode names, case-insensitive)
-    OR modeIds=['3'] OR modeIds=['3','5'] (IDs directly, from get_modes).
-    IMPORTANT: writes modesX<N> internally -- do NOT pass tstate or rawSettings.tstate for Mode triggers (silently ignored; trigger renders as Broken Trigger). Use get_modes to list valid mode names/IDs.
+    OR modeIds=['3'] OR modeIds=['3','5'] (IDs directly, from hub_list_modes).
+    IMPORTANT: writes modesX<N> internally -- do NOT pass tstate or rawSettings.tstate for Mode triggers (silently ignored; trigger renders as Broken Trigger). Use hub_list_modes to list valid mode names/IDs.
   - Periodic Schedule (recurring schedule via the dedicated periodic sub-page):
     capability='Periodic Schedule', periodic={frequency: 'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String',
       everyN: <int>,           // "every N <unit>" mode (Seconds/Minutes/Hourly/Daily). REQUIRED even when =1 for Daily AND Hourly (omitting it renders null). Seconds/Minutes: whole number from restricted enum [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer). Fractional truncates (5.5->5).
@@ -3055,16 +2857,16 @@ Capability families and the spec fields each accepts:
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
-  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`).[[FLAT_TRIM]] Narrower extended-shape support than addRequiredExpression/addAction: Mode-via-picker, Between two times, and compareToDevice are NOT supported on `trigger.condition` -- use those tools instead. Supported extended shapes on this row: Variable (incl. `compareToVariable`), Custom Attribute (`attribute`+`comparator`+`state`/`value`), enum/numeric device-state. `_rmBuildCondition` is a static direct-write helper, not the shared `_rmWalkConditionReveal` walker -- that is why Mode-via-picker (`modeIds`), Between two times (`start`/`end`), and `compareToDevice` Maps don't yet work here. `compareToVariable` (variable-vs-variable) works on `addTrigger.condition`, `addRequiredExpression`, AND `addAction` IF-expressions: on this row the `selectTriggers` sub-wizard writes the fixed `xVarR_<N>` field, while the walker pages (STPage/doActPage) toggle `isVar_<N>=true` and discover the firmware-assigned right-hand picker from the live schema. On Variable conditions, for value-comparison comparators supply exactly one of `value`/`compareToVariable` (they are mutually exclusive; passing both is rejected); omit the RHS entirely for state-change comparators (`*changed*`/`*became*`).[[/FLAT_TRIM]]
+  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate hub_update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`).[[FLAT_TRIM]] Narrower extended-shape support than addRequiredExpression/addAction: Mode-via-picker, Between two times, and compareToDevice are NOT supported on `trigger.condition` -- use those tools instead. Supported extended shapes on this row: Variable (incl. `compareToVariable`), Custom Attribute (`attribute`+`comparator`+`state`/`value`), enum/numeric device-state. `_rmBuildCondition` is a static direct-write helper, not the shared `_rmWalkConditionReveal` walker -- that is why Mode-via-picker (`modeIds`), Between two times (`start`/`end`), and `compareToDevice` Maps don't yet work here. `compareToVariable` (variable-vs-variable) works on `addTrigger.condition`, `addRequiredExpression`, AND `addAction` IF-expressions: on this row the `selectTriggers` sub-wizard writes the fixed `xVarR_<N>` field, while the walker pages (STPage/doActPage) toggle `isVar_<N>=true` and discover the firmware-assigned right-hand picker from the live schema. On Variable conditions, for value-comparison comparators supply exactly one of `value`/`compareToVariable` (they are mutually exclusive; passing both is rejected); omit the RHS entirely for state-change comparators (`*changed*`/`*became*`).[[/FLAT_TRIM]]
   - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.). Use `@N` token to substitute the auto-assigned trigger/condition index — e.g. {'xVar@N': 'myVar'} writes `xVar1` when the trigger lands at index 1.
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
 
-PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at least one setting was written to the rule (the trigger skeleton exists). `success: false` means a hard failure -- API errored or nothing was written at all. `partial: true` is ORTHOGONAL to success and means some caller-requested fields didn't land OR the row carries a *BROKEN* marker. A `success: true, partial: true` result is the normal partial-success state -- the trigger row exists, but needs repair. The result includes `repairHints` with concrete next steps. Common repair: pass missing capability-specific fields via rawSettings={fieldName: value, ...} and re-add the trigger, OR use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see what fields are live and write them one at a time. Don't treat `partial: true` as failure -- exhaust tool-only repair before declaring failure.[[FLAT_TRIM]] Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The trigger row IS in the rule's appSettings but the running rule instance never subscribed to its device events -- retry via `update_native_app(button='updateRule', confirm=true)`. (`subscriptionsNotLive` rather than `expressionNotLive` because the failure consequence is device-event subscription, not gate-evaluator re-pick-up -- see addAction PARTIAL-SUCCESS HANDLING for the full naming rationale.)[[/FLAT_TRIM]]"""
+PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at least one setting was written to the rule (the trigger skeleton exists). `success: false` means a hard failure -- API errored or nothing was written at all. `partial: true` is ORTHOGONAL to success and means some caller-requested fields didn't land OR the row carries a *BROKEN* marker. A `success: true, partial: true` result is the normal partial-success state -- the trigger row exists, but needs repair. The result includes `repairHints` with concrete next steps. Common repair: pass missing capability-specific fields via rawSettings={fieldName: value, ...} and re-add the trigger, OR use hub_update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see what fields are live and write them one at a time. Don't treat `partial: true` as failure -- exhaust tool-only repair before declaring failure.[[FLAT_TRIM]] Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The trigger row IS in the rule's appSettings but the running rule instance never subscribed to its device events -- retry via `hub_update_native_app(button='updateRule', confirm=true)`. (`subscriptionsNotLive` rather than `expressionNotLive` because the failure consequence is device-event subscription, not gate-evaluator re-pick-up -- see addAction PARTIAL-SUCCESS HANDLING for the full naming rationale.)[[/FLAT_TRIM]]"""
                     ],
                     addTriggers: [
                         type: "array",
-                        description: "Bulk-add multiple triggers in one tool call. Each item is the same shape as addTrigger. updateRule fires ONCE at the end (not after each trigger), so subscriptions populate from a fully-loaded rule. Pairs naturally with addActions for building a complete rule in a single call. Empty/omitted falls back to the single addTrigger path.[[FLAT_TRIM]] Trailing-updateRule failure: if the post-bulk `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed to its device events -- retry via `update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]",
+                        description: "Bulk-add multiple triggers in one tool call. Each item is the same shape as addTrigger. updateRule fires ONCE at the end (not after each trigger), so subscriptions populate from a fully-loaded rule. Pairs naturally with addActions for building a complete rule in a single call. Empty/omitted falls back to the single addTrigger path.[[FLAT_TRIM]] Trailing-updateRule failure: if the post-bulk `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed to its device events -- retry via `hub_update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     addRequiredExpression: [
@@ -3085,7 +2887,7 @@ RM 5.1 spec: AND/OR/XOR have equal precedence, evaluated left-to-right.
 Use `operators` (list) for mixed-operator expressions like 'P1 AND P2 OR P3 XOR P4'.
 
 Per-condition spec fields:
-  - capability — required. Call `get_tool_guide(section='update_native_app_reference')` for the full STPage capability list.[[FLAT_TRIM]] RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.[[/FLAT_TRIM]]
+  - capability — required. Call `hub_get_tool_guide(section='update_native_app_reference')` for the full STPage capability list.[[FLAT_TRIM]] RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.[[/FLAT_TRIM]]
   - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, Last Event Device, time-based).[[FLAT_TRIM]] Convenience: pass singular deviceId: N and the dispatcher normalizes to deviceIds: [N] because RM 5.1 expects the array form in rDev_<N> -- passing a bare integer bypasses the pre-validation device-exist check and silently stores {N: null} in the setting (rule renders but never fires). If both deviceId and deviceIds are provided, deviceIds (array form) takes precedence. This normalization also applies recursively inside nested subExpression.conditions[] of arbitrary depth.[[/FLAT_TRIM]]
   - state — enum value matching the capability ('on'/'off' for Switch, 'active'/'inactive' for Motion, 'open'/'closed' for Contact, 'locked'/'unlocked' for Lock, 'present'/'not present' for Presence, 'true'/'false' for Private Boolean, etc.). Omit for numeric capabilities.
   - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!='). REQUIRED when capability='Custom Attribute' and attribute is set (both must be provided together; omitting comparator causes the condition to render incomplete in RM 5.1 and will throw an error).[[FLAT_TRIM]] ASCII forms '!=' / '<>' / '==' are accepted and auto-mapped to RM's Unicode glyphs '≠' / '='. ALSO required together with `variable` and `value` when capability='Variable'; state-change comparators ('*changed*' / '*became*') are the only exemption from the RHS-value requirement on Variable conditions.[[/FLAT_TRIM]]
@@ -3138,16 +2940,16 @@ The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Swi
 
 PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, some condition fields didn't land. settingsSkipped entries are plain field names or {key, reason, condIdx} Maps for degraded writes; repairHints names the next step. Common repair: pass missing fields via rawSettings on the affected condition.[[FLAT_TRIM]] Sentinel reasons callers may see in settingsSkipped: `rhs_type_not_revealed` (compareToDevice RHS-type toggle absent on firmware; entry also carries fallbackApplied: true if a literal state_<N> fallback was written, or false if neither state nor value was available and the condition will be incomplete), `offset_field_not_revealed` (compareToDevice optional offset field absent; degrades partial:true with the offset value preserved on the entry), `api_unavailable` paired with `key: "variable-validation"` (Variable picker returned an empty option list so the schema-side name validation was skipped; write still proceeds), `reveal_fallback_to_existing_field` (walker matched an already-visible field instead of a newly-revealed one -- INFORMATIONAL, does NOT flip partial by itself).[[/FLAT_TRIM]]
 
-On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call update_native_app(button='cancelCapab', pageName='STPage', confirm=true) before retry; restoreHint has the exact command.[[FLAT_TRIM]]
+On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call hub_update_native_app(button='cancelCapab', pageName='STPage', confirm=true) before retry; restoreHint has the exact command.[[FLAT_TRIM]]
 
-Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The condition slots are written (the rule's STPage state is committed) but the rule's evaluator will not re-pick-up the gate until updateRule fires. Retry via `update_native_app(button='updateRule', confirm=true)`. (`expressionNotLive` rather than `subscriptionsNotLive` because the failure consequence is gate-evaluator re-pick-up, not device-event subscription -- see addAction PARTIAL-SUCCESS HANDLING for the full naming rationale.)[[/FLAT_TRIM]]
+Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The condition slots are written (the rule's STPage state is committed) but the rule's evaluator will not re-pick-up the gate until updateRule fires. Retry via `hub_update_native_app(button='updateRule', confirm=true)`. (`expressionNotLive` rather than `subscriptionsNotLive` because the failure consequence is gate-evaluator re-pick-up, not device-event subscription -- see addAction PARTIAL-SUCCESS HANDLING for the full naming rationale.)[[/FLAT_TRIM]]
 
 Note: some sensor capabilities report discrete events -- use capability-specific state names ('wet'/'dry' for Water, 'detected'/'clear' for Smoke/CO, 'active'/'inactive' for Acceleration, 'detected'/'clear' for Tamper).[[FLAT_TRIM]] Carbon dioxide sensor is intentionally EXCLUDED: the `CarbonDioxideMeasurement` capability is numeric ppm (use comparator + value), not a discrete enum; CO2 looks superficially symmetric to CO but RM 5.1 rejects the state-based shape.[[/FLAT_TRIM]] Full table in TOOL_GUIDE.md."""
                     ],
 
                     addActions: [
                         type: "array",
-                        description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so subscriptions populate from a fully-loaded rule (actions self-bake via doActPage->selectActions per-item). Pairs naturally with addTriggers -- pass both to add many triggers + many actions in a single tool call.[[FLAT_TRIM]] Trailing-updateRule failure: if the post-bulk `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed to its device events -- retry via `update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]",
+                        description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so subscriptions populate from a fully-loaded rule (actions self-bake via doActPage->selectActions per-item). Pairs naturally with addTriggers -- pass both to add many triggers + many actions in a single tool call.[[FLAT_TRIM]] Trailing-updateRule failure: if the post-bulk `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed to its device events -- retry via `hub_update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     addLocalVariable: [
@@ -3170,11 +2972,11 @@ Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/s
                     ],
                     clearActions: [
                         type: "boolean",
-                        description: "Pass true to delete every action on the rule (highest index first). Useful for the 'wipe and rebuild' pattern. The delete commits synchronously (a full selectActions page-form submit runs RM's trashActs handler in-band), so the actions are gone when the call returns. updateRule fires after the clear.[[FLAT_TRIM]] Defensive recovery (rare): a thin verify-retry follows the submit. If it still sees the actions present (stuck state.editAct, or an uncommon firmware commit lag) the response carries `asyncCommitLikely: true, partial: true, stage: 'clearActions.verify_absent', httpWriteStatus: 200, wizardStuck: false` plus `actionsRequestedForRemoval` / `actionsStillPresent` / `possibleStateEditAct` and a `safeRecovery` block `{recommended: 'verify-then-decide', verifyVia: 'get_app_config(appId: <id>)', ifActionsAbsent, ifActionsPresent, avoid: ['cancelTrash']}`. Recovery: call `get_app_config(appId)` to check whether the clear committed. Do NOT call `cancelTrash` -- in trash-confirmation mode it may commit pending deletes rather than abort.[[/FLAT_TRIM]]"
+                        description: "Pass true to delete every action on the rule (highest index first). Useful for the 'wipe and rebuild' pattern. The delete commits synchronously (a full selectActions page-form submit runs RM's trashActs handler in-band), so the actions are gone when the call returns. updateRule fires after the clear.[[FLAT_TRIM]] Defensive recovery (rare): a thin verify-retry follows the submit. If it still sees the actions present (stuck state.editAct, or an uncommon firmware commit lag) the response carries `asyncCommitLikely: true, partial: true, stage: 'clearActions.verify_absent', httpWriteStatus: 200, wizardStuck: false` plus `actionsRequestedForRemoval` / `actionsStillPresent` / `possibleStateEditAct` and a `safeRecovery` block `{recommended: 'verify-then-decide', verifyVia: 'hub_get_app_config(appId: <id>)', ifActionsAbsent, ifActionsPresent, avoid: ['cancelTrash']}`. Recovery: call `hub_get_app_config(appId)` to check whether the clear committed. Do NOT call `cancelTrash` -- in trash-confirmation mode it may commit pending deletes rather than abort.[[/FLAT_TRIM]]"
                     ],
                     replaceActions: [
                         type: "array",
-                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions (synchronous trashActs submit), then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Useful for updating existing actions or reordering by passing actions in the new order. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true).[[FLAT_TRIM]] Defensive recovery (rare): if the inner clearActions verify-retry still sees the actions present after its submit, the response carries `asyncCommitLikely: true, partial: true, stage: 'replaceActions.clear_committed_late_no_add'` and the add half is NOT attempted (prevents double-write if the clear did commit). Original specs are echoed as `pendingActionsToAdd`; the inner clearActions fingerprint is exposed via `clearActionsResult`, a subset `{stage, asyncCommitLikely, actionsRequestedForRemoval, actionsStillPresent, error}` (the outer envelope carries the `safeRecovery` / `backup` / `restoreHint` / `verifyHint` slots). `verifyHint` and `error` are overridden with copy that names the data-loss-protection rationale. Recovery: call `get_app_config(appId)`; if actions are absent the clear committed, call `addAction` (or bulk `addActions`) with the echoed specs to finish the replace. Do NOT call `cancelTrash`.[[/FLAT_TRIM]]",
+                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions (synchronous trashActs submit), then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Useful for updating existing actions or reordering by passing actions in the new order. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true).[[FLAT_TRIM]] Defensive recovery (rare): if the inner clearActions verify-retry still sees the actions present after its submit, the response carries `asyncCommitLikely: true, partial: true, stage: 'replaceActions.clear_committed_late_no_add'` and the add half is NOT attempted (prevents double-write if the clear did commit). Original specs are echoed as `pendingActionsToAdd`; the inner clearActions fingerprint is exposed via `clearActionsResult`, a subset `{stage, asyncCommitLikely, actionsRequestedForRemoval, actionsStillPresent, error}` (the outer envelope carries the `safeRecovery` / `backup` / `restoreHint` / `verifyHint` slots). `verifyHint` and `error` are overridden with copy that names the data-loss-protection rationale. Recovery: call `hub_get_app_config(appId)`; if actions are absent the clear committed, call `addAction` (or bulk `addActions`) with the echoed specs to finish the replace. Do NOT call `cancelTrash`.[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     moveAction: [
@@ -3297,7 +3099,7 @@ Capability families and the spec fields each accepts:
 
   - Mode (capability='mode'):
       action='setMode' + modeId (Integer) OR modeName (String, case-insensitive, resolved to ID)
-      Note: modeName is resolved to a numeric mode ID before submission -- unknown names fail fast with the valid mode list. Degenerate: if location.modes is empty, error reads "(none -- hub returned no modes; verify hub state via get_modes)".
+      Note: modeName is resolved to a numeric mode ID before submission -- unknown names fail fast with the valid mode list. Degenerate: if location.modes is empty, error reads "(none -- hub returned no modes; verify hub state via hub_list_modes)".
       Note: addAction uses 'modeName' for name-based resolution; addTrigger uses a generic 'state' field for the mode name instead, because triggers represent a superset of device-state events where a single field covers mode, switch, presence, and similar state values.
 
   - Hub Variable (capability='setVariable', also accepted as 'variable'):
@@ -3377,7 +3179,7 @@ Wire-format quirks the helper handles for you (so callers don't need to know):
 
 PARTIAL-SUCCESS HANDLING: `partial: true` is ORTHOGONAL to success -- the action row exists but needs repair. repairHints names next steps. Common repair: walkStep introspect on doActPage to see the LIVE schema (settingsSkipped[].available shows present fields), then write missing fields via settings=... . For unrecoverable rows (hubRenderError=true), use removeAction(index:N) then retry.[[FLAT_TRIM]] When a compareToDevice RHS-type toggle is absent in an expression condition, settingsSkipped entries carry fallbackApplied: true/false (true = literal state_<N> was written as fallback; false = no fallback available, condition is incomplete). For expression-action conditions (ifThen/elseIf/repeatWhile/waitExpression), settingsSkipped sentinel reasons are the same set the shared `_rmWalkConditionReveal` walker emits on the addRequiredExpression side -- see addRequiredExpression PARTIAL-SUCCESS HANDLING above for the full enumeration (`rhs_type_not_revealed`, `offset_field_not_revealed`, `api_unavailable` paired with `variable-validation`, `reveal_fallback_to_existing_field`). Naming-divergence rationale (one slot per dispatcher, picked to name the caller-visible consequence): `expressionNotLive` (addRequiredExpression -- gate evaluator does not re-pick-up the new expression), `subscriptionsNotLive` (addTrigger / bulk addTriggers+addActions / action-mutation / trigger-mutation -- rule does not re-subscribe to device events), `variableNotLive` (addLocalVariable -- variable created but rule action map cannot read it), `patchesNotLive` (patches -- catch-all because patches can bundle any mix). All four share `updateRuleFailed` and `updateRuleError` for the common facts.[[/FLAT_TRIM]]
 
-On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call update_native_app(button='cancelCapab', pageName='doActPage', confirm=true) before retry; restoreHint has the exact command."""
+On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call hub_update_native_app(button='cancelCapab', pageName='doActPage', confirm=true) before retry; restoreHint has the exact command."""
                     ],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
@@ -3385,8 +3187,8 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
             ]
         ],
         [
-            name: "clone_native_app",
-            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner system app. Lower-overhead alternative to rebuilding via the wizard — clone an existing rule that has the shape you want, then surgically edit fields via update_native_app. Preserves the full rule shape (state.actNdx, conditions, expressions, IF/THEN/ELSE positional arrays). Drives the appCloner's 4-step wizard (cloneRuleButton → confirmation → importRule sub-page → importNow); the actual clone fires in tens of seconds for typical rules. Returns newAppId on success. Requires Built-in App Tools enabled + Hub Admin Write + confirm=true.""",
+            name: "hub_clone_native_app",
+            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner system app. Lower-overhead alternative to rebuilding via the wizard — clone an existing rule that has the shape you want, then surgically edit fields via hub_update_native_app. Preserves the full rule shape (state.actNdx, conditions, expressions, IF/THEN/ELSE positional arrays). Drives the appCloner's 4-step wizard (cloneRuleButton → confirmation → importRule sub-page → importNow); the actual clone fires in tens of seconds for typical rules. Returns newAppId on success. Requires Built-in App Tools enabled + Hub Admin Write + confirm=true.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3398,8 +3200,8 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
             ]
         ],
         [
-            name: "export_native_app",
-            description: """Export any classic native automation app to its canonical JSON shape via Hubitat's first-party appCloner. The exported JSON is the same format Hubitat's UI 'Export' button produces — a self-contained document with appReplacements + deviceReplacements + the full rule state — that round-trips cleanly through import_native_app. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer. Pass saveAs to also write the JSON to the hub's File Manager (e.g. for HPM-style distribution). Requires Built-in App Tools enabled.""",
+            name: "hub_export_native_app",
+            description: """Export any classic native automation app to its canonical JSON shape via Hubitat's first-party appCloner. The exported JSON is the same format Hubitat's UI 'Export' button produces — a self-contained document with appReplacements + deviceReplacements + the full rule state — that round-trips cleanly through hub_import_native_app. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer. Pass saveAs to also write the JSON to the hub's File Manager (e.g. for HPM-style distribution). Requires Built-in App Tools enabled.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3410,8 +3212,8 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
             ]
         ],
         [
-            name: "import_native_app",
-            description: """Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Pair with export_native_app for round-trip edits or backup/restore workflows. Pass jsonContent (the exported JSON string) OR fromFile (a File Manager filename written by export_native_app). The cloner needs an existing rule under the target parent to seed itself — pass parentHintAppId (any existing rule id under the same parent app you want the imported rule to land under, e.g. another RM rule for an RM import). Requires Built-in App Tools enabled + Hub Admin Write + confirm=true.""",
+            name: "hub_import_native_app",
+            description: """Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Pair with hub_export_native_app for round-trip edits or backup/restore workflows. Pass jsonContent (the exported JSON string) OR fromFile (a File Manager filename written by hub_export_native_app). The cloner needs an existing rule under the target parent to seed itself — pass parentHintAppId (any existing rule id under the same parent app you want the imported rule to land under, e.g. another RM rule for an RM import). Requires Built-in App Tools enabled + Hub Admin Write + confirm=true.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3433,7 +3235,7 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
             ]
         ],
         [
-            name: "check_rule_health",
+            name: "hub_get_rule_health",
             description: """Inspect a rule's current state and return a structured health report — the LLM uses this to detect broken rules without having to investigate via curl. Surfaces:
 
   - configPage.error: page render failures (often caused by multi-flag DB poisoning)
@@ -3442,7 +3244,7 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
   - multiple-flag corruption: lists settings whose statusJson .multiple flag has been flipped to false despite the schema declaring multiple=true
   - structural imbalance: walks actType.<N>/actSubType.<N> and flags IF/ELSE-IF/ELSE/END-IF or Repeat/End-Repeat blocks left unmatched by a false-failed mutation that committed post-response; RM does NOT surface this via the paragraph markers above
 
-Run after every mutation to confirm the change didn't leave the rule in a broken state. update_native_app already attaches this report automatically as `health` on every response, but you can call it explicitly any time.
+Run after every mutation to confirm the change didn't leave the rule in a broken state. hub_update_native_app already attaches this report automatically as `health` on every response, but you can call it explicitly any time.
 
 Returns {ok: bool, label, configPageError, brokenMarkers: [...], multipleFlagPoison: [...], structuralIssues: [...], issues: [...]}. ok=false means at least one issue was found; the issues list explains what.""",
             inputSchema: [
@@ -3454,14 +3256,14 @@ Returns {ok: bool, label, configPageError, brokenMarkers: [...], multipleFlagPoi
             ]
         ],
         [
-            name: "delete_native_app",
+            name: "hub_delete_native_app",
             description: """Delete any classic native automation app (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them. Two modes:
 
 force=false (default): soft delete via /installedapp/delete. Hub refuses if the app has child apps or devices; response includes hubMessage explaining why.
 
 force=true: hard delete via /installedapp/forcedelete/quiet — the same path the hub UI uses internally for its own \"Delete\" buttons. No child safety checks.
 
-BEFORE DELETE: full snapshot saved to File Manager. Response includes backup.backupKey; call restore_item_backup (in manage_apps_drivers) with that key to recreate the app with all its settings re-applied.
+BEFORE DELETE: full snapshot saved to File Manager. Response includes backup.backupKey; call hub_restore_backup (in hub_manage_code_write) with that key to recreate the app with all its settings re-applied.
 
 Requires Hub Admin Write + confirm=true + recent hub backup.""",
             inputSchema: [
@@ -3476,18 +3278,18 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
         ],
         // Tool Guide
         [
-            name: "get_tool_guide",
+            name: "hub_get_tool_guide",
             description: "Get detailed reference for MCP tools. USE SPARINGLY - tool descriptions should suffice for most cases. When needed, ALWAYS specify a section to minimize token usage.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    section: [type: "string", description: "REQUIRED for efficiency: device_authorization, hub_admin_write, virtual_devices, update_device, rules, backup, file_manager, performance, builtin_app_tools, update_native_app_reference, create_native_app_reference. Full guide only if absolutely necessary.", enum: ["device_authorization", "hub_admin_write", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "update_native_app_reference", "create_native_app_reference"]]
+                    section: [type: "string", description: "REQUIRED for efficiency: device_authorization, hub_admin_write, virtual_devices, hub_update_device, rules, backup, file_manager, performance, builtin_app_tools, update_native_app_reference, create_native_app_reference. Full guide only if absolutely necessary.", enum: ["device_authorization", "hub_admin_write", "virtual_devices", "hub_update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "update_native_app_reference", "create_native_app_reference"]]
                 ]
             ]
         ],
         // Tool Search (BM25)
         [
-            name: "search_tools",
+            name: "hub_search_tools",
             description: "Search all MCP tools by natural language query (BM25 ranking). Searches tool names, descriptions, and parameter names. Returns matching tools with their gateway location so you know how to call them. Use when unsure which gateway contains the tool you need.",
             inputSchema: [
                 type: "object",
@@ -3511,186 +3313,210 @@ def executeTool(toolName, args) {
     def customEngineOn = settings.enableCustomRuleEngine == true
     def builtinAppOn   = settings.enableBuiltinApp == true
     def customEngineMode = customEngineOn ? "full" : (builtinAppOn ? "readonly" : "off")
-    def customReadonlyTools = ["custom_list_rules", "custom_get_rule", "custom_test_rule",
-                               "custom_get_rule_diagnostics", "custom_update_rule"] as Set
-    if (toolName?.startsWith("custom_")) {
+    def customReadonlyTools = ["hub_get_custom_rule", "hub_test_custom_rule",
+                               "hub_update_custom_rule"] as Set
+    // Legacy custom-rule tools are named hub_<verb>_custom_rule (the `custom`
+    // qualifier moved into the noun during the issue #105 hub_ rename), so detect
+    // them by the _custom_rule suffix rather than a custom_ prefix.
+    if (toolName?.contains("_custom_rule")) {
         if (customEngineMode == "off") {
-            throw new IllegalArgumentException("${toolName} is not available. Both 'Enable Custom Rule Engine' and 'Enable Built-in App Tools' are OFF. To use custom_* legacy MCP rule tools, turn on Custom Rule Engine. To use native Hubitat Rule Machine rules (recommended), turn on Built-in App Tools instead.")
+            throw new IllegalArgumentException("${toolName} is not available. Both 'Enable Custom Rule Engine' and 'Enable Built-in App Tools' are OFF. To use the legacy custom-rule tools (hub_*_custom_rule), turn on Custom Rule Engine. To use native Hubitat Rule Machine rules (recommended), turn on Built-in App Tools instead.")
         }
         if (customEngineMode == "readonly" && !customReadonlyTools.contains(toolName)) {
-            throw new IllegalArgumentException("${toolName} is not available in read-only mode. The Custom Rule Engine toggle is OFF. Turn it ON in MCP Rule Server settings to use create/delete/export/import/clone operations. NOTE: the custom MCP rule engine is legacy -- for new rule work prefer manage_native_rules_and_apps.")
+            throw new IllegalArgumentException("${toolName} is not available in read-only mode. The Custom Rule Engine toggle is OFF. Turn it ON in MCP Rule Server settings to use create/delete/export/import/clone operations. NOTE: the custom MCP rule engine is legacy -- for new rule work prefer hub_manage_native_rules.")
         }
     }
     switch (toolName) {
         // Device Tools
-        case "list_devices": return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor)
-        case "get_device": return toolGetDevice(args.deviceId)
-        case "send_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
-        case "get_device_events": return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
-        case "get_attribute": return toolGetAttribute(args.deviceId, args.attribute)
-        case "poll_until_attribute": return toolPollUntilAttribute(args)
+        case "hub_list_devices":
+            // filter='virtual' routes to the MCP-managed virtual-device listing (a distinct
+            // population -- this app's child devices -- with a richer driver-namespace shape).
+            if (args.filter == "virtual") return toolListVirtualDevices(args)
+            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor)
+        case "hub_get_device": return toolGetDevice(args.deviceId)
+        case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
+        case "hub_list_device_events":
+            // Recent-N for one device when no window/filter given; otherwise windowed
+            // device history, or location-level events when deviceId is omitted.
+            if (args.deviceId != null && args.hoursBack == null && args.attribute == null)
+                return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
+            return toolGetDeviceHistory(args)
+        case "hub_get_device_attribute":
+            // Poll mode when ANY poll arg is supplied (expectedValue/expectedValues
+            // or timeoutMs/pollIntervalMs); otherwise a one-shot read. Routing on the
+            // timeout/interval too preserves the old contract where a timeout without
+            // an expected value is rejected rather than silently read once.
+            return (args.expectedValue != null || args.expectedValues != null || args.timeoutMs != null || args.pollIntervalMs != null) ? toolPollUntilAttribute(args) : toolGetAttribute(args.deviceId, args.attribute)
 
         // Rule Management - now using child apps
-        case "custom_list_rules": return toolListRules(args)
-        case "custom_get_rule": return toolGetRule(args.ruleId)
-        case "custom_create_rule": return toolCreateRule(args)
-        case "custom_update_rule": return toolUpdateRule(args.ruleId, args, customEngineMode)
-        case "custom_delete_rule": return toolDeleteRule(args)
-        // enable_rule/disable_rule merged into custom_update_rule
-        case "custom_test_rule": return toolTestRule(args.ruleId)
+        case "hub_get_custom_rule":
+            // ruleId omitted = list mode; detailed=true (requires ruleId) = diagnostics; else single rule.
+            // Reject detailed-without-ruleId loudly rather than silently dropping detailed and listing.
+            if (args.detailed == true && args.ruleId == null)
+                throw new IllegalArgumentException("detailed=true requires a ruleId (it returns per-rule diagnostics). Omit detailed to list all rules.")
+            if (args.ruleId == null) return toolListRules(args)
+            if (args.detailed == true) return toolGetRuleDiagnostics(args)
+            return toolGetRule(args.ruleId)
+        case "hub_create_custom_rule": return toolCreateRule(args)
+        case "hub_update_custom_rule": return toolUpdateRule(args.ruleId, args, customEngineMode)
+        case "hub_delete_custom_rule": return toolDeleteRule(args)
+        // enable_rule/disable_rule merged into hub_update_custom_rule
+        case "hub_test_custom_rule": return toolTestRule(args.ruleId)
 
         // System Tools
-        case "get_hub_info": return toolGetHubInfo(args)
-        case "get_modes": return toolGetModes()
-        case "set_mode": return toolSetMode(args.mode)
-        case "list_variables": return toolListVariables(args)
-        case "get_variable": return toolGetVariable(args.name)
-        case "set_variable": return toolSetVariable(args.name, args.value)
-        case "create_variable": return toolCreateVariable(args)
-        case "delete_variable": return toolDeleteHubVariable(args)
-        case "create_connector": return toolCreateConnector(args)
-        case "remove_connector": return toolRemoveConnector(args)
-        case "get_variable_history": return toolGetVariableHistory(args)
-        case "update_mcp_settings": return toolUpdateMcpSettings(args)
-        case "get_hsm_status": return toolGetHsmStatus()
-        case "set_hsm": return toolSetHsm(args.mode)
+        case "hub_get_info": return toolGetHubInfo(args)
+        case "hub_list_modes": return toolGetModes()
+        case "hub_set_mode": return toolSetMode(args.mode)
+        case "hub_list_variables": return toolListVariables(args)
+        case "hub_get_variable": return toolGetVariable(args.name)
+        case "hub_set_variable": return toolSetVariable(args.name, args.value)
+        case "hub_create_variable": return toolCreateVariable(args)
+        case "hub_delete_variable": return toolDeleteHubVariable(args)
+        case "hub_create_connector": return toolCreateConnector(args)
+        case "hub_delete_connector": return toolRemoveConnector(args)
+        case "hub_list_variable_changes": return toolGetVariableHistory(args)
+        case "hub_update_mcp_settings": return toolUpdateMcpSettings(args)
+        case "hub_get_hsm_status": return toolGetHsmStatus()
+        case "hub_set_hsm": return toolSetHsm(args.mode)
 
         // Captured State Management
-        case "list_captured_states": return toolListCapturedStates(args)
-        case "delete_captured_state": return toolDeleteCapturedState(args.stateId)
-        case "clear_captured_states": return toolClearCapturedStates()
+        case "hub_list_captured_states": return toolListCapturedStates(args)
+        case "hub_delete_captured_state": return toolDeleteCapturedState(args)
 
         // Debug Logging Tools
-        case "get_debug_logs": return toolGetDebugLogs(args)
-        case "clear_debug_logs": return toolClearDebugLogs(args)
-        case "custom_get_rule_diagnostics": return toolGetRuleDiagnostics(args)
-        case "set_log_level": return toolSetLogLevel(args)
-        case "get_logging_status": return toolGetLoggingStatus(args)
-        case "generate_bug_report": return toolGenerateBugReport(args)
+        case "hub_get_debug_logs":
+            return (args.mode == "status") ? toolGetLoggingStatus(args) : toolGetDebugLogs(args)
+        case "hub_delete_debug_logs": return toolClearDebugLogs(args)
+        case "hub_set_log_level": return toolSetLogLevel(args)
+        case "hub_report_issue": return toolGenerateBugReport(args)
 
         // Rule Export/Import/Clone
-        case "custom_export_rule": return toolExportRule(args)
-        case "custom_import_rule": return toolImportRule(args)
-        case "custom_clone_rule": return toolCloneRule(args)
+        case "hub_export_custom_rule": return toolExportRule(args)
+        case "hub_import_custom_rule": return toolImportRule(args)
+        case "hub_clone_custom_rule": return toolCloneRule(args)
 
         // Version Check
-        case "check_for_update": return toolCheckForUpdate(args)
+        case "hub_get_update_status": return toolCheckForUpdate(args)
 
         // Hub Admin Read Tools
-        // get_hub_details merged into get_hub_info
-        case "list_hub_apps": return toolListHubApps(args)
-        case "list_hub_drivers": return toolListHubDrivers(args)
-        case "get_zwave_details": return toolGetZwaveDetails(args)
-        case "get_zigbee_details": return toolGetZigbeeDetails(args)
-        // get_hub_health merged into get_hub_info
+        // get_hub_details merged into hub_get_info
+        case "hub_list_apps": return toolListHubApps(args)
+        case "hub_list_drivers": return toolListHubDrivers(args)
+        case "hub_get_radio_details": {
+            def radio = args.radio
+            if (radio != null && !(radio in ["zwave", "zigbee"]))
+                throw new IllegalArgumentException("radio must be 'zwave' or 'zigbee' (or omit for both)")
+            if (radio == "zwave") return toolGetZwaveDetails(args)
+            if (radio == "zigbee") return toolGetZigbeeDetails(args)
+            return [zwave: toolGetZwaveDetails(args), zigbee: toolGetZigbeeDetails(args)]
+        }
+        // get_hub_health merged into hub_get_info
 
         // Monitoring Tools
-        case "get_hub_logs": return toolGetHubLogs(args)
-        case "get_device_history": return toolGetDeviceHistory(args)
-        case "get_performance_stats": return toolGetPerformanceStats(args)
-        case "get_hub_jobs": return toolGetHubJobs(args)
-        case "get_set_hub_metrics": return toolGetHubPerformance(args)
-        case "device_health_check": return toolDeviceHealthCheck(args)
-        case "get_memory_history": return toolGetMemoryHistory(args)
-        case "force_garbage_collection": return toolForceGarbageCollection(args)
+        case "hub_get_logs": return toolGetHubLogs(args)
+        case "hub_get_performance_stats": return toolGetPerformanceStats(args)
+        case "hub_get_jobs": return toolGetHubJobs(args)
+        case "hub_get_metrics": return toolGetHubPerformance(args)
+        case "hub_get_device_health": return toolDeviceHealthCheck(args)
+        case "hub_get_memory_history": return toolGetMemoryHistory(args)
+        case "hub_call_gc": return toolForceGarbageCollection(args)
 
         // Hub Admin Write Tools
-        case "create_hub_backup": return toolCreateHubBackup(args)
-        case "reboot_hub": return toolRebootHub(args)
-        case "shutdown_hub": return toolShutdownHub(args)
-        case "zwave_repair": return toolZwaveRepair(args)
+        case "hub_create_backup": return toolCreateHubBackup(args)
+        case "hub_reboot": return toolRebootHub(args)
+        case "hub_shutdown": return toolShutdownHub(args)
+        case "hub_call_zwave_repair": return toolZwaveRepair(args)
 
         // Device Admin
-        case "delete_device": return toolDeleteDevice(args)
+        case "hub_delete_device": return toolDeleteDevice(args)
 
         // Virtual Device Management
-        case "manage_virtual_device": return toolManageVirtualDevice(args)
-        case "list_virtual_devices": return toolListVirtualDevices(args)
-        case "update_device": return toolUpdateDevice(args)
+        case "hub_manage_virtual_device": return toolManageVirtualDevice(args)
+        case "hub_update_device": return toolUpdateDevice(args)
 
         // Room Management
-        case "list_rooms": return toolListRooms(args)
-        case "get_room": return toolGetRoom(args.room)
-        case "create_room": return toolCreateRoom(args)
-        case "delete_room": return toolDeleteRoom(args)
-        case "rename_room": return toolRenameRoom(args)
+        case "hub_list_rooms": return toolListRooms(args)
+        case "hub_get_room": return toolGetRoom(args.room)
+        case "hub_create_room": return toolCreateRoom(args)
+        case "hub_delete_room": return toolDeleteRoom(args)
+        case "hub_update_room": return toolRenameRoom(args)
 
         // Hub Admin App Configuration Read
-        case "get_app_config": return toolGetAppConfig(args)
-        case "list_app_pages": return toolListAppPages(args)
+        case "hub_get_app_config": return toolGetAppConfig(args)
+        case "hub_list_app_pages": return toolListAppPages(args)
 
         // Hub Admin App/Driver Management
-        case "get_app_source": return toolGetAppSource(args)
-        case "get_driver_source": return toolGetDriverSource(args)
-        case "install_app": return toolInstallApp(args)
-        case "install_driver": return toolInstallDriver(args)
-        case "update_app_code": return toolUpdateAppCode(args)
-        case "update_driver_code": return toolUpdateDriverCode(args)
-        case "delete_app": return toolDeleteApp(args)
-        case "delete_driver": return toolDeleteDriver(args)
+        case "hub_get_source": return toolGetSource(args)
+        case "hub_create_app": return toolInstallApp(args)
+        case "hub_create_driver": return toolInstallDriver(args)
+        case "hub_update_app": return toolUpdateAppCode(args)
+        case "hub_update_driver": return toolUpdateDriverCode(args)
+        case "hub_delete_item": return toolDeleteItem(args)
 
         // Hub Admin Library Management
-        case "get_library_source": return toolGetLibrarySource(args)
-        case "install_library": return toolInstallLibrary(args)
-        case "update_library_code": return toolUpdateLibraryCode(args)
-        case "delete_library": return toolDeleteLibrary(args)
+        case "hub_create_library": return toolInstallLibrary(args)
+        case "hub_update_library": return toolUpdateLibraryCode(args)
 
         // Item Backup Tools
-        case "list_item_backups": return toolListItemBackups(args)
-        case "get_item_backup": return toolGetItemBackup(args)
-        case "restore_item_backup": return toolRestoreItemBackup(args)
+        case "hub_list_backups": return toolListItemBackups(args)
+        case "hub_get_backup": return toolGetItemBackup(args)
+        case "hub_restore_backup": return toolRestoreItemBackup(args)
 
         // File Manager Tools
-        case "list_files": return toolListFiles(args)
-        case "read_file": return toolReadFile(args)
-        case "write_file": return toolWriteFile(args)
-        case "delete_file": return toolDeleteFile(args)
+        case "hub_list_files": return toolListFiles(args)
+        case "hub_read_file": return toolReadFile(args)
+        case "hub_write_file": return toolWriteFile(args)
+        case "hub_delete_file": return toolDeleteFile(args)
 
         // Installed Apps Integration
-        case "list_installed_apps": return toolListInstalledApps(args)
-        case "get_device_in_use_by": return toolGetDeviceInUseBy(args)
+        case "hub_list_installed_apps": return toolListInstalledApps(args)
+        case "hub_list_device_dependents": return toolGetDeviceInUseBy(args)
 
         // HPM Package State
-        case "list_hpm_packages": return toolListHpmPackages(args)
-        case "get_hpm_drift": return toolGetHpmDrift(args)
+        case "hub_list_hpm_packages": {
+            def listResult = toolListHpmPackages(args)
+            if (args.includeDrift == true && listResult instanceof Map) {
+                listResult = listResult + [drift: toolGetHpmDrift(args)]
+            }
+            return listResult
+        }
 
         // Rule Machine Integration (via RMUtils)
-        case "list_rm_rules": return toolListRmRules(args)
-        case "run_rm_rule": return toolRunRmRule(args)
-        case "pause_rm_rule": return toolPauseRmRule(args)
-        case "resume_rm_rule": return toolResumeRmRule(args)
-        case "set_rm_rule_boolean": return toolSetRmRuleBoolean(args)
+        case "hub_list_rules": return toolListRmRules(args)
+        case "hub_call_rule": return toolRunRmRule(args)
+        case "hub_set_rule_paused": return toolSetRulePaused(args)
+        case "hub_set_rule_private_boolean": return toolSetRmRuleBoolean(args)
 
         // Native Rule Machine CRUD (hub admin-layer; backups flow through
-        // list_item_backups + restore_item_backup in manage_apps_drivers)
-        case "create_native_app": return toolCreateNativeApp(args)
-        case "update_native_app": return toolUpdateNativeApp(args)
-        case "delete_native_app": return toolDeleteNativeApp(args)
-        case "clone_native_app": return toolCloneNativeApp(args)
-        case "export_native_app": return toolExportNativeApp(args)
-        case "import_native_app": return toolImportNativeApp(args)
-        case "check_rule_health": return toolCheckRuleHealth(args)
+        // hub_list_backups (hub_manage_code_read) + hub_restore_backup (hub_manage_code_write))
+        case "hub_create_native_app": return toolCreateNativeApp(args)
+        case "hub_update_native_app": return toolUpdateNativeApp(args)
+        case "hub_delete_native_app": return toolDeleteNativeApp(args)
+        case "hub_clone_native_app": return toolCloneNativeApp(args)
+        case "hub_export_native_app": return toolExportNativeApp(args)
+        case "hub_import_native_app": return toolImportNativeApp(args)
+        case "hub_get_rule_health": return toolCheckRuleHealth(args)
 
         // Tool Guide
-        case "get_tool_guide": return toolGetToolGuide(args.section)
+        case "hub_get_tool_guide": return toolGetToolGuide(args.section)
 
         // Tool Search (BM25)
-        case "search_tools": return toolSearchTools(args)
+        case "hub_search_tools": return toolSearchTools(args)
 
         // Category Gateway Proxy Tools
-        case "manage_rules_admin":
-        case "manage_hub_variables":
-        case "manage_rooms":
-        case "manage_destructive_hub_ops":
-        case "manage_apps_drivers":
-        case "manage_app_driver_code":
-        case "manage_logs":
-        case "manage_diagnostics":
-        case "manage_files":
-        case "manage_installed_apps":
-        case "manage_hpm":
-        case "manage_native_rules_and_apps":
-        case "manage_mcp_self":
+        case "hub_manage_rules":
+        case "hub_manage_variables":
+        case "hub_manage_rooms":
+        case "hub_manage_destructive_ops":
+        case "hub_manage_code_read":
+        case "hub_manage_code_write":
+        case "hub_manage_logs":
+        case "hub_manage_diagnostics":
+        case "hub_manage_files":
+        case "hub_manage_installed_apps":
+        case "hub_manage_hpm":
+        case "hub_manage_native_rules":
+        case "hub_manage_mcp":
             // Flat-mode guard: gateways are not advertised on tools/list when useGateways=false,
             // so a gateway-name call here is almost certainly a stale/cached client. Returning
             // the gateway catalog would silently contradict the user's intent — fail loud with
@@ -3730,7 +3556,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         if (offset != null && (offset as Integer) > 0) {
             throw new IllegalArgumentException("cursor and offset are mutually exclusive (got cursor=${cursor}, offset=${offset}); pick one")
         }
-        offset = _parseListCursor(cursor, Integer.MAX_VALUE, "list_devices")
+        offset = _parseListCursor(cursor, Integer.MAX_VALUE, "hub_list_devices")
         // Default page size in cursor mode so nextCursor arithmetic is deterministic.
         // Callers who want a different page size set limit explicitly (cursor still wins
         // on offset; limit just sizes the page).
@@ -4260,11 +4086,14 @@ def toolGetAttribute(deviceId, attribute) {
  * timeout elapses. Uses pauseExecution() for inter-poll delays -- the only
  * synchronous sleep available in the Hubitat app sandbox.
  *
- * Kept separate from get_attribute rather than extending it because the two
- * tools have different cost profiles (sub-second vs. up-to-60s blocking),
- * different cognitive intent (observe now vs. wait-for), and different arg
- * shapes. Extending get_attribute would create a UX trap where a fast-read
- * tool silently becomes a long-blocking one.
+ * Internal helper for the hub_get_device_attribute tool's poll mode: executeTool
+ * routes here when ANY poll arg is supplied (expectedValue/expectedValues OR
+ * timeoutMs/pollIntervalMs), and to toolGetAttribute for a one-shot read otherwise.
+ * Routing on the timeout/interval too is deliberate: a timeout without an expected
+ * value reaches here and is rejected ("at least one of expectedValue/expectedValues")
+ * rather than silently read once. The poll path BLOCKS up to timeoutMs (max 60s),
+ * so the hub_get_device_attribute description flags the cost; a bare call (no poll
+ * arg) stays a sub-second read.
  */
 def toolPollUntilAttribute(args) {
     // 0. Reject unknown args early to surface caller mistakes (e.g., timeoutSeconds vs timeoutMs).
@@ -4466,7 +4295,7 @@ def toolListRules(args = null) {
     }?.findAll { it != null } ?: []
 
     def cursor = args?.cursor
-    def paged = _paginateList(rules, cursor, 50, "custom_list_rules")
+    def paged = _paginateList(rules, cursor, 50, "hub_get_custom_rule")
     def result = [rules: paged.page, count: paged.page.size()]
     if (cursor != null) {
         result.total = rules.size()
@@ -4486,7 +4315,7 @@ def toolGetRule(ruleId) {
 
     def ruleData = childApp.getRuleData()
     // Inject source marker so callers can distinguish MCP-managed rules from
-    // native RM rules returned by list_rm_rules / manage_native_rules_and_apps.
+    // native RM rules returned by hub_list_rules / hub_manage_native_rules.
     if (ruleData instanceof Map) {
         ruleData = ruleData + [source: "mcp_custom_engine"]
     }
@@ -4610,7 +4439,7 @@ def toolUpdateRule(ruleId, args, String customEngineMode = "full") {
         // Fields in args besides 'enabled' (ruleId is passed as a separate param, not in args)
         def structuralKeys = (args?.keySet() ?: []).findAll { it != "enabled" && it != "ruleId" }
         if (!structuralKeys.isEmpty()) {
-            throw new IllegalArgumentException("In read-only mode (Custom Rule Engine toggle OFF), only the 'enabled' field can be updated. Structural fields provided: ${structuralKeys.sort().join(', ')}. To modify rule structure (triggers/conditions/actions), turn ON the Custom Rule Engine toggle in MCP server settings. The custom rule engine is legacy -- for new rule structure work, use manage_native_rules_and_apps create_native_app/update_native_app instead.")
+            throw new IllegalArgumentException("In read-only mode (Custom Rule Engine toggle OFF), only the 'enabled' field can be updated. Structural fields provided: ${structuralKeys.sort().join(', ')}. To modify rule structure (triggers/conditions/actions), turn ON the Custom Rule Engine toggle in MCP server settings. The custom rule engine is legacy -- for new rule structure work, use hub_manage_native_rules hub_create_native_app/hub_update_native_app instead.")
         }
     }
 
@@ -4746,7 +4575,7 @@ def toolDeleteRule(args) {
     return result
 }
 
-// toolEnableRule/toolDisableRule/toolToggleRule removed in v0.8.1 (dead code since v0.8.0 merged into custom_update_rule)
+// toolEnableRule/toolDisableRule/toolToggleRule removed in v0.8.1 (dead code since v0.8.0 merged into hub_update_custom_rule)
 
 def toolTestRule(ruleId) {
     def childApp = getChildAppById(ruleId)
@@ -4772,13 +4601,13 @@ def toolTestRule(ruleId) {
  * Rule-like detection uses the human-readable type string from the app's instance data
  * (e.g. "Rule-5.1", "Room Lights", "Visual Rule Builder"). Fragment matching is case-insensitive
  * substring: any type string containing a fragment from ruleTypeFragments is considered rule-like.
- * The test verb additionally checks RM-specific fragments to gate the run_rm_rule pointer
+ * The test verb additionally checks RM-specific fragments to gate the hub_call_rule pointer
  * (RMUtils is RM-only and does not work for Room Lighting / Basic Rules / Visual Rules instances).
  *
  * @param ruleId  the ID to look up (String or numeric)
  * @param verb    controls hint phrasing: "read" (get/export; clone routes through export so it also uses read),
  *                "write" (update -- catch-all for any future write verbs),
- *                "delete" (delete), "test" (test -- RM-only run_rm_rule pointer; non-RM falls back to inspection)
+ *                "delete" (delete), "test" (test -- RM-only hub_call_rule pointer; non-RM falls back to inspection)
  * @return        redirect hint String, or null if no redirect applies
  */
 private String findRuleAppRedirect(ruleId, String verb) {
@@ -4794,7 +4623,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
         "rule machine", "rule-5", "rule-4", "room light", "basic rules", "visual rule"
     ]
 
-    // Subset of ruleTypeFragments that are RM-specific. run_rm_rule (RMUtils) only works for
+    // Subset of ruleTypeFragments that are RM-specific. hub_call_rule (RMUtils) only works for
     // Rule Machine rules -- pointing Room Lighting / Basic Rules / VRB ids there would fail.
     def rmTypeFragments = ["rule machine", "rule-5", "rule-4"]
 
@@ -4836,42 +4665,42 @@ private String findRuleAppRedirect(ruleId, String verb) {
         boolean isRuleLike = ruleTypeFragments.any { frag -> appTypeNameLower.contains(frag) }
         if (!isRuleLike) return null
 
-        // Is this app a Rule Machine instance? Gates the run_rm_rule pointer in the test-verb hint.
+        // Is this app a Rule Machine instance? Gates the hub_call_rule pointer in the test-verb hint.
         boolean isRmRule = rmTypeFragments.any { frag -> appTypeNameLower.contains(frag) }
 
         // Build verb-appropriate redirect hint.
         if (verb == "read") {
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
-                "Use `manage_installed_apps -> get_app_config(appId=${idStr})` to read its configuration. " +
-                "`custom_get_rule`, `custom_export_rule`, and `custom_clone_rule` only handle MCP's own rule engine, not Hubitat built-in apps."
+                "Use `hub_manage_installed_apps -> hub_get_app_config(appId=${idStr})` to read its configuration. " +
+                "`hub_get_custom_rule`, `hub_export_custom_rule`, and `hub_clone_custom_rule` only handle MCP's own rule engine, not Hubitat built-in apps."
         } else if (verb == "delete") {
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
-                "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
-                "`custom_delete_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
-                "Use `manage_native_rules_and_apps -> delete_native_app(appId=${idStr}, confirm=true)` to delete it programmatically " +
+                "Use `hub_manage_installed_apps -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
+                "`hub_delete_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
+                "Use `hub_manage_native_rules -> hub_delete_native_app(appId=${idStr}, confirm=true)` to delete it programmatically " +
                 "(requires Built-in App Tools + Hub Admin Write)."
         } else if (verb == "test") {
-            // run_rm_rule routes through RMUtils and is RM-only. Point non-RM rule-likes at get_app_config instead.
+            // hub_call_rule routes through RMUtils and is RM-only. Point non-RM rule-likes at hub_get_app_config instead.
             if (isRmRule) {
                 return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
-                    "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
-                    "`custom_test_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
-                    "Use `manage_native_rules_and_apps -> run_rm_rule(ruleId=${idStr})` to trigger it " +
+                    "Use `hub_manage_installed_apps -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
+                    "`hub_test_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
+                    "Use `hub_manage_native_rules -> hub_call_rule(ruleId=${idStr})` to trigger it " +
                     "(requires Built-in App Tools)."
             } else {
                 return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
-                    "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
-                    "`custom_test_rule` only handles MCP's own rule engine, not Hubitat built-in apps."
+                    "Use `hub_manage_installed_apps -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
+                    "`hub_test_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps."
             }
         } else {
-            // Catch-all for "write" verb (custom_update_rule) and any future write verbs.
+            // Catch-all for "write" verb (hub_update_custom_rule) and any future write verbs.
             if (verb != "write") {
                 mcpLog("debug", "rules", "findRuleAppRedirect: unrecognized verb '${verb}', defaulting to write-verb message")
             }
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
-                "Use `manage_installed_apps -> get_app_config(appId=${idStr})` for read-only inspection. " +
-                "`custom_update_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
-                "Use `manage_native_rules_and_apps -> update_native_app(appId=${idStr})` to modify it programmatically " +
+                "Use `hub_manage_installed_apps -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
+                "`hub_update_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
+                "Use `hub_manage_native_rules -> hub_update_native_app(appId=${idStr})` to modify it programmatically " +
                 "(requires Built-in App Tools + Hub Admin Write)."
         }
     } catch (Exception e) {
@@ -5329,9 +5158,9 @@ def toolListVariables(args = null) {
         }
     } catch (Exception e) {
         // Surface to mcpLog (not just logDebug) so a "no hub variables" response can be
-        // distinguished from "hub variable API broke" via get_debug_logs.
+        // distinguished from "hub variable API broke" via hub_get_debug_logs.
         hubVarsError = e.message ?: e.toString()
-        mcpLog("warn", "variables", "list_variables: getAllGlobalVars() failed: ${hubVarsError} -- returning empty hubVariables", null, [details: [error: hubVarsError]])
+        mcpLog("warn", "variables", "hub_list_variables: getAllGlobalVars() failed: ${hubVarsError} -- returning empty hubVariables", null, [details: [error: hubVarsError]])
     }
 
     def ruleVariables = state.ruleVariables?.collect { name, value ->
@@ -5339,7 +5168,7 @@ def toolListVariables(args = null) {
     } ?: []
 
     def cursor = args?.cursor
-    def paged = _paginateList(hubVariables, cursor, 100, "list_variables")
+    def paged = _paginateList(hubVariables, cursor, 100, "hub_list_variables")
     // Both per-list totals are always emitted so a caller can distinguish "1000 hub
     // vars + 0 rule vars" from "0 hub vars + 1000 rule vars" without needing cursor
     // context. `total` is the legacy summed field; the per-list fields are the
@@ -5435,7 +5264,7 @@ private String _validateHubVarType(String type) {
  * Discovery is two-stage because /hub2/appsList omits hidden system apps
  * on at least some firmware versions (verified on 2.5.0.126: Hub Variables
  * is reachable at /installedapp/configure/json/<id> but not listed in
- * /hub2/appsList -- same gap that hides it from list_installed_apps):
+ * /hub2/appsList -- same gap that hides it from hub_list_installed_apps):
  *   1. Walk /hub2/appsList (cheap, single GET) -- catches hubs that DO
  *      list it.
  *   2. If miss, fall back to scanning installed-app config endpoints up
@@ -5444,9 +5273,9 @@ private String _validateHubVarType(String type) {
  *      caches in atomicState so the scan only happens once per fresh
  *      install.
  *
- * Used by create_variable, delete_variable's hub-namespace branch, and
- * create_connector -- all of which drive that app's wizard via
- * update_native_app's settings/button POST machinery.
+ * Used by hub_create_variable, hub_delete_variable's hub-namespace branch, and
+ * hub_create_connector -- all of which drive that app's wizard via
+ * hub_update_native_app's settings/button POST machinery.
  */
 // Wizard-priming for the Hub Variables system app. Verified on firmware
 // 2.5.0.126: clicks via _rmClickAppButton silently no-op unless the app's
@@ -5543,7 +5372,7 @@ def _findHubVariablesAppId() {
 }
 
 /**
- * create_variable: drive the Hub Variables system app's wizard to create a
+ * hub_create_variable: drive the Hub Variables system app's wizard to create a
  * new hub variable. Sequence (probed on firmware 2.5.0.126):
  *   1. btn moreVar (stateAttribute=moreVar) on page hubVar -- opens wizard
  *   2. set hbVar  = name      -- wizard advances; varType field appears
@@ -5575,14 +5404,14 @@ def toolCreateVariable(args) {
         }
     } catch (IllegalArgumentException reraise) { throw reraise }
     catch (Exception e) {
-        logDebug("create_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+        logDebug("hub_create_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
 
     def appId = _findHubVariablesAppId()
     def applied = []
     def skipped = []
 
-    _primeHubVarsWizard(appId, "create_variable pre-moreVar")
+    _primeHubVarsWizard(appId, "hub_create_variable pre-moreVar")
     _rmClickAppButton(appId, "moreVar", "moreVar", "hubVar")
     _rmWriteSettingOnPage(appId, "hubVar", "hbVar",   name, applied, "text", skipped)
     _rmWriteSettingOnPage(appId, "hubVar", "varType", type, applied, "enum", skipped)
@@ -5609,8 +5438,8 @@ def toolCreateVariable(args) {
         _rmWriteSettingOnPage(appId, "hubVar", "varTime", timeStr, applied, "time", skipped)
         // DateTime requires an explicit Done click to commit (the other
         // types auto-commit when varValue is written). Prime first — same
-        // wizard quirk as delete/create_connector clicks.
-        _primeHubVarsWizard(appId, "create_variable DateTime pre-Done")
+        // wizard quirk as delete/hub_create_connector clicks.
+        _primeHubVarsWizard(appId, "hub_create_variable DateTime pre-Done")
         _rmClickAppButton(appId, "dateTimeDone", null, "hubVar")
     } else {
         _rmWriteSettingOnPage(appId, "hubVar", "varValue", value, applied, "textarea", skipped)
@@ -5623,18 +5452,18 @@ def toolCreateVariable(args) {
     for (int attempt = 0; attempt < 4; attempt++) {
         try { pauseExecution(500) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
         try { created = getGlobalVar(name) } catch (Exception e) {
-            logDebug("create_variable: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+            logDebug("hub_create_variable: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
         }
         if (created != null) break
     }
     if (created == null) {
         throw new IllegalStateException(
-            "create_variable: wizard completed but '${name}' is not visible via getGlobalVar. " +
+            "hub_create_variable: wizard completed but '${name}' is not visible via getGlobalVar. " +
             "Settings applied: ${applied.join(', ')}. Skipped: ${skipped}")
     }
 
     // Subscribe to the new variable's location event so changes show up in
-    // get_variable_history without waiting for the next updated() pass.
+    // hub_list_variable_changes without waiting for the next updated() pass.
     // Null-check + Throwable catch mirrors renameVariable: hubitat_ci's
     // validator throws AssertionError (not Exception) when location is null
     // in unit-test environments, and the create itself shouldn't be aborted
@@ -5642,7 +5471,7 @@ def toolCreateVariable(args) {
     if (location != null) {
         try { subscribe(location, "variable:${name}", "handleHubVariableEvent") }
         catch (Throwable e) {
-            mcpLog("error", "hub-vars", "post-create subscribe to variable:${name} failed: ${e.message} -- get_variable_history won't capture this var's changes until next initialize()")
+            mcpLog("error", "hub-vars", "post-create subscribe to variable:${name} failed: ${e.message} -- hub_list_variable_changes won't capture this var's changes until next initialize()")
         }
     }
 
@@ -5658,7 +5487,7 @@ def toolCreateVariable(args) {
 }
 
 /**
- * create_connector: bind a virtual device to an existing hub variable so
+ * hub_create_connector: bind a virtual device to an existing hub variable so
  * apps that only consume devices can read/write it. Wizard sequence:
  *   1. btn <varName> with stateAttribute=createCon on page hubVar
  *   2. For Number/Decimal vars, page renders a `capab` enum chooser
@@ -5679,7 +5508,7 @@ def toolCreateConnector(args) {
     try { existing = getGlobalVar(name) }
     catch (Exception e) { existing = null }
     if (existing == null) {
-        throw new IllegalArgumentException("Hub variable '${name}' does not exist. Create it first with create_variable.")
+        throw new IllegalArgumentException("Hub variable '${name}' does not exist. Create it first with hub_create_variable.")
     }
     if (existing.deviceId != null) {
         return [
@@ -5693,7 +5522,7 @@ def toolCreateConnector(args) {
     }
 
     def appId = _findHubVariablesAppId()
-    _primeHubVarsWizard(appId, "create_connector pre-click")
+    _primeHubVarsWizard(appId, "hub_create_connector pre-click")
     _rmClickAppButton(appId, name, "createCon", "hubVar")
 
     // For Number/Decimal vars Hubitat opens a chooser sub-wizard requiring
@@ -5705,7 +5534,7 @@ def toolCreateConnector(args) {
     def chosenType = requestedType?.trim() ?: "Variable"
     def applied = []
     def skipped = []
-    _primeHubVarsWizard(appId, "create_connector pre-capab")
+    _primeHubVarsWizard(appId, "hub_create_connector pre-capab")
     _rmWriteSettingOnPage(appId, "hubVar", "capab", chosenType, applied, "enum", skipped)
 
     def after
@@ -5716,7 +5545,7 @@ def toolCreateConnector(args) {
     }
     if (after?.deviceId == null) {
         throw new IllegalStateException(
-            "create_connector: wizard completed but '${name}' still has no deviceId. " +
+            "hub_create_connector: wizard completed but '${name}' still has no deviceId. " +
             "Tried capab='${chosenType}' (only relevant for Number/Decimal). The connector did not bake.")
     }
 
@@ -5732,8 +5561,8 @@ def toolCreateConnector(args) {
 }
 
 /**
- * remove_connector: delete the connector device that backs a hub variable.
- * Reuses the existing delete_device path (the connector is a regular hub
+ * hub_delete_connector: delete the connector device that backs a hub variable.
+ * Reuses the existing hub_delete_device path (the connector is a regular hub
  * device once created) -- Hubitat's UI does the same: open the connector
  * device's page, click Remove Device.
  *
@@ -5763,11 +5592,11 @@ def toolRemoveConnector(args) {
     def res = toolDeleteDevice([deviceId: deviceId.toString(), confirm: true])
     if (res?.success != true) {
         throw new IllegalStateException(
-            "remove_connector: toolDeleteDevice failed for deviceId=${deviceId}: ${res?.error ?: 'unknown error'}")
+            "hub_delete_connector: toolDeleteDevice failed for deviceId=${deviceId}: ${res?.error ?: 'unknown error'}")
     }
 
     // Verify the variable's deviceId linkage is cleared. Without this, a
-    // delete_device that returned success but didn't actually remove (or the
+    // hub_delete_device that returned success but didn't actually remove (or the
     // hub didn't propagate the unlinking) would silently report success here.
     def after = null
     for (int v = 0; v < 4; v++) {
@@ -5777,7 +5606,7 @@ def toolRemoveConnector(args) {
     }
     if (after?.deviceId != null) {
         throw new IllegalStateException(
-            "remove_connector: device ${deviceId} delete returned success but variable '${name}' still has deviceId=${after.deviceId}")
+            "hub_delete_connector: device ${deviceId} delete returned success but variable '${name}' still has deviceId=${after.deviceId}")
     }
 
     mcpLog("info", "hub-vars", "Removed connector for '${name}' (deviceId=${deviceId})")
@@ -5822,7 +5651,7 @@ def toolDeleteHubVariable(args) {
     def hubVar = null
     try { hubVar = getGlobalVar(varName) }
     catch (Exception e) {
-        logDebug("delete_variable: getGlobalVar('${varName}') threw ${e.class.simpleName}: ${e.message}")
+        logDebug("hub_delete_variable: getGlobalVar('${varName}') threw ${e.class.simpleName}: ${e.message}")
     }
     def isHubVar = (hubVar != null)
     def isRuleVar = state.ruleVariables?.containsKey(varName) ?: false
@@ -5856,7 +5685,7 @@ def toolDeleteHubVariable(args) {
         // Defensive: if the scan itself errors, fall through to apply normal force gate
         // rather than blocking deletion entirely. Log so investigators know the scan
         // didn't run.
-        logDebug("delete_variable: getChildApps() scan failed: ${e.class.simpleName}: ${e.message}")
+        logDebug("hub_delete_variable: getChildApps() scan failed: ${e.class.simpleName}: ${e.message}")
     }
     if (consumers && !force) {
         def consumerCount = consumers.size()
@@ -5887,7 +5716,7 @@ def toolDeleteHubVariable(args) {
         // attempt always commits.
         def stillThere = null
         for (int attempt = 0; attempt < 2; attempt++) {
-            _primeHubVarsWizard(appId, "delete_variable pre-click attempt-${attempt + 1}")
+            _primeHubVarsWizard(appId, "hub_delete_variable pre-click attempt-${attempt + 1}")
             _rmClickAppButton(appId, varName, "deleteGV", "hubVar")
             _rmClickAppButton(appId, "delConfirm", null, "hubVar")
             // Brief pause + verification. If the var is gone, we're done.
@@ -5900,7 +5729,7 @@ def toolDeleteHubVariable(args) {
         }
         if (stillThere != null) {
             throw new IllegalStateException(
-                "delete_variable: wizard completed but '${varName}' still exists in getGlobalVar after 2 click-sequence attempts.")
+                "hub_delete_variable: wizard completed but '${varName}' still exists in getGlobalVar after 2 click-sequence attempts.")
         }
 
         def prevStr = previousValue?.toString()
@@ -5911,7 +5740,7 @@ def toolDeleteHubVariable(args) {
             def cc = consumers.size()
             consumerNote = " (forced; ${cc} ${cc == 1 ? 'rule' : 'rules'} now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})"
         }
-        mcpLog("warn", "developer-mode", "delete_variable: removed hub var '${varName}' (type=${previousType}, previous value: ${auditValue})${connectorNote}${consumerNote}")
+        mcpLog("warn", "developer-mode", "hub_delete_variable: removed hub var '${varName}' (type=${previousType}, previous value: ${auditValue})${connectorNote}${consumerNote}")
         return [
             success: true,
             name: varName,
@@ -5939,7 +5768,7 @@ def toolDeleteHubVariable(args) {
         def cc = consumers.size()
         consumerNote = " (forced; ${cc} ${cc == 1 ? 'rule' : 'rules'} now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})"
     }
-    mcpLog("warn", "developer-mode", "delete_variable: removed '${varName}' (previous value: ${auditValue})${consumerNote}")
+    mcpLog("warn", "developer-mode", "hub_delete_variable: removed '${varName}' (previous value: ${auditValue})${consumerNote}")
     return [success: true, name: varName, deleted: true, source: "rule_engine", previousValue: previousValue, brokenConsumers: consumers ?: null]
 }
 
@@ -5949,7 +5778,7 @@ def toolUpdateMcpSettings(args) {
     // type all other gates throw (requireHubAdminWrite, requireBuiltinApp). Toggle-off
     // is a config refusal, not an unexpected runtime error worth a stack trace + ERROR log.
     if (!settings.enableDeveloperMode) {
-        throw new IllegalArgumentException("Developer Mode tools are disabled. Enable 'Developer Mode Tools' in MCP rule app settings to use update_mcp_settings.")
+        throw new IllegalArgumentException("Developer Mode tools are disabled. Enable 'Developer Mode Tools' in MCP rule app settings to use hub_update_mcp_settings.")
     }
     requireHubAdminWrite(args.confirm)
 
@@ -5989,7 +5818,7 @@ def toolUpdateMcpSettings(args) {
     args.settings.each { key, value ->
         def keyStr = key.toString()
         if (!allowedSettings.containsKey(keyStr)) {
-            throw new IllegalArgumentException("Setting '${keyStr}' is not allowed for self-modification via update_mcp_settings. Allowed: ${allowedSettings.keySet().sort().join(', ')}")
+            throw new IllegalArgumentException("Setting '${keyStr}' is not allowed for self-modification via hub_update_mcp_settings. Allowed: ${allowedSettings.keySet().sort().join(', ')}")
         }
         def coerced = coerceSettingValue(keyStr, value, allowedSettings[keyStr])
         // Per-key sub-validation that the apply step would otherwise discover too late.
@@ -6004,7 +5833,7 @@ def toolUpdateMcpSettings(args) {
 
     // Two-phase audit so post-mortem investigators can distinguish "validation accepted N
     // keys" (attempted) from "all N writes landed" (applied). Both fire at WARN.
-    mcpLog("warn", "developer-mode", "update_mcp_settings: attempted=${updates}")
+    mcpLog("warn", "developer-mode", "hub_update_mcp_settings: attempted=${updates}")
 
     // Apply each update via app.updateSetting() — the documented Hubitat sandbox API for
     // self-modifying app settings. mcpLogLevel needs special handling because the runtime
@@ -6023,7 +5852,7 @@ def toolUpdateMcpSettings(args) {
         }
     }
 
-    mcpLog("warn", "developer-mode", "update_mcp_settings: applied=${updates}")
+    mcpLog("warn", "developer-mode", "hub_update_mcp_settings: applied=${updates}")
 
     def updateCount = updates.size()
     def settingWord = updateCount == 1 ? "setting" : "settings"
@@ -6231,7 +6060,7 @@ def toolListCapturedStates(args = null) {
     def states = listCapturedStates()
     def count = states.size()
     def cursor = args?.cursor
-    def paged = _paginateList(states, cursor, 50, "list_captured_states")
+    def paged = _paginateList(states, cursor, 50, "hub_list_captured_states")
     def result = [
         capturedStates: paged.page,
         count: paged.page.size(),
@@ -6252,15 +6081,12 @@ def toolListCapturedStates(args = null) {
     return result
 }
 
-def toolDeleteCapturedState(stateId) {
-    if (!stateId) {
-        throw new IllegalArgumentException("stateId is required")
-    }
-    return deleteCapturedState(stateId)
-}
-
-def toolClearCapturedStates() {
-    return clearAllCapturedStates()
+// hub_delete_captured_state: stateId present -> delete that one; omitted -> delete all
+// (no-ID = delete all, per the verb vocabulary). Accepts either an args map or a
+// raw stateId for backward-compatible internal calls.
+def toolDeleteCapturedState(args) {
+    def stateId = (args instanceof Map) ? args.stateId : args
+    return stateId ? deleteCapturedState(stateId) : clearAllCapturedStates()
 }
 
 // ==================== VALIDATION FUNCTIONS ====================
@@ -7150,7 +6976,7 @@ private Map _createUserAppInstance(Integer codeAppId) {
                 hint = "codeAppId ${codeAppId} does not exist in Apps Code."
                 break
             case 500:
-                hint = "Hub returned a server error (status 500). Code ${codeAppId} may be in a compile-error state -- inspect via get_app_source."
+                hint = "Hub returned a server error (status 500). Code ${codeAppId} may be in a compile-error state -- inspect via hub_get_source(type='app')."
                 break
             case 200:
                 hint = "Hub returned the configure page without redirect (status 200). codeAppId ${codeAppId} may be a driver/library, or an already-instantiated app."
@@ -7377,8 +7203,8 @@ def requireHubAdminRead() {
  * Check if Built-in App Tools (read + write) is enabled. Throws if not.
  * Gates installed-app enumeration, device-in-use-by lookup, Rule Machine
  * interop (RMUtils-based list/run/pause/resume/setBoolean), AND native
- * classic SmartApp CRUD (create_native_app / update_native_app /
- * delete_native_app). The CRUD tools additionally require Hub Admin Write.
+ * classic SmartApp CRUD (hub_create_native_app / hub_update_native_app /
+ * hub_delete_native_app). The CRUD tools additionally require Hub Admin Write.
  */
 def requireBuiltinApp() {
     if (!settings.enableBuiltinApp) {
@@ -7394,11 +7220,11 @@ def requireHubAdminWrite(Boolean confirmParam) {
         throw new IllegalArgumentException("Hub Admin Write access is disabled. Enable 'Enable Hub Admin Write Tools' in MCP Rule Server app settings to use this tool.")
     }
     if (!confirmParam) {
-        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with create_hub_backup first? Review the tool description for the mandatory pre-flight checklist.")
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with hub_create_backup first? Review the tool description for the mandatory pre-flight checklist.")
     }
     // Check for recent hub backup (within 24 hours)
     if (!state.lastBackupTimestamp || (now() - state.lastBackupTimestamp) > 86400000) {
-        throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours. You MUST call create_hub_backup FIRST and verify it succeeds before using any Hub Admin Write tool. Last backup: ${state.lastBackupTimestamp ? formatTimestamp(state.lastBackupTimestamp) : 'Never'}")
+        throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours. You MUST call hub_create_backup FIRST and verify it succeeds before using any Hub Admin Write tool. Last backup: ${state.lastBackupTimestamp ? formatTimestamp(state.lastBackupTimestamp) : 'Never'}")
     }
 }
 
@@ -7487,10 +7313,10 @@ def toolListItemBackups(args = null) {
             backups: [],
             count: 0,
             total: 0,
-            message: "No item backups exist yet. Backups are created automatically when you use update_app_code, update_driver_code, update_library_code, delete_app, delete_driver, or delete_library.",
+            message: "No item backups exist yet. Backups are created automatically when you use hub_update_app, hub_update_driver, hub_update_library, or hub_delete_item.",
             maxBackups: 20,
             storage: "Backups are stored as .groovy files in the hub's File Manager. You can access them at http://<HUB_IP>/local/<filename> or via Hubitat > Settings > File Manager.",
-            howToRestore: "Use 'get_item_backup' to retrieve source code, then 'restore_item_backup' to restore (apps/drivers). For deleted apps or drivers, use 'install_app' or 'install_driver' with the backup source. For deleted libraries, use 'install_library' with the backup source."
+            howToRestore: "Use 'hub_get_backup' to retrieve source code, then 'hub_restore_backup' to restore (apps/drivers). For deleted apps or drivers, use 'hub_create_app' or 'hub_create_driver' with the backup source. For deleted libraries, use 'hub_create_library' with the backup source."
         ]
     }
 
@@ -7521,14 +7347,14 @@ def toolListItemBackups(args = null) {
     }.sort { a, b -> (b.timestampEpoch <=> a.timestampEpoch) } // Newest first
 
     def cursor = args?.cursor
-    def paged = _paginateList(backupList, cursor, 50, "list_item_backups")
+    def paged = _paginateList(backupList, cursor, 50, "hub_list_backups")
     def result = [
         backups: paged.page,
         count: paged.page.size(),
         total: backupList.size(),
         maxBackups: 20,
         storage: "Backup files are stored in the hub's local File Manager (Settings > File Manager). Files persist even if MCP is uninstalled.",
-        howToRestore: "Use 'restore_item_backup' with a backupKey to restore apps/drivers via MCP. For library backups, use 'update_library_code' with sourceFile mode instead. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code / Libraries code manually.",
+        howToRestore: "Use 'hub_restore_backup' with a backupKey to restore apps/drivers via MCP. For library backups, use 'hub_update_library' with sourceFile mode instead. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code / Libraries code manually.",
         manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste the source > click Save."
     ]
     if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
@@ -7552,7 +7378,7 @@ def toolGetItemBackup(args) {
         return [
             error: "No backup found for key '${args.backupKey}'",
             availableBackups: availableKeys.isEmpty() ? "None -- no backups exist yet" : availableKeys.join(", "),
-            hint: "Use 'list_item_backups' to see all available backups with details"
+            hint: "Use 'hub_list_backups' to see all available backups with details"
         ]
     }
 
@@ -7595,11 +7421,11 @@ def toolGetItemBackup(args) {
     }
 
     if (entry.type == "app") {
-        result.howToRestore = "To restore via MCP: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Apps Code > app ID ${entry.id} > paste source > Save."
+        result.howToRestore = "To restore via MCP: call 'hub_restore_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Apps Code > app ID ${entry.id} > paste source > Save."
     } else if (entry.type == "library") {
-        result.howToRestore = "Library backups cannot be restored via restore_item_backup. To restore: call 'update_library_code' with libraryId='${entry.id}' and sourceFile='${entry.fileName}' (confirm=true). To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > FOR DEVELOPERS > Libraries code > library ID ${entry.id} > paste source > Save."
+        result.howToRestore = "Library backups cannot be restored via hub_restore_backup. To restore: call 'hub_update_library' with libraryId='${entry.id}' and sourceFile='${entry.fileName}' (confirm=true). To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > FOR DEVELOPERS > Libraries code > library ID ${entry.id} > paste source > Save."
     } else {
-        result.howToRestore = "To restore via MCP: call 'restore_item_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Drivers Code > driver ID ${entry.id} > paste source > Save."
+        result.howToRestore = "To restore via MCP: call 'hub_restore_backup' with backupKey='${args.backupKey}' and confirm=true. To restore manually: download ${entry.fileName} from File Manager, go to Hubitat > Drivers Code > driver ID ${entry.id} > paste source > Save."
     }
 
     return result
@@ -7607,7 +7433,7 @@ def toolGetItemBackup(args) {
 
 /**
  * Restores an app or driver to its backed-up source code.
- * Reads the backup from File Manager and calls update_app_code or update_driver_code.
+ * Reads the backup from File Manager and calls hub_update_app or hub_update_driver.
  * Both the read (downloadHubFile) and write (hubInternalPostForm) are local — no cloud involvement.
  * Requires Hub Admin Write access.
  */
@@ -7630,16 +7456,16 @@ def toolRestoreItemBackup(args) {
     }
 
     // Library backups cannot be restored via the app/driver ajax/update endpoint.
-    // Direct the caller to use install_library or update_library_code with the backup source.
+    // Direct the caller to use hub_create_library or hub_update_library with the backup source.
     if (entry.type == "library") {
         return [
             success: false,
-            error: "Library backups cannot be restored via restore_item_backup -- use install_library or update_library_code with the backup source from '${entry.fileName}' instead.",
+            error: "Library backups cannot be restored via hub_restore_backup -- use hub_create_library or hub_update_library with the backup source from '${entry.fileName}' instead.",
             backupKey: args.backupKey,
             type: "library",
             backupFile: entry.fileName,
             directDownload: "http://<HUB_IP>/local/${entry.fileName}",
-            hint: "Download the backup from File Manager or use get_item_backup to retrieve the source, then call update_library_code with sourceFile mode."
+            hint: "Download the backup from File Manager or use hub_get_backup to retrieve the source, then call hub_update_library with sourceFile mode."
         ]
     }
 
@@ -7756,7 +7582,7 @@ def toolRestoreItemBackup(args) {
                 restoredVersion: entryCopy.version,
                 preRestoreBackup: preRestoreBackupKey,
                 preRestoreFile: preRestoreFileName,
-                undoHint: "To undo this restore, use 'restore_item_backup' with backupKey='${preRestoreBackupKey}'"
+                undoHint: "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'"
             ]
         } else {
             mcpLog("error", "hub-admin", "Restore failed for ${entryCopy.type} ID ${entryCopy.id}: ${errorMsg ?: 'unknown error'}")
@@ -7857,11 +7683,11 @@ def toolListFiles(args = null) {
         if (fileList.isEmpty() && parsed) {
             def shapeHint = (parsed instanceof Map) ? "Map with keys=${parsed.keySet()?.take(10)?.toList()}" :
                             (parsed instanceof List) ? "empty List" : "non-map non-list"
-            mcpLog("warn", "file-manager", "list_files: parsed response yielded zero files (${shapeHint}) -- shape may not be recognized", null, [details: [endpoint: endpointUsed, shape: shapeHint]])
+            mcpLog("warn", "file-manager", "hub_list_files: parsed response yielded zero files (${shapeHint}) -- shape may not be recognized", null, [details: [endpoint: endpointUsed, shape: shapeHint]])
         }
 
         mcpLog("info", "file-manager", "Listed ${fileList.size()} files in File Manager (via ${endpointUsed})")
-        def pagedFM = _paginateList(fileList, cursor, 100, "list_files")
+        def pagedFM = _paginateList(fileList, cursor, 100, "hub_list_files")
         def res = [
             files: pagedFM.page,
             total: fileList.size(),
@@ -7890,7 +7716,7 @@ def toolListFiles(args = null) {
         if (fileList) {
             fileList = fileList.sort { a, b -> (a.name <=> b.name) }
             mcpLog("info", "file-manager", "Listed ${fileList.size()} files from File Manager HTML page")
-            def pagedHtml = _paginateList(fileList, cursor, 100, "list_files")
+            def pagedHtml = _paginateList(fileList, cursor, 100, "hub_list_files")
             def res = [
                 files: pagedHtml.page,
                 total: fileList.size(),
@@ -8078,7 +7904,7 @@ def toolDeleteFile(args) {
         if (backedUp) {
             result.backupFile = backupFileName
             result.backupDownload = "http://<HUB_IP>/local/${backupFileName}"
-            result.undoHint = "To recover: use 'read_file' on '${backupFileName}' to view contents, or 'write_file' to recreate '${args.fileName}' from the backup."
+            result.undoHint = "To recover: use 'hub_read_file' on '${backupFileName}' to view contents, or 'hub_write_file' to recreate '${args.fileName}' from the backup."
         }
         if (!backedUp && !isBackupFile) {
             result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."
@@ -8089,7 +7915,7 @@ def toolDeleteFile(args) {
         return [
             success: false,
             error: "Failed to delete '${args.fileName}': ${e.message}",
-            suggestion: "Check that the file exists. Use 'list_files' to see available files."
+            suggestion: "Check that the file exists. Use 'hub_list_files' to see available files."
         ]
     }
 }
@@ -8150,12 +7976,12 @@ def getLogLevels() {
 
 /**
  * Get configured log level threshold
- * Checks settings first (UI), then state (MCP set_log_level), then defaults to "error"
+ * Checks settings first (UI), then state (MCP hub_set_log_level), then defaults to "error"
  */
 def getConfiguredLogLevel() {
     // Settings take priority (can be set via UI)
     if (settings.mcpLogLevel) return settings.mcpLogLevel
-    // Fall back to state (can be set via MCP set_log_level tool)
+    // Fall back to state (can be set via MCP hub_set_log_level tool)
     return state.debugLogs?.config?.logLevel ?: "error"
 }
 
@@ -8264,7 +8090,7 @@ def toolGetDebugLogs(args) {
         return e
     }
     def cursor = args?.cursor
-    def paged = _paginateList(materialized, cursor, 100, "get_debug_logs")
+    def paged = _paginateList(materialized, cursor, 100, "hub_get_debug_logs")
     def result = [
         entries: paged.page,
         count: paged.page.size(),
@@ -8804,7 +8630,7 @@ def toolListHubApps(args) {
             result.note = "Empty response from hub API"
         }
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "list_hub_apps API call failed: ${e.message}")
+        mcpLog("warn", "hub-admin", "hub_list_apps API call failed: ${e.message}")
         // Fallback: return MCP child apps as the only apps we can enumerate
         def childApps = getChildApps()
         result.apps = childApps?.collect { ca ->
@@ -8816,7 +8642,7 @@ def toolListHubApps(args) {
     }
 
     if (cursor != null && result.apps instanceof List) {
-        def paged = _paginateList(result.apps, cursor, 50, "list_hub_apps")
+        def paged = _paginateList(result.apps, cursor, 50, "hub_list_apps")
         result.total = result.apps.size()
         result.apps = paged.page
         result.count = paged.page.size()
@@ -8853,7 +8679,7 @@ def toolListHubDrivers(args) {
             result.note = "Empty response from hub API"
         }
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "list_hub_drivers API call failed: ${e.message}")
+        mcpLog("warn", "hub-admin", "hub_list_drivers API call failed: ${e.message}")
         result.drivers = []
         result.count = 0
         result.source = "unavailable"
@@ -8861,7 +8687,7 @@ def toolListHubDrivers(args) {
     }
 
     if (cursor != null && result.drivers instanceof List) {
-        def paged = _paginateList(result.drivers, cursor, 50, "list_hub_drivers")
+        def paged = _paginateList(result.drivers, cursor, 50, "hub_list_drivers")
         result.total = result.drivers.size()
         result.drivers = paged.page
         result.count = paged.page.size()
@@ -9436,7 +9262,7 @@ def toolGetHubLogs(args) {
     // Truncation safety for 128KB cloud limit
     def cursor = args?.cursor
     def fullLogs = logs.toList()
-    def paged = _paginateList(fullLogs, cursor, 100, "get_hub_logs")
+    def paged = _paginateList(fullLogs, cursor, 100, "hub_get_logs")
     // appliedLimit surfaces the limit-truncated entry count so a cursor caller can
     // tell whether they're iterating within the full ring buffer or within a
     // user-specified ceiling. Default limit is 100; max 500. Pair with limit=500
@@ -9876,7 +9702,7 @@ def toolGetMemoryHistory(args) {
         summary.avgMemoryKB = (memValues.sum() / memValues.size()).toInteger()
 
         if (summary.currentMemoryKB < 50000) {
-            summary.memoryWarning = "LOW MEMORY: ${summary.currentMemoryKB}KB free. Consider rebooting or running force_garbage_collection."
+            summary.memoryWarning = "LOW MEMORY: ${summary.currentMemoryKB}KB free. Consider rebooting or running hub_call_gc."
         }
 
         // Java heap and direct memory summary from latest entry
@@ -9904,7 +9730,7 @@ def toolGetMemoryHistory(args) {
 
     // Cursor pages within the limit-trimmed candidate pool; limit=0 + cursor pages the full ring buffer.
     def cursor = args?.cursor
-    def paged = _paginateList(entries, cursor, 100, "get_memory_history")
+    def paged = _paginateList(entries, cursor, 100, "hub_get_memory_history")
     def result = [entries: paged.page, summary: summary]
     if (cursor != null) {
         result.total = entries.size()
@@ -9991,7 +9817,7 @@ def toolDeviceHealthCheck(args) {
         } catch (Exception e) {
             def msg = e.message ?: e.toString()
             identifyHubFields = [identifyHubTriggered: false, identifyHubError: msg]
-            mcpLog("warn", "monitoring", "device_health_check identifyHub blinkLED request failed [${e.class.simpleName}]: ${msg}")
+            mcpLog("warn", "monitoring", "hub_get_device_health identifyHub blinkLED request failed [${e.class.simpleName}]: ${msg}")
         }
     }
 
@@ -10028,7 +9854,7 @@ def toolDeviceHealthCheck(args) {
                 // Unexpected -- a sandbox tightening or device-proxy change rather than the
                 // documented MissingPropertyException case. Log so a "why are all my devices
                 // unknown" report has a breadcrumb to chase; still fall through to "never".
-                mcpLog("debug", "monitoring", "device_health_check could not read lastActivity for device ${device.id}: ${e.class.simpleName}: ${e.message}")
+                mcpLog("debug", "monitoring", "hub_get_device_health could not read lastActivity for device ${device.id}: ${e.class.simpleName}: ${e.message}")
             }
 
             if (lastActivity) {
@@ -10053,10 +9879,10 @@ def toolDeviceHealthCheck(args) {
             }
         } catch (Exception e) {
             // Skip device entirely if we can't even get basic info. Log so the failure
-            // shows up in get_debug_logs / generate_bug_report; surface errorClass on the
+            // shows up in hub_get_debug_logs / hub_report_issue; surface errorClass on the
             // entry so an LLM triaging the result can distinguish transient (NPE) from
             // systemic (MissingMethodException) without re-running.
-            mcpLog("warn", "monitoring", "device_health_check failed to inspect device ${device?.id}: ${e.class.simpleName}: ${e.message}")
+            mcpLog("warn", "monitoring", "hub_get_device_health failed to inspect device ${device?.id}: ${e.class.simpleName}: ${e.message}")
             unknown << [id: device.id?.toString() ?: "unknown", name: "Error: ${e.message}", lastActivity: "error", errorClass: e.class.simpleName]
         }
     }
@@ -10065,7 +9891,7 @@ def toolDeviceHealthCheck(args) {
     stale.sort { a, b -> (b.hoursAgo ?: 0) <=> (a.hoursAgo ?: 0) }
 
     // Only stale is paged; unknown/healthy stay in full so the summary call still resolves in one request.
-    def paged = _paginateList(stale, cursor, 100, "device_health_check")
+    def paged = _paginateList(stale, cursor, 100, "hub_get_device_health")
 
     def result = [
         summary: [
@@ -10094,7 +9920,7 @@ def toolDeviceHealthCheck(args) {
     if (stale.size() > 0 || unknown.size() > 0) {
         result.recommendation = "Found ${stale.size()} stale and ${unknown.size()} unknown devices. " +
             "Stale devices may have dead batteries, be out of range, or be orphaned/ghost devices. " +
-            "Use 'get_device' on individual devices for more details."
+            "Use 'hub_get_device' on individual devices for more details."
     }
 
     if (pingResults != null) {
@@ -10385,9 +10211,9 @@ private stripOptionsHtml(options) {
  * HPM repository drill-downs, etc.) embed action buttons inside paragraph
  * HTML rather than emitting them as `input.type=button` schema entries.
  * Without extraction, paragraphs like "Create New Trigger Event" appear as
- * stripped plain text in get_app_config — a tool-only LLM has no way to
+ * stripped plain text in hub_get_app_config — a tool-only LLM has no way to
  * discover the button name (`true`) or the stateAttribute (`moreCond`) it
- * needs to pass to update_native_app, so the entire trigger/action wizard
+ * needs to pass to hub_update_native_app, so the entire trigger/action wizard
  * is undriveable from tools alone.
  *
  * Pattern (verified live on firmware 2.5.0.123):
@@ -10396,7 +10222,7 @@ private stripOptionsHtml(options) {
  *   a paired `<input type='hidden' name='<NAME>.type' value='button'>` in
  *   the same form group. The `<NAME>` prefix on the hidden input is the
  *   button name to POST as `name=<NAME>` against /installedapp/btn (which
- *   is what update_native_app does when given button=<NAME>).
+ *   is what hub_update_native_app does when given button=<NAME>).
  *
  * Returns a list of maps:
  *   [{name: "true", title: "Create New Trigger", stateAttribute: "moreCond"},
@@ -10477,13 +10303,13 @@ def toolGetAppConfig(args) {
     def path = "/installedapp/configure/json/${appIdStr}"
     if (pageName) path += "/${pageName}"
 
-    mcpLog("info", "hub-admin", "get_app_config appId=${appIdStr} page=${pageName ?: 'main'} includeSettings=${includeSettings}")
+    mcpLog("info", "hub-admin", "hub_get_app_config appId=${appIdStr} page=${pageName ?: 'main'} includeSettings=${includeSettings}")
 
     def responseText
     try {
         responseText = hubInternalGet(path, null, 30)
     } catch (Exception e) {
-        mcpLogError("hub-admin", "get_app_config fetch failed", e)
+        mcpLogError("hub-admin", "hub_get_app_config fetch failed", e)
         return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
     }
 
@@ -10495,7 +10321,7 @@ def toolGetAppConfig(args) {
     try {
         parsed = new groovy.json.JsonSlurper().parseText(responseText)
     } catch (Exception e) {
-        mcpLogError("hub-admin", "get_app_config JSON parse failed", e)
+        mcpLogError("hub-admin", "hub_get_app_config JSON parse failed", e)
         return [success: false, error: "Failed to parse app config JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
     }
 
@@ -10514,7 +10340,7 @@ def toolGetAppConfig(args) {
         return [success: false, error: "Unexpected response shape: missing 'configPage' object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "missing configPage"]
     }
     if (!(parsed.configPage.sections instanceof List)) {
-        return [success: false, error: "Unexpected response shape: configPage.sections is not a list. This page may be a dynamic redirect or action-only page (common in HPM multi-step flows). Try a different pageName -- call list_app_pages for this app, or `get_tool_guide(section='builtin_app_tools')` for common multi-page app names.", appId: appIdStr as Integer, fingerprint: "sections not a list"]
+        return [success: false, error: "Unexpected response shape: configPage.sections is not a list. This page may be a dynamic redirect or action-only page (common in HPM multi-step flows). Try a different pageName -- call hub_list_app_pages for this app, or `hub_get_tool_guide(section='builtin_app_tools')` for common multi-page app names.", appId: appIdStr as Integer, fingerprint: "sections not a list"]
     }
 
     // Hub returns app.appType as a ~30-key metadata object (author, classLocation,
@@ -10672,14 +10498,14 @@ def toolListAppPages(args) {
         throw new IllegalArgumentException("appId must be numeric: ${appIdStr}")
     }
 
-    mcpLog("info", "hub-admin", "list_app_pages appId=${appIdStr}")
+    mcpLog("info", "hub-admin", "hub_list_app_pages appId=${appIdStr}")
 
     def path = "/installedapp/configure/json/${appIdStr}"
     def responseText
     try {
         responseText = hubInternalGet(path, null, 30)
     } catch (Exception e) {
-        mcpLogError("hub-admin", "list_app_pages fetch failed", e)
+        mcpLogError("hub-admin", "hub_list_app_pages fetch failed", e)
         return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
     }
 
@@ -10691,7 +10517,7 @@ def toolListAppPages(args) {
     try {
         parsed = new groovy.json.JsonSlurper().parseText(responseText)
     } catch (Exception e) {
-        mcpLogError("hub-admin", "list_app_pages JSON parse failed", e)
+        mcpLogError("hub-admin", "hub_list_app_pages JSON parse failed", e)
         return [success: false, error: "Failed to parse app config JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
     }
 
@@ -10763,31 +10589,39 @@ def toolListAppPages(args) {
     ]
 }
 
-def toolGetAppSource(args) {
-    return toolGetItemSource("app", "appId", args)
-}
-
-def toolGetDriverSource(args) {
-    return toolGetItemSource("driver", "driverId", args)
+// Unified source reader for the hub_get_source tool: dispatches on type to the
+// shared app/driver helper (toolGetItemSource) or the library helper. The
+// public param is `id`; we map it to the per-type id the helpers expect.
+def toolGetSource(args) {
+    def type = args.type
+    if (!(type in ["app", "driver", "library"])) {
+        throw new IllegalArgumentException("type is required and must be one of: app, driver, library")
+    }
+    def id = (args.id != null) ? args.id : (type == "app" ? args.appId : (type == "driver" ? args.driverId : args.libraryId))
+    if (type == "library") {
+        return toolGetLibrarySource(args + [libraryId: id])
+    }
+    def idParam = (type == "app") ? "appId" : "driverId"
+    return toolGetItemSource(type, idParam, args + [(idParam): id])
 }
 
 def toolInstallApp(args) {
     if (args.installs != null) {
-        throw new IllegalArgumentException("Bulk mode ('installs' array) is not supported for install_app. Apps do not cluster the way drivers do; install each app individually.")
+        throw new IllegalArgumentException("Bulk mode ('installs' array) is not supported for hub_create_app. Apps do not cluster the way drivers do; install each app individually.")
     }
     requireHubAdminWrite(args.confirm)
 
     // installAsUserApp mode: create a running instance from already-installed code.
-    // Closes the "install_app installs code but not an instance" gap. Mutually
+    // Closes the "hub_create_app installs code but not an instance" gap. Mutually
     // exclusive with code-install args -- callers can't combine the two in one
     // call (avoids confusion about which appId the response refers to).
     if (args.installAsUserApp != null) {
         if (args.source || args.sourceFile || args.importUrl) {
             throw new IllegalArgumentException(
                 "installAsUserApp is mutually exclusive with source/sourceFile/importUrl. " +
-                "Use two calls: (1) install_app(source|sourceFile|importUrl, confirm:true) " +
+                "Use two calls: (1) hub_create_app(source|sourceFile|importUrl, confirm:true) " +
                 "to install the code, then " +
-                "(2) install_app(installAsUserApp:<codeAppId>, confirm:true) " +
+                "(2) hub_create_app(installAsUserApp:<codeAppId>, confirm:true) " +
                 "to create the running instance."
             )
         }
@@ -10973,7 +10807,7 @@ private Map toolInstallItemSingle(String type, args) {
                     success: false,
                     error: "${type.capitalize()} installation failed: ${errMsg}",
                     (idField): newItemId,
-                    note: "The hub created an item slot (ID: ${newItemId}) but reported an error. Check the Groovy source for compilation issues. You can view the error via get_app_source/get_driver_source with this ID.",
+                    note: "The hub created an item slot (ID: ${newItemId}) but reported an error. Check the Groovy source for compilation issues. You can view the error via hub_get_source(type='app'|'driver') with this ID.",
                     lastBackup: formatTimestamp(state.lastBackupTimestamp)
                 ]
             }
@@ -11048,15 +10882,15 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
     if (type == "app") {
         def selfAppId = app?.id?.toString()
         if (selfAppId == null) {
-            mcpLog("error", "hub-admin", "update_app_code: self-update guard cannot verify -- app context unavailable (app=${app}); refusing appId=${itemId} to fail closed")
-            throw new IllegalArgumentException("update_app_code cannot verify the self-update guard: app context is unavailable (app=${app}). Refusing to proceed to avoid a silent self-update brick. Retry the call; this is typically a transient lifecycle window.")
+            mcpLog("error", "hub-admin", "hub_update_app: self-update guard cannot verify -- app context unavailable (app=${app}); refusing appId=${itemId} to fail closed")
+            throw new IllegalArgumentException("hub_update_app cannot verify the self-update guard: app context is unavailable (app=${app}). Refusing to proceed to avoid a silent self-update brick. Retry the call; this is typically a transient lifecycle window.")
         }
         if (itemId.toString() == selfAppId) {
             if (!settings.enableDeveloperMode) {
-                mcpLog("warn", "hub-admin", "update_app_code: self-update of MCP server app (id=${itemId}) BLOCKED -- Developer Mode is off")
-                throw new IllegalArgumentException("update_app_code refuses to overwrite the MCP server's own app source (appId=${itemId}) while Developer Mode is off. A bad self-update can brick the MCP loop -- enable 'Developer Mode Tools' in the MCP Rule Server app settings to permit self-updates.")
+                mcpLog("warn", "hub-admin", "hub_update_app: self-update of MCP server app (id=${itemId}) BLOCKED -- Developer Mode is off")
+                throw new IllegalArgumentException("hub_update_app refuses to overwrite the MCP server's own app source (appId=${itemId}) while Developer Mode is off. A bad self-update can brick the MCP loop -- enable 'Developer Mode Tools' in the MCP Rule Server app settings to permit self-updates.")
             }
-            mcpLog("warn", "hub-admin", "update_app_code: self-update of MCP server app (id=${itemId}) ALLOWED -- Developer Mode is on")
+            mcpLog("warn", "hub-admin", "hub_update_app: self-update of MCP server app (id=${itemId}) ALLOWED -- Developer Mode is on")
         }
     }
 
@@ -11261,7 +11095,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
 
 def toolUpdateAppCode(args) {
     if (args.updates != null) {
-        throw new IllegalArgumentException("Bulk mode ('updates' array) is not supported for update_app_code. Apps do not cluster the way drivers do; update each app individually.")
+        throw new IllegalArgumentException("Bulk mode ('updates' array) is not supported for hub_update_app. Apps do not cluster the way drivers do; update each app individually.")
     }
     return toolUpdateItemCode("app", "appId", args)
 }
@@ -11317,14 +11151,14 @@ def toolUpdateDriverCode(args) {
                 }
                 itemResults << entry
             } catch (Exception e) {
-                mcpLogError("hub-admin", "Bulk update_driver_code item ${idx} (driverId ${item.driverId}) threw", e)
+                mcpLogError("hub-admin", "Bulk hub_update_driver item ${idx} (driverId ${item.driverId}) threw", e)
                 itemResults << [driverId: item.driverId.toString(), success: false, error: e.message ?: e.toString(), errorClass: e.class.simpleName]
                 allSucceeded = false
             }
         }
 
         def successCount = itemResults.count { it.success == true }
-        mcpLog("info", "hub-admin", "Bulk update_driver_code: ${successCount}/${itemResults.size()} succeeded")
+        mcpLog("info", "hub-admin", "Bulk hub_update_driver: ${successCount}/${itemResults.size()} succeeded")
         return [
             success: allSucceeded,
             message: allSucceeded ? "All ${itemResults.size()} driver(s) updated successfully." : "${successCount} of ${itemResults.size()} driver(s) updated successfully.",
@@ -11337,19 +11171,28 @@ def toolUpdateDriverCode(args) {
     return toolUpdateItemCodeInner("driver", "driverId", args)
 }
 
-def toolDeleteApp(args) {
-    return toolDeleteItem("app", "appId", "/app/edit/deleteJsonSafe/", args)
-}
-
-def toolDeleteDriver(args) {
-    return toolDeleteItem("driver", "driverId", "/driver/editor/deleteJson/", args)
+// Unified delete for the hub_delete_item tool: dispatches on type to the shared
+// app/driver endpoint helper or the library-specific handler. Public param is
+// `id`; mapped to the per-type id the helpers expect.
+def toolDeleteItem(args) {
+    def type = args.type
+    if (!(type in ["app", "driver", "library"])) {
+        throw new IllegalArgumentException("type is required and must be one of: app, driver, library")
+    }
+    def id = (args.id != null) ? args.id : (type == "app" ? args.appId : (type == "driver" ? args.driverId : args.libraryId))
+    if (type == "library") {
+        return toolDeleteLibrary(args + [libraryId: id])
+    }
+    def idParam = (type == "app") ? "appId" : "driverId"
+    def deletePath = (type == "app") ? "/app/edit/deleteJsonSafe/" : "/driver/editor/deleteJson/"
+    return _deleteItemViaEndpoint(type, idParam, deletePath, args + [(idParam): id])
 }
 
 /**
  * Shared implementation for deleting apps and drivers.
  * Backs up source code before deletion, then deletes and verifies.
  */
-private Map toolDeleteItem(String type, String idParam, String deletePath, args) {
+private Map _deleteItemViaEndpoint(String type, String idParam, String deletePath, args) {
     requireHubAdminWrite(args.confirm)
     def itemId = args[idParam]
     if (!itemId) throw new IllegalArgumentException("${idParam} is required")
@@ -11380,7 +11223,7 @@ private Map toolDeleteItem(String type, String idParam, String deletePath, args)
             mcpLog("info", "hub-admin", "${type.capitalize()} ID ${itemId} deleted successfully")
             // .toString() because the stored key is a String but Map.get(GString) does not coerce (hashCode mismatch → silent null).
             def backupEntry = (atomicState.itemBackupManifest ?: [:])?.get("${type}_${itemId}".toString())
-            def installTool = (type == "app") ? "install_app" : "install_driver"
+            def installTool = (type == "app") ? "hub_create_app" : "hub_create_driver"
             def result = [
                 success: true,
                 message: backupSucceeded ? "${type.capitalize()} deleted successfully. Source code backed up to File Manager." : "${type.capitalize()} deleted successfully. WARNING: Pre-delete backup failed -- source code may not be recoverable.",
@@ -11479,7 +11322,7 @@ private Map backupLibrarySource(String libraryId) {
 
 /**
  * Get library Groovy source. Supports chunked reading (offset/length).
- * Large files are auto-saved to File Manager for use with update_library_code sourceFile mode.
+ * Large files are auto-saved to File Manager for use with hub_update_library sourceFile mode.
  * Hub endpoint: GET /library/list/single/data/<id> returns [{id, source, version, ...}]
  */
 def toolGetLibrarySource(args) {
@@ -11552,7 +11395,7 @@ def toolGetLibrarySource(args) {
         }
         if (savedToFile) {
             result.sourceFile = savedToFile
-            result.sourceFileHint = "Full source saved to File Manager. Use update_library_code with sourceFile: '${savedToFile}' to update without cloud size limits."
+            result.sourceFileHint = "Full source saved to File Manager. Use hub_update_library with sourceFile: '${savedToFile}' to update without cloud size limits."
         }
         if (savedToFileError) {
             result.sourceFileError = "Failed to auto-save full source to File Manager: ${savedToFileError}. Use chunked reads (offset/length) to retrieve the full source."
@@ -11637,7 +11480,7 @@ def toolInstallLibrary(args) {
         // Post-install verification: confirm library persists in the hub list.
         // Mirrors toolInstallItemSingle semantics: empty/unparseable verify response or a hub
         // compile-error signal both return success=false (with libraryId populated so the
-        // caller can inspect via get_library_source). Transient fetch failures return
+        // caller can inspect via hub_get_source(type='library')). Transient fetch failures return
         // success=true with verified=false + verifyError.
         def verifyText = null
         def verifyError = null
@@ -11655,7 +11498,7 @@ def toolInstallLibrary(args) {
                     success: false,
                     error: "Library install unverified: hub returned empty verify body for ID ${newLibraryId}",
                     libraryId: newLibraryId,
-                    note: "Hub created a library slot but the verify fetch returned no content. Use get_library_source with ID ${newLibraryId} to confirm whether the library persisted. Do NOT retry without checking first -- a duplicate library at a new ID may result.",
+                    note: "Hub created a library slot but the verify fetch returned no content. Use hub_get_source(type='library', id=${newLibraryId}) to confirm whether the library persisted. Do NOT retry without checking first -- a duplicate library at a new ID may result.",
                     lastBackup: formatTimestamp(state.lastBackupTimestamp)
                 ]
             }
@@ -11668,7 +11511,7 @@ def toolInstallLibrary(args) {
                     success: false,
                     error: "Library install unverified: hub returned unparseable verify body for ID ${newLibraryId}",
                     libraryId: newLibraryId,
-                    note: "Hub created a library slot but the verify response was not valid JSON. Use get_library_source with ID ${newLibraryId} to confirm whether the library persisted. Do NOT retry without checking first -- a duplicate library at a new ID may result.",
+                    note: "Hub created a library slot but the verify response was not valid JSON. Use hub_get_source(type='library', id=${newLibraryId}) to confirm whether the library persisted. Do NOT retry without checking first -- a duplicate library at a new ID may result.",
                     lastBackup: formatTimestamp(state.lastBackupTimestamp)
                 ]
             }
@@ -11679,7 +11522,7 @@ def toolInstallLibrary(args) {
                     success: false,
                     error: "Library install unverified: ID ${newLibraryId} not found in post-install library list",
                     libraryId: newLibraryId,
-                    note: "Hub created a library slot but the verify list did not include it. Use get_library_source with ID ${newLibraryId} to confirm. Do NOT retry without checking first -- a duplicate library at a new ID may result.",
+                    note: "Hub created a library slot but the verify list did not include it. Use hub_get_source(type='library', id=${newLibraryId}) to confirm. Do NOT retry without checking first -- a duplicate library at a new ID may result.",
                     lastBackup: formatTimestamp(state.lastBackupTimestamp)
                 ]
             }
@@ -11696,7 +11539,7 @@ def toolInstallLibrary(args) {
             verified: (verifyError == null),
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
-        if (verifyError != null) installResult.verifyError = "${verifyError} -- use get_library_source with ID ${newLibraryId} to confirm."
+        if (verifyError != null) installResult.verifyError = "${verifyError} -- use hub_get_source(type='library', id=${newLibraryId}) to confirm."
         return installResult
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "Library installation failed: ${e.message}")
@@ -11920,7 +11763,7 @@ def toolDeleteLibrary(args) {
                 libraryId: libraryId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName ?: backupFileName,
-                restoreHint: backupEntry ? "To restore: use 'install_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
+                restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result
@@ -12168,7 +12011,7 @@ def toolManageVirtualDevice(args) {
             if (!args.deviceLabel) throw new IllegalArgumentException("deviceLabel is required for action='create'.")
             return toolCreateVirtualDevice(args)
         case "delete":
-            if (!args.deviceNetworkId) throw new IllegalArgumentException("deviceNetworkId is required for action='delete'. Use list_virtual_devices to find the DNI.")
+            if (!args.deviceNetworkId) throw new IllegalArgumentException("deviceNetworkId is required for action='delete'. Use hub_list_devices(filter='virtual') to find the DNI.")
             return toolDeleteVirtualDevice(args)
         default:
             throw new IllegalArgumentException("Unknown action '${action}'. Use 'create' or 'delete'.")
@@ -12276,10 +12119,10 @@ def toolCreateVirtualDevice(args) {
         mcpLog("error", "device", "Failed to create virtual device '${deviceLabel}' (${displayType}): ${e.class.simpleName}: ${e.message}")
         if (args.customDriver != null) {
             // Custom driver path: always surface the actionable hint regardless of how the hub phrased the error.
-            throw new IllegalArgumentException("Failed to create virtual device with custom driver '${namespace}:${typeName}'. If the driver is not installed, use list_hub_drivers to verify the namespace and name match. (Hub reported: ${e.message})", e)
+            throw new IllegalArgumentException("Failed to create virtual device with custom driver '${namespace}:${typeName}'. If the driver is not installed, use hub_list_drivers to verify the namespace and name match. (Hub reported: ${e.message})", e)
         }
         if (e.message?.contains("UnknownDeviceTypeException") || e.message?.contains("not found")) {
-            throw new RuntimeException("Driver '${typeName}' not found on this hub. The hub firmware may not include this built-in driver -- verify deviceType is one of the supported values (see get_tool_guide) and check the Hubitat docs for built-in virtual driver availability on your firmware version. (Hub reported: ${e.message})", e)
+            throw new RuntimeException("Driver '${typeName}' not found on this hub. The hub firmware may not include this built-in driver -- verify deviceType is one of the supported values (see hub_get_tool_guide) and check the Hubitat docs for built-in virtual driver availability on your firmware version. (Hub reported: ${e.message})", e)
         }
         if (e.message?.contains("already exists") || e.message?.contains("unique")) {
             throw new RuntimeException("A device with network ID '${dni}' already exists or conflicts with an existing device. (Hub reported: ${e.message})", e)
@@ -12288,10 +12131,10 @@ def toolCreateVirtualDevice(args) {
     }
 
     if (!newDevice) {
-        throw new RuntimeException("Failed to create virtual device -- addChildDevice returned null. A device with DNI '${dni}' may have been partially registered. Check list_virtual_devices and Hubitat UI before retrying with the same DNI.")
+        throw new RuntimeException("Failed to create virtual device -- addChildDevice returned null. A device with DNI '${dni}' may have been partially registered. Check hub_list_devices(filter='virtual') and Hubitat UI before retrying with the same DNI.")
     }
 
-    // Persist the authoritative namespace as a device data value so list_virtual_devices can
+    // Persist the authoritative namespace as a device data value so hub_list_devices(filter='virtual') can
     // read it back reliably. getDriverType()?.namespace returns null on real hubs for custom-driver
     // virtual devices (confirmed on Hubitat 2.5.0.126), making the list path's derivation unreliable.
     // Persisting here at create time -- when the namespace is unambiguously known -- gives the
@@ -12299,7 +12142,7 @@ def toolCreateVirtualDevice(args) {
     try {
         newDevice.updateDataValue("mcpDriverNamespace", namespace)
     } catch (Exception e) {
-        mcpLog("warn", "device", "Could not persist mcpDriverNamespace data value on device ${newDevice.id}: ${e.class.simpleName}: ${e.message ?: e.toString()} -- list_virtual_devices will fall back to best-effort derivation for this device")
+        mcpLog("warn", "device", "Could not persist mcpDriverNamespace data value on device ${newDevice.id}: ${e.class.simpleName}: ${e.message ?: e.toString()} -- hub_list_devices(filter='virtual') will fall back to best-effort derivation for this device")
     }
 
     // Read back device info
@@ -12322,10 +12165,10 @@ def toolCreateVirtualDevice(args) {
 
     return [
         success: true,
-        message: "Virtual device '${deviceLabel}' created successfully. It is now accessible via all MCP device tools (send_command, get_device, etc.) without needing to be added to the device selection list. It also appears in the Hubitat device list and can be shared with other apps like Maker API.",
+        message: "Virtual device '${deviceLabel}' created successfully. It is now accessible via all MCP device tools (hub_call_device_command, hub_get_device, etc.) without needing to be added to the device selection list. It also appears in the Hubitat device list and can be shared with other apps like Maker API.",
         device: deviceInfo,
         tips: [
-            "Use send_command with deviceId '${newDevice.id}' to control this device",
+            "Use hub_call_device_command with deviceId '${newDevice.id}' to control this device",
             "The device is visible in Hubitat web UI under Devices for sharing with other apps",
             "To add it to Maker API: open Maker API app settings and select this device"
         ]
@@ -12339,7 +12182,7 @@ def toolListVirtualDevices(args) {
         return [
             devices: [],
             count: 0,
-            message: "No MCP-managed virtual devices found. Use manage_virtual_device(action=\"create\") to create one."
+            message: "No MCP-managed virtual devices found. Use hub_manage_virtual_device(action=\"create\") to create one."
         ]
     }
 
@@ -12383,7 +12226,7 @@ def toolListVirtualDevices(args) {
     }
 
     def cursor = args?.cursor
-    def paged = _paginateList(devices, cursor, 50, "list_virtual_devices")
+    def paged = _paginateList(devices, cursor, 50, "list_devices_virtual")
     def result = [
         devices: paged.page,
         count: paged.page.size(),
@@ -12404,7 +12247,7 @@ def toolDeleteVirtualDevice(args) {
 
     def childDevice = getChildDevices()?.find { it.deviceNetworkId == dni }
     if (!childDevice) {
-        throw new IllegalArgumentException("No MCP-managed virtual device found with network ID '${dni}'. Use list_virtual_devices to see available devices.")
+        throw new IllegalArgumentException("No MCP-managed virtual device found with network ID '${dni}'. Use hub_list_devices(filter='virtual') to see available devices.")
     }
 
     def deviceLabel = childDevice.label ?: childDevice.name ?: "Unknown"
@@ -12457,7 +12300,7 @@ def toolUpdateDevice(args) {
     if (args.preferences) requestedProps << "preferences(${args.preferences.size()})"
     if (args.room != null) requestedProps << "room"
     if (args.enabled != null) requestedProps << "enabled"
-    mcpLog("debug", "device", "update_device called for '${deviceLabel}' (ID: ${deviceId}), properties: ${requestedProps.join(', ')}")
+    mcpLog("debug", "device", "hub_update_device called for '${deviceLabel}' (ID: ${deviceId}), properties: ${requestedProps.join(', ')}")
 
     // Label (official API)
     if (args.label != null) {
@@ -12466,9 +12309,9 @@ def toolUpdateDevice(args) {
             device.setLabel(args.label)
             changes << [property: "label", oldValue: oldLabel, newValue: args.label]
             deviceLabel = args.label
-            mcpLog("debug", "device", "update_device label: '${oldLabel}' -> '${args.label}'")
+            mcpLog("debug", "device", "hub_update_device label: '${oldLabel}' -> '${args.label}'")
         } catch (Exception e) {
-            mcpLog("debug", "device", "update_device label: error: ${e.message}")
+            mcpLog("debug", "device", "hub_update_device label: error: ${e.message}")
             errors << [property: "label", error: e.message]
         }
     }
@@ -12479,9 +12322,9 @@ def toolUpdateDevice(args) {
             def oldName = device.name
             device.setName(args.name)
             changes << [property: "name", oldValue: oldName, newValue: args.name]
-            mcpLog("debug", "device", "update_device name: '${oldName}' -> '${args.name}'")
+            mcpLog("debug", "device", "hub_update_device name: '${oldName}' -> '${args.name}'")
         } catch (Exception e) {
-            mcpLog("debug", "device", "update_device name: error: ${e.message}")
+            mcpLog("debug", "device", "hub_update_device name: error: ${e.message}")
             errors << [property: "name", error: e.message]
         }
     }
@@ -12492,9 +12335,9 @@ def toolUpdateDevice(args) {
             def oldDni = device.deviceNetworkId
             device.setDeviceNetworkId(args.deviceNetworkId)
             changes << [property: "deviceNetworkId", oldValue: oldDni, newValue: args.deviceNetworkId]
-            mcpLog("debug", "device", "update_device DNI: '${oldDni}' -> '${args.deviceNetworkId}'")
+            mcpLog("debug", "device", "hub_update_device DNI: '${oldDni}' -> '${args.deviceNetworkId}'")
         } catch (Exception e) {
-            mcpLog("debug", "device", "update_device DNI: error: ${e.message}")
+            mcpLog("debug", "device", "hub_update_device DNI: error: ${e.message}")
             errors << [property: "deviceNetworkId", error: e.message]
         }
     }
@@ -12505,9 +12348,9 @@ def toolUpdateDevice(args) {
             try {
                 device.updateDataValue(key.toString(), value?.toString())
                 changes << [property: "dataValue.${key}", newValue: value?.toString()]
-                mcpLog("debug", "device", "update_device dataValue: ${key}='${value}'")
+                mcpLog("debug", "device", "hub_update_device dataValue: ${key}='${value}'")
             } catch (Exception e) {
-                mcpLog("debug", "device", "update_device dataValue ${key}: error: ${e.message}")
+                mcpLog("debug", "device", "hub_update_device dataValue ${key}: error: ${e.message}")
                 errors << [property: "dataValue.${key}", error: e.message]
             }
         }
@@ -12519,14 +12362,14 @@ def toolUpdateDevice(args) {
             try {
                 if (setting instanceof Map && setting.type && setting.containsKey("value")) {
                     device.updateSetting(key.toString(), [type: setting.type.toString(), value: setting.value])
-                    mcpLog("debug", "device", "update_device preference: ${key}={type:${setting.type}, value:${setting.value}}")
+                    mcpLog("debug", "device", "hub_update_device preference: ${key}={type:${setting.type}, value:${setting.value}}")
                 } else {
                     device.updateSetting(key.toString(), setting?.toString())
-                    mcpLog("debug", "device", "update_device preference: ${key}='${setting}'")
+                    mcpLog("debug", "device", "hub_update_device preference: ${key}='${setting}'")
                 }
                 changes << [property: "preference.${key}", newValue: setting]
             } catch (Exception e) {
-                mcpLog("debug", "device", "update_device preference ${key}: error: ${e.message}")
+                mcpLog("debug", "device", "hub_update_device preference ${key}: error: ${e.message}")
                 errors << [property: "preference.${key}", error: e.message]
             }
         }
@@ -12538,27 +12381,27 @@ def toolUpdateDevice(args) {
             errors << [property: "room", error: "Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings"]
         } else {
             try {
-                mcpLog("debug", "device", "update_device room: starting room assignment for device ${deviceId}")
+                mcpLog("debug", "device", "hub_update_device room: starting room assignment for device ${deviceId}")
 
                 // Find room ID by name
                 def targetRoomId = null
                 if (args.room == "" || args.room == "none" || args.room == "null") {
                     targetRoomId = "0"
-                    mcpLog("debug", "device", "update_device room: unassigning device from room")
+                    mcpLog("debug", "device", "hub_update_device room: unassigning device from room")
                 } else {
                     def cachedRooms = null
                     try {
                         cachedRooms = getRooms()
-                        mcpLog("debug", "device", "update_device room: getRooms() returned ${cachedRooms?.size() ?: 0} rooms")
+                        mcpLog("debug", "device", "hub_update_device room: getRooms() returned ${cachedRooms?.size() ?: 0} rooms")
                         if (cachedRooms) {
                             def targetRoom = cachedRooms.find { it.name?.toString()?.toLowerCase() == args.room?.toString()?.toLowerCase() }
                             if (targetRoom) {
                                 targetRoomId = targetRoom.id?.toString()
-                                mcpLog("debug", "device", "update_device room: resolved '${args.room}' -> roomId=${targetRoomId}")
+                                mcpLog("debug", "device", "hub_update_device room: resolved '${args.room}' -> roomId=${targetRoomId}")
                             }
                         }
                     } catch (Exception e) {
-                        mcpLog("debug", "device", "update_device room: getRooms() failed: ${e.message}")
+                        mcpLog("debug", "device", "hub_update_device room: getRooms() failed: ${e.message}")
                     }
 
                     if (targetRoomId == null) {
@@ -12617,35 +12460,35 @@ def toolUpdateDevice(args) {
 
                 // Get current room data
                 def allRooms = getRooms()
-                mcpLog("debug", "device", "update_device room: getRooms() returned ${allRooms?.size() ?: 0} rooms")
+                mcpLog("debug", "device", "hub_update_device room: getRooms() returned ${allRooms?.size() ?: 0} rooms")
 
                 if (targetRoomId == "0") {
                     // --- UNASSIGN: remove device from its current room ---
                     def currentRoom = allRooms?.find { deviceInRoom(it) }
                     if (!currentRoom) {
                         saveSuccess = true
-                        mcpLog("debug", "device", "update_device room: device not in any room, nothing to unassign")
+                        mcpLog("debug", "device", "hub_update_device room: device not in any room, nothing to unassign")
                     } else {
-                        mcpLog("debug", "device", "update_device room: removing device ${deviceId} from room '${currentRoom.name}' (${currentRoom.id})")
+                        mcpLog("debug", "device", "hub_update_device room: removing device ${deviceId} from room '${currentRoom.name}' (${currentRoom.id})")
                         def updatedDeviceIds = currentRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt }?.collect { it as Integer } ?: []
                         def body = [roomId: currentRoom.id as Integer, name: currentRoom.name, deviceIds: updatedDeviceIds]
-                        mcpLog("debug", "device", "update_device room: POST /room/save (remove) body: ${groovy.json.JsonOutput.toJson(body)}")
+                        mcpLog("debug", "device", "hub_update_device room: POST /room/save (remove) body: ${groovy.json.JsonOutput.toJson(body)}")
                         try {
                             roomSavePost(body)
                             saveSuccess = true
                         } catch (Exception e) {
-                            mcpLog("debug", "device", "update_device room: remove failed: ${e.message}")
+                            mcpLog("debug", "device", "hub_update_device room: remove failed: ${e.message}")
                             saveError = e.message
                         }
                     }
                 } else {
                     // --- ASSIGN: add device to target room ---
-                    mcpLog("debug", "device", "update_device room: assigning device ${deviceId} to room ${targetRoomId}")
+                    mcpLog("debug", "device", "hub_update_device room: assigning device ${deviceId} to room ${targetRoomId}")
 
                     // Check if device is already in the target room
                     def targetRoom = allRooms?.find { it.id?.toString() == targetRoomId }
                     if (targetRoom && deviceInRoom(targetRoom)) {
-                        mcpLog("debug", "device", "update_device room: device already in target room '${targetRoom.name}'")
+                        mcpLog("debug", "device", "hub_update_device room: device already in target room '${targetRoom.name}'")
                         saveSuccess = true
                     } else {
                         // Safe Move pattern: add to new room FIRST, then remove from old room.
@@ -12668,34 +12511,34 @@ def toolUpdateDevice(args) {
                         }
 
                         def roomData = [roomId: targetRoomId as Integer, name: freshTarget?.name ?: targetRoom?.name ?: "", deviceIds: targetDeviceIds]
-                        mcpLog("debug", "device", "update_device room: POST /room/save (add) body: ${groovy.json.JsonOutput.toJson(roomData)}")
+                        mcpLog("debug", "device", "hub_update_device room: POST /room/save (add) body: ${groovy.json.JsonOutput.toJson(roomData)}")
                         try {
                             roomSavePost(roomData)
-                            mcpLog("debug", "device", "update_device room: added to target room '${freshTarget?.name ?: targetRoomId}'")
+                            mcpLog("debug", "device", "hub_update_device room: added to target room '${freshTarget?.name ?: targetRoomId}'")
                             saveSuccess = true
                         } catch (Exception e) {
                             // Add failed — device stays safely in its old room (no change made)
-                            mcpLog("debug", "device", "update_device room: add to room failed: ${e.message}")
+                            mcpLog("debug", "device", "hub_update_device room: add to room failed: ${e.message}")
                             saveError = e.message
                         }
 
                         // Step 2: Remove from old room (only if add succeeded)
                         if (saveSuccess && oldRoom) {
-                            mcpLog("debug", "device", "update_device room: removing from old room '${oldRoom.name}' (${oldRoom.id})")
+                            mcpLog("debug", "device", "hub_update_device room: removing from old room '${oldRoom.name}' (${oldRoom.id})")
                             // Re-fetch rooms to get fresh data after the add mutation
                             def freshRooms = getRooms()
                             def freshOldRoom = freshRooms?.find { it.id?.toString() == oldRoom.id?.toString() }
                             if (freshOldRoom) {
                                 def oldDeviceIds = freshOldRoom.deviceIds?.findAll { it != deviceIdLong && it != deviceIdInt }?.collect { it as Integer } ?: []
                                 def oldBody = [roomId: freshOldRoom.id as Integer, name: freshOldRoom.name, deviceIds: oldDeviceIds]
-                                mcpLog("debug", "device", "update_device room: POST /room/save (remove) body: ${groovy.json.JsonOutput.toJson(oldBody)}")
+                                mcpLog("debug", "device", "hub_update_device room: POST /room/save (remove) body: ${groovy.json.JsonOutput.toJson(oldBody)}")
                                 try {
                                     roomSavePost(oldBody)
-                                    mcpLog("debug", "device", "update_device room: removed from old room '${oldRoom.name}'")
+                                    mcpLog("debug", "device", "hub_update_device room: removed from old room '${oldRoom.name}'")
                                 } catch (Exception oldErr) {
                                     // Device is in both rooms — not ideal but it IS in the target room.
                                     // Log a warning so the user is aware.
-                                    mcpLog("warn", "device", "update_device room: device added to new room but removal from old room '${oldRoom.name}' failed: ${oldErr.message}. Device may appear in both rooms.")
+                                    mcpLog("warn", "device", "hub_update_device room: device added to new room but removal from old room '${oldRoom.name}' failed: ${oldErr.message}. Device may appear in both rooms.")
                                 }
                             }
                         }
@@ -12711,24 +12554,24 @@ def toolUpdateDevice(args) {
                             def stillInRoom = verifyRooms?.find { room -> deviceInRoom(room) }
                             verified = (stillInRoom == null)
                             if (!verified) {
-                                mcpLog("debug", "device", "update_device room: VERIFICATION FAILED - device still in room '${stillInRoom?.name}'")
+                                mcpLog("debug", "device", "hub_update_device room: VERIFICATION FAILED - device still in room '${stillInRoom?.name}'")
                             }
                         } else {
                             def tRoom = verifyRooms?.find { it.id?.toString() == targetRoomId }
                             verified = deviceInRoom(tRoom)
                             if (!verified) {
-                                mcpLog("debug", "device", "update_device room: VERIFICATION FAILED - device not in target room '${tRoom?.name}' deviceIds: ${tRoom?.deviceIds}")
+                                mcpLog("debug", "device", "hub_update_device room: VERIFICATION FAILED - device not in target room '${tRoom?.name}' deviceIds: ${tRoom?.deviceIds}")
                             }
                             // Also verify device is NOT still in the old room
                             if (verified) {
                                 def dualRoom = verifyRooms?.find { room -> deviceInRoom(room) && room.id?.toString() != targetRoomId }
                                 if (dualRoom) {
-                                    mcpLog("warn", "device", "update_device room: WARNING - device also still in room '${dualRoom.name}' (dual-room state)")
+                                    mcpLog("warn", "device", "hub_update_device room: WARNING - device also still in room '${dualRoom.name}' (dual-room state)")
                                 }
                             }
                         }
                     } catch (Exception verErr) {
-                        mcpLog("debug", "device", "update_device room: verification error: ${verErr.message}")
+                        mcpLog("debug", "device", "hub_update_device room: verification error: ${verErr.message}")
                     }
 
                     if (verified) {
@@ -12742,7 +12585,7 @@ def toolUpdateDevice(args) {
                     throw new RuntimeException("Room assignment failed. Last error: ${saveError}")
                 }
             } catch (Exception e) {
-                mcpLog("debug", "device", "update_device room: error: ${e.message}")
+                mcpLog("debug", "device", "hub_update_device room: error: ${e.message}")
                 errors << [property: "room", error: e.message]
             }
         }
@@ -12756,12 +12599,12 @@ def toolUpdateDevice(args) {
         } else {
             try {
                 def disableValue = args.enabled ? "false" : "true"
-                mcpLog("debug", "device", "update_device enabled: POSTing to /device/disable with id=${deviceId}, disable=${disableValue}")
+                mcpLog("debug", "device", "hub_update_device enabled: POSTing to /device/disable with id=${deviceId}, disable=${disableValue}")
                 hubInternalPost("/device/disable", [id: deviceId, disable: disableValue])
                 changes << [property: "enabled", newValue: args.enabled]
                 mcpLog("info", "device", "Device '${deviceLabel}' ${args.enabled ? 'enabled' : 'disabled'}")
             } catch (Exception e) {
-                mcpLog("debug", "device", "update_device enabled: error: ${e.message}")
+                mcpLog("debug", "device", "hub_update_device enabled: error: ${e.message}")
                 errors << [property: "enabled", error: e.message]
             }
         }
@@ -12778,7 +12621,7 @@ def toolUpdateDevice(args) {
 
     mcpLog("info", "device", "Updated device '${deviceLabel}' (ID: ${deviceId}): ${changes.size()} changes, ${errors.size()} errors")
     if (errors) {
-        mcpLog("debug", "device", "update_device errors: ${errors.collect { "${it.property}: ${it.error}" }.join('; ')}")
+        mcpLog("debug", "device", "hub_update_device errors: ${errors.collect { "${it.property}: ${it.error}" }.join('; ')}")
     }
 
     return [
@@ -12809,7 +12652,7 @@ def toolListRooms(args = null) {
         ]
     }.sort { it.name }
     def cursor = args?.cursor
-    def paged = _paginateList(roomList, cursor, 100, "list_rooms")
+    def paged = _paginateList(roomList, cursor, 100, "hub_list_rooms")
     def result = [rooms: paged.page, count: paged.page.size()]
     if (cursor != null) {
         result.total = roomList.size()
@@ -12891,7 +12734,7 @@ def toolCreateRoom(args) {
     def cookie = getHubSecurityCookie()
     def body = [roomId: 0, name: roomName, deviceIds: deviceIds]
     def jsonStr = groovy.json.JsonOutput.toJson(body)
-    mcpLog("debug", "room", "create_room: POST /room/save body: ${jsonStr}")
+    mcpLog("debug", "room", "hub_create_room: POST /room/save body: ${jsonStr}")
 
     def respBody = null
     try {
@@ -12907,7 +12750,7 @@ def toolCreateRoom(args) {
         if (cookie) { postParams.headers = ["Cookie": cookie] }
         httpPost(postParams) { resp ->
             try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
-            mcpLog("debug", "room", "create_room: response status=${resp.status} body=${respBody?.take(500)}")
+            mcpLog("debug", "room", "hub_create_room: response status=${resp.status} body=${respBody?.take(500)}")
         }
     } catch (Exception httpErr) {
         throw new RuntimeException("Failed to create room '${roomName}': ${httpErr.message}")
@@ -12957,7 +12800,7 @@ def toolDeleteRoom(args) {
     def roomId = room.id
     def roomName = room.name
     def deviceCount = room.deviceIds?.size() ?: 0
-    mcpLog("debug", "room", "delete_room: deleting room '${roomName}' (ID: ${roomId}), ${deviceCount} devices will be unassigned")
+    mcpLog("debug", "room", "hub_delete_room: deleting room '${roomName}' (ID: ${roomId}), ${deviceCount} devices will be unassigned")
 
     def cookie = getHubSecurityCookie()
     def deleteSuccess = false
@@ -12985,7 +12828,7 @@ def toolDeleteRoom(args) {
                 def postRespBody = null
                 httpPost(postParams) { resp ->
                     try { postRespBody = resp.data?.text?.toString() } catch (Exception ignored) { postRespBody = resp.data?.toString() }
-                    mcpLog("debug", "room", "delete_room: ${att.desc} status=${resp.status} body=${postRespBody?.take(500)}")
+                    mcpLog("debug", "room", "hub_delete_room: ${att.desc} status=${resp.status} body=${postRespBody?.take(500)}")
                 }
                 // Check response for error
                 if (postRespBody) {
@@ -12999,11 +12842,11 @@ def toolDeleteRoom(args) {
                 deleteSuccess = true
             } else {
                 hubInternalGet("/room/delete/${roomId}")
-                mcpLog("debug", "room", "delete_room: ${att.desc} succeeded")
+                mcpLog("debug", "room", "hub_delete_room: ${att.desc} succeeded")
                 deleteSuccess = true
             }
         } catch (Exception e) {
-            mcpLog("debug", "room", "delete_room: ${att.desc} failed: ${e.message}")
+            mcpLog("debug", "room", "hub_delete_room: ${att.desc} failed: ${e.message}")
             deleteError = e.message
         }
     }
@@ -13063,7 +12906,7 @@ def toolRenameRoom(args) {
     def cookie = getHubSecurityCookie()
     def body = [roomId: roomId as Integer, name: newName, deviceIds: deviceIds]
     def jsonStr = groovy.json.JsonOutput.toJson(body)
-    mcpLog("debug", "room", "rename_room: POST /room/save body: ${jsonStr}")
+    mcpLog("debug", "room", "hub_update_room: POST /room/save body: ${jsonStr}")
 
     def respBody = null
     try {
@@ -13079,7 +12922,7 @@ def toolRenameRoom(args) {
         if (cookie) { postParams.headers = ["Cookie": cookie] }
         httpPost(postParams) { resp ->
             try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
-            mcpLog("debug", "room", "rename_room: response status=${resp.status} body=${respBody?.take(500)}")
+            mcpLog("debug", "room", "hub_update_room: response status=${resp.status} body=${respBody?.take(500)}")
         }
     } catch (Exception httpErr) {
         throw new RuntimeException("Failed to rename room '${oldName}': ${httpErr.message}")
@@ -13188,7 +13031,7 @@ def toolListInstalledApps(args) {
             }
         }
 
-        def paged = _paginateList(filtered, cursor, 50, "list_installed_apps")
+        def paged = _paginateList(filtered, cursor, 50, "hub_list_installed_apps")
         def result = [
             apps: paged.page,
             count: paged.page.size(),
@@ -13206,7 +13049,7 @@ def toolListInstalledApps(args) {
         // Programmer error -- e.g. validFilters / switch drift on the filter whitelist.
         // Don't reframe as a transport failure; surface so the drift gets fixed instead
         // of swallowed under a misleading "hub blip" note.
-        mcpLog("error", "installed-apps", "list_installed_apps internal invariant violated: ${e.message}")
+        mcpLog("error", "installed-apps", "hub_list_installed_apps internal invariant violated: ${e.message}")
         throw e
     } catch (Exception e) {
         // The Built-in-App-Tools gate has already passed by the time we reach here, so
@@ -13214,7 +13057,7 @@ def toolListInstalledApps(args) {
         // (network blip, firmware change to /hub2/appsList) or the flatten/filter pipeline
         // (unexpected shape in a child entry). The error message itself will usually
         // distinguish the two.
-        mcpLog("error", "installed-apps", "list_installed_apps failed: ${e.message}")
+        mcpLog("error", "installed-apps", "hub_list_installed_apps failed: ${e.message}")
         return [success: false, error: "Failed to list installed apps: ${e.message}", note: "Hub transport error or unexpected /hub2/appsList response shape -- retry; if persistent, inspect the raw response for firmware-side drift."]
     }
 }
@@ -13256,7 +13099,7 @@ def toolGetDeviceInUseBy(args) {
             String shape = (parsed.appsUsing instanceof Map) ? "Map" :
                            (parsed.appsUsing instanceof String) ? "String" :
                            (parsed.appsUsing instanceof Number) ? "Number" : "non-list"
-            mcpLog("warn", "installed-apps", "get_device_in_use_by: appsUsing is ${shape} not List for device ${deviceId} -- treating as empty")
+            mcpLog("warn", "installed-apps", "hub_list_device_dependents: appsUsing is ${shape} not List for device ${deviceId} -- treating as empty")
             return [success: false, deviceId: deviceId, error: "Firmware returned unexpected appsUsing shape: ${shape}", note: "Hub firmware may have changed the /device/fullJson endpoint contract."]
         }
         def appsUsing = parsed?.appsUsing ?: []
@@ -13267,7 +13110,7 @@ def toolGetDeviceInUseBy(args) {
             // A non-numeric appsUsingCount is a firmware/paging signal worth recording
             // (e.g. hub returns "42+" for truncated counts); fall back to the list size
             // so the caller still gets a usable count.
-            mcpLog("warn", "installed-apps", "get_device_in_use_by: non-numeric appsUsingCount '${parsed?.appsUsingCount}' for device ${deviceId}; using appsUsing.size()=${appsUsing.size()}")
+            mcpLog("warn", "installed-apps", "hub_list_device_dependents: non-numeric appsUsingCount '${parsed?.appsUsingCount}' for device ${deviceId}; using appsUsing.size()=${appsUsing.size()}")
             count = appsUsing.size()
         }
 
@@ -13281,7 +13124,7 @@ def toolGetDeviceInUseBy(args) {
             ]
         }
         def cursor = args?.cursor
-        def paged = _paginateList(appsUsingList, cursor, 100, "get_device_in_use_by")
+        def paged = _paginateList(appsUsingList, cursor, 100, "hub_list_device_dependents")
         def result = [
             deviceId: deviceId,
             // extraBreadcrumb is the canonical UI breadcrumb label; fall back to .name or
@@ -13304,7 +13147,7 @@ def toolGetDeviceInUseBy(args) {
         }
         return result
     } catch (Exception e) {
-        mcpLog("error", "installed-apps", "get_device_in_use_by failed for device ${deviceId}: ${e.message}")
+        mcpLog("error", "installed-apps", "hub_list_device_dependents failed for device ${deviceId}: ${e.message}")
         return [success: false, error: "Failed: ${e.message}", note: "Verify the device ID is valid and Built-in App Tools is enabled."]
     }
 }
@@ -13481,7 +13324,7 @@ def toolListHpmPackages(args) {
         hpmAppId = _hpmDiscoverAppId()
     }
 
-    mcpLog("info", "hpm", "list_hpm_packages hpmAppId=${hpmAppId}")
+    mcpLog("info", "hpm", "hub_list_hpm_packages hpmAppId=${hpmAppId}")
 
     def manifests
     try {
@@ -13493,7 +13336,7 @@ def toolListHpmPackages(args) {
     def skippedMalformed = []
     def packages = manifests.collect { manifestUrl, manifest ->
         if (!(manifest instanceof Map)) {
-            mcpLog("warn", "hpm", "list_hpm_packages: skipping malformed manifest entry for URL ${manifestUrl} -- value is not a Map")
+            mcpLog("warn", "hpm", "hub_list_hpm_packages: skipping malformed manifest entry for URL ${manifestUrl} -- value is not a Map")
             skippedMalformed << manifestUrl?.toString()
             return null
         }
@@ -13501,7 +13344,7 @@ def toolListHpmPackages(args) {
         int skippedDriverCount = 0
         int skippedFileCount = 0
         def apps = (manifest.apps ?: []).collect { a ->
-            if (!(a instanceof Map)) { skippedAppCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map app component in '${manifest.packageName}' (value: ${a?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
+            if (!(a instanceof Map)) { skippedAppCount++; mcpLog("warn", "hpm", "hub_list_hpm_packages: non-Map app component in '${manifest.packageName}' (value: ${a?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
             def heId = a.heID
             def heIdStr = null
             def heIdWarning = null
@@ -13510,14 +13353,14 @@ def toolListHpmPackages(args) {
                 // issue without breaking the consumer (matches drift treatment).
                 heIdWarning = "empty heID string '${heId}' normalized to null"
                 heId = null
-                mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
+                mcpLog("warn", "hpm", "hub_list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
             }
             // Whitespace-padded String heID (e.g. " 142 ") is normalized to the trimmed value so
             // that heID surfaces correctly to the consumer (matches get_hpm_drift treatment).
             if (heId instanceof String && heId.trim() != heId) {
                 def trimmed = heId.trim()
                 heIdWarning = "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
-                mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                mcpLog("warn", "hpm", "hub_list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
                 heId = trimmed
             }
             if (heId != null) {
@@ -13525,7 +13368,7 @@ def toolListHpmPackages(args) {
                     heIdStr = heId.toString()
                 } else {
                     heIdWarning = "non-scalar heID (not Number or String) -- heID cleared"
-                    mcpLog("warn", "hpm", "list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping heID")
+                    mcpLog("warn", "hpm", "hub_list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping heID")
                 }
             }
             def entry = [
@@ -13540,7 +13383,7 @@ def toolListHpmPackages(args) {
         }.findAll { it != null }
 
         def drivers = (manifest.drivers ?: []).collect { d ->
-            if (!(d instanceof Map)) { skippedDriverCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map driver component in '${manifest.packageName}' (value: ${d?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
+            if (!(d instanceof Map)) { skippedDriverCount++; mcpLog("warn", "hpm", "hub_list_hpm_packages: non-Map driver component in '${manifest.packageName}' (value: ${d?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
             def heId = d.heID
             def heIdStr = null
             def heIdWarning = null
@@ -13549,13 +13392,13 @@ def toolListHpmPackages(args) {
                 // issue without breaking the consumer (matches drift treatment).
                 heIdWarning = "empty heID string '${heId}' normalized to null"
                 heId = null
-                mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
+                mcpLog("warn", "hpm", "hub_list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
             }
             // Whitespace-padded String heID normalized to trimmed value (matches app treatment above).
             if (heId instanceof String && heId.trim() != heId) {
                 def trimmed = heId.trim()
                 heIdWarning = "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
-                mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                mcpLog("warn", "hpm", "hub_list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
                 heId = trimmed
             }
             if (heId != null) {
@@ -13563,7 +13406,7 @@ def toolListHpmPackages(args) {
                     heIdStr = heId.toString()
                 } else {
                     heIdWarning = "non-scalar heID (not Number or String) -- heID cleared"
-                    mcpLog("warn", "hpm", "list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping heID")
+                    mcpLog("warn", "hpm", "hub_list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping heID")
                 }
             }
             def entry = [
@@ -13578,7 +13421,7 @@ def toolListHpmPackages(args) {
         }.findAll { it != null }
 
         def files = (manifest.files ?: []).collect { f ->
-            if (!(f instanceof Map)) { skippedFileCount++; mcpLog("warn", "hpm", "list_hpm_packages: non-Map file component in '${manifest.packageName}' (value: ${f?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
+            if (!(f instanceof Map)) { skippedFileCount++; mcpLog("warn", "hpm", "hub_list_hpm_packages: non-Map file component in '${manifest.packageName}' (value: ${f?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
             [
                 id  : f.id?.toString(),
                 name: f.name?.toString()
@@ -13602,7 +13445,7 @@ def toolListHpmPackages(args) {
     }.findAll { it != null }
 
     def cursor = args?.cursor
-    def paged = _paginateList(packages, cursor, 25, "list_hpm_packages")
+    def paged = _paginateList(packages, cursor, 25, "hub_list_hpm_packages")
     def result = [
         success   : true,
         hpmAppId  : hpmAppId,
@@ -13688,7 +13531,7 @@ def toolGetHpmDrift(args) {
     // /hub2/userDeviceTypes is the Drivers Code registry endpoint -- each entry
     // represents a driver code definition (whether or not any devices use it).
     // Note: the endpoint name follows the hub's naming convention (userDeviceTypes, not
-    // userDriverTypes); this is the same endpoint used by list_hub_drivers.
+    // userDriverTypes); this is the same endpoint used by hub_list_drivers.
     def installedDriverCodeIds = [] as Set
     def orphanDriverDetection = [enabled: true]
     try {
@@ -13756,7 +13599,7 @@ def toolGetHpmDrift(args) {
             }
             def heId = a.heID
             // Normalize empty/whitespace-only String heID to null and surface as data-quality warning
-            // so the consumer knows the manifest has a blank heID (matches list_hpm_packages treatment).
+            // so the consumer knows the manifest has a blank heID (matches hub_list_hpm_packages treatment).
             if (heId instanceof String && heId.trim() == "") {
                 dataQualityWarnings << [
                     type         : "empty-heid",
@@ -13953,7 +13796,7 @@ def toolGetHpmDrift(args) {
         summary                     : summary,
         orphanDetection             : orphanDetection,
         orphanDriverDetection       : orphanDriverDetection,
-        limitations                 : "Drift detection is heID-presence-only. Per-component source drift (e.g., post-update_app_code edits) is NOT detected -- HPM stores no source hashes."
+        limitations                 : "Drift detection is heID-presence-only. Per-component source drift (e.g., post-hub_update_app edits) is NOT detected -- HPM stores no source hashes."
     ]
     if (driftSkippedMalformed) result.skippedMalformed = driftSkippedMalformed
     if (driftDataQualityWarnings) result.dataQualityWarnings = driftDataQualityWarnings
@@ -14028,7 +13871,7 @@ def toolListRmRules(args) {
             combined = filtered
         }
     } catch (Throwable e) {
-        mcpLog("warn", "rm-interop", "list_rm_rules: could not cross-check RMUtils output against /hub2/appsList (${e.message}); returning unfiltered")
+        mcpLog("warn", "rm-interop", "hub_list_rules: could not cross-check RMUtils output against /hub2/appsList (${e.message}); returning unfiltered")
     }
 
     // combined.values() returns a Collection view in some Groovy versions; materialize
@@ -14036,7 +13879,7 @@ def toolListRmRules(args) {
     def rules = combined.values().sort { it.label ?: "" }.toList()
 
     def cursor = args?.cursor
-    def paged = _paginateList(rules, cursor, 50, "list_rm_rules")
+    def paged = _paginateList(rules, cursor, 50, "hub_list_rules")
     def result = [
         rules: paged.page,
         count: paged.page.size()
@@ -14130,14 +13973,14 @@ private void registerRmRule(Map combined, def r, String version) {
             def entry = r.entrySet().iterator().next()
             // entry.key may come back as String or Integer depending on how Hubitat built
             // the Map; coerce to Integer (via string) so downstream consumers get the
-            // Integer id advertised in list_rm_rules' response schema.
+            // Integer id advertised in hub_list_rules' response schema.
             def rawKey = entry.key
             try {
                 id = (rawKey instanceof Number) ? rawKey.toInteger() : rawKey.toString().toInteger()
             } catch (NumberFormatException coerceErr) {
                 // Returning the raw key would silently violate the tool's
                 // ruleId: integer schema (callers would see a String id in the
-                // response and fail to dispatch run_rm_rule against it). Skip
+                // response and fail to dispatch hub_call_rule against it). Skip
                 // the entry and surface the anomaly via logs instead.
                 def keyType = rawKey instanceof Number ? 'Number' : rawKey instanceof String ? 'String' : 'other'
                 mcpLog("warn", "rm-interop", "registerRmRule: non-integer ruleId '${rawKey}' (type=${keyType}) in RM ${version} list -- skipping entry")
@@ -14195,7 +14038,7 @@ def toolRunRmRule(args) {
         default: throw new IllegalArgumentException("Invalid action '${action}'. Must be 'rule', 'actions', 'stop', or 'start'.")
     }
 
-    return sendRmAction(ruleId, rmAction, "run_rm_rule action=${action}")
+    return sendRmAction(ruleId, rmAction, "hub_call_rule action=${action}")
 }
 
 /**
@@ -14210,7 +14053,7 @@ private Map _rmToggleStopped(Integer ruleId, String action) {
     try {
         status = _rmFetchStatusJson(ruleId)
     } catch (Exception e) {
-        return [success: false, ruleId: ruleId, error: "run_rm_rule action=${action}: cannot read rule state before toggle (${e.message})"]
+        return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: cannot read rule state before toggle (${e.message})"]
     }
     def stoppedNow = _readAppStateBoolean(status, "stopped", false)
     def targetStopped = (action == "stop")
@@ -14225,7 +14068,7 @@ private Map _rmToggleStopped(Integer ruleId, String action) {
     try {
         _rmClickAppButton(ruleId, "stopRule")
     } catch (Exception e) {
-        return [success: false, ruleId: ruleId, error: "run_rm_rule action=${action}: stopRule button click failed (${e.message})"]
+        return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: stopRule button click failed (${e.message})"]
     }
     return [
         success: true,
@@ -14271,23 +14114,22 @@ private Object _rmGetStateEditAct(Integer appId) {
 }
 
 /**
- * Pause a Rule Machine rule via RMUtils.sendAction(pauseRule).
- * Idempotent on the hub side: pausing an already-paused rule is a no-op.
+ * Pause or resume a Rule Machine rule via RMUtils.sendAction(pauseRule|resumeRule).
+ * value=true pauses, value=false resumes. Idempotent on the hub side. Backs the
+ * hub_set_rule_paused tool (verb-pair merge of the former pause/resume tools).
  */
-def toolPauseRmRule(args) {
+def toolSetRulePaused(args) {
     requireBuiltinApp()
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
-    return sendRmAction(normalizeRuleId(args.ruleId), "pauseRule", "pause_rm_rule")
-}
-
-/**
- * Resume a previously paused Rule Machine rule via RMUtils.sendAction(resumeRule).
- * Idempotent on the hub side: resuming an already-active rule is a no-op.
- */
-def toolResumeRmRule(args) {
-    requireBuiltinApp()
-    if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
-    return sendRmAction(normalizeRuleId(args.ruleId), "resumeRule", "resume_rm_rule")
+    if (args?.value == null) throw new IllegalArgumentException("value (boolean) is required: true=pause, false=resume")
+    Boolean paused
+    if (args.value instanceof Boolean) paused = args.value
+    else if (args.value == "true") paused = true
+    else if (args.value == "false") paused = false
+    else throw new IllegalArgumentException("value must be boolean true/false (got: ${args.value})")
+    def ruleId = normalizeRuleId(args.ruleId)
+    return paused ? sendRmAction(ruleId, "pauseRule", "hub_set_rule_paused")
+                  : sendRmAction(ruleId, "resumeRule", "hub_set_rule_paused")
 }
 
 /**
@@ -14319,7 +14161,7 @@ def toolSetRmRuleBoolean(args) {
         throw new IllegalArgumentException("value must be boolean true/false (or the string 'true'/'false'), got: ${args.value}")
     }
     def rmAction = resolved ? "setRuleBooleanTrue" : "setRuleBooleanFalse"
-    return sendRmAction(normalizeRuleId(args.ruleId), rmAction, "set_rm_rule_boolean value=${resolved}")
+    return sendRmAction(normalizeRuleId(args.ruleId), rmAction, "hub_set_rule_private_boolean value=${resolved}")
 }
 
 /**
@@ -14349,7 +14191,7 @@ private Map sendRmAction(Integer ruleId, String rmAction, String logContext) {
         // double-fire the action if the first call partially succeeded.
         def m = e.message ?: e.toString()
         mcpLog("error", "rm-interop", "${logContext} failed for rule ${ruleId}: ${m}")
-        return [success: false, error: "RMUtils.sendAction failed: ${m}", note: "Verify the ruleId is valid (use list_rm_rules) and Rule Machine is installed."]
+        return [success: false, error: "RMUtils.sendAction failed: ${m}", note: "Verify the ruleId is valid (use hub_list_rules) and Rule Machine is installed."]
     }
 }
 
@@ -14368,7 +14210,7 @@ private Map sendRmActionFallback(Integer ruleId, String rmAction, String appLabe
         def m1 = original.message ?: original.toString()
         def m2 = e2.message ?: e2.toString()
         mcpLog("error", "rm-interop", "${logContext} failed for rule ${ruleId}: 4-arg=${m1}, 3-arg=${m2}")
-        return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "4-arg attempt also failed: ${m1}. Verify the ruleId is valid (use list_rm_rules) and Rule Machine is installed."]
+        return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "4-arg attempt also failed: ${m1}. Verify the ruleId is valid (use hub_list_rules) and Rule Machine is installed."]
     }
 }
 
@@ -14427,7 +14269,7 @@ private Integer normalizeRuleId(def ruleId) {
  *   - rule_machine: namespace=hubitat appName=Rule-5.1 parentType="Rule Machine"
  *
  * Sources for additional entries (per #120 scope expansion notes —
- * confirm namespace+appName via list_installed_apps before enabling):
+ * confirm namespace+appName via hub_list_installed_apps before enabling):
  *   - button_controller (parent),  Button Controller-5.1, parentType="Button Controllers"
  *   - button_rule (under controller), Button Rule-5.1, parentType=<a specific Button Controller>
  *   - basic_rule, parentType="Basic Rules"
@@ -14436,9 +14278,9 @@ private Integer normalizeRuleId(def ruleId) {
  *   - notifier (Notifier), parentType="Notifications"
  *   - visual_rule (Visual Rule Builder), parentType="Visual Rules Builder"
  *
- * Update + delete already work on these today — call update_native_app /
- * delete_native_app with the appId of any existing classic-app instance
- * (read appId via list_installed_apps + get_app_config).
+ * Update + delete already work on these today — call hub_update_native_app /
+ * hub_delete_native_app with the appId of any existing classic-app instance
+ * (read appId via hub_list_installed_apps + hub_get_app_config).
  */
 private Map _appTypeRegistry() {
     return [
@@ -14459,7 +14301,7 @@ private Map _appTypeRegistry() {
  * Detect whether the given configPage still carries an open RM-style
  * wizard editor scaffold (any input whose name matches the well-known
  * trigger/condition/action edit-scaffold patterns). Used by
- * update_native_app to decide whether a wizard-Done button (`hasAll`,
+ * hub_update_native_app to decide whether a wizard-Done button (`hasAll`,
  * `actionDone`, ...) actually closed the editor or whether it needs a
  * second click to commit. Verified live on firmware 2.5.0.123: the
  * first wizard-Done click frequently leaves the scaffold in place and
@@ -14542,7 +14384,7 @@ private String _rmFindResidualCondTrig(Map configPage) {
  * hasAll commit followed by updateRule, eventSubscriptions can stay
  * at 0 for up to ~minute before populating — a second updateRule click
  * typically settles them immediately. This function detects the case
- * so update_native_app can auto-retry once + surface a clean warning
+ * so hub_update_native_app can auto-retry once + surface a clean warning
  * if the retry still doesn't help.
  */
 private Map _rmCheckSubscriptionSettle(Integer appId) {
@@ -14568,7 +14410,7 @@ private Map _rmCheckSubscriptionSettle(Integer appId) {
 
 /**
  * Collect all installed-app ids currently present in the hub's authoritative
- * /hub2/appsList tree. Used by list_rm_rules to filter out stale RMUtils-
+ * /hub2/appsList tree. Used by hub_list_rules to filter out stale RMUtils-
  * cache ghosts after a rule is deleted (the delete itself succeeds at the
  * InstalledApp table, but RMUtils' internal rule list lags for seconds-to-
  * minutes — hub UI lists never show these because they read /hub2/appsList,
@@ -14611,7 +14453,7 @@ private Set _collectLiveAppIds() {
 
 /**
  * Discover and cache the parent app id for the given native-app type.
- * Required by create_native_app: createchild is addressed
+ * Required by hub_create_native_app: createchild is addressed
  * `/installedapp/createchild/<ns>/<appName>/parent/<parentId>`, and the
  * parent id is per-hub.
  *
@@ -14669,7 +14511,7 @@ private Integer _discoverParentAppId(String appType) {
 
     if (parentNode?.id == null) {
         throw new IllegalArgumentException(
-            "'${parentTypeName}' parent not found on this hub. Install it via Apps --> Add Built-In App before using create_native_app with appType=${appType}.")
+            "'${parentTypeName}' parent not found on this hub. Install it via Apps --> Add Built-In App before using hub_create_native_app with appType=${appType}.")
     }
     def id = parentNode.id.toString().toInteger()
     ids[appType] = id
@@ -14786,7 +14628,7 @@ def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = 
  * → set state-or-comparator → optional modifiers → hasAll → finalize) with
  * one orchestrated call. Discovers the next trigger index from existing
  * settings, opens the wizard, walks the schema-aware writes, commits via
- * hasAll, and the auto-finalize on update_native_app's path closes the
+ * hasAll, and the auto-finalize on hub_update_native_app's path closes the
  * residual isCondTrig prompt.
  *
  * Capability-family field mapping:
@@ -14810,11 +14652,11 @@ def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = 
  *   conditional (sets isCondTrig.<N>=true; condition wizard not driven)
  *   rawSettings { fieldName: value, ... } — escape hatch
  *
- * Single-trigger path (update_native_app addTrigger={}): the wrapper
+ * Single-trigger path (hub_update_native_app addTrigger={}): the wrapper
  * auto-fires updateRule after a successful commit so subscriptions
  * populate immediately. No manual updateRule needed for single calls.
  *
- * Bulk/batch paths (addTriggers[], patches, create_native_app triggers[]):
+ * Bulk/batch paths (addTriggers[], patches, hub_create_native_app triggers[]):
  * the wrapper fires updateRule ONCE at the end of the batch, not per
  * item. _rmAddTrigger itself does NOT fire updateRule, so callers that
  * issue multiple sequential _rmAddTrigger calls avoid N redundant inits.
@@ -14938,7 +14780,7 @@ String _rmNormalizeAtTime(String raw) {
  *
  * SCOPE CAVEAT: this list is the source of truth for production behavior
  * ONLY. Doc surfaces that name reason codes literally (inline schema
- * descriptions in this file's tool registrations, the inline get_tool_guide
+ * descriptions in this file's tool registrations, the inline hub_get_tool_guide
  * content block, TOOL_GUIDE.md, etc.) still require manual sync when a new
  * reason code is added -- there is no lint rule today that mirrors the
  * discrete-event-caps-doc-parity check for reason codes. Adding such a lint
@@ -14948,7 +14790,7 @@ String _rmNormalizeAtTime(String raw) {
  * Genuinely-partial reason codes (`silent_rejection`, `rhs_type_not_revealed`,
  * `offset_field_not_revealed`, `verification_fetch_failed`, `not_in_schema`,
  * `api_unavailable`, etc.) are NOT in this list and continue to flip `partial`.
- * Reason-code is the disambiguator -- doc contract at the inline get_tool_guide
+ * Reason-code is the disambiguator -- doc contract at the inline hub_get_tool_guide
  * content block calls this list out by name.
  */
 private List _rmInformationalSkippedReasons() {
@@ -14990,7 +14832,7 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
             }
         }
         if (!exists) {
-            throw new IllegalArgumentException("${label} contains device ID '${idStr}' which does not exist on the hub. Verify the device ID via list_devices.")
+            throw new IllegalArgumentException("${label} contains device ID '${idStr}' which does not exist on the hub. Verify the device ID via hub_list_devices.")
         }
     }
 }
@@ -15196,7 +15038,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         def hasRawXVar = triggerSpec.rawSettings instanceof Map &&
             ((triggerSpec.rawSettings as Map).any { k, _v -> k.toString().replace("@N", idx.toString()) == "xVar${idx}".toString() })
         if (triggerSpec.variable == null && !hasRawXVar) {
-            throw new IllegalArgumentException("triggers[].variable is required when capability='Variable' (hub variable name). Use list_variables to discover available names.")
+            throw new IllegalArgumentException("triggers[].variable is required when capability='Variable' (hub variable name). Use hub_list_variables to discover available names.")
         }
         if (triggerSpec.variable != null) {
             writeIfPresent("xVar${idx}", triggerSpec.variable)
@@ -15442,7 +15284,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             // emitting bad periodic hrefs shows up as more than scattered hub logs.
             def anomaly = periodicNMalformed ? "periodic href params.n malformed (resolved to 1)" : "periodic href discovery threw (${periodicHrefDiscoveryError})"
             skipped << [key: "periodic", reason: "periodic_href_anomaly_firsttrigger", value: freq,
-                        note: "${anomaly}; suffix-1 was used and is correct for the first periodic trigger, but verify the schedule rendered via get_app_config."]
+                        note: "${anomaly}; suffix-1 was used and is correct for the first periodic trigger, but verify the schedule rendered via hub_get_app_config."]
         }
         // Periodic field names are suffixed by the per-trigger sub-page index
         // (pn). For pn=1 the field names end in ...C1; for a later periodic
@@ -15623,7 +15465,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             def doneErr = "${periodicDoneExc.class.simpleName}: ${periodicDoneExc.message}".toString()
             mcpLog("warn", "rm-native", "_rmAddTrigger: periodic sub-page Done submit failed for app ${appId} (in-flight trigger idx ${idx}) (${doneErr})")
             skipped << [key: "periodic", reason: "subpage_done_failed", value: freq,
-                        note: "Periodic sub-page Done submit failed (${doneErr}); the trigger row description may not have baked. Verify via get_app_config and re-add if the row shows '?'."]
+                        note: "Periodic sub-page Done submit failed (${doneErr}); the trigger row description may not have baked. Verify via hub_get_app_config and re-add if the row shows '?'."]
         }
         } // end if (!periodicUnsafeFallback)
     }
@@ -15729,7 +15571,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
 
     // Partial-success signal — see _rmAddAction for rationale. The trigger
     // is committed but a caller-requested field didn't land; LLM should
-    // retry via update_native_app(walkStep) or rebuild the trigger row.
+    // retry via hub_update_native_app(walkStep) or rebuild the trigger row.
     // health.brokenMarkers non-empty means a PRIOR trigger is already broken;
     // the new trigger committed but the rule is in a known-bad state the
     // caller should address — surface as partial so the LLM sees it immediately.
@@ -15773,7 +15615,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     def repairHints = []
     def hasBrokenLabel = health?.label?.toString()?.contains("*BROKEN*") as Boolean
     if (triggerNotBaked) {
-        repairHints << "Trigger did not bake — mainPage still shows 'Define Triggers' placeholder. Common causes: state value not in capability's enum (e.g. 'on' is invalid for Motion which uses 'active'/'inactive'), capability/state mismatch, or unknown deviceIds. Verify state value matches the capability's domain (Switch: 'on'/'off'/'*changed*', Motion: 'active'/'inactive', Contact: 'open'/'closed', etc.) and run list_devices to verify deviceIds. Then call removeAction or rebuild the rule."
+        repairHints << "Trigger did not bake — mainPage still shows 'Define Triggers' placeholder. Common causes: state value not in capability's enum (e.g. 'on' is invalid for Motion which uses 'active'/'inactive'), capability/state mismatch, or unknown deviceIds. Verify state value matches the capability's domain (Switch: 'on'/'off'/'*changed*', Motion: 'active'/'inactive', Contact: 'open'/'closed', etc.) and run hub_list_devices to verify deviceIds. Then call removeAction or rebuild the rule."
     }
     if (partial || hasBrokenLabel) {
         // Name only genuinely-degraded fields (exclude the informational walker
@@ -15782,16 +15624,16 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         if (!genuineSkipped.isEmpty()) {
             def skippedKeys = genuineSkipped*.key.findAll { it != null }.join(', ')
             def settingWord = genuineSkipped.size() == 1 ? "setting" : "settings"
-            repairHints << "Some trigger ${settingWord} didn't land: ${skippedKeys}. Use update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see the live schema, then write the missing fields one at a time. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial trigger construction, no longer in the live input list). Verify via get_app_config(appId) -- if the trigger paragraph renders the value correctly (e.g. 'Certain Time 5:30 PM'), the partial flag is cosmetic and the trigger is fully baked. Skip the repair."
+            repairHints << "Some trigger ${settingWord} didn't land: ${skippedKeys}. Use hub_update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see the live schema, then write the missing fields one at a time. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial trigger construction, no longer in the live input list). Verify via hub_get_app_config(appId) -- if the trigger paragraph renders the value correctly (e.g. 'Certain Time 5:30 PM'), the partial flag is cosmetic and the trigger is fully baked. Skip the repair."
         }
         if (hasBrokenLabel) {
             repairHints << "Trigger row has *BROKEN* marker -- capability '${cap}' likely needs a capability-specific field (Mode: pass state='ModeName' or modeIds=['id'], NOT rawSettings.tstate; Periodic: pass periodic={} sub-spec). Re-add the trigger with the correct fields."
         }
         if ((health?.brokenMarkers as List)?.size() > 0 && !hasBrokenLabel) {
-            repairHints << "Rule has pre-existing broken markers: ${(health.brokenMarkers as List).unique().join(', ')}. The new trigger committed, but run check_rule_health(${appId}) and repair the existing broken trigger/action rows before this rule fires correctly."
+            repairHints << "Rule has pre-existing broken markers: ${(health.brokenMarkers as List).unique().join(', ')}. The new trigger committed, but run hub_get_rule_health(${appId}) and repair the existing broken trigger/action rows before this rule fires correctly."
         }
         if (skipped?.any { it?.reason == "periodic_href_unresolved_nonfirst_trigger" }) {
-            repairHints << "The periodic sub-page index could not be resolved for this (non-first) trigger -- its href was absent from the trigger schema, or the href's params.n was malformed -- so its schedule was NOT written, because writing it would have overwritten an earlier periodic trigger's schedule. Retry the add: re-fetch with update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to confirm the periodic href is present with an integer params.n, or rebuild the rule's triggers in order. If the rule has only one periodic trigger, this should not recur."
+            repairHints << "The periodic sub-page index could not be resolved for this (non-first) trigger -- its href was absent from the trigger schema, or the href's params.n was malformed -- so its schedule was NOT written, because writing it would have overwritten an earlier periodic trigger's schedule. Retry the add: re-fetch with hub_update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to confirm the periodic href is present with an integer params.n, or rebuild the rule's triggers in order. If the rule has only one periodic trigger, this should not recur."
         }
         if (hubRenderError) {
             repairHints << "WARNING: selectTriggers may have rendered with an error (configPageError=${err}, or skipped items have empty available list). This is a hub-side issue. Consider deleting the trigger and trying with different deviceIds or trigger shape."
@@ -15825,7 +15667,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
  * Return a structured schema Map describing every supported addTrigger capability.
  * Called when addTrigger: {discover: true} is passed -- no hub mutation, no
  * confirm/backup required. Content is sourced from the inline capability-family
- * reference in the update_native_app tool description.
+ * reference in the hub_update_native_app tool description.
  */
 private Map _rmTriggerSchemaForDiscover() {
     return [
@@ -16069,10 +15911,10 @@ private Map _rmTriggerSchemaForDiscover() {
                 name: "Mode",
                 family: "hub-state",
                 requiredFields: [
-                    [name: "state", type: "String or List<String>", description: "Mode name(s) that trigger the rule (e.g. 'Night' or ['Away', 'Night']). Names are resolved to IDs via location.modes -- must match existing hub modes (case-insensitive). Use get_modes to list available modes and their IDs. Required unless modeIds is provided."]
+                    [name: "state", type: "String or List<String>", description: "Mode name(s) that trigger the rule (e.g. 'Night' or ['Away', 'Night']). Names are resolved to IDs via location.modes -- must match existing hub modes (case-insensitive). Use hub_list_modes to list available modes and their IDs. Required unless modeIds is provided."]
                 ],
                 optionalFields: [
-                    [name: "modeIds", type: "List<String or Integer>", description: "Mode IDs directly (alternative to state). Use when you already have the ID from get_modes. E.g. ['3'] or ['3', '5']. When provided, state is not required."]
+                    [name: "modeIds", type: "List<String or Integer>", description: "Mode IDs directly (alternative to state). Use when you already have the ID from hub_list_modes. E.g. ['3'] or ['3', '5']. When provided, state is not required."]
                 ],
                 notes: "No deviceIds required. Triggers when hub mode becomes any of the listed modes. IMPORTANT: internally writes modesX<N> (not tstate<N>) -- passing only rawSettings with tstate will produce a broken trigger."
             ],
@@ -16080,7 +15922,7 @@ private Map _rmTriggerSchemaForDiscover() {
                 name: "Variable",
                 family: "variable",
                 requiredFields: [
-                    [name: "variable", type: "String", description: "Hub variable name. Use list_variables to discover."]
+                    [name: "variable", type: "String", description: "Hub variable name. Use hub_list_variables to discover."]
                 ],
                 optionalFields: [
                     [name: "comparator", type: "enum", values: ["=", "!= (or ≠)", "<", ">", "<=", ">=", "in", "*changed*", "*increased*", "*decreased*", "*increased by over*", "*decreased by over*"], description: "Default: *changed*. ASCII '!=' / '<>' map to Unicode '≠'."],
@@ -16099,7 +15941,7 @@ private Map _rmTriggerSchemaForDiscover() {
  * Return a structured schema Map describing every supported addAction capability.
  * Called when addAction: {discover: true} is passed -- no hub mutation, no
  * confirm/backup required. Content is sourced from the inline capability-family
- * reference in the update_native_app tool description.
+ * reference in the hub_update_native_app tool description.
  */
 private Map _rmActionSchemaForDiscover() {
     return [
@@ -16273,8 +16115,8 @@ private Map _rmActionSchemaForDiscover() {
                 family: "hub",
                 requiredFields: [],
                 optionalFields: [
-                    [name: "modeId", type: "Integer", description: "Mode ID -- provide this OR modeName (not both). When modeName is given, it is resolved to its ID before submission; unknown names fail fast with the valid mode list. Degenerate: if location.modes is empty, the error lists '(none -- hub returned no modes; verify hub state via get_modes)'."],
-                    [name: "modeName", type: "String", description: "Mode name (case-insensitive) -- provide this OR modeId (not both). Resolved to mode ID automatically. Use get_modes to confirm available names."]
+                    [name: "modeId", type: "Integer", description: "Mode ID -- provide this OR modeName (not both). When modeName is given, it is resolved to its ID before submission; unknown names fail fast with the valid mode list. Degenerate: if location.modes is empty, the error lists '(none -- hub returned no modes; verify hub state via hub_list_modes)'."],
+                    [name: "modeName", type: "String", description: "Mode name (case-insensitive) -- provide this OR modeId (not both). Resolved to mode ID automatically. Use hub_list_modes to confirm available names."]
                 ],
                 notes: "Exactly one of modeId or modeName is required at call time."
             ],
@@ -16772,7 +16614,7 @@ private List _rmCollectActionIndices(Integer appId) {
  * near-zero extra latency on the common success path (first check passes
  * immediately). The 10s budget covers typical and slow hub propagation
  * observed in live-hub runs; on retry exhaustion the throw directs the
- * caller to verify via get_app_config since the deletion may complete
+ * caller to verify via hub_get_app_config since the deletion may complete
  * post-response. See source comment below for the original race description.
  */
 private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
@@ -16803,7 +16645,7 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     def editActEntry = (status?.appState ?: []).find { it?.name?.toString() == "editAct" }
     def stuckEditAct = editActEntry?.value
     if (stuckEditAct != null) {
-        throw new IllegalStateException("removeAction(${actionIdx}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops delAct clicks until this clears. Recovery options: (a) wait ~60s for RM's stale-state timeout and retry, (b) try update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to abort the in-flight edit (behavior unverified -- attempt at own risk), (c) restore_item_backup with a recent snapshot.")
+        throw new IllegalStateException("removeAction(${actionIdx}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops delAct clicks until this clears. Recovery options: (a) wait ~60s for RM's stale-state timeout and retry, (b) try hub_update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to abort the in-flight edit (behavior unverified -- attempt at own risk), (c) hub_restore_backup with a recent snapshot.")
     }
     // Structural pre-flight: refuse if the deleted index is a block
     // opener/closer AND removing it would introduce a new imbalance not
@@ -16858,7 +16700,7 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
             return [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
         }
     }
-    throw new IllegalStateException("removeAction(${actionIdx}) waited 10 seconds and action ${actionIdx} is still present in rule ${appId}'s actions list (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). This is likely an extreme propagation lag (state.editAct was clear at pre-flight). Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response.")
+    throw new IllegalStateException("removeAction(${actionIdx}) waited 10 seconds and action ${actionIdx} is still present in rule ${appId}'s actions list (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). This is likely an extreme propagation lag (state.editAct was clear at pre-flight). Verify via hub_get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response.")
 }
 
 /**
@@ -16880,7 +16722,7 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
  * attempts are made with increasing delays (1s, 3s, 6s) for a max sleep
  * budget of 10s. The 10s budget covers typical and slow hub propagation;
  * on retry exhaustion the throw directs the caller to verify via
- * get_app_config since the deletion may complete post-response.
+ * hub_get_app_config since the deletion may complete post-response.
  */
 private Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
     def beforeIndices = _rmCollectTriggerIndices(appId)
@@ -16938,7 +16780,7 @@ private Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
             return [success: true, removedIndex: triggerIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
         }
     }
-    throw new IllegalStateException("removeTrigger(${triggerIdx}) waited 10s and trigger ${triggerIdx} is still present in rule ${appId}'s trigger list (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). This is likely an extreme propagation lag. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. If the issue persists, use restore_item_backup to roll back to the pre-operation snapshot.")
+    throw new IllegalStateException("removeTrigger(${triggerIdx}) waited 10s and trigger ${triggerIdx} is still present in rule ${appId}'s trigger list (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). This is likely an extreme propagation lag. Verify via hub_get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. If the issue persists, use hub_restore_backup to roll back to the pre-operation snapshot.")
 }
 
 /**
@@ -16993,7 +16835,7 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     // new state value echoes back. Mirrors the _rmAddTrigger pattern --
     // RM may silently accept the write but not persist it if the wizard
     // is in an unexpected state. verificationFetchFailed lets the caller
-    // check via get_app_config rather than assuming success.
+    // check via hub_get_app_config rather than assuming success.
     def verifiedState = null
     def verificationFetchFailed = false
     try {
@@ -17101,7 +16943,7 @@ private List _rmClearActions(Integer appId) {
     // follows the same precedent of encoding a recoverable-shape hint in the
     // exception message. Single source of truth: getAsyncCommitMarker() --
     // throw and strip sites must agree.
-    throw new IllegalStateException("clearActions: trashActs submit returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear) or a rare RM commit lag. Verify via get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via restore_item_backup if the ${stillThereWord} really did get clobbered. Note: do NOT use update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.${getAsyncCommitMarker()}")
+    throw new IllegalStateException("clearActions: trashActs submit returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use hub_update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to clear) or a rare RM commit lag. Verify via hub_get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via hub_restore_backup if the ${stillThereWord} really did get clobbered. Note: do NOT use hub_update_native_app(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.${getAsyncCommitMarker()}")
 }
 
 /**
@@ -17134,7 +16976,7 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     // an invalid index gets the more actionable IllegalArgumentException first.
     def stuckEditAct = _rmGetStateEditAct(appId)
     if (stuckEditAct != null) {
-        throw new IllegalStateException("moveAction(${actionIdx}, ${direction}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops move-arrow clicks until this clears. Recovery options: (a) wait ~60s for RM's stale-state timeout and retry, (b) try update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to abort the in-flight edit (behavior unverified -- attempt at own risk), (c) restore_item_backup with a recent snapshot.")
+        throw new IllegalStateException("moveAction(${actionIdx}, ${direction}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops move-arrow clicks until this clears. Recovery options: (a) wait ~60s for RM's stale-state timeout and retry, (b) try hub_update_native_app(button='cancelAct', pageName='doActPage', confirm=true) to abort the in-flight edit (behavior unverified -- attempt at own risk), (c) hub_restore_backup with a recent snapshot.")
     }
     def beforePosition = beforeOrderRaw.indexOf(actionIdx)
     def isBoundary = (direction == "up" && beforePosition == 0) ||
@@ -17312,7 +17154,7 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
     //     the dispatcher's backup-and-catch and surfaces as success:false (abort the op).
     //   - addTrigger periodic Done: wraps THIS call and folds the failure into skipped as a
     //     repairable partial (the trigger row already committed).
-    //   - create_native_app trailing Done: wraps THIS call but discards the exception
+    //   - hub_create_native_app trailing Done: wraps THIS call but discards the exception
     //     (log-only) -- best-effort cleanup, the following updateRule handles the commit.
     // Catching inside the helper would erase all three distinctions, so it does not.
     hubInternalPostForm("/installedapp/update/json", body)
@@ -17371,7 +17213,7 @@ private void _rmSubmitMainPageDone(Integer appId) {
     }
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
     try { hubInternalPostForm("/installedapp/update/json", body) } catch (Exception e) {
-        mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: final Done POST for app ${appId} failed (${e.message}) -- state.editAct / state.editCond markers from in-flight edits may not have been cleared; next edit session should verify via get_app_config")
+        mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: final Done POST for app ${appId} failed (${e.message}) -- state.editAct / state.editCond markers from in-flight edits may not have been cleared; next edit session should verify via hub_get_app_config")
     }
 }
 
@@ -17806,7 +17648,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
                 // .flashOff() command (verified: rule that did Flash → Delay
                 // 5s → On left lights flashing for ~90s after the rule
                 // completed, until I sent .flashOff() directly via
-                // send_command).
+                // hub_call_device_command).
                 //
                 // To cancel a running flash from within a rule, use
                 // capability='runCommand' (mapped below) with command=
@@ -18098,7 +17940,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
             def matched = hubModes.find { it?.name?.toString()?.equalsIgnoreCase(name) }
             if (!matched) {
                 def available = hubModes.collect { it?.name }.findAll { it }.sort().join(', ')
-                def availableDisplay = available ?: "(none -- hub returned no modes; verify hub state via get_modes)"
+                def availableDisplay = available ?: "(none -- hub returned no modes; verify hub state via hub_list_modes)"
                 throw new IllegalArgumentException("mode action: modeName '${name}' not found. Available modes: ${availableDisplay}")
             }
             modeValue = matched.id
@@ -19184,7 +19026,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     // Partial-success signal: any skipped settings indicate a field the
     // caller asked for that didn't land. The action is still committed
     // (actType/actSubType set, row in actions[]), but it's incomplete and
-    // worth retrying via update_native_app(walkStep) or replaceActions.
+    // worth retrying via hub_update_native_app(walkStep) or replaceActions.
     // health.brokenMarkers non-empty means a PRIOR action/trigger is already
     // broken; the new action committed but the rule is in a known-bad state.
     // INFORMATIONAL sentinels (reveal_fallback_to_existing_field) are excluded
@@ -19205,7 +19047,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     def hubRenderError = err != null || (genuineSkipped.any { it?.available != null && (it.available as List).isEmpty() } as Boolean) || actionNotBaked
     def repairHints = []
     if (actionNotBaked) {
-        repairHints << "Action did not bake — mainPage still shows 'Define Actions' placeholder. Common causes: required field for the (capability, action) pair was omitted (e.g. dimmer.setLevel needs 'level'; switch.setPerMode needs 'perMode'; runCommand needs 'command'), invalid deviceIds, or value out of range. Inspect the rule via get_app_config(includeSettings=true) — settings.actType.<idx> set without matching subtype-specific fields means the action was registered but not committed. Use removeAction(${idx}) to clean up, then rebuild."
+        repairHints << "Action did not bake — mainPage still shows 'Define Actions' placeholder. Common causes: required field for the (capability, action) pair was omitted (e.g. dimmer.setLevel needs 'level'; switch.setPerMode needs 'perMode'; runCommand needs 'command'), invalid deviceIds, or value out of range. Inspect the rule via hub_get_app_config(includeSettings=true) — settings.actType.<idx> set without matching subtype-specific fields means the action was registered but not committed. Use removeAction(${idx}) to clean up, then rebuild."
     }
     if (partial) {
         // Use genuineSkipped (excluding informational sentinels) so the repair
@@ -19215,14 +19057,14 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
         if (!genuineSkipped.isEmpty()) {
             def skippedKeys = genuineSkipped*.key.findAll { it != null }.join(', ')
             def settingWord = genuineSkipped.size() == 1 ? "setting" : "settings"
-            repairHints << "Some ${settingWord} didn't land: ${skippedKeys}. Use update_native_app(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial action construction, no longer in the live input list). Verify via get_app_config(appId) -- if the action paragraph renders the value correctly, the partial flag is cosmetic and the action is fully baked. Skip the repair."
+            repairHints << "Some ${settingWord} didn't land: ${skippedKeys}. Use hub_update_native_app(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial action construction, no longer in the live input list). Verify via hub_get_app_config(appId) -- if the action paragraph renders the value correctly, the partial flag is cosmetic and the action is fully baked. Skip the repair."
             if (hubRenderError) {
                 repairHints << "WARNING: doActPage may have rendered with an error (configPageError=${err}, or skipped items have empty available list). This is a hub-side issue, not a wire-format problem. The action partially committed; consider removeAction(${idx}) to clear the broken row, then retry with different deviceIds or a different action shape."
             }
             repairHints << "If retries still fail, removeAction(index:${idx}) to clean up, then call addAction again with corrections."
         }
         if ((health?.brokenMarkers as List)?.size() > 0) {
-            repairHints << "Rule has pre-existing broken markers: ${(health.brokenMarkers as List).unique().join(', ')}. The new action committed, but run check_rule_health(${appId}) and repair the existing broken trigger/action rows before this rule fires correctly."
+            repairHints << "Rule has pre-existing broken markers: ${(health.brokenMarkers as List).unique().join(', ')}. The new action committed, but run hub_get_rule_health(${appId}) and repair the existing broken trigger/action rows before this rule fires correctly."
         }
     }
     // success=true when: the API call completed without an error AND at least
@@ -19318,7 +19160,7 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
         def hasRawXVar = condSpec.rawSettings instanceof Map &&
             ((condSpec.rawSettings as Map).any { k, _v -> k.toString().replace("@N", idx.toString()) == "xVar_${idx}".toString() })
         if (condSpec.variable == null && !hasRawXVar) {
-            throw new IllegalArgumentException("condition.variable is required when condition.capability='Variable' (hub variable name). Use list_variables to discover available names.")
+            throw new IllegalArgumentException("condition.variable is required when condition.capability='Variable' (hub variable name). Use hub_list_variables to discover available names.")
         }
         if (condSpec.variable != null) {
             _rmWriteSettingOnPage(appId, "selectTriggers", "xVar_${idx}", condSpec.variable, applied, null, skipped)
@@ -19565,7 +19407,7 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
 /**
  * Fetch /installedapp/configure/json/<appId>[/<pageName>] and parse.
  * Returns the raw map (app, configPage, settings, childApps, ...).
- * Callers (get_app_config, update_native_app) use this to discover the input
+ * Callers (hub_get_app_config, hub_update_native_app) use this to discover the input
  * schema (names + types + multiple flags) before issuing a write.
  */
 private Map _rmFetchConfigJson(Integer appId, String pageName = null) {
@@ -19646,7 +19488,7 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
         def aType = entry?.actType?.toString()
         def sType = entry?.actSubType?.toString()
         if (entry?.partial == true || (aType in ["condActs", "repeatActs"] && (sType == null || sType == ""))) {
-            issues << ("action ${idx} is in a partial-commit state (actType set, actSubType missing) — likely from an interrupted wizard write where the actType landed but the actSubType did not. The walker treats this as an opaque block boundary; restore from a recent backup or finish the wizard via update_native_app(walkStep=...).".toString())
+            issues << ("action ${idx} is in a partial-commit state (actType set, actSubType missing) — likely from an interrupted wizard write where the actType landed but the actSubType did not. The walker treats this as an opaque block boundary; restore from a recent backup or finish the wizard via hub_update_native_app(walkStep=...).".toString())
             return
         }
         if (aType == "condActs") {
@@ -19756,7 +19598,7 @@ private Map _rmFetchSettingsByName(Integer appId) {
  * blocks. Detects pre-flight refusals (signalled by the "RM is not
  * touched" sentinel that every pre-flight refusal throw includes) and
  * adjusts the restoreHint to make clear that nothing was mutated — so
- * the caller doesn't waste a restore_item_backup call. On pre-flight
+ * the caller doesn't waste a hub_restore_backup call. On pre-flight
  * refusal, also attaches the current health so the caller sees existing
  * structural issues that motivated the refusal.
  */
@@ -19777,9 +19619,9 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
         // pageName tells the caller which wizard page the cancelCapab recovery click belongs on
         // (doActPage for addAction, STPage for addRequiredExpression). The wizardStuck markers
         // themselves carry no page info, so callers thread it in.
-        restoreHint = "Backup saved before write -- restore via restore_item_backup with backupKey='${backup.backupKey}'. Or, before your next write, call update_native_app(button='cancelCapab', pageName='${pageName}', confirm=true) to manually close the in-flight wizard."
+        restoreHint = "Backup saved before write -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Or, before your next write, call hub_update_native_app(button='cancelCapab', pageName='${pageName}', confirm=true) to manually close the in-flight wizard."
     } else {
-        restoreHint = "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+        restoreHint = "Backup saved before write. Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
     }
     def result = [
         success: false,
@@ -19899,7 +19741,7 @@ private Map _rmCheckRuleHealth(Integer appId) {
         // post-response-commit race for non-structural deletes).
         structuralIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(settingsByName))
         if (structuralIssues) {
-            issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — likely caused by a raw settings write or a mutation that committed post-response. Use restore_item_backup to roll back, or add the missing closer via addAction(capability='endIf'|'stopRepeat').".toString())
+            issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — likely caused by a raw settings write or a mutation that committed post-response. Use hub_restore_backup to roll back, or add the missing closer via addAction(capability='endIf'|'stopRepeat').".toString())
         }
     } catch (Exception e) {
         issues << "health check failed: ${e.message}".toString()
@@ -20543,7 +20385,7 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
         // submit (stale version token, auth, malformed envelope, etc.) instead
         // of just a bare status code.
         def bodyPreview = resp?.data?.toString()?.take(200)
-        throw new IllegalStateException("Full-form submit on ${pageName} for app ${appId} failed: status=${resp.status}${bodyPreview ? "; body=" + bodyPreview : ""}. The submit was rejected so nothing was committed (a 4xx is usually a stale version token -- re-fetch via get_app_config(appId=${appId}) and retry). The page may be left in trash-confirmation mode; on this hard-fail path the tool backs it out automatically via cancelTrash. Do NOT treat this as a partial delete.")
+        throw new IllegalStateException("Full-form submit on ${pageName} for app ${appId} failed: status=${resp.status}${bodyPreview ? "; body=" + bodyPreview : ""}. The submit was rejected so nothing was committed (a 4xx is usually a stale version token -- re-fetch via hub_get_app_config(appId=${appId}) and retry). The page may be left in trash-confirmation mode; on this hard-fail path the tool backs it out automatically via cancelTrash. Do NOT treat this as a partial delete.")
     }
     // Surface any non-button inputs the wholesale-replace blanked (absent from
     // currentSettings AND not in extraSettings) so a caller can refuse a
@@ -20587,7 +20429,7 @@ private Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = nu
  * as a single JSON file (configure/json + statusJson combined), recorded
  * in the unified atomicState.itemBackupManifest alongside app/driver backups.
  *
- * Entries get type="rm-rule" so list_item_backups + restore_item_backup
+ * Entries get type="rm-rule" so hub_list_backups + hub_restore_backup
  * (the existing tools) handle them too — no separate RM-only backup
  * tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss>.
  */
@@ -20684,7 +20526,7 @@ private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
  * Force-delete an app via /installedapp/forcedelete/<id>/quiet. Same path
  * RM uses internally for its own "Delete Rule" button — bypasses child/
  * device reference checks. Caller MUST have called _rmBackupRuleSnapshot
- * first; delete_native_app enforces this.
+ * first; hub_delete_native_app enforces this.
  */
 private Map _rmForceDeleteApp(Integer appId) {
     def resp = hubInternalGetRaw("/installedapp/forcedelete/${appId}/quiet")
@@ -20720,10 +20562,10 @@ private Map _rmSoftDeleteApp(Integer appId) {
 // -------------------- Native RM tools (MCP-exposed) --------------------
 
 /**
- * create_native_app — create a new, empty Rule Machine 5.1 rule with a name.
+ * hub_create_native_app — create a new, empty Rule Machine 5.1 rule with a name.
  *
  * Body content (triggers/actions/required-expression) is added via
- * update_native_app after creation. This tool deliberately does only the
+ * hub_update_native_app after creation. This tool deliberately does only the
  * createchild + name-set so failure modes are small and recoverable.
  *
  * Auto-cleanup: if the name-set fails after createchild succeeds, the
@@ -20752,11 +20594,11 @@ def toolCreateNativeApp(args) {
         // hint instead of the generic "unexpected error".
         mcpLog("error", "rm-native", "createchild failed for appType='${appType}' (ns=${reg.namespace}, appName=${reg.appName}, parent=${parentId}): ${createExc.message}")
         throw new IllegalArgumentException(
-            "create_native_app failed at the createchild step for appType='${appType}'. " +
+            "hub_create_native_app failed at the createchild step for appType='${appType}'. " +
             "The hub rejected namespace='${reg.namespace}' + appName='${reg.appName}' " +
             "(parent app id ${parentId}). Most likely the _appTypeRegistry entry has the " +
             "wrong child appName for this hub's installed parent. To verify the actual " +
-            "child appName, call list_installed_apps and inspect the children of " +
+            "child appName, call hub_list_installed_apps and inspect the children of " +
             "parentTypeName='${reg.parentTypeName}' — the children's `type` field is the " +
             "child appName the hub expects. Underlying error: ${createExc.message}")
     }
@@ -20795,7 +20637,7 @@ def toolCreateNativeApp(args) {
                     triggerResults << _rmAddTrigger(newId, spec as Map)
                 } catch (Exception te) {
                     triggerResults << [success: false, error: te.message, specCapability: spec.capability]
-                    mcpLog("warn", "rm-native", "create_native_app: trigger ${i} (capability=${spec.capability}) failed -- ${te.message}")
+                    mcpLog("warn", "rm-native", "hub_create_native_app: trigger ${i} (capability=${spec.capability}) failed -- ${te.message}")
                 }
             }
             // Re-init once after all triggers are committed.
@@ -20803,7 +20645,7 @@ def toolCreateNativeApp(args) {
         }
 
         // Optional bulk-action creation. Mirrors the triggers path but
-        // for actions. Each spec follows update_native_app's addAction
+        // for actions. Each spec follows hub_update_native_app's addAction
         // shape. After all are committed, fire updateRule so the rule
         // re-subscribes from a fully-loaded state (actions self-bake via
         // doActPage->selectActions per-item).
@@ -20819,7 +20661,7 @@ def toolCreateNativeApp(args) {
                     actionResults << _rmAddAction(newId, spec as Map)
                 } catch (Exception ae) {
                     actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
-                    mcpLog("warn", "rm-native", "create_native_app: action ${i} (${spec.capability}/${spec.action}) failed -- ${ae.message}")
+                    mcpLog("warn", "rm-native", "hub_create_native_app: action ${i} (${spec.capability}/${spec.action}) failed -- ${ae.message}")
                 }
             }
             // After bulk-add, navigate selectActions → mainPage via
@@ -20833,7 +20675,7 @@ def toolCreateNativeApp(args) {
             try {
                 _rmSubmitSubPageDone(newId, "selectActions", "mainPage", "name", null)
             } catch (Exception subPageDoneExc) {
-                mcpLog("warn", "rm-native", "create_native_app: trailing _rmSubmitSubPageDone(selectActions->mainPage) failed for app ${newId} (${subPageDoneExc.message}) -- relying on updateRule below; lingering state.editAct markers may corrupt subsequent edits")
+                mcpLog("warn", "rm-native", "hub_create_native_app: trailing _rmSubmitSubPageDone(selectActions->mainPage) failed for app ${newId} (${subPageDoneExc.message}) -- relying on updateRule below; lingering state.editAct markers may corrupt subsequent edits")
             }
             _rmClickAppButton(newId, "updateRule")
         }
@@ -20862,7 +20704,7 @@ def toolCreateNativeApp(args) {
         def repairHints = []
         if (partialTriggers || partialActions) {
             repairHints << "Rule ${newId} was created BUT some pieces are incomplete — see partialTriggers / partialActions arrays for indices. Each partial result has its own repairHints list with concrete next steps."
-            repairHints << "Repair pattern: 1) get_app_config(${newId}, includeSettings=true) to inspect current state. 2) For each partial trigger/action, follow its repairHints. 3) update_native_app(walkStep={...}) for incremental field writes; replaceActions(...) or removeAction(index) + addAction(...) for whole-action retries. 4) update_native_app(button='updateRule') after fixes to commit. 5) Re-run check_rule_health to verify. Don't conclude failure until tool-only repair attempts are exhausted."
+            repairHints << "Repair pattern: 1) hub_get_app_config(${newId}, includeSettings=true) to inspect current state. 2) For each partial trigger/action, follow its repairHints. 3) hub_update_native_app(walkStep={...}) for incremental field writes; replaceActions(...) or removeAction(index) + addAction(...) for whole-action retries. 4) hub_update_native_app(button='updateRule') after fixes to commit. 5) Re-run hub_get_rule_health to verify. Don't conclude failure until tool-only repair attempts are exhausted."
         }
         def result = [
             success: health.ok && !partialTriggers && !partialActions,
@@ -20881,7 +20723,7 @@ def toolCreateNativeApp(args) {
             health: health,
             note: (triggerSpecs || actionSpecs) ?
                 "Created ${appType} app (id=${newId}) with ${triggerResults.count { it?.success == true }}/${triggerSpecs.size()} triggers + ${actionResults.count { it?.success == true }}/${actionSpecs.size()} actions FULLY committed${partialTriggers || partialActions ? " (some partial — see partialTriggers/partialActions for repair)" : ""}. updateRule fired once at the end." :
-                "Empty ${appType} app created (id=${newId}). Use update_native_app to populate, or get_app_config to inspect."
+                "Empty ${appType} app created (id=${newId}). Use hub_update_native_app to populate, or hub_get_app_config to inspect."
         ]
         if (triggerSpecs) result.triggers = triggerResults
         if (actionSpecs) result.actions = actionResults
@@ -20890,7 +20732,7 @@ def toolCreateNativeApp(args) {
         // Orphan cleanup: caller didn't get a usable app, so remove the
         // half-created shell rather than leaving it under the parent.
         // forcedelete/quiet is idempotent on already-gone ids.
-        mcpLog("error", "rm-native", "create_native_app setup failed after createchild for ${newId} (appType=${appType}): ${e.message} -- cleaning up")
+        mcpLog("error", "rm-native", "hub_create_native_app setup failed after createchild for ${newId} (appType=${appType}): ${e.message} -- cleaning up")
         try { _rmForceDeleteApp(newId) } catch (Exception ce) {
             mcpLog("warn", "rm-native", "Orphan cleanup failed for ${newId}: ${ce.message}")
         }
@@ -22039,7 +21881,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // propagating the error so the next caller starts fresh.
     // Track whether the cancel cleanup itself failed — propagated to the
     // caller's error result via the wizardStuck flag so they know to call
-    // restore_item_backup OR update_native_app(button='cancelCapab',
+    // hub_restore_backup OR hub_update_native_app(button='cancelCapab',
     // pageName='STPage') before issuing the next write.
     def wizardCleanupFailed = false
     def wizardCleanupErr = null
@@ -22287,7 +22129,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
         // is fully committed. It only means the browser may show the
         // "Required Fields missing" popup when navigating STPage manually.
         // Log warn so the operator can detect and navigate away with
-        // update_native_app(button='doneST', pageName='STPage') as repair.
+        // hub_update_native_app(button='doneST', pageName='STPage') as repair.
         mcpLog("warn", "rm-native", "addRequiredExpression: doneST click failed for app ${appId} (${doneStExc.message ?: doneStExc.toString()}) -- RE is committed but STPage stays in build mode; browser navigation may show validation popup")
     }
 
@@ -22347,7 +22189,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             conditionIndices: conditionIndices,
             settingsApplied: applied,
             settingsSkipped: skipped,
-            error: "Post-commit verification fetch failed (hub may be under load or session expired). The Required Expression write commands were sent but the result cannot be confirmed. Retry get_app_config(appId=${appId}) -- if the expression paragraph appears, the operation succeeded; if not, re-run addRequiredExpression or restore_item_backup."
+            error: "Post-commit verification fetch failed (hub may be under load or session expired). The Required Expression write commands were sent but the result cannot be confirmed. Retry hub_get_app_config(appId=${appId}) -- if the expression paragraph appears, the operation succeeded; if not, re-run addRequiredExpression or hub_restore_backup."
         ]
     }
     def mainParagraphs = (mainCfg?.configPage?.sections ?: []).collectMany { sect ->
@@ -22364,11 +22206,11 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             conditionIndices: conditionIndices,
             settingsApplied: applied,
             settingsSkipped: skipped,
-            error: "Required Expression did not bake -- mainPage still shows 'Define Required Expression' placeholder. Common causes: unknown deviceIds (verify via list_devices), state value not in capability's enum (e.g. 'on' is invalid for Motion which uses 'active'/'inactive'), or capability/state mismatch.",
+            error: "Required Expression did not bake -- mainPage still shows 'Define Required Expression' placeholder. Common causes: unknown deviceIds (verify via hub_list_devices), state value not in capability's enum (e.g. 'on' is invalid for Motion which uses 'active'/'inactive'), or capability/state mismatch.",
             repairHints: [
-                "Verify every deviceIds entry exists via list_devices.",
+                "Verify every deviceIds entry exists via hub_list_devices.",
                 "Verify the 'state' value matches the capability's domain (Switch: 'on'/'off', Motion: 'active'/'inactive', Contact: 'open'/'closed', Lock: 'locked'/'unlocked', etc.).",
-                "Inspect the rule's actual state via get_app_config(appId, includeSettings=true) — settings.rDev_<N> = {<id>: null} indicates the device wasn't resolved; settings.rCapab_<N> absent means the condition slot wasn't committed. Note: 'cond' is an ephemeral wizard selector (value 'a'/'b') and is NOT present in appSettings after commit -- conditions live in rCapab_N/rDev_N/state_N only."
+                "Inspect the rule's actual state via hub_get_app_config(appId, includeSettings=true) — settings.rDev_<N> = {<id>: null} indicates the device wasn't resolved; settings.rCapab_<N> absent means the condition slot wasn't committed. Note: 'cond' is an ephemeral wizard selector (value 'a'/'b') and is NOT present in appSettings after commit -- conditions live in rCapab_N/rDev_N/state_N only."
             ]
         ]
     }
@@ -22377,7 +22219,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // the walker matched a field that was already visible BEFORE the trigger
     // closure ran (normal on static-schema firmware, AND normal on Between-two-times
     // where multiple stage reveals naturally land on already-revealed fields after
-    // the previous stage committed). The doc contract at the inline get_tool_guide
+    // the previous stage committed). The doc contract at the inline hub_get_tool_guide
     // content block says these sentinels do NOT flip `partial` by themselves;
     // production must match. Other reason codes (silent_rejection,
     // rhs_type_not_revealed, offset_field_not_revealed, verification_fetch_failed,
@@ -22414,7 +22256,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
                 def uniqueCondIdxs = degEntries.collect { it.condIdx }.findAll { it != null }.unique().size()
                 def deg = uniqueCondIdxs > 0 ? uniqueCondIdxs : degEntries.size()
                 def cw = (deg == 1) ? "condition" : "conditions"
-                "${deg} ${cw} used a degraded write path (e.g. rhs_type_not_revealed; see settingsSkipped entries with 'reason'). Inspect via get_app_config(appId, includeSettings=true) and re-run with rawSettings to fill missing fields if needed."
+                "${deg} ${cw} used a degraded write path (e.g. rhs_type_not_revealed; see settingsSkipped entries with 'reason'). Inspect via hub_get_app_config(appId, includeSettings=true) and re-run with rawSettings to fill missing fields if needed."
             }()]
         ]
     }
@@ -22428,7 +22270,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
 
 
 /**
- * update_native_app — two modes, caller picks one (settings OR button):
+ * hub_update_native_app — two modes, caller picks one (settings OR button):
  *
  *   settings: apply a settings map with the multi-device 3-field contract
  *             enforced automatically. Always backs up first, always
@@ -22471,7 +22313,7 @@ def toolUpdateNativeApp(args) {
         def devKeyPattern = ~/^([tr]Dev[_-]?\d+|switch[A-Z]\w*|onOffSwitch\.\d+|lockLockUnlock\.\d+|shadeOpenClose\.\d+|fanRL\.\d+|tDev-\d+|deviceList|dimmerLevel\.\d+|ButtontDev_?\d+|pushButton\d+)$/
         settingsMap.each { k, v ->
             if (v instanceof List && k?.toString()?.matches(devKeyPattern)) {
-                _rmValidateDeviceIdsExist("update_native_app.settings.${k}", v)
+                _rmValidateDeviceIdsExist("hub_update_native_app.settings.${k}", v)
             }
         }
     }
@@ -22501,7 +22343,7 @@ def toolUpdateNativeApp(args) {
     def modifyTriggerSpec = args?.modifyTrigger instanceof Map ? args.modifyTrigger : null
     if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList
             && !addRequiredExpressionSpec && !addLocalVariableSpec && !patchesList && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec && !removeTriggerSpec && !modifyTriggerSpec) {
-        throw new IllegalArgumentException("update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'addLocalVariable' (Map), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
+        throw new IllegalArgumentException("hub_update_native_app requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'addLocalVariable' (Map), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
     }
 
     // Always snapshot before writing. No exceptions — this is the
@@ -22552,7 +22394,7 @@ def toolUpdateNativeApp(args) {
                 appId: appId,
                 error: e.message,
                 backup: backup,
-                restoreHint: "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+                restoreHint: "Backup saved before write. Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
             ]
         }
     }
@@ -22572,7 +22414,7 @@ def toolUpdateNativeApp(args) {
         def moveResult = null
         // removeAction rich return ({removedIndex, beforeIndices, afterIndices}).
         // Surfaced on the outer envelope alongside moveAction's rich return so
-        // callers see the index list shift without re-fetching via get_app_config.
+        // callers see the index list shift without re-fetching via hub_get_app_config.
         def removeResult = null
         // Trailing-updateRule failure propagation (sibling pattern from the
         // bulk addTriggers/addActions branch and the addTrigger single-spec
@@ -22613,14 +22455,14 @@ def toolUpdateNativeApp(args) {
                 def idx = (removeActionSpec.index as Integer)
                 // Capture the helper's rich return ({removedIndex, beforeIndices,
                 // afterIndices}) so the outer response can surface the index list
-                // shift without forcing callers to re-fetch via get_app_config.
+                // shift without forcing callers to re-fetch via hub_get_app_config.
                 // Mirrors the moveAction rich-envelope propagation pattern above.
                 removeResult = _rmDeleteAction(appId, idx)
                 removed << idx
             }
             // Capture the helper's rich return ({beforePosition, afterPosition,
             // indicesAfter}) so the outer response can surface it without forcing
-            // callers to re-fetch via get_app_config. Mirrors the addLocalVariable
+            // callers to re-fetch via hub_get_app_config. Mirrors the addLocalVariable
             // rich-envelope propagation pattern.
             if (moveActionSpec) {
                 if (moveActionSpec.index == null) throw new IllegalArgumentException("moveAction.index is required")
@@ -22663,7 +22505,7 @@ def toolUpdateNativeApp(args) {
                         mcpLog("warn", "rm-native", "clearActions threw mid-flow for app ${appId} (${clearExc.message}) -- auto-firing cancelTrash to recover the page")
                         try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
                         catch (Exception cancelExc) {
-                            mcpLog("warn", "rm-native", "cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need restore_item_backup")
+                            mcpLog("warn", "rm-native", "cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need hub_restore_backup")
                         }
                     }
                     throw clearExc
@@ -22678,7 +22520,7 @@ def toolUpdateNativeApp(args) {
                     try { addedResults << _rmAddAction(appId, spec as Map) }
                     catch (Exception ae) {
                         addedResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
-                        mcpLog("warn", "rm-native", "update_native_app: replaceActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
+                        mcpLog("warn", "rm-native", "hub_update_native_app: replaceActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
                     }
                 }
             }
@@ -22697,7 +22539,7 @@ def toolUpdateNativeApp(args) {
             // delete normally commits before the POST returns and this path
             // almost never fires. When it does (state.editAct no-op, or a rare
             // firmware commit lag), the write returned HTTP 200 but verification
-            // still saw the actions; callers verify via get_app_config and treat
+            // still saw the actions; callers verify via hub_get_app_config and treat
             // absent as success. replaceActions does NOT proceed to add when this
             // fires -- the clear may have committed and we can't tell yet, so
             // adding would risk double-write if the caller retries the whole
@@ -22726,13 +22568,13 @@ def toolUpdateNativeApp(args) {
                     possibleStateEditAct: possibleStateEditAct,
                     wizardStuck: false,
                     backup: backup,
-                    restoreHint: "If get_app_config confirms the operation did NOT commit, roll back via restore_item_backup(backupKey='${backup.backupKey}').",
-                    verifyHint: "Call get_app_config(appId=${appId}) and inspect the actions list -- if the deletion actually committed asynchronously after the response, do NOT call restore_item_backup.",
+                    restoreHint: "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').",
+                    verifyHint: "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the deletion actually committed asynchronously after the response, do NOT call hub_restore_backup.",
                     safeRecovery: [
                         recommended: 'verify-then-decide',
-                        verifyVia: "get_app_config(appId: ${appId})",
+                        verifyVia: "hub_get_app_config(appId: ${appId})",
                         ifActionsAbsent: 'treat as success -- clearActions committed post-response',
-                        ifActionsPresent: "wait 15s, then call get_app_config to re-check. If actions still present, retry clearActions, or clear state.editAct via update_native_app(button='cancelAct', pageName='doActPage', confirm=true) first.",
+                        ifActionsPresent: "wait 15s, then call hub_get_app_config to re-check. If actions still present, retry clearActions, or clear state.editAct via hub_update_native_app(button='cancelAct', pageName='doActPage', confirm=true) first.",
                         avoid: ['cancelTrash']
                     ]
                 ]
@@ -22747,7 +22589,7 @@ def toolUpdateNativeApp(args) {
                         error: cleanedError
                     ]
                     shape.error = "Clear half may have committed asynchronously. Add half not attempted to prevent data loss if clear actually succeeded."
-                    shape.verifyHint = "Call get_app_config to confirm clear state. If actions absent (clear succeeded), call addAction (or bulk addActions) to complete the replacement. If actions still present (clear genuinely failed), call replaceActions again."
+                    shape.verifyHint = "Call hub_get_app_config to confirm clear state. If actions absent (clear succeeded), call addAction (or bulk addActions) to complete the replacement. If actions still present (clear genuinely failed), call replaceActions again."
                 } else {
                     shape.stage = 'clearActions.verify_absent'
                     shape.error = cleanedError
@@ -22763,8 +22605,8 @@ def toolUpdateNativeApp(args) {
             // because it's single-row and the async race is rarer in practice.
             def isRetryExhaustion = e.message?.contains("deletion may commit post-response")
             if (isRetryExhaustion) {
-                result.restoreHint = "If get_app_config confirms the operation did NOT commit, roll back via restore_item_backup(backupKey='${backup.backupKey}')."
-                result.verifyHint = "Call get_app_config(appId=${appId}) and inspect the actions list -- if the operation actually committed despite the false-fail, do NOT call restore_item_backup."
+                result.restoreHint = "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')."
+                result.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
             }
             return result
         }
@@ -22792,7 +22634,7 @@ def toolUpdateNativeApp(args) {
             addedResults.any { it instanceof Map && it.partial == true })
         def repairHints = []
         if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the action mutation committed. The action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            repairHints << "updateRule click was rejected after the action mutation committed. The action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
         }
         // Inner-only partial (replaceActions list had partial inner items but the
         // trailing updateRule click landed clean). Without this hint the outer
@@ -22810,7 +22652,7 @@ def toolUpdateNativeApp(args) {
             removedIndices: removed ?: null,
             addedActions: addedResults ?: null,
             // Surface moveAction's rich return so callers can see the new position
-            // without a follow-up get_app_config. Null when this dispatch path was
+            // without a follow-up hub_get_app_config. Null when this dispatch path was
             // not moveAction.
             beforePosition: moveResult?.beforePosition,
             afterPosition: moveResult?.afterPosition,
@@ -22874,11 +22716,11 @@ def toolUpdateNativeApp(args) {
                 error: e.message,
                 backup: backup,
                 restoreHint: isRetryExhaustion ?
-                    "If get_app_config confirms the operation did NOT commit, roll back via restore_item_backup(backupKey='${backup.backupKey}')." :
-                    "Backup saved before write. Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+                    "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')." :
+                    "Backup saved before write. Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
             ]
             if (isRetryExhaustion) {
-                trigResult.verifyHint = "Call get_app_config(appId=${appId}) and inspect the triggers list -- if the operation actually committed despite the false-fail, do NOT call restore_item_backup."
+                trigResult.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the triggers list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
             }
             return trigResult
         }
@@ -22898,7 +22740,7 @@ def toolUpdateNativeApp(args) {
         def health = _rmCheckRuleHealth(appId)
         def repairHints = []
         if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the trigger mutation committed. The trigger row is baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            repairHints << "updateRule click was rejected after the trigger mutation committed. The trigger row is baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
         }
         if (removeTriggerSpec) {
             // Defense-in-depth: if _rmRemoveTrigger ever starts emitting partial
@@ -23003,7 +22845,7 @@ def toolUpdateNativeApp(args) {
         }
         def trigRepairHints = (trigResult?.repairHints as List) ?: []
         if (updateRuleFailed) {
-            trigRepairHints = trigRepairHints + ["updateRule click was rejected after the trigger row committed. The trigger settings are baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
+            trigRepairHints = trigRepairHints + ["updateRule click was rejected after the trigger row committed. The trigger settings are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
         }
         return [
             success: (trigResult?.success != false) && !updateRuleFailed,
@@ -23160,7 +23002,7 @@ def toolUpdateNativeApp(args) {
                             } else {
                                 try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
                                 catch (Exception cancelExc) {
-                                    mcpLog("warn", "rm-native", "patches[${pi}].clearActions: cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need restore_item_backup")
+                                    mcpLog("warn", "rm-native", "patches[${pi}].clearActions: cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need hub_restore_backup")
                                 }
                             }
                             throw clearExc
@@ -23181,7 +23023,7 @@ def toolUpdateNativeApp(args) {
                             } else {
                                 try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
                                 catch (Exception cancelExc) {
-                                    mcpLog("warn", "rm-native", "patches[${pi}].clearActions: cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need restore_item_backup")
+                                    mcpLog("warn", "rm-native", "patches[${pi}].clearActions: cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need hub_restore_backup")
                                 }
                             }
                             throw clearExc
@@ -23205,7 +23047,7 @@ def toolUpdateNativeApp(args) {
                             } else {
                                 try { _rmClickAppButton(appId, "cancelTrash", null, "selectActions") }
                                 catch (Exception cancelExc) {
-                                    mcpLog("warn", "rm-native", "patches[${pi}].replaceActions: cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need restore_item_backup")
+                                    mcpLog("warn", "rm-native", "patches[${pi}].replaceActions: cancelTrash recovery also failed for app ${appId}: ${cancelExc.message} -- rule may need hub_restore_backup")
                                 }
                             }
                             throw clearExc
@@ -23224,7 +23066,7 @@ def toolUpdateNativeApp(args) {
                         // Capture the helper's rich return ({beforePosition, afterPosition,
                         // indicesAfter}) so per-patch entries surface the move outcome the
                         // same way the action-mutation envelope does. Without these, callers
-                        // would need a separate get_app_config to see where the action moved.
+                        // would need a separate hub_get_app_config to see where the action moved.
                         def mvRes = _rmMoveAction(appId, pm.moveAction.index as Integer, dir)
                         patchResults << [
                             success: true,
@@ -23275,7 +23117,7 @@ def toolUpdateNativeApp(args) {
         def health = _rmCheckRuleHealth(appId)
         def repairHints = []
         if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the patch ops committed. The patch settings are baked but the rule will not re-evaluate / re-subscribe until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            repairHints << "updateRule click was rejected after the patch ops committed. The patch settings are baked but the rule will not re-evaluate / re-subscribe until updateRule fires. Retry hub_update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
         }
         // Inner-only partial hint (one or more patch ops self-reported partial:true BUT
         // the trailing updateRule click landed clean). Outer partial: already bubbles
@@ -23341,7 +23183,7 @@ def toolUpdateNativeApp(args) {
         def health = _rmCheckRuleHealth(appId)
         def repairHints = []
         if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the local variable committed. The variable is created on the hub but the rule's action map will not pick it up until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            repairHints << "updateRule click was rejected after the local variable committed. The variable is created on the hub but the rule's action map will not pick it up until updateRule fires. Retry hub_update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
         }
         // Propagate partial/error/hubRenderError/repairHints from the inner
         // helper. _rmAddLocalVariable's commit-verification path can return
@@ -23420,7 +23262,7 @@ def toolUpdateNativeApp(args) {
         def reCondCount = reResult?.conditionIndices?.size() ?: 0
         def repairHints = (reResult?.repairHints as List) ?: []
         if (updateRuleFailed) {
-            repairHints = repairHints + ["updateRule click was rejected after the expression conditions wrote successfully. The condition slots are baked but the rule will not re-evaluate the gate until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
+            repairHints = repairHints + ["updateRule click was rejected after the expression conditions wrote successfully. The condition slots are baked but the rule will not re-evaluate the gate until updateRule fires. Retry hub_update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
         }
         // Propagate partial/repairHints and all failure fields from the underlying
         // result so callers can detect degraded writes and verification failures
@@ -23476,7 +23318,7 @@ def toolUpdateNativeApp(args) {
                 try { triggerResults << _rmAddTrigger(appId, spec as Map) }
                 catch (Exception te) {
                     triggerResults << [success: false, error: te.message, specCapability: spec.capability]
-                    mcpLog("warn", "rm-native", "update_native_app: addTriggers[${i}] (${spec.capability}) failed -- ${te.message}")
+                    mcpLog("warn", "rm-native", "hub_update_native_app: addTriggers[${i}] (${spec.capability}) failed -- ${te.message}")
                 }
             }
             (addActionsList ?: []).eachWithIndex { spec, i ->
@@ -23487,7 +23329,7 @@ def toolUpdateNativeApp(args) {
                 try { actionResults << _rmAddAction(appId, spec as Map) }
                 catch (Exception ae) {
                     actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
-                    mcpLog("warn", "rm-native", "update_native_app: addActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
+                    mcpLog("warn", "rm-native", "hub_update_native_app: addActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
                 }
             }
         } catch (Exception e) {
@@ -23518,7 +23360,7 @@ def toolUpdateNativeApp(args) {
         def health = _rmCheckRuleHealth(appId)
         def repairHints = []
         if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the bulk adds committed. The trigger/action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            repairHints << "updateRule click was rejected after the bulk adds committed. The trigger/action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_update_native_app(button='updateRule', confirm=true), or restore via backup if the retry also fails."
         }
         // Bubble per-item partial:true (silent_rejection / verification_fetch_failed /
         // hubRenderError on inner field writes) up through the outer envelope. trigOk
@@ -23598,7 +23440,7 @@ def toolUpdateNativeApp(args) {
             // so any subsequent sub-page write lands in the wrong state.
             // Callers orchestrating a sub-page flow should: write their
             // page-specific settings with pageName=<sub>, click the
-            // sub-page Done button, then call update_native_app once
+            // sub-page Done button, then call hub_update_native_app once
             // more with button='updateRule' to re-initialize the rule.
             def isMainPage = (!pageName || pageName == "mainPage")
             if (!button && isMainPage && knownSettings) _rmClickAppButton(appId, "updateRule")
@@ -23607,10 +23449,10 @@ def toolUpdateNativeApp(args) {
                 result.settingsSkipped = unknownSettings
                 def settingWord = (unknownSettings.size() == 1) ? "Setting" : "Settings"
                 def beVerb = (unknownSettings.size() == 1) ? "is" : "are"
-                result.unknownSettingsWarning = "${settingWord} ${unknownSettings} ${beVerb} not in the current page schema (pageName='${pageName ?: 'mainPage'}') and would have been silently dropped by the hub. Common cause on RM wizards: schema inputs are incremental -- e.g. on selectTriggers, tstate1 only appears AFTER tCapab1+tDev1 are written, so bundling them into one call drops tstate1. Fix: split into sequential update_native_app calls, one precondition per call."
+                result.unknownSettingsWarning = "${settingWord} ${unknownSettings} ${beVerb} not in the current page schema (pageName='${pageName ?: 'mainPage'}') and would have been silently dropped by the hub. Common cause on RM wizards: schema inputs are incremental -- e.g. on selectTriggers, tstate1 only appears AFTER tCapab1+tDev1 are written, so bundling them into one call drops tstate1. Fix: split into sequential hub_update_native_app calls, one precondition per call."
             }
             if (!isMainPage) {
-                result.subPageNote = "Sub-page write (pageName='${pageName}') — updateRule NOT auto-fired so the editor state survives. Finish the wizard and call update_native_app(button='updateRule') to commit."
+                result.subPageNote = "Sub-page write (pageName='${pageName}') — updateRule NOT auto-fired so the editor state survives. Finish the wizard and call hub_update_native_app(button='updateRule') to commit."
             }
         }
 
@@ -23653,10 +23495,10 @@ def toolUpdateNativeApp(args) {
                         _rmUpdateAppSettings(appId, [(residualCondTrigName): false], finalizeSchema)
                         result.wizardDoneAutoRetry = "OK after finalize (set ${residualCondTrigName}=false to clear residual Conditional? prompt)"
                     } catch (Exception finalizeErr) {
-                        result.wizardDoneAutoRetry = "WARN: failed to auto-finalize ${residualCondTrigName} (${finalizeErr.message}) — trigger committed but the residual Conditional? prompt is still open; call update_native_app(settings={${residualCondTrigName}: false}, pageName='${pageName}') to clear it manually"
+                        result.wizardDoneAutoRetry = "WARN: failed to auto-finalize ${residualCondTrigName} (${finalizeErr.message}) — trigger committed but the residual Conditional? prompt is still open; call hub_update_native_app(settings={${residualCondTrigName}: false}, pageName='${pageName}') to clear it manually"
                     }
                 } else if (_rmHasWizardScaffold(afterClickConfig?.configPage)) {
-                    result.wizardDoneAutoRetry = "WARN: wizard scaffold still present after click — caller probably hasn't filled all required fields (capability, device, state); inspect get_app_config(pageName='${pageName}')"
+                    result.wizardDoneAutoRetry = "WARN: wizard scaffold still present after click — caller probably hasn't filled all required fields (capability, device, state); inspect hub_get_app_config(pageName='${pageName}')"
                 } else {
                     result.wizardDoneAutoRetry = "OK"
                 }
@@ -23670,7 +23512,7 @@ def toolUpdateNativeApp(args) {
         def err = finalConfig?.configPage?.error
         if (err) {
             result.warning = "App has a rendering error after update: ${err}"
-            result.restoreHint = "Call restore_item_backup with backupKey='${backup.backupKey}' to roll back."
+            result.restoreHint = "Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
         }
         result.configPageError = err
 
@@ -23700,14 +23542,14 @@ def toolUpdateNativeApp(args) {
                 // ("triggers", plural by default) the "triggers are" verb is correct anyway.
                 def trigVerb = (trigCount == 1) ? "trigger is" : "triggers are"
                 result.subscriptionSettle = settleStatus?.unsettled ?
-                    "WARN: rule has ${trigCount} ${trigWord} but eventSubscriptions=0 after two updateRule clicks. The ${trigVerb} likely incomplete (missing tstate, attached-condition, or other required field) OR a hub timing race. Inspect statusJson.eventSubscriptions; if still empty, call update_native_app(button='updateRule') again or check the wizard for missing fields." :
+                    "WARN: rule has ${trigCount} ${trigWord} but eventSubscriptions=0 after two updateRule clicks. The ${trigVerb} likely incomplete (missing tstate, attached-condition, or other required field) OR a hub timing race. Inspect statusJson.eventSubscriptions; if still empty, call hub_update_native_app(button='updateRule') again or check the wizard for missing fields." :
                     "OK after auto-retry"
             } else if (settleStatus != null) {
                 result.subscriptionSettle = "OK"
             }
         }
         // Always attach health to settings/button mutations too — the LLM
-        // sees broken state immediately without having to call check_rule_health.
+        // sees broken state immediately without having to call hub_get_rule_health.
         result.health = _rmCheckRuleHealth(appId)
         if (!result.health.ok) result.success = false
         // Final commit: click the mainPage Done button. Mirrors the live UI's
@@ -23715,17 +23557,17 @@ def toolUpdateNativeApp(args) {
         // state markers (state.editAct, state.editCond, etc.) can linger and
         // cause subsequent edits to misbehave.
         try { _rmSubmitMainPageDone(appId) }
-        catch (Exception doneExc) { mcpLog("warn", "rm-native", "update_native_app: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} -- in-flight state markers may linger and corrupt subsequent edits") }
+        catch (Exception doneExc) { mcpLog("warn", "rm-native", "hub_update_native_app: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} -- in-flight state markers may linger and corrupt subsequent edits") }
         return result
     } catch (Exception e) {
         def msg = e.message ?: e.toString()
-        mcpLog("error", "rm-native", "update_native_app failed for ${appId}: ${msg}")
+        mcpLog("error", "rm-native", "hub_update_native_app failed for ${appId}: ${msg}")
         return _rmBuildUpdateErrorResponse(appId, msg, backup)
     }
 }
 
 /**
- * delete_native_app — always snapshots the app first, then deletes. Default
+ * hub_delete_native_app — always snapshots the app first, then deletes. Default
  * mode is soft delete (hub refuses if the app has child apps or devices).
  * force=true routes to forcedelete/quiet — the same path RM itself uses.
  *
@@ -23749,7 +23591,7 @@ def toolDeleteNativeApp(args) {
                 appId: appId,
                 mode: "forcedelete",
                 backup: backup,
-                note: "App force-deleted. To restore, call restore_item_backup with backupKey='${backup.backupKey}' (will recreate an empty app and apply saved settings)."
+                note: "App force-deleted. To restore, call hub_restore_backup with backupKey='${backup.backupKey}' (will recreate an empty app and apply saved settings)."
             ]
         } else {
             def resp = _rmSoftDeleteApp(appId)
@@ -23785,9 +23627,9 @@ def toolDeleteNativeApp(args) {
 }
 
 /**
- * check_rule_health — public tool wrapper around _rmCheckRuleHealth.
+ * hub_get_rule_health — public tool wrapper around _rmCheckRuleHealth.
  * Read-only; doesn't take a backup. Returns the same {ok, issues, ...}
- * shape that update_native_app embeds as `health` on every response.
+ * shape that hub_update_native_app embeds as `health` on every response.
  */
 def toolCheckRuleHealth(args) {
     requireBuiltinApp()
@@ -23875,7 +23717,7 @@ private Map _appClonerInit(Integer sourceAppId) {
     // Mimic browser flow: fetch the configPage JSON before any settings POSTs.
     // Without this, file-text widgets (`settings[ruleUpload]`) silently drop
     // their values — the cloner accepts the POST (200, ruleUpload key
-    // registered) but stores null. Required for import_native_app.
+    // registered) but stores null. Required for hub_import_native_app.
     try {
         hubInternalGet("/installedapp/configure/json/${clonerId}/main", [:])
     } catch (Exception primeErr) {
@@ -24095,7 +23937,7 @@ private Integer _appClonerDiscoverNewChild(Integer parentAppId, Set<String> preC
 }
 
 /**
- * clone_native_app — wraps the appCloner's Clone path.
+ * hub_clone_native_app — wraps the appCloner's Clone path.
  */
 def toolCloneNativeApp(args) {
     requireBuiltinApp()
@@ -24108,7 +23950,7 @@ def toolCloneNativeApp(args) {
     try {
         sourceCfg = _rmFetchConfigJson(sourceAppId)
     } catch (Exception sourceErr) {
-        mcpLog("warn", "rm-native", "clone_native_app: source ${sourceAppId} config fetch failed: ${sourceErr.message}")
+        mcpLog("warn", "rm-native", "hub_clone_native_app: source ${sourceAppId} config fetch failed: ${sourceErr.message}")
         sourceCfg = null
     }
     if (!sourceCfg?.app) {
@@ -24119,7 +23961,7 @@ def toolCloneNativeApp(args) {
     try {
         parentAppId = (sourceCfg.app.parentAppId != null) ? (sourceCfg.app.parentAppId.toString() as Integer) : null
     } catch (NumberFormatException ignored) {
-        mcpLog("warn", "rm-native", "clone_native_app: source ${sourceAppId} parentAppId not numeric: ${sourceCfg.app.parentAppId}")
+        mcpLog("warn", "rm-native", "hub_clone_native_app: source ${sourceAppId} parentAppId not numeric: ${sourceCfg.app.parentAppId}")
     }
 
     def preIds = [] as Set
@@ -24128,7 +23970,7 @@ def toolCloneNativeApp(args) {
             def pc = _rmFetchConfigJson(parentAppId)
             preIds = ((pc?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it } as Set
         } catch (Exception preErr) {
-            mcpLog("warn", "rm-native", "clone_native_app: pre-clone parent ${parentAppId} fetch failed: ${preErr.message}; new-child discovery may misidentify a pre-existing app")
+            mcpLog("warn", "rm-native", "hub_clone_native_app: pre-clone parent ${parentAppId} fetch failed: ${preErr.message}; new-child discovery may misidentify a pre-existing app")
         }
     }
 
@@ -24140,7 +23982,7 @@ def toolCloneNativeApp(args) {
     // Step 2: click cloneRuleButton + form refresh — TWICE. Hubitat's
     // appCloner state machine drops the first click event silently
     // (verified live via Chrome XHR sniffing — same race the
-    // delete_variable wizard works around with a retry-once loop).
+    // hub_delete_variable wizard works around with a retry-once loop).
     // The second click+refresh commits the state transition to the
     // confirmation page.
     def btnBody = [
@@ -24162,8 +24004,8 @@ def toolCloneNativeApp(args) {
     Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, sourceLabel, newName)
 
     String note = newAppId
-        ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use update_native_app to further customize."
-        : "Clone fired but no new child appeared under parent ${parentAppId}. Re-check via list_installed_apps shortly."
+        ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_update_native_app to further customize."
+        : "Clone fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_installed_apps shortly."
     def result = [
         success: newAppId != null,
         sourceAppId: sourceAppId,
@@ -24183,7 +24025,7 @@ def toolCloneNativeApp(args) {
 }
 
 /**
- * export_native_app — wraps the appCloner's Export path. JSON is captured
+ * hub_export_native_app — wraps the appCloner's Export path. JSON is captured
  * from the form-refresh response body of the click POST itself; see
  * `_appClonerExtractJsonFromResponse` for why settings/HTML scraping doesn't
  * work (the filecontent is session-keyed, only present in the same request).
@@ -24198,7 +24040,7 @@ def toolExportNativeApp(args) {
     try {
         sourceCfg = _rmFetchConfigJson(sourceAppId)
     } catch (Exception sourceErr) {
-        mcpLog("warn", "rm-native", "export_native_app: source ${sourceAppId} config fetch failed: ${sourceErr.message}")
+        mcpLog("warn", "rm-native", "hub_export_native_app: source ${sourceAppId} config fetch failed: ${sourceErr.message}")
         sourceCfg = null
     }
     if (!sourceCfg?.app) {
@@ -24241,7 +24083,7 @@ def toolExportNativeApp(args) {
         clonerAppId: clonerAppId,
         contentLength: jsonContent.length(),
         jsonContent: jsonContent,
-        note: "Exported source ${sourceAppId} via appCloner. Pass jsonContent to import_native_app to re-create the rule."
+        note: "Exported source ${sourceAppId} via appCloner. Pass jsonContent to hub_import_native_app to re-create the rule."
     ]
     if (saveAs) {
         try {
@@ -24254,11 +24096,11 @@ def toolExportNativeApp(args) {
             } else {
                 // Don't emit a literally-broken http://<HUB_IP>/... URL — flag
                 // the lookup failure instead.
-                mcpLog("warn", "rm-native", "export_native_app: location.hub.localIP unavailable; savedUrl omitted from result")
+                mcpLog("warn", "rm-native", "hub_export_native_app: location.hub.localIP unavailable; savedUrl omitted from result")
             }
         } catch (Exception fileErr) {
             result.saveError = fileErr.message
-            mcpLog("warn", "rm-native", "export_native_app: saveAs '${saveAs}' upload failed: ${fileErr.message}")
+            mcpLog("warn", "rm-native", "hub_export_native_app: saveAs '${saveAs}' upload failed: ${fileErr.message}")
         }
     }
     return result
@@ -24310,7 +24152,7 @@ private String _appClonerExtractJsonFromResponse(String responseBody) {
 }
 
 /**
- * import_native_app — wraps the appCloner's Import path.
+ * hub_import_native_app — wraps the appCloner's Import path.
  *
  * Stages the JSON via settings[ruleUpload]= (urlencoded, NOT multipart),
  * then drives the same importRule -> importNow commit as clone.
@@ -24359,7 +24201,7 @@ def toolImportNativeApp(args) {
     try {
         parentHintCfg = _rmFetchConfigJson(parentHintAppId)
     } catch (Exception hintErr) {
-        mcpLog("warn", "rm-native", "import_native_app: parentHintAppId ${parentHintAppId} fetch failed: ${hintErr.message}")
+        mcpLog("warn", "rm-native", "hub_import_native_app: parentHintAppId ${parentHintAppId} fetch failed: ${hintErr.message}")
         parentHintCfg = null
     }
     if (!parentHintCfg?.app) {
@@ -24369,7 +24211,7 @@ def toolImportNativeApp(args) {
     try {
         parentAppId = (parentHintCfg.app.parentAppId != null) ? (parentHintCfg.app.parentAppId.toString() as Integer) : null
     } catch (NumberFormatException nfe) {
-        mcpLog("warn", "rm-native", "import_native_app: parentHintAppId ${parentHintAppId} parentAppId not numeric: ${parentHintCfg.app.parentAppId}; new-child discovery will be skipped")
+        mcpLog("warn", "rm-native", "hub_import_native_app: parentHintAppId ${parentHintAppId} parentAppId not numeric: ${parentHintCfg.app.parentAppId}; new-child discovery will be skipped")
     }
     if (parentAppId == null) {
         // Without a parent we can't diff children to identify the new rule.
@@ -24381,7 +24223,7 @@ def toolImportNativeApp(args) {
         def pc = _rmFetchConfigJson(parentAppId)
         preIds = ((pc?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it } as Set
     } catch (Exception preErr) {
-        mcpLog("warn", "rm-native", "import_native_app: pre-import parent ${parentAppId} fetch failed: ${preErr.message}; new-child discovery may misidentify a pre-existing app")
+        mcpLog("warn", "rm-native", "hub_import_native_app: pre-import parent ${parentAppId} fetch failed: ${preErr.message}; new-child discovery may misidentify a pre-existing app")
     }
 
     def initRes = _appClonerInit(parentHintAppId)
@@ -24413,8 +24255,8 @@ def toolImportNativeApp(args) {
     Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, originalLabel, newName)
 
     String note = newAppId
-        ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use update_native_app to further customize."
-        : "Import fired but no new child appeared under parent ${parentAppId}. Re-check via list_installed_apps shortly."
+        ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_update_native_app to further customize."
+        : "Import fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_installed_apps shortly."
     def result = [
         success: newAppId != null,
         clonerAppId: clonerAppId,
@@ -24435,7 +24277,7 @@ def toolImportNativeApp(args) {
 
 /**
  * Internal: replay an RM rule snapshot. Called by the unified
- * restore_item_backup tool when entry.type == "rm-rule". Two paths:
+ * hub_restore_backup tool when entry.type == "rm-rule". Two paths:
  *   - Rule still exists: settings re-applied in place (no new rule created).
  *   - Rule was deleted: a fresh empty rule is created and the saved
  *     settings are replayed onto it. The new rule has a different id;
@@ -24490,7 +24332,7 @@ private Map _rmRestoreFromBackup(Map entry) {
             _rmClickAppButton(ruleId, "updateRule")
         } catch (Exception e) {
             try { _rmForceDeleteApp(ruleId) } catch (Exception ce) {
-                mcpLog("warn", "rm-native", "_rmRestoreFromBackup: orphan cleanup of newly-created app ${ruleId} failed after recreate error (${ce.message}) -- app may be left in an empty-label state; clean up manually via delete_native_app(appId=${ruleId})")
+                mcpLog("warn", "rm-native", "_rmRestoreFromBackup: orphan cleanup of newly-created app ${ruleId} failed after recreate error (${ce.message}) -- app may be left in an empty-label state; clean up manually via hub_delete_native_app(appId=${ruleId})")
             }
             throw new IllegalArgumentException("Restore failed during app recreate (appType=${savedAppType}): ${e.message}")
         }
@@ -24526,7 +24368,7 @@ private Map _rmRestoreFromBackup(Map entry) {
             ruleId: ruleId,
             originalRuleId: savedId,
             error: "Restore applied partially; failed during settings replay: ${e.message}",
-            note: "Rule ${ruleId} exists but may have incomplete settings. Inspect with get_app_config."
+            note: "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config."
         ]
     }
 
@@ -24686,7 +24528,7 @@ def toolSearchTools(args) {
     }
 
     // Apply the same visibility filter that getToolDefinitions() uses so that
-    // search_tools never surfaces tools the LLM cannot actually invoke.
+    // hub_search_tools never surfaces tools the LLM cannot actually invoke.
     //   "off"      -- engine OFF + builtinApp OFF; all custom_* hidden
     //   "readonly" -- engine OFF + builtinApp ON; write subset hidden
     //   "full"     -- engine ON; all custom_* visible
@@ -24696,18 +24538,17 @@ def toolSearchTools(args) {
     def searchHideByName = [] as Set
     def searchHideGwSubTools = [:].withDefault { [] as Set }
     if (customEngineMode == "off") {
-        ["custom_list_rules", "custom_get_rule", "custom_create_rule", "custom_update_rule",
-         "custom_delete_rule", "custom_test_rule", "custom_get_rule_diagnostics",
-         "custom_export_rule", "custom_import_rule", "custom_clone_rule"].each {
+        ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule",
+         "hub_delete_custom_rule", "hub_test_custom_rule",
+         "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each {
             searchHideByName << it
         }
-        searchHideGwSubTools["manage_diagnostics"] << "custom_get_rule_diagnostics"
     } else if (customEngineMode == "readonly") {
-        ["custom_create_rule", "custom_delete_rule", "custom_export_rule",
-         "custom_import_rule", "custom_clone_rule"].each {
+        ["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule",
+         "hub_import_custom_rule", "hub_clone_custom_rule"].each {
             searchHideByName << it
         }
-        // custom_get_rule_diagnostics stays visible in readonly mode (read sub-tool)
+        // hub_get_custom_rule (list/get/diagnostics modes) stays visible in readonly mode
     }
     // Filter corpus to only tools the current toggle state allows.
     def visibleCorpus = corpus.findAll { entry ->
@@ -24766,7 +24607,7 @@ private buildToolSearchCorpus() {
     def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
     // Strip [[FLAT_TRIM]] marker tokens before BM25 corpus build -- the markers
     // shouldn't show up as searchable tokens, but the wrapped capability lists
-    // SHOULD (so search_tools still matches "switch motion contact").
+    // SHOULD (so hub_search_tools still matches "switch motion contact").
     def allDefs = applyDescriptionTransform(getAllToolDefinitions(), false)
     def allDefsMap = allDefs.collectEntries { [(it.name): it] }
 
@@ -24894,7 +24735,7 @@ def getToolGuideSections() {
 - Example: User says "use test switch" but only "Virtual Test Switch" exists → ask "Did you mean 'Virtual Test Switch'?"
 
 **Tool failure rule:**
-- If a tool fails (e.g., manage_virtual_device returns an error), report the failure to the user
+- If a tool fails (e.g., hub_manage_virtual_device returns an error), report the failure to the user
 - Do NOT silently fall back to using existing devices as a workaround
 - Example: If creating a virtual device fails, don't just grab an existing device to use instead
 
@@ -24905,27 +24746,27 @@ def getToolGuideSections() {
         hub_admin_write: '''## Hub Admin Write Tools - Pre-Flight Checklist
 
 All Hub Admin Write tools require these steps:
-1. Backup check: Ensure create_hub_backup was called within the last 24 hours
+1. Backup check: Ensure hub_create_backup was called within the last 24 hours
 2. Inform user: Tell them what you're about to do
 3. Get confirmation: Wait for explicit "yes", "confirm", or "proceed"
 4. Set confirm=true: Pass the confirm parameter
 
 ### Tool-Specific Requirements
 
-**reboot_hub** - 1-3 min downtime, all automations stop, scheduled jobs lost, radios restart. Only when user explicitly requests.
+**hub_reboot** - 1-3 min downtime, all automations stop, scheduled jobs lost, radios restart. Only when user explicitly requests.
 
-**shutdown_hub** - Powers OFF completely, requires physical restart. NOT a reboot. Only when user explicitly requests.
+**hub_shutdown** - Powers OFF completely, requires physical restart. NOT a reboot. Only when user explicitly requests.
 
-**zwave_repair** - 5-30 min duration, Z-Wave devices may be unresponsive. Best during off-peak hours.
+**hub_call_zwave_repair** - 5-30 min duration, Z-Wave devices may be unresponsive. Best during off-peak hours.
 
-**delete_device** - MOST DESTRUCTIVE, NO UNDO. For ghost/orphaned devices, stale DB records, stuck virtual devices.
-- Use get_device to verify correct device
+**hub_delete_device** - MOST DESTRUCTIVE, NO UNDO. For ghost/orphaned devices, stale DB records, stuck virtual devices.
+- Use hub_get_device to verify correct device
 - Warn if recent activity or Z-Wave/Zigbee (do exclusion first)
 - All details logged to MCP debug logs for audit
 
-**delete_room** - Devices become unassigned (not deleted). List affected devices first.
+**hub_delete_room** - Devices become unassigned (not deleted). List affected devices first.
 
-**delete_app/delete_driver/delete_library** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Auto-backs up before deletion.''',
+**hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Auto-backs up before deletion.''',
 
         virtual_devices: '''## Virtual Device Types
 
@@ -24951,16 +24792,16 @@ All Hub Admin Write tools require these steps:
 
 Use `customDriver={namespace, name}` instead of `deviceType` to instantiate any user-installed driver:
 - `namespace` and `name` must match exactly as the driver is registered on the hub
-- Use `manage_apps_drivers(tool="list_hub_drivers")` to discover installed driver namespace + name values
+- Use `hub_manage_code_read(tool="hub_list_drivers")` to discover installed driver namespace + name values
 - Mutually exclusive with `deviceType` -- supply exactly one
-- On failure, the tool surfaces an `IllegalArgumentException` with a `list_hub_drivers` hint
+- On failure, the tool surfaces an `IllegalArgumentException` with a `hub_list_drivers` hint
 
 MCP-managed virtual devices:
 - Auto-accessible to all MCP tools without manual selection
 - Appear in Hubitat UI for Maker API, Dashboard, Rule Machine
-- Use manage_virtual_device(action="delete") to remove (not delete_device)''',
+- Use hub_manage_virtual_device(action="delete") to remove (not hub_delete_device)''',
 
-        update_device: '''## update_device Properties
+        update_device: '''## hub_update_device Properties
 
 | Property | Requires Hub Admin Write |
 |----------|-------------------------|
@@ -24981,7 +24822,7 @@ MCP-managed virtual devices:
 
         rules: '''## Rule Structure Reference
 
-NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* tools). For native Rule Machine rules built via create_native_app / update_native_app (addTrigger), the periodic shape is DIFFERENT -- use periodic={frequency, everyN, ...}, NOT {type, interval, unit}. See get_tool_guide section "update_native_app_reference" for the native addTrigger periodic field shape.
+NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* tools). For native Rule Machine rules built via hub_create_native_app / hub_update_native_app (addTrigger), the periodic shape is DIFFERENT -- use periodic={frequency, everyN, ...}, NOT {type, interval, unit}. See hub_get_tool_guide section "update_native_app_reference" for the native addTrigger periodic field shape.
 
 ### Rule JSON Structure
 {"name": "Rule name", "description": "Optional", "enabled": true, "triggers": [...], "conditions": [...], "conditionLogic": "all|any", "actions": [...]}
@@ -25030,20 +24871,20 @@ NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* too
         backup: '''## Backup System
 
 ### Hub Backups
-- create_hub_backup creates full hub database backup
+- hub_create_backup creates full hub database backup
 - Required within 24 hours before any Hub Admin Write operation
 - Only write tool that doesn't require a prior backup
 
 ### Source Code Backups (Automatic)
-- Created when using update_app_code, update_driver_code, update_library_code, delete_app, delete_driver, delete_library
+- Created when using hub_update_app, hub_update_driver, hub_update_library, hub_delete_item
 - Stored in File Manager as .groovy files
 - Persist even if MCP uninstalled
 - Max 20 kept, oldest pruned
 - Rapid edits preserve original (1-hour protection)
 
 ### Rule Backups (Automatic)
-- custom_delete_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
-- Restore via: read_file → custom_import_rule
+- hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
+- Restore via: hub_read_file → hub_import_custom_rule
 - Skip backup: set testRule=true when creating/updating''',
 
         file_manager: '''## File Manager
@@ -25062,7 +24903,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 
         performance: '''## Performance Tips
 
-**list_devices:**
+**hub_list_devices:**
 - Use detailed=false for initial discovery
 - With detailed=true, paginate: 20-30 devices per request
 - Make tool calls sequentially, not in parallel
@@ -25070,103 +24911,104 @@ Files stored at http://<HUB_IP>/local/<filename>
 - format='ids' returns a flat integer array (cheapest for "which devices exist" queries)
 - fields=[...] projects named fields only: currentStates and attributes are the expensive ones (per-device hub reads) -- project those out to save hub CPU; capabilities and commands are in-memory and cheap. id is always included regardless of projection. Unknown field names throw.
 
-**get_device_events:**
+**hub_list_device_events:**
 - Default limit 10, recommended max 50
 - Higher values (100+) may cause delays
 
-**get_hub_logs:**
+**hub_get_logs:**
 - Default 100 entries, max 500
 - Use level and source filters to narrow results
 
-**get_device_history:**
-- Up to 7 days of history
-- Use attribute filter to reduce data volume''',
+**hub_list_device_events:**
+- Default: most-recent events for a device (deviceId + limit)
+- Add hoursBack for up to 7 days of history; omit deviceId for location-level events (mode/HSM/hub variable)
+- Use the attribute filter to reduce data volume''',
 
         builtin_app_tools: '''## Built-in App Tools
 
-Tools in the manage_installed_apps and manage_native_rules_and_apps gateways have mixed gate requirements. list_installed_apps and get_device_in_use_by require the "Enable Built-in App Tools (read + write)" toggle (requireBuiltinApp). get_app_config and list_app_pages require Hub Admin Read (requireHubAdminRead). Both manage_hpm tools (list_hpm_packages and get_hpm_drift) require Hub Admin Read. All manage_native_rules_and_apps tools require the "Enable Built-in App Tools" toggle; the CRUD tools (create_native_app / update_native_app / delete_native_app) ALSO require Hub Admin Write. If the user sees "Built-in App Tools are disabled" or "Hub Admin Read is disabled" errors, direct them to the MCP Rule Server app settings page.
+Tools in the hub_manage_installed_apps and hub_manage_native_rules gateways have mixed gate requirements. hub_list_installed_apps and hub_list_device_dependents require the "Enable Built-in App Tools (read + write)" toggle (requireBuiltinApp). hub_get_app_config and hub_list_app_pages require Hub Admin Read (requireHubAdminRead). The hub_manage_hpm tool (hub_list_hpm_packages, with optional includeDrift) requires Hub Admin Read. All hub_manage_native_rules tools require the "Enable Built-in App Tools" toggle; the CRUD tools (hub_create_native_app / hub_update_native_app / hub_delete_native_app) ALSO require Hub Admin Write. If the user sees "Built-in App Tools are disabled" or "Hub Admin Read is disabled" errors, direct them to the MCP Rule Server app settings page.
 
-**manage_installed_apps (4 tools):**
+**hub_manage_installed_apps (4 tools):**
 
-- **list_installed_apps** — enumerate ALL apps on the hub (built-in + user) with parent/child tree
+- **hub_list_installed_apps** — enumerate ALL apps on the hub (built-in + user) with parent/child tree
   - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"
   - Each entry: id, name, type, disabled, user, hidden, parentId, hasChildren, childCount
   - Built-in apps have user=false (Rule Machine, Room Lighting, Groups and Scenes, Mode Manager, HSM, Dashboards, Maker API, etc.)
   - User apps have user=true (Awair, Ecobee, HPM, etc.)
   - Parent/child tree is flattened with parentId pointers. Hidden parents are excluded from output but their children are promoted to the nearest visible ancestor.
 
-- **get_device_in_use_by** — find apps that reference a specific device
+- **hub_list_device_dependents** — find apps that reference a specific device
   - Use BEFORE deleting a device, disabling a device, or troubleshooting unexpected behavior
   - Returns appsUsing array with each app's id, name (type like "Room Lights" or "Rule-5.1"), label (user-visible), trueLabel (HTML-stripped), disabled
   - Answers "if I delete this device, which automations break?"
 
-- **get_app_config** — read an installed app's configuration page (Hub Admin Read required)
+- **hub_get_app_config** — read an installed app's configuration page (Hub Admin Read required)
   - Returns app identity (label, type, disabled), config page sections/inputs/values, and child apps
-  - Multi-page apps expose sub-pages via pageName. For HPM: use pageName="prefPkgUninstall" for the FULL installed-package list; pageName="prefPkgModify" returns only the subset with optional components; pageName="prefOptions" is the main-menu navigation (no package data). RM 5.x and Room Lighting use a single mainPage (no pageName needed). Call list_app_pages first to discover available page names for any multi-page app.
+  - Multi-page apps expose sub-pages via pageName. For HPM: use pageName="prefPkgUninstall" for the FULL installed-package list; pageName="prefPkgModify" returns only the subset with optional components; pageName="prefOptions" is the main-menu navigation (no package data). RM 5.x and Room Lighting use a single mainPage (no pageName needed). Call hub_list_app_pages first to discover available page names for any multi-page app.
   - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
-  - Workflow: list_installed_apps (or list_rm_rules for RM rules specifically -- note that custom_list_rules / custom_get_rule handle only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then get_app_config to inspect. For multi-page apps, consider list_app_pages first.
+  - Workflow: hub_list_installed_apps (or hub_list_rules for RM rules specifically -- note that hub_get_custom_rule handles only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then hub_get_app_config to inspect. For multi-page apps, consider hub_list_app_pages first.
 
-- **list_app_pages** — discover what pageNames a given app accepts (Hub Admin Read required)
+- **hub_list_app_pages** — discover what pageNames a given app accepts (Hub Admin Read required)
   - Input: appId
   - Returns curated page directory for known app types (HPM, RM 5.x, Room Lighting, Mode Manager) plus an introspected primary page for unknown app types
   - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
 
-**manage_hpm (2 tools) — HPM package state introspection (Hub Admin Read required):**
+**hub_manage_hpm (2 tools) — HPM package state introspection (Hub Admin Read required):**
 
-- **list_hpm_packages** — return all packages tracked by Hubitat Package Manager with full component inventory
+- **hub_list_hpm_packages** — return all packages tracked by Hubitat Package Manager with full component inventory
   - If hpmAppId is omitted, HPM is auto-discovered by scanning installed apps for type="Hubitat Package Manager"
   - Each package: manifestUrl, packageName, version, beta, author, apps[], drivers[], files[]
   - Each app/driver component: id (UUID), name, heID (Hubitat code ID or null), required, version
   - files[] entries have no heID (File Manager assets tracked by name only)
 
-- **get_hpm_drift** — cross-reference HPM tracked state against what is installed on the hub
+- **hub_list_hpm_packages with includeDrift=true** — also cross-reference HPM tracked state against what is installed on the hub (attached under a `drift` key)
   - Surfaces missing-required (required=true but heID null), orphan-app (heID recorded but code no longer in Apps Code registry), and orphan-driver (heID recorded but code no longer in Drivers Code registry) signals
   - Optional packageFilter (case-insensitive substring) narrows to specific packages
   - Response: packagesChecked, packagesWithActionableDrift (packages with at least one actionable signal), totalDriftSignals (actionable drift only -- not data-quality warnings), drift[] array (one entry per package with signals or dataQualityWarnings; drift[].length may exceed packagesWithActionableDrift when data-quality-only packages exist), summary sentence, orphanDetection ({enabled, reason?}), orphanDriverDetection ({enabled, reason?}), limitations note
   - Data-quality warning types in dataQualityWarnings[]: heid-whitespace-normalized (padded heID normalized; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid, skipped-malformed-component
-  - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via update_app_code are not detectable
+  - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via hub_update_app are not detectable
 
-**manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules:**
+**hub_manage_native_rules (12 tools) — read, trigger, AND full CRUD on native RM rules:**
 
 RMUtils-based control surface (Built-in App Tools gate only):
-- **list_rm_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)
-- **run_rm_rule** — trigger an existing RM rule
+- **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)
+- **hub_call_rule** — trigger an existing RM rule
   - action="rule" (default): full evaluation (triggers + conditions + actions)
   - action="actions": run actions only, skip conditions
   - action="stop": stop running actions
-- **pause_rm_rule** / **resume_rm_rule** — reversible toggle
-- **set_rm_rule_boolean** — set private boolean (Boolean or lowercase "true"/"false" only)
+- **hub_set_rule_paused** — pause (value=true) or resume (value=false) a rule; reversible
+- **hub_set_rule_private_boolean** — set private boolean (Boolean or lowercase "true"/"false" only)
 
 Native CRUD (hub admin-layer, additionally requires Hub Admin Write):
-- **create_native_app** — create a new empty classic SmartApp (RM 5.1 by default; appType enum covers rule_machine / button_controller / groups_scenes / notifier / visual_rule). Args: appType (default rule_machine), name, confirm. Returns appId. Call update_native_app afterward to populate; or pass triggers=[...] / actions=[...] arrays to populate in one call.
-- **update_native_app** — modify any classic SmartApp. Two raw modes (settings (Map) OR button (String)) plus 14 structured shortcuts (addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, patches, walkStep). Args: appId + one of those shortcut keys, plus optional pageName, stateAttribute, confirm. Auto-backs-up before writing; emits the multiple=true 3-field capability contract automatically. removeTrigger={index:N} deletes a trigger; modifyTrigger={index:N, mods:{state:'...'}} changes the state field of an existing trigger (capability/deviceIds changes require removeTrigger + addTrigger).
-- **delete_native_app** — soft delete (default; refuses if children exist) or force=true. Args: appId, force, confirm. Auto-backs-up before deleting.
-- **clone_native_app** — clone any classic SmartApp via Hubitat's first-party appCloner. Args: sourceAppId, newName (opt), confirm. Returns newAppId. Drives the appCloner's 4-step wizard (cloneRuleButton -> confirmation -> importRule sub-page -> importNow); typical clones complete in tens of seconds.
-- **export_native_app** — export any classic SmartApp to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns jsonContent. Self-contained document with appReplacements + deviceReplacements + full rule state; round-trips through import_native_app.
-- **import_native_app** — re-create a rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Args: jsonContent | fromFile, parentHintAppId, newName (opt), confirm. Returns newAppId. The cloner needs an existing rule under the target parent to seed itself (parentHintAppId).
-- **check_rule_health** — read-only health check on any installed app. Args: appId. Returns ok / configPageError / brokenMarkers / multipleFlagPoison / structuralIssues / issues.
+- **hub_create_native_app** — create a new empty classic SmartApp (RM 5.1 by default; appType enum covers rule_machine / button_controller / groups_scenes / notifier / visual_rule). Args: appType (default rule_machine), name, confirm. Returns appId. Call hub_update_native_app afterward to populate; or pass triggers=[...] / actions=[...] arrays to populate in one call.
+- **hub_update_native_app** — modify any classic SmartApp. Two raw modes (settings (Map) OR button (String)) plus 14 structured shortcuts (addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, patches, walkStep). Args: appId + one of those shortcut keys, plus optional pageName, stateAttribute, confirm. Auto-backs-up before writing; emits the multiple=true 3-field capability contract automatically. removeTrigger={index:N} deletes a trigger; modifyTrigger={index:N, mods:{state:'...'}} changes the state field of an existing trigger (capability/deviceIds changes require removeTrigger + addTrigger).
+- **hub_delete_native_app** — soft delete (default; refuses if children exist) or force=true. Args: appId, force, confirm. Auto-backs-up before deleting.
+- **hub_clone_native_app** — clone any classic SmartApp via Hubitat's first-party appCloner. Args: sourceAppId, newName (opt), confirm. Returns newAppId. Drives the appCloner's 4-step wizard (cloneRuleButton -> confirmation -> importRule sub-page -> importNow); typical clones complete in tens of seconds.
+- **hub_export_native_app** — export any classic SmartApp to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns jsonContent. Self-contained document with appReplacements + deviceReplacements + full rule state; round-trips through hub_import_native_app.
+- **hub_import_native_app** — re-create a rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Args: jsonContent | fromFile, parentHintAppId, newName (opt), confirm. Returns newAppId. The cloner needs an existing rule under the target parent to seed itself (parentHintAppId).
+- **hub_get_rule_health** — read-only health check on any installed app. Args: appId. Returns ok / configPageError / brokenMarkers / multipleFlagPoison / structuralIssues / issues.
 
-For READING an RM rule's current state, use **get_app_config** in the manage_installed_apps gateway — it works on any installed app including RM rules and returns the same configPage shape that update_native_app expects to see.
+For READING an RM rule's current state, use **hub_get_app_config** in the hub_manage_installed_apps gateway — it works on any installed app including RM rules and returns the same configPage shape that hub_update_native_app expects to see.
 
-For BACKUP enumeration and restore, use the unified **list_item_backups** + **restore_item_backup** in manage_apps_drivers — RM rule snapshots have type="rm-rule" in those tools' output and restore_item_backup auto-dispatches the rule-restore path.
+For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_manage_code_read) + **hub_restore_backup** (in hub_manage_code_write) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
 **Safety model for native CRUD:**
 1. Every write is preceded by a full snapshot (configure/json + statusJson) saved to File Manager; the response's backup.backupKey is the restore handle.
-2. Multi-device capability inputs (capability.X with multiple=true) require a 3-field POST payload group (settings[name]=csv, name.type=capability.X, name.multiple=true). Omitting name.multiple=true poisons the AppSetting DB flag and every render throws `Command 'size' is not supported by device`. update_native_app emits the full group automatically from the input schema — callers never have to think about this.
-3. After every write, the multiple flags in the live appSettings are verified. If any flipped, one automatic retry fires with the full group. Persistent divergence throws and the response surfaces restore_item_backup as the next step.
+2. Multi-device capability inputs (capability.X with multiple=true) require a 3-field POST payload group (settings[name]=csv, name.type=capability.X, name.multiple=true). Omitting name.multiple=true poisons the AppSetting DB flag and every render throws `Command 'size' is not supported by device`. hub_update_native_app emits the full group automatically from the input schema — callers never have to think about this.
+3. After every write, the multiple flags in the live appSettings are verified. If any flipped, one automatic retry fires with the full group. Persistent divergence throws and the response surfaces hub_restore_backup as the next step.
 4. delete is soft by default. Pass force=true only when you know the rule has children you also want gone.
 
 **CRUD workflow example:**
-  create_native_app(name="BAT-RM-demo", confirm=true) → {appId: 974, ...}
-  get_app_config(appId=974, includeSettings=true) → input schema + current settings
-  update_native_app(appId=974, addTrigger={capability: "Switch", deviceIds: [8, 9], state: "on"}, confirm=true)
-  update_native_app(appId=974, addAction={capability: "switch", action: "off", deviceIds: [10]}, confirm=true)
-  check_rule_health(appId=974) → verify ok=true, no configPageError or brokenMarkers
-  delete_native_app(appId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}''',
+  hub_create_native_app(name="BAT-RM-demo", confirm=true) → {appId: 974, ...}
+  hub_get_app_config(appId=974, includeSettings=true) → input schema + current settings
+  hub_update_native_app(appId=974, addTrigger={capability: "Switch", deviceIds: [8, 9], state: "on"}, confirm=true)
+  hub_update_native_app(appId=974, addAction={capability: "switch", action: "off", deviceIds: [10]}, confirm=true)
+  hub_get_rule_health(appId=974) → verify ok=true, no configPageError or brokenMarkers
+  hub_delete_native_app(appId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}''',
 
-        update_native_app_reference: '''## `update_native_app` capability reference
+        update_native_app_reference: '''## `hub_update_native_app` capability reference
 
-Reference for the three `update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`). The schema descriptions point here so flat-mode `tools/list` can stay under the 124 KB cap (issue #181); gateway-mode catalog responses still carry the full enumerations inline. For machine-readable schemas, pass `{discover: true}` on `addTrigger` or `addAction` — both return live structured Maps from the running code.
+Reference for the three `hub_update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`). The schema descriptions point here so flat-mode `tools/list` can stay under the 124 KB cap (issue #181); gateway-mode catalog responses still carry the full enumerations inline. For machine-readable schemas, pass `{discover: true}` on `addTrigger` or `addAction` — both return live structured Maps from the running code.
 
 ### `addTrigger` capability families
 
@@ -25178,8 +25020,8 @@ Reference for the three `update_native_app` structured shortcuts (`addTrigger`, 
 - **And-stays sticky modifier** (any device-state or numeric trigger): add `andStays={hours, minutes, seconds}` to the spec
 - **Time / Sunrise / Sunset** (`capability='Certain Time (and optional date)'`): `time` (`'A specific time'` | `'Sunrise'` | `'Sunset'`), `atTime`, `offset` (minutes, for sunrise/sunset)
   - `atTime` semantic: `'HH:mm'` form (e.g. `'17:00'`) = **DAILY-recurring** trigger that fires every day at that wall-clock time. Full ISO datetime (e.g. `'2026-04-29T17:00:00'` or `'2026-04-29T17:00:00.000-0500'`) = **ONE-SHOT dated** trigger that fires once on that specific date. Forms without timezone are auto-normalized to hub local tz; explicit-offset and Zulu forms are normalized to UTC equivalent.
-- **Mode** (`capability='Mode'`): `state='Night'` OR `state=['Away','Night']` (mode names, case-insensitive) OR `modeIds=['3']` OR `modeIds=['3','5']` (IDs directly, from `get_modes`).
-  - **IMPORTANT:** writes `modesX<N>` internally — do NOT pass `tstate` or `rawSettings.tstate` for Mode triggers (silently ignored; renders as Broken Trigger). Use `get_modes` to list valid mode names/IDs.
+- **Mode** (`capability='Mode'`): `state='Night'` OR `state=['Away','Night']` (mode names, case-insensitive) OR `modeIds=['3']` OR `modeIds=['3','5']` (IDs directly, from `hub_list_modes`).
+  - **IMPORTANT:** writes `modesX<N>` internally — do NOT pass `tstate` or `rawSettings.tstate` for Mode triggers (silently ignored; renders as Broken Trigger). Use `hub_list_modes` to list valid mode names/IDs.
 - **Periodic Schedule** (`capability='Periodic Schedule'`): recurring schedule via the dedicated periodic sub-page. Spec:
   ```
   periodic={
@@ -25238,7 +25080,7 @@ For the live machine-readable per-field schema (action enums, required and optio
 - **Thermostat** (`capability='thermostat'`): `action=(any)` + `deviceIds` + optional `mode`/`fanMode`/`heatingSetpoint`/`coolingSetpoint`/`adjustHeating`/`adjustCooling`.
 - **Shade/blind** (`capability='shade'`): `open`/`close`/`stop` + `deviceIds`. `setPosition` + `deviceIds` + `position` (0–100).
 - **Fan** (`capability='fan'`): `setSpeed` + `deviceIds` + `speed` (low/med/high/auto/etc.). `cycle` + `deviceIds`.
-- **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) OR `modeName` (String, case-insensitive). When `modeName` is supplied it is resolved to the numeric mode ID via `location.modes` before the write; an unknown name fails fast with the list of valid mode names. Use `get_modes` to inspect available modes first. Note: `addAction` mode uses the `modeName` field for explicit name-based resolution; `addTrigger` mode uses the generic `state` field instead because triggers cover a superset of device-state events where a single field serves multiple capability types -- `modeName` vs `state` is an intentional surface difference, not a typo.
+- **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) OR `modeName` (String, case-insensitive). When `modeName` is supplied it is resolved to the numeric mode ID via `location.modes` before the write; an unknown name fails fast with the list of valid mode names. Use `hub_list_modes` to inspect available modes first. Note: `addAction` mode uses the `modeName` field for explicit name-based resolution; `addTrigger` mode uses the generic `state` field instead because triggers cover a superset of device-state events where a single field serves multiple capability types -- `modeName` vs `state` is an intentional surface difference, not a typo.
 - **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` + `value` (numeric constant) OR `sourceVariable` (copy from another hub variable). Both `variable` and `sourceVariable` must be existing hub variable names -- unknown names are rejected before any write. `value` and `sourceVariable` are mutually exclusive; providing both is rejected. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
 - **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
 - **Music/Sound** (`capability='volume'`/`'mute'`/`'chime'`/`'siren'`): `volume + deviceIds + level`. `mute + action='mute'/'unmute' + deviceIds`. `chime + deviceIds + optional playStop/soundNumber`. `siren + deviceIds + optional sirenAction`.
@@ -25295,21 +25137,21 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 - `reveal_fallback_to_existing_field` -- walker matched an already-visible field instead of a newly-revealed one (static-schema firmware). INFORMATIONAL -- does NOT flip `partial` by itself.
 
 Trailing-updateRule failure slots (`addRequiredExpression`, `addTrigger`, `addLocalVariable`, bulk `addTriggers`/`addActions`, `patches`, and the action/trigger mutation dispatchers):
-- `addRequiredExpression`: `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError: <message>` when the post-commit `updateRule` click is rejected. `success` flips false and `partial` flips true. `repairHints` adds a recovery line pointing at `update_native_app(button='updateRule', confirm=true)`.
+- `addRequiredExpression`: `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError: <message>` when the post-commit `updateRule` click is rejected. `success` flips false and `partial` flips true. `repairHints` adds a recovery line pointing at `hub_update_native_app(button='updateRule', confirm=true)`.
 - `addTrigger`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The trigger row IS in the rule's appSettings but the running rule instance never re-subscribed to its device events -- retry `updateRule` to populate subscriptions.
 - `addLocalVariable`: `updateRuleFailed: true` + `variableNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The variable IS created on the hub but the rule's action map never re-evaluates against the new variable until updateRule fires -- retry as above.
 - `addTriggers` / `addActions` (bulk path): `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed -- retry as above.
 - `patches`: `updateRuleFailed: true` + `patchesNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The patch ops landed but the rule will not re-evaluate / re-subscribe until updateRule fires -- retry as above.
 - `removeTrigger` / `modifyTrigger` / `removeAction` / `clearActions` / `replaceActions` / `moveAction`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The mutation IS committed but the rule never re-subscribed -- retry as above.''',
 
-        create_native_app_reference: '''## `create_native_app` reference
+        create_native_app_reference: '''## `hub_create_native_app` reference
 
 ### appType options
 
 `appType` (default: `rule_machine`) selects which class of native app to create:
 
 - `rule_machine` — Rule Machine 5.1 (the only registered type today; verified live).
-- Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in `_appTypeRegistry` to enable creation. `update_native_app` / `delete_native_app` already work on them today via their `appId`.
+- Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in `_appTypeRegistry` to enable creation. `hub_update_native_app` / `hub_delete_native_app` already work on them today via their `appId`.
 
 ### Partial-success protocol
 
@@ -25319,6 +25161,6 @@ The tool ALWAYS creates the rule shell (you get an `appId` back) even if some tr
 - `repairHints: [...]` → concrete next-step instructions.
 - Each per-trigger / per-action result has its own `success`, `partial`, `settingsSkipped`, `repairHints`, and `health` block. `success: true, partial: true` on an inner result means the row was written but needs repair.
 
-The right move when `partial: true` is to follow the `repairHints`, NOT to delete the rule and retry from scratch. Tool-only repair via `update_native_app(walkStep={...})` / `replaceActions` / `removeAction` can usually finish the job. Only declare failure after exhausting those repair attempts.'''
+The right move when `partial: true` is to follow the `repairHints`, NOT to delete the rule and retry from scratch. Tool-only repair via `hub_update_native_app(walkStep={...})` / `replaceActions` / `removeAction` can usually finish the job. Only declare failure after exhausting those repair attempts.'''
     ]
 }

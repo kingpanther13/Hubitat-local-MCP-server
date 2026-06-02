@@ -123,7 +123,7 @@ class HubitatMcpClient:
                 )
                 if 500 <= resp.status_code < 600:
                     # Hub or cloud relay returned a transient error. Heavy
-                    # queries (e.g. get_performance_stats) sometimes 504.
+                    # queries (e.g. hub_get_performance_stats) sometimes 504.
                     last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}")
                     self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/3) — retrying")
                     # Exponential backoff with jitter to avoid thundering-herd if
@@ -260,9 +260,9 @@ class TestRunner:
     # -- Helpers -------------------------------------------------------------
 
     def get_first_device_id(self) -> str:
-        """Get and cache the first device ID from list_devices."""
+        """Get and cache the first device ID from hub_list_devices."""
         if self._first_device_id is None:
-            result = self.client.call_tool("list_devices")
+            result = self.client.call_tool("hub_list_devices")
             devices = result if isinstance(result, list) else result.get("devices", [])
             if not devices:
                 raise RuntimeError("No devices available on hub -- cannot run tests")
@@ -290,7 +290,7 @@ class TestRunner:
             pass
 
         # Create one
-        result = self.client.call_tool("manage_virtual_device", {
+        result = self.client.call_tool("hub_manage_virtual_device", {
             "action": "create",
             "deviceType": "Virtual Switch",
             "deviceLabel": f"{PREFIX}Action_Switch",
@@ -352,13 +352,13 @@ class TestRunner:
         """Create a rule, verify it was created, return ruleId."""
         rule_def.setdefault("name", name)
         rule_def.setdefault("testRule", True)
-        result = self.client.call_tool("custom_create_rule", rule_def)
+        result = self.client.call_tool("hub_create_custom_rule", rule_def)
         rule_id = str(result.get("ruleId", result.get("id", "")))
-        assert rule_id, f"custom_create_rule did not return a ruleId: {result}"
+        assert rule_id, f"hub_create_custom_rule did not return a ruleId: {result}"
         self.created_rule_ids.append(rule_id)
 
         # Verify creation
-        fetched = self.client.call_tool("custom_get_rule", {"ruleId": rule_id})
+        fetched = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
         assert fetched.get("name") == name or fetched.get("name", "").startswith(PREFIX), \
             f"Rule name mismatch: expected '{name}', got '{fetched.get('name')}'"
         return rule_id
@@ -366,7 +366,7 @@ class TestRunner:
     def _delete_rule_safe(self, rule_id: str) -> None:
         """Delete a rule, swallowing errors."""
         try:
-            self.client.call_tool("custom_delete_rule", {"ruleId": rule_id, "confirm": True})
+            self.client.call_tool("hub_delete_custom_rule", {"ruleId": rule_id, "confirm": True})
         except Exception as exc:
             print(f"[WARN] _delete_rule_safe({rule_id}) failed: {exc}")
         if rule_id in self.created_rule_ids:
@@ -375,7 +375,7 @@ class TestRunner:
     def _create_variable(self, name: str, var_type: str = "String",
                          value: str = "test") -> None:
         """Create a hub variable via the gateway."""
-        self.client.call_tool("manage_hub_variables", {
+        self.client.call_tool("hub_manage_variables", {
             "tool": "set_variable", "args": {"name": name, "type": var_type, "value": value},
         })
         self.created_variable_names.append(name)
@@ -385,8 +385,8 @@ class TestRunner:
             # confirm=true is required by Hub Admin Write gate; without it the
             # delete is silently skipped (try/except swallows the refusal),
             # leaving the variable stranded.
-            self.client.call_tool("manage_hub_variables", {
-                "tool": "delete_variable", "args": {"name": name, "confirm": True},
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_delete_variable", "args": {"name": name, "confirm": True},
             })
         except Exception as exc:
             print(f"[WARN] _delete_variable_safe({name}) failed: {exc}")
@@ -407,7 +407,7 @@ class TestRunner:
     def test_tools_list(self) -> None:
         result = self.client.list_tools()
         tools = result.get("tools", [])
-        assert len(tools) == 36, f"Expected 36 tools (23 core + 13 gateways), got {len(tools)}"
+        assert len(tools) == 33, f"Expected 33 tools (20 core + 13 gateways), got {len(tools)}"
 
     @test("infrastructure")
     def test_health_endpoint(self) -> None:
@@ -421,10 +421,10 @@ class TestRunner:
 
     @test("devices")
     def test_list_devices(self) -> None:
-        result = self.client.call_tool("list_devices")
+        result = self.client.call_tool("hub_list_devices")
         devices = result if isinstance(result, list) else result.get("devices", [])
-        assert isinstance(devices, list), "list_devices did not return a list"
-        assert len(devices) > 0, "list_devices returned empty list"
+        assert isinstance(devices, list), "hub_list_devices did not return a list"
+        assert len(devices) > 0, "hub_list_devices returned empty list"
         first = devices[0]
         assert "id" in first, "Device missing 'id'"
         assert "label" in first or "name" in first, "Device missing label/name"
@@ -432,14 +432,14 @@ class TestRunner:
     @test("devices")
     def test_get_device(self) -> None:
         dev_id = self.get_first_device_id()
-        result = self.client.call_tool("get_device", {"deviceId": dev_id})
+        result = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
         assert "attributes" in result or "currentStates" in result, \
-            "get_device response missing attributes"
+            "hub_get_device response missing attributes"
 
     @test("devices")
     def test_get_attribute(self) -> None:
         # Find a switch device
-        all_devs = self.client.call_tool("list_devices")
+        all_devs = self.client.call_tool("hub_list_devices")
         devices = all_devs if isinstance(all_devs, list) else all_devs.get("devices", [])
         switch_dev = None
         for d in devices:
@@ -451,21 +451,21 @@ class TestRunner:
                 break
         if switch_dev is None:
             raise SkipTest("No switch device found on hub")
-        result = self.client.call_tool("get_attribute", {
+        result = self.client.call_tool("hub_get_device_attribute", {
             "deviceId": str(switch_dev["id"]),
             "attribute": "switch",
         })
         # Result should contain the value (on/off or similar)
-        assert result is not None, "get_attribute returned None"
+        assert result is not None, "hub_get_device_attribute returned None"
 
     @test("devices")
     def test_send_command_error(self) -> None:
         try:
-            self.client.call_tool("send_command", {
+            self.client.call_tool("hub_call_device_command", {
                 "deviceId": "99999",
                 "command": "on",
             })
-            raise AssertionError("send_command with bogus device should have raised an error")
+            raise AssertionError("hub_call_device_command with bogus device should have raised an error")
         except (McpToolError, McpError):
             pass  # expected — server may return JSON-RPC error or tool error
 
@@ -475,7 +475,7 @@ class TestRunner:
 
     @test("virtual_device_lifecycle")
     def test_create_virtual_switch(self) -> None:
-        result = self.client.call_tool("manage_virtual_device", {
+        result = self.client.call_tool("hub_manage_virtual_device", {
             "action": "create",
             "deviceType": "Virtual Switch",
             "deviceLabel": f"{PREFIX}Switch_Test",
@@ -517,17 +517,17 @@ class TestRunner:
         dev_id = str(target["id"])
 
         # Turn on
-        self.client.call_tool("send_command", {"deviceId": dev_id, "command": "on"})
+        self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "on"})
         time.sleep(0.5)
-        detail = self.client.call_tool("get_device", {"deviceId": dev_id})
+        detail = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
         attrs = detail.get("attributes", detail.get("currentStates", []))
         switch_val = _find_attr(attrs, "switch")
         assert switch_val == "on", f"Expected switch=on, got {switch_val}"
 
         # Turn off
-        self.client.call_tool("send_command", {"deviceId": dev_id, "command": "off"})
+        self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
         time.sleep(0.5)
-        detail = self.client.call_tool("get_device", {"deviceId": dev_id})
+        detail = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
         attrs = detail.get("attributes", detail.get("currentStates", []))
         switch_val = _find_attr(attrs, "switch")
         assert switch_val == "off", f"Expected switch=off, got {switch_val}"
@@ -556,7 +556,7 @@ class TestRunner:
         if not target_dni:
             raise SkipTest(f"{PREFIX}Switch_Test not found for deletion")
 
-        self.client.call_tool("manage_virtual_device", {
+        self.client.call_tool("hub_manage_virtual_device", {
             "action": "delete",
             "deviceNetworkId": target_dni,
             "confirm": True,
@@ -592,22 +592,22 @@ class TestRunner:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise SkipTest("No rule created to get")
-        result = self.client.call_tool("custom_get_rule", {"ruleId": rule_id})
+        result = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
         assert result.get("name", "").startswith(PREFIX), \
             f"Rule name mismatch: {result.get('name')}"
-        assert "triggers" in result or "trigger" in result, "Missing triggers in custom_get_rule"
-        assert "actions" in result, "Missing actions in custom_get_rule"
+        assert "triggers" in result or "trigger" in result, "Missing triggers in hub_get_custom_rule"
+        assert "actions" in result, "Missing actions in hub_get_custom_rule"
 
     @test("rule_crud")
     def test_update_rule(self) -> None:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise SkipTest("No rule created to update")
-        self.client.call_tool("custom_update_rule", {
+        self.client.call_tool("hub_update_custom_rule", {
             "ruleId": rule_id,
             "name": f"{PREFIX}Rule_CRUD_Updated",
         })
-        fetched = self.client.call_tool("custom_get_rule", {"ruleId": rule_id})
+        fetched = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
         assert "Updated" in fetched.get("name", ""), \
             f"Rule name not updated: {fetched.get('name')}"
 
@@ -616,13 +616,13 @@ class TestRunner:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise SkipTest("No rule created to delete")
-        self.client.call_tool("custom_delete_rule", {"ruleId": rule_id, "confirm": True})
+        self.client.call_tool("hub_delete_custom_rule", {"ruleId": rule_id, "confirm": True})
         if rule_id in self.created_rule_ids:
             self.created_rule_ids.remove(rule_id)
         # Verify it's gone
         try:
-            self.client.call_tool("custom_get_rule", {"ruleId": rule_id})
-            raise AssertionError("custom_get_rule should fail after deletion")
+            self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
+            raise AssertionError("hub_get_custom_rule should fail after deletion")
         except (McpToolError, McpError):
             pass
 
@@ -906,43 +906,43 @@ class TestRunner:
 
     @test("system_tools")
     def test_get_modes(self) -> None:
-        result = self.client.call_tool("get_modes")
+        result = self.client.call_tool("hub_list_modes")
         # Should have modes list and currentMode
-        assert result is not None, "get_modes returned None"
+        assert result is not None, "hub_list_modes returned None"
         # Accept various response shapes
         has_modes = ("modes" in result if isinstance(result, dict) else isinstance(result, list))
         assert has_modes or "currentMode" in result, \
-            f"get_modes response missing modes/currentMode: {list(result.keys()) if isinstance(result, dict) else type(result)}"
+            f"hub_list_modes response missing modes/currentMode: {list(result.keys()) if isinstance(result, dict) else type(result)}"
 
     @test("system_tools")
     def test_manage_hub_variables_list(self) -> None:
-        result = self.client.call_tool("manage_hub_variables", {
-            "tool": "list_variables",
+        result = self.client.call_tool("hub_manage_variables", {
+            "tool": "hub_list_variables",
         })
         # Should return a list or dict with variables
-        assert result is not None, "list_variables returned None"
+        assert result is not None, "hub_list_variables returned None"
 
     @test("system_tools")
     def test_get_hub_info(self) -> None:
-        result = self.client.call_tool("get_hub_info")
-        assert result is not None, "get_hub_info returned None"
-        assert isinstance(result, dict), f"get_hub_info returned {type(result)}"
+        result = self.client.call_tool("hub_get_info")
+        assert result is not None, "hub_get_info returned None"
+        assert isinstance(result, dict), f"hub_get_info returned {type(result)}"
 
     @test("system_tools")
     def test_manage_diagnostics(self) -> None:
-        result = self.client.call_tool("manage_diagnostics", {
-            "tool": "get_set_hub_metrics",
+        result = self.client.call_tool("hub_manage_diagnostics", {
+            "tool": "hub_get_metrics",
         })
-        assert result is not None, "get_set_hub_metrics returned None"
+        assert result is not None, "hub_get_metrics returned None"
 
     @test("system_tools")
     def test_get_memory_history(self) -> None:
-        result = self.client.call_tool("manage_diagnostics", {
-            "tool": "get_memory_history",
+        result = self.client.call_tool("hub_manage_diagnostics", {
+            "tool": "hub_get_memory_history",
         })
-        assert isinstance(result, dict), f"get_memory_history returned {type(result)}"
-        assert "entries" in result, "get_memory_history missing 'entries'"
-        assert "summary" in result, "get_memory_history missing 'summary'"
+        assert isinstance(result, dict), f"hub_get_memory_history returned {type(result)}"
+        assert "entries" in result, "hub_get_memory_history missing 'entries'"
+        assert "summary" in result, "hub_get_memory_history missing 'summary'"
         entries = result["entries"]
         assert isinstance(entries, list), "entries should be a list"
         if entries:
@@ -955,10 +955,10 @@ class TestRunner:
 
     @test("system_tools")
     def test_force_garbage_collection(self) -> None:
-        result = self.client.call_tool("manage_diagnostics", {
-            "tool": "force_garbage_collection",
+        result = self.client.call_tool("hub_manage_diagnostics", {
+            "tool": "hub_call_gc",
         })
-        assert isinstance(result, dict), f"force_garbage_collection returned {type(result)}"
+        assert isinstance(result, dict), f"hub_call_gc returned {type(result)}"
         assert "beforeFreeMemoryKB" in result, "Missing 'beforeFreeMemoryKB'"
         assert "afterFreeMemoryKB" in result, "Missing 'afterFreeMemoryKB'"
         assert "summary" in result, "Missing 'summary'"
@@ -969,11 +969,11 @@ class TestRunner:
     @test("system_tools")
     def test_get_memory_history_with_limit(self) -> None:
         """Verify limit parameter works (v0.9.0 fix for response-too-large)."""
-        result = self.client.call_tool("manage_diagnostics", {
-            "tool": "get_memory_history",
+        result = self.client.call_tool("hub_manage_diagnostics", {
+            "tool": "hub_get_memory_history",
             "args": {"limit": 5},
         })
-        assert isinstance(result, dict), f"get_memory_history returned {type(result)}"
+        assert isinstance(result, dict), f"hub_get_memory_history returned {type(result)}"
         assert "entries" in result, "Missing 'entries'"
         entries = result["entries"]
         assert len(entries) <= 5, f"limit=5 but got {len(entries)} entries"
@@ -982,11 +982,11 @@ class TestRunner:
 
     @test("system_tools")
     def test_get_performance_stats_device(self) -> None:
-        """Test get_performance_stats with type=device (default)."""
-        result = self.client.call_tool("manage_logs", {
-            "tool": "get_performance_stats",
+        """Test hub_get_performance_stats with type=device (default)."""
+        result = self.client.call_tool("hub_manage_logs", {
+            "tool": "hub_get_performance_stats",
         })
-        assert isinstance(result, dict), f"get_performance_stats returned {type(result)}"
+        assert isinstance(result, dict), f"hub_get_performance_stats returned {type(result)}"
         assert "uptime" in result, "Missing 'uptime'"
         assert "deviceSummary" in result, "Missing 'deviceSummary'"
         assert "deviceStats" in result, "Missing 'deviceStats'"
@@ -1003,12 +1003,12 @@ class TestRunner:
 
     @test("system_tools")
     def test_get_performance_stats_app(self) -> None:
-        """Test get_performance_stats with type=app."""
-        result = self.client.call_tool("manage_logs", {
-            "tool": "get_performance_stats",
+        """Test hub_get_performance_stats with type=app."""
+        result = self.client.call_tool("hub_manage_logs", {
+            "tool": "hub_get_performance_stats",
             "args": {"type": "app", "limit": 5},
         })
-        assert isinstance(result, dict), f"get_performance_stats returned {type(result)}"
+        assert isinstance(result, dict), f"hub_get_performance_stats returned {type(result)}"
         assert "appSummary" in result, "Missing 'appSummary'"
         assert "appStats" in result, "Missing 'appStats'"
         assert isinstance(result["appStats"], list), "appStats should be a list"
@@ -1019,22 +1019,22 @@ class TestRunner:
 
     @test("system_tools")
     def test_get_performance_stats_both(self) -> None:
-        """Test get_performance_stats with type=both."""
-        result = self.client.call_tool("manage_logs", {
-            "tool": "get_performance_stats",
+        """Test hub_get_performance_stats with type=both."""
+        result = self.client.call_tool("hub_manage_logs", {
+            "tool": "hub_get_performance_stats",
             "args": {"type": "both", "limit": 3},
         })
-        assert isinstance(result, dict), f"get_performance_stats returned {type(result)}"
+        assert isinstance(result, dict), f"hub_get_performance_stats returned {type(result)}"
         assert "deviceStats" in result, "type=both missing 'deviceStats'"
         assert "appStats" in result, "type=both missing 'appStats'"
 
     @test("system_tools")
     def test_get_hub_jobs(self) -> None:
-        """Test get_hub_jobs returns scheduled jobs and hub actions."""
-        result = self.client.call_tool("manage_logs", {
-            "tool": "get_hub_jobs",
+        """Test hub_get_jobs returns scheduled jobs and hub actions."""
+        result = self.client.call_tool("hub_manage_logs", {
+            "tool": "hub_get_jobs",
         })
-        assert isinstance(result, dict), f"get_hub_jobs returned {type(result)}"
+        assert isinstance(result, dict), f"hub_get_jobs returned {type(result)}"
         assert "uptime" in result, "Missing 'uptime'"
         assert "scheduledJobs" in result, "Missing 'scheduledJobs'"
         assert "runningJobs" in result, "Missing 'runningJobs'"
@@ -1049,11 +1049,11 @@ class TestRunner:
 
     @test("system_tools")
     def test_manage_rooms_list(self) -> None:
-        result = self.client.call_tool("manage_rooms", {
-            "tool": "list_rooms",
+        result = self.client.call_tool("hub_manage_rooms", {
+            "tool": "hub_list_rooms",
         })
         # May be empty list, but should not error
-        assert result is not None, "list_rooms returned None"
+        assert result is not None, "hub_list_rooms returned None"
 
     # -----------------------------------------------------------------------
     # GROUP 10: developer_mode (10 tests — Section 12 of BAT-v2.md + review-fix coverage)
@@ -1067,19 +1067,19 @@ class TestRunner:
     #
     # T219 (toggle-OFF refusal) is omitted — would require briefly disabling
     # Developer Mode via UI, which CI can't do (toggle excluded from
-    # update_mcp_settings allowlist by design). Covered by ToolUpdateMcpSettingsSpec
+    # hub_update_mcp_settings allowlist by design). Covered by ToolUpdateMcpSettingsSpec
     # at the unit level + manual BAT.
 
     @test("developer_mode")
     def test_t220_update_mcp_settings_boolean_flip(self) -> None:
-        """T220: update_mcp_settings flips a boolean setting end-to-end."""
+        """T220: hub_update_mcp_settings flips a boolean setting end-to-end."""
         # Capture initial value so we can restore.
-        info = self.client.call_tool("get_hub_info")
-        # debugLogging isn't surfaced in get_hub_info; just round-trip through
-        # update_mcp_settings — true → false → true and assert success each time.
+        info = self.client.call_tool("hub_get_info")
+        # debugLogging isn't surfaced in hub_get_info; just round-trip through
+        # hub_update_mcp_settings — true → false → true and assert success each time.
         for value in (True, False, True):
-            result = self.client.call_tool("manage_mcp_self", {
-                "tool": "update_mcp_settings",
+            result = self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
                 "args": {"settings": {"debugLogging": value}, "confirm": True},
             })
             assert result.get("success") is True, f"flip to {value} did not succeed: {result}"
@@ -1090,8 +1090,8 @@ class TestRunner:
     def test_t221_update_mcp_settings_allowlist_rejection(self) -> None:
         """T221: rejects setting outside the allowlist (enableHubAdminWrite is excluded)."""
         try:
-            self.client.call_tool("manage_mcp_self", {
-                "tool": "update_mcp_settings",
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
                 "args": {"settings": {"enableHubAdminWrite": False}, "confirm": True},
             })
             assert False, "Expected -32602 rejection for enableHubAdminWrite (footgun)"
@@ -1105,18 +1105,18 @@ class TestRunner:
     @test("developer_mode")
     def test_t222_atomic_batch_one_bad_key_blocks_all(self) -> None:
         """T222: a single bad key in a multi-key batch rejects the whole batch (no partial writes)."""
-        # Capture pre-state: read debugLogging via update_mcp_settings round-trip
+        # Capture pre-state: read debugLogging via hub_update_mcp_settings round-trip
         # is not feasible from this side, so assert via behavior — flip debugLogging
         # to a known value first (true), then attempt mixed-batch with a bad key,
         # then verify debugLogging is STILL true (i.e., the OTHER keys did not flip).
-        self.client.call_tool("manage_mcp_self", {
-            "tool": "update_mcp_settings",
+        self.client.call_tool("hub_manage_mcp", {
+            "tool": "hub_update_mcp_settings",
             "args": {"settings": {"debugLogging": True}, "confirm": True},
         })
         # Mixed batch: one valid (debugLogging=false), one invalid (enableHubAdminWrite).
         try:
-            self.client.call_tool("manage_mcp_self", {
-                "tool": "update_mcp_settings",
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
                 "args": {
                     "settings": {"debugLogging": False, "enableHubAdminWrite": False},
                     "confirm": True,
@@ -1129,8 +1129,8 @@ class TestRunner:
         # and assert no-op-like success (atomic validation prevented partial write).
         # Best assertion we can make from outside: after a mixed-batch reject,
         # writing the same value again should still succeed.
-        result = self.client.call_tool("manage_mcp_self", {
-            "tool": "update_mcp_settings",
+        result = self.client.call_tool("hub_manage_mcp", {
+            "tool": "hub_update_mcp_settings",
             "args": {"settings": {"debugLogging": True}, "confirm": True},
         })
         assert result.get("success") is True, f"post-rejection write didn't succeed: {result}"
@@ -1138,8 +1138,8 @@ class TestRunner:
     @test("developer_mode")
     def test_t223_update_mcp_settings_reconnect_hint(self) -> None:
         """T223: response message includes a client-reconnect hint."""
-        result = self.client.call_tool("manage_mcp_self", {
-            "tool": "update_mcp_settings",
+        result = self.client.call_tool("hub_manage_mcp", {
+            "tool": "hub_update_mcp_settings",
             "args": {"settings": {"enableCustomRuleEngine": False}, "confirm": True},
         })
         assert result.get("success") is True
@@ -1147,8 +1147,8 @@ class TestRunner:
         assert "reconnect" in msg.lower(), f"message missing 'reconnect' hint: {msg}"
         assert "tool schemas" in msg, f"message missing 'tool schemas' phrase: {msg}"
         # Restore so the rest of the suite (rule_crud etc.) keeps working.
-        restore = self.client.call_tool("manage_mcp_self", {
-            "tool": "update_mcp_settings",
+        restore = self.client.call_tool("hub_manage_mcp", {
+            "tool": "hub_update_mcp_settings",
             "args": {"settings": {"enableCustomRuleEngine": True}, "confirm": True},
         })
         assert restore.get("success") is True
@@ -1158,15 +1158,15 @@ class TestRunner:
         """T224: set → delete → verify gone."""
         var_name = f"{PREFIX}DELETE_T224"
         # Setup
-        self.client.call_tool("manage_hub_variables", {
+        self.client.call_tool("hub_manage_variables", {
             "tool": "set_variable",
             "args": {"name": var_name, "value": "scratch-t224"},
         })
         # Track for cleanup in case assertion fails partway
         self.created_variable_names.append(var_name)
         # Delete
-        result = self.client.call_tool("manage_hub_variables", {
-            "tool": "delete_variable",
+        result = self.client.call_tool("hub_manage_variables", {
+            "tool": "hub_delete_variable",
             "args": {"name": var_name, "confirm": True},
         })
         assert result.get("success") is True
@@ -1176,8 +1176,8 @@ class TestRunner:
         assert result.get("brokenConsumers") is None  # no rules reference this var
         # Verify gone
         try:
-            self.client.call_tool("manage_hub_variables", {
-                "tool": "get_variable",
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable",
                 "args": {"name": var_name},
             })
             assert False, f"{var_name} should not be retrievable after delete"
@@ -1190,11 +1190,11 @@ class TestRunner:
     @test("developer_mode")
     def test_t225_delete_variable_not_in_either_namespace(self) -> None:
         """T225: refusal when the variable doesn't exist in either namespace."""
-        # delete_variable now addresses both hub-variables and rule_engine
+        # hub_delete_variable now addresses both hub-variables and rule_engine
         # namespaces (PR #151), so the refusal mentions both.
         try:
-            self.client.call_tool("manage_hub_variables", {
-                "tool": "delete_variable",
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_delete_variable",
                 "args": {"name": f"{PREFIX}DEFINITELY_NONEXISTENT_T225", "confirm": True},
             })
             assert False, "Expected refusal for variable missing from both namespaces"
@@ -1204,27 +1204,27 @@ class TestRunner:
 
     @test("developer_mode")
     def test_t226_delete_variable_no_confirm(self) -> None:
-        """T226: delete_variable refuses when confirm flag is absent.
+        """T226: hub_delete_variable refuses when confirm flag is absent.
 
         Note: gateway-layer parameter validation returns the refusal as
         `isError: true` in result content (not as JSON-RPC -32602). Same
         wire-format pattern other gateway-required-param checks use.
         """
         var_name = f"{PREFIX}NO_CONFIRM_T226"
-        self.client.call_tool("manage_hub_variables", {
+        self.client.call_tool("hub_manage_variables", {
             "tool": "set_variable",
             "args": {"name": var_name, "value": "safe"},
         })
         self.created_variable_names.append(var_name)
-        result = self.client.call_tool("manage_hub_variables", {
-            "tool": "delete_variable",
+        result = self.client.call_tool("hub_manage_variables", {
+            "tool": "hub_delete_variable",
             "args": {"name": var_name},  # no confirm
         })
         assert result.get("isError") is True, f"Expected isError result for missing confirm: {result}"
         assert "confirm" in str(result.get("error", "")).lower(), f"refusal didn't mention confirm: {result}"
         # Variable should still exist
-        verify = self.client.call_tool("manage_hub_variables", {
-            "tool": "get_variable",
+        verify = self.client.call_tool("hub_manage_variables", {
+            "tool": "hub_get_variable",
             "args": {"name": var_name},
         })
         assert verify.get("value") == "safe", f"variable was deleted despite missing confirm: {verify}"
@@ -1233,13 +1233,13 @@ class TestRunner:
     def test_per_key_mcplogs_validation_atomic(self) -> None:
         """Atomic rejection — bad mcpLogLevel in a mixed batch with debugLogging blocks both."""
         # Set known baseline for debugLogging (true) — needs to NOT change despite the bad key.
-        self.client.call_tool("manage_mcp_self", {
-            "tool": "update_mcp_settings",
+        self.client.call_tool("hub_manage_mcp", {
+            "tool": "hub_update_mcp_settings",
             "args": {"settings": {"debugLogging": True}, "confirm": True},
         })
         try:
-            self.client.call_tool("manage_mcp_self", {
-                "tool": "update_mcp_settings",
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
                 "args": {
                     "settings": {"debugLogging": False, "mcpLogLevel": "blarg"},
                     "confirm": True,
@@ -1256,15 +1256,15 @@ class TestRunner:
         """Type coercion — JSON-RPC clients sending string 'true'/'false' get coerced to native bool."""
         # JSON in this test runner naturally encodes Python bool as JSON true/false,
         # so to actually exercise the coercion path we have to send a string literal.
-        result = self.client.call_tool("manage_mcp_self", {
-            "tool": "update_mcp_settings",
+        result = self.client.call_tool("hub_manage_mcp", {
+            "tool": "hub_update_mcp_settings",
             "args": {"settings": {"debugLogging": "false"}, "confirm": True},
         })
         assert result.get("success") is True
         # Re-read via a write that should be a no-op if coercion landed correctly:
         # writing native False should also succeed and round-trip cleanly.
-        result2 = self.client.call_tool("manage_mcp_self", {
-            "tool": "update_mcp_settings",
+        result2 = self.client.call_tool("hub_manage_mcp", {
+            "tool": "hub_update_mcp_settings",
             "args": {"settings": {"debugLogging": True}, "confirm": True},
         })
         assert result2.get("success") is True
@@ -1274,8 +1274,8 @@ class TestRunner:
     def test_type_coercion_rejects_invalid_bool_string(self) -> None:
         """Type coercion — strings that aren't 'true'/'false' get rejected, not silently coerced."""
         try:
-            self.client.call_tool("manage_mcp_self", {
-                "tool": "update_mcp_settings",
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
                 "args": {"settings": {"debugLogging": "yes"}, "confirm": True},
             })
             assert False, "Expected rejection for ambiguous bool-coerced string 'yes'"
@@ -1296,7 +1296,7 @@ class TestRunner:
         # Use the shared virtual switch; get_or_create ensures it exists in 'off' state.
         dev_id = self.get_test_switch_id()
         # Drive it to 'off' first so we know its state.
-        self.client.call_tool("send_command", {"deviceId": dev_id, "command": "off"})
+        self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
         time.sleep(0.3)
 
         result = self.client.call_tool("poll_until_attribute", {
@@ -1314,7 +1314,7 @@ class TestRunner:
         """Timeout path: value won't match -> timedOut=true, elapsedMs approx timeoutMs."""
         dev_id = self.get_test_switch_id()
         # Ensure switch is 'off' so 'on' won't match.
-        self.client.call_tool("send_command", {"deviceId": dev_id, "command": "off"})
+        self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
         time.sleep(0.3)
 
         import time as _time
@@ -1340,8 +1340,8 @@ class TestRunner:
     def test_no_hub_errors(self) -> None:
         """Soft check: look for hub errors logged during the test window."""
         try:
-            result = self.client.call_tool("manage_logs", {
-                "tool": "get_hub_logs",
+            result = self.client.call_tool("hub_manage_logs", {
+                "tool": "hub_get_logs",
                 "args": {"level": "error"},
             })
             logs = result if isinstance(result, list) else result.get("logs", [])
@@ -1381,7 +1381,7 @@ class TestRunner:
         for rule_id in list(self.created_rule_ids):
             try:
                 print(f"  Deleting tracked rule {rule_id}")
-                self.client.call_tool("custom_delete_rule", {"ruleId": rule_id, "confirm": True})
+                self.client.call_tool("hub_delete_custom_rule", {"ruleId": rule_id, "confirm": True})
             except Exception as exc:
                 print(f"  [WARN] Failed to delete rule {rule_id}: {exc}")
         self.created_rule_ids.clear()
@@ -1389,7 +1389,7 @@ class TestRunner:
         for dni in list(self.created_device_dnis):
             try:
                 print(f"  Deleting tracked device DNI={dni}")
-                self.client.call_tool("manage_virtual_device", {
+                self.client.call_tool("hub_manage_virtual_device", {
                     "action": "delete",
                     "deviceNetworkId": dni,
                     "confirm": True,
@@ -1401,8 +1401,8 @@ class TestRunner:
         for var_name in list(self.created_variable_names):
             try:
                 print(f"  Deleting tracked variable {var_name}")
-                self.client.call_tool("manage_hub_variables", {
-                    "tool": "delete_variable",
+                self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_delete_variable",
                     "args": {"name": var_name, "confirm": True},
                 })
             except Exception as exc:
@@ -1420,7 +1420,7 @@ class TestRunner:
                     if dni:
                         try:
                             print(f"  Sweep: deleting virtual device '{lbl}' (DNI={dni})")
-                            self.client.call_tool("manage_virtual_device", {
+                            self.client.call_tool("hub_manage_virtual_device", {
                                 "action": "delete",
                                 "deviceNetworkId": dni,
                                 "confirm": True,
@@ -1441,7 +1441,7 @@ class TestRunner:
                     if rid:
                         try:
                             print(f"  Sweep: deleting rule '{rname}' (id={rid})")
-                            self.client.call_tool("custom_delete_rule", {"ruleId": rid, "confirm": True})
+                            self.client.call_tool("hub_delete_custom_rule", {"ruleId": rid, "confirm": True})
                         except Exception as exc:
                             print(f"  [WARN] Sweep delete failed for rule '{rname}': {exc}")
         except Exception as exc:
@@ -1656,7 +1656,7 @@ def main() -> None:
     # Ensure a hub backup exists — many tools require a recent backup
     print("Creating hub backup (required by safety checks)...")
     try:
-        backup_result = client.call_tool("create_hub_backup", {"confirm": True})
+        backup_result = client.call_tool("hub_create_backup", {"confirm": True})
         msg = backup_result.get("message", backup_result) if isinstance(backup_result, dict) else backup_result
         print(f"  Backup: {msg}\n")
     except Exception as exc:
