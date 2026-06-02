@@ -3,6 +3,8 @@
 > **Canonical home** of the PR1 (tool audit) game plan, paired with [Issue #105](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/105). This is the authoritative version.
 >
 > **Revised 2026-06-01** after PR #208 was reverted (#216). The original plan assumed #208 would land first and PR1 would rename its output; that premise is dead. This revision re-baselines on **current master (103 tools)** and folds #208's consolidation work *into* PR1, redone with AGENTS.md-conformant names.
+>
+> **Status (2026-06-02):** **PR1A is complete** — shipped as PR #224 (103 → 89 tools, universal `hub_` rename + 11 merges; full Spock suite + sandbox_lint green). The two follow-on PRs that finish the #105 PR1 audit — **PR1B (gateways)** and **PR1C (descriptions + schema)** — are detailed in *Remaining PR1 work* at the bottom.
 
 ## What changed since the first draft
 
@@ -13,7 +15,7 @@
   1. **Consolidations only — nothing is split.** Every change is a rename or a merge. (`get_set_hub_metrics` has a compound verb but stays ONE tool — renamed `hub_get_metrics`, keeping its optional `recordSnapshot`/`trendPoints` trend-history params; the CSV append is a benign opt-in side effect, not a hub-state write.)
   2. **Verb-noun, verb-first after `hub_`.** The verb leads. Qualifiers fold into the noun: legacy custom-rule tools are `hub_get_custom_rule`, NOT `hub_custom_get_rule`.
   3. `manage_` is reserved for gateways. No new flat `manage_`-style action tools (so connectors and debug-log writes stay as separate single-verb tools, not merged under a `manage_` action dispatcher).
-  4. **Consolidations land before renames** within PR1A. The old PR1a/PR1b/PR1c sub-structure is dropped; PR1A = one consolidation + rename pass, sized like #208 was.
+  4. **Consolidations land before renames** within PR1A. PR1A is a single consolidation + rename pass (sized like #208) — it is *not* internally sub-divided into a/b/c. The gateway work and the description/schema work the original #105 plan bundled under PR1 ship as their own follow-on PRs **PR1B** and **PR1C** (see *Remaining PR1 work* at the bottom).
   5. **Don't break gateways.** When merged tools replace their sources inside a gateway, update the gateway's `tools[]`/`summaries`/`searchHints`. A tool MAY live in more than one gateway.
 
 ## Approach
@@ -136,3 +138,33 @@ Grounded in a per-handler audit of `hubitat-mcp-server.groovy`. "Mechanism" = ho
 7. **No version bumps / CHANGELOG / manifest releaseNotes edits** — bot-managed, `pr_guard.py`-protected.
 8. **AGENTS.md and CLAUDE.md stay byte-identical** if either is touched.
 9. **Surface contradictions, don't paper over them** — note in the PR description.
+
+## Remaining PR1 work — PR1B (gateways) and PR1C (descriptions + schema)
+
+PR1A (above) shipped as **PR #224**. Two follow-on PRs finish the #105 PR1 audit. They were deliberately held out of PR1A to keep it #208-sized and low-risk: PR1A touched every tool's *name*, so layering gateway reorganization and per-tool schema work on top would have ballooned the review surface. Each lands on the post-PR1A (89-tool, all-`hub_`) baseline.
+
+### PR1B — gateway audit + read/write organization
+
+The gateways themselves, now that every tool is `hub_`-named. **No tool merges/splits** (those are done in PR1A) — this is gateway organization + naming only.
+
+- **Read/write split audit** per AGENTS.md ("gateways SHOULD be read-only OR write-only where the domain permits"). Classify each of the 13 gateways and either split a mixed gateway into read/write siblings or document why it stays mixed. Status today:
+  - *Already pure:* `hub_manage_code_read` (read), `hub_manage_code_write` (write), `hub_manage_destructive_ops` (write), `hub_manage_installed_apps` (read), `hub_manage_hpm` (read), `hub_manage_mcp` (write), `hub_manage_files` — review.
+  - *Mixed → review for split:* `hub_manage_variables` (list/get/changes reads + set/create/delete + connector writes), `hub_manage_rooms` (list/get + create/delete/update), `hub_manage_diagnostics` (metrics/memory/radio/health reads + `hub_call_gc`/`hub_call_zwave_repair`/`hub_delete_captured_state` writes), `hub_manage_native_rules` (list/export/`hub_get_rule_health` reads + `hub_call_rule`/`hub_set_rule_*`/CRUD writes), `hub_manage_logs` (reads + `hub_delete_debug_logs`/`hub_set_log_level`), `hub_manage_rules` (test/export reads + delete/import/clone writes).
+- **Gateway naming rework.** Settle the convention for read/write gateway pairs — the current `hub_manage_code_read` / `hub_manage_code_write` bake read/write into the noun, which is the only place a gateway does that. Decide the final pattern and apply it consistently if more pairs are created by the split audit.
+- **Backup tool placement cross-refs.** `hub_list_backups`/`hub_get_backup` (read gateway) and `hub_restore_backup` (write gateway) are split across the read/write code gateways. PR1A patched the stale prose; PR1B should decide whether that split is the intended end state or whether the backup tools should regroup.
+- **Single-tool gateways.** `hub_manage_hpm` (1 tool) and `hub_manage_mcp` (1 tool) — decide keep-as-gateway vs promote-to-flat now that the surface is settled.
+- **Flat-only `manage_`** (clarified in AGENTS.md this round) — confirm `hub_manage_virtual_device` is the only flat `manage_` tool and is justified.
+
+### PR1C — description quality + `outputSchema` audit
+
+Per-tool description and schema quality, per AGENTS.md § "Tool descriptions" + "Schema design".
+
+- **`outputSchema` on every structured-return tool.** Today **zero** tools have one; AGENTS.md requires it (servers MUST conform to a published `outputSchema`; clients SHOULD validate). Add to: all `hub_get_*` object reads, all `hub_list_*` (`{items, nextCursor, …}` shape), and `hub_create_*`/`hub_update_*`/`hub_set_*` writes that return the modified entity. Mind the multi-mode merged tools (`hub_get_custom_rule`, `hub_get_debug_logs`, `hub_list_hpm_packages`, `hub_get_radio_details`, `hub_list_device_events`) — their output shape varies by mode, so the schema needs `oneOf`/per-mode handling or a documented superset.
+- **Anthropic-quality descriptions** per-tool: concise first line, usage/when-to-use body, semantic IDs over opaque UUIDs (expose both name + id where chaining needs it), recovery-oriented error text. Prioritize the high-traffic reads and the merged multi-mode tools.
+- **Param descriptions** unambiguous (`device_id` not `id`), `enum` where a fixed set exists, `required` present only when there are required params.
+- **Watch the 124–128KB `tools/list` cap** — `outputSchema` adds bytes and flat-mode is the size-constrained path. Use `[[FLAT_TRIM]]` markers for the heavy parts so the constrained surface stays under the cap.
+
+### Beyond PR1 (context only — not part of PR1)
+
+- **PR2** — everything *outside* the tools: server/backend, gateway dispatch internals, permission/gate model, transport.
+- **PR3** — AGENTS.md / styleguide / doc updates so future tools conform without another audit.
