@@ -3,8 +3,8 @@ package server
 import support.ToolSpecBase
 
 /**
- * Spec for the library management tools in the hub_manage_code_read
- * (hub_get_source) and hub_manage_code_write (create/update/delete) gateways:
+ * Spec for the library management tools in the hub_read_apps_code
+ * (hub_get_source) and hub_manage_code (create/update/delete) gateways:
  *
  * - toolGetLibrarySource   -> hub_get_source (type:library)
  * - toolInstallLibrary     -> hub_create_library

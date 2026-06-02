@@ -36,14 +36,14 @@ These rules apply to every MCP tool added or renamed. Cached MCP clients refresh
 
 - **Universal service prefix.** Every MCP tool name begins with `hub_`. Anthropic's verified guidance: prefix-namespacing tools by service has "non-trivial effects on our tool-use evaluations" — *writing-tools-for-agents* (2025-09-11). Example: `hub_list_devices`, `hub_create_room`, `hub_call_device_command`.
 - **Verb-noun order.** After the `hub_` prefix, the name reads verb-noun. Verbs are drawn from the strict vocabulary table below. Nouns are the most natural English for the entity in context (drop redundant qualifiers — e.g., `rule` is preferred over `rm_rule` where context disambiguates).
-- **Gateways and flat-only `manage_` tools.** `manage_` is the verb for gateway tools (e.g., `hub_manage_rooms`, `hub_manage_logs`). It MAY also be used by a **flat-only tool** — one that never sits behind any gateway and is always kept top-level on `tools/list` — even though it is not itself a gateway. The canonical case is a flat tool that action-dispatches a small set (≤4) of verbs on a single noun (current example: `hub_manage_virtual_device` with `action: "create"/"delete"`). Don't introduce more flat `manage_` tools without explicit maintainer sign-off.
+- **Gateway verbs — `manage_` (write-bearing) and `read_` (pure-read).** A gateway's verb encodes whether it can mutate. **`manage_`** names any gateway that contains at least one write tool, whether mixed read+write or write-only (e.g., `hub_manage_rooms`, `hub_manage_code`, `hub_manage_destructive_ops`). **`read_`** names a gateway whose every sub-tool is read-only (e.g., `hub_read_apps_code`, `hub_read_diagnostics`). This lets an AI consumer enable the `hub_read_*` gateways for safe read-only access while gating every write-bearing `hub_manage_*` gateway behind a write permission. `manage_` MAY also be used by a **flat-only tool** — one that never sits behind any gateway and is always kept top-level on `tools/list` — even though it is not itself a gateway. The canonical case is a flat tool that action-dispatches a small set (≤4) of verbs on a single noun (current example: `hub_manage_virtual_device` with `action: "create"/"delete"`). Don't introduce more flat `manage_` tools without explicit maintainer sign-off. A gateway `read_` prefix is distinct from the file-manager **leaf** tools `hub_read_file`/`hub_write_file` (see the verb table) — those keep their own `read`/`write` verbs; the noun (`file` vs a gateway domain) disambiguates.
 - **Multi-gateway membership.** A tool MAY appear under more than one gateway when both gateway domains apply.
-- **Gateway read/write split.** Gateways SHOULD be read-only OR write-only where the domain permits. Mixed-mode gateways are accepted only when splitting genuinely doesn't fit the domain. Pure-mode gateways enable cleaner per-gateway disable in LLM client settings and clearer mental models for AI consumers.
+- **Gateway read/write split.** A read-only tool MUST be reachable from a `hub_read_*` gateway (or be a flat top-level tool) — it may never be unique to a `hub_manage_*` gateway. A `hub_manage_*` gateway MAY be mixed (carry its read tools too, for workflow cohesion) as long as those reads are *also* surfaced in a `hub_read_*` gateway via multi-gateway membership (same tool listed in both; no code duplication). This guarantees an AI consumer can reach every read through a pure-read surface while disabling every write-bearing `manage_` gateway. Pure-read gateways enable cleaner per-gateway disable in LLM client settings and clearer mental models for AI consumers.
 - **Hard rename, no aliases.** Non-conforming tools are renamed in lockstep when the convention requires it. The expectation: MCP clients refresh their cached tool list on server update. No deprecation aliases are shipped.
 
 ### Verb vocabulary
 
-Tools use exactly one verb from the table below. The table is the canonical list — `read`/`write` (file-manager domain), `report` (locked to one tool), and `reboot`/`shutdown` (destructive-ops domain) are narrow exceptions to the otherwise-general verb vocabulary.
+Tools use exactly one verb from the table below. The table is the canonical list — `write` (file-manager leaf tools), `report` (locked to one tool), and `reboot`/`shutdown` (destructive-ops domain) are narrow exceptions to the otherwise-general verb vocabulary. `read` is dual-purpose: the file-manager leaf verb (`hub_read_file`) AND the verb for pure-read **gateways** (`hub_read_*`). `manage` is the verb for write-bearing gateways (see Tool naming).
 
 | Verb | Semantic | Folds in |
 |---|---|---|
@@ -56,11 +56,11 @@ Tools use exactly one verb from the table below. The table is the canonical list
 | `delete` | Write that destroys an entity (no ID = delete all) | `clear`, `remove` |
 | `set` | Write that assigns a value/state (`set_X_<attr>`) or replaces an entity wholesale (`set_X`, PUT-like) | `pause`, `resume`, `enable`, `disable`, `lock`, `unlock`, `mute`, `unmute`, `start`, `stop`, `open`, `close`, `assign`, `unassign` |
 | `call` | Invoke a method / service / dispatch / device command | `send`, `dispatch`, `invoke`, `request`, `evaluate`, `run`, `force` |
-| `manage` | Action-dispatch — gateways, plus flat-only top-level tools (see Tool naming) | — |
+| `manage` | Action-dispatch gateway that contains writes (mixed read+write or write-only), plus flat-only top-level tools (see Tool naming) | — |
 | `restore` | Re-apply a prior backup | — |
 | `import` / `export` | Round-trip serialization counterpart | — |
 | `clone` | Duplicate an existing entity | — |
-| `read` / `write` | File-manager domain only — narrow exception | — |
+| `read` / `write` | File-manager **leaf** tools (`hub_read_file`, `hub_write_file`) — narrow exception. `read` is ALSO the verb for pure-read **gateways** (`hub_read_*`, every sub-tool read-only); the noun disambiguates a gateway domain from the `file` leaf | — |
 | `report` | LOCKED to `hub_report_issue` only | — |
 | `reboot` / `shutdown` | EXCEPTIONS — destructive-ops gateway only | — |
 

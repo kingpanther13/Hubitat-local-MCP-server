@@ -112,6 +112,7 @@ class HubitatMcpClient:
 
         last_exc: Optional[Exception] = None
         data: Optional[dict] = None
+        resp = None
         for attempt in range(3):
             resp = None
             try:
@@ -157,6 +158,9 @@ class HubitatMcpClient:
                 raise McpError(f"JSON decode failed on {method}{snippet}") from last_exc
             raise last_exc if last_exc else McpError(f"transport failure on {method}")
 
+        # Reaching here means the loop broke on a successful decode (the for-else
+        # above always raises on exhaustion), so data is a dict.
+        assert data is not None
         self._log(f"<< {json.dumps(data)[:500]}")
 
         if "error" in data:
@@ -407,7 +411,7 @@ class TestRunner:
     def test_tools_list(self) -> None:
         result = self.client.list_tools()
         tools = result.get("tools", [])
-        assert len(tools) == 33, f"Expected 33 tools (20 core + 13 gateways), got {len(tools)}"
+        assert len(tools) == 30, f"Expected 30 tools (11 core + 19 gateways), got {len(tools)}"
 
     @test("infrastructure")
     def test_health_endpoint(self) -> None:
@@ -1073,8 +1077,6 @@ class TestRunner:
     @test("developer_mode")
     def test_t220_update_mcp_settings_boolean_flip(self) -> None:
         """T220: hub_update_mcp_settings flips a boolean setting end-to-end."""
-        # Capture initial value so we can restore.
-        info = self.client.call_tool("hub_get_info")
         # debugLogging isn't surfaced in hub_get_info; just round-trip through
         # hub_update_mcp_settings — true → false → true and assert success each time.
         for value in (True, False, True):
@@ -1369,7 +1371,7 @@ class TestRunner:
     # Cleanup
     # -----------------------------------------------------------------------
 
-    def cleanup(self, artifacts_only: bool = False) -> None:
+    def cleanup(self) -> None:
         """Three-layer cleanup:
         1. Delete tracked artifacts (device DNIs, rule IDs, variables)
         2. Sweep for any BAT_E2E_ virtual devices

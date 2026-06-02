@@ -6,7 +6,7 @@ import support.ToolSpecBase
 /**
  * Spec for toolSetRulePaused with value=true (the pause half of the merged
  * verb-pair tool; former pause_rm_rule).
- * Gateway: hub_manage_native_rules -> hub_set_rule_paused.
+ * Gateway: hub_manage_native_rules_and_apps -> hub_set_rule_paused.
  *
  * Covers: gate-throw, missing ruleId, golden-path pauseRule dispatch,
  * and String ruleId coercion.
@@ -184,7 +184,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinApp = true
 
         when:
-        def result = script.handleGateway('hub_manage_native_rules', 'hub_set_rule_paused', [ruleId: 500, value: true])
+        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_rule_paused', [ruleId: 500, value: true])
 
         then:
         result.success == true

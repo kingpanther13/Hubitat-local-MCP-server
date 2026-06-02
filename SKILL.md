@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 89 tools (33 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, HPM package state introspection, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 88 tools (30 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, HPM package state introspection, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -32,7 +32,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 89 tools (33 on tools/list + gateways)  │  │
+│  │  - 88 tools (30 on tools/list + gateways)  │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -93,38 +93,52 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 89 items to 33. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 88 items to 30. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
 
 **Architecture:**
-- `getGatewayConfig()` — defines 13 gateways, each with a description, tools list, and summaries map
-- `getToolDefinitions()` — returns 20 core tools + 13 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 89 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getGatewayConfig()` — defines 19 gateways, each with a description, tools list, and summaries map
+- `getToolDefinitions()` — returns 11 core tools + 19 gateway tool definitions (client-visible)
+- `getAllToolDefinitions()` — returns all 88 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
-1. AI calls `manage_<domain>()` with no args → gets full tool schemas (catalog mode)
-2. AI calls `manage_<domain>(tool="tool_name", args={...})` → executes the proxied tool
+1. AI calls `<gateway>()` with no args → gets full tool schemas (catalog mode)
+2. AI calls `<gateway>(tool="tool_name", args={...})` → executes the proxied tool
 
-**13 gateways (69 proxied tools):**
+**19 gateways (7 read + 12 manage):**
+
+Read gateways (`hub_read_*`, every sub-tool read-only):
 | Gateway | Tools | Domain |
 |---------|-------|--------|
-| `hub_manage_rules` | 5 | Rule delete/test/export/import/clone |
+| `hub_read_apps_code` | 9 | List apps/drivers, get source, backups (list/get), device-in-use-by lookup, app config inspection, page-name directory, HPM package state (read-only) |
+| `hub_read_devices` | 4 | List/get devices, device attributes, device events (read-only) |
+| `hub_read_diagnostics` | 9 | Logs, performance stats, hub jobs, debug logs, metrics, memory history, device health, radio details (zwave/zigbee), captured states (read-only) |
+| `hub_read_files` | 2 | File Manager list + read (read-only) |
+| `hub_read_rooms` | 2 | Room list + get (read-only) |
+| `hub_read_rules` | 4 | Custom-engine rule get/test, native rule list, rule health (read-only) |
+| `hub_read_variables` | 3 | Hub connector and rule engine variable list/get + change history (read-only) |
+
+Manage gateways (`hub_manage_*`, contain at least one write):
+| Gateway | Tools | Domain |
+|---------|-------|--------|
+| `hub_manage_custom_rules` | 8 | Custom-engine rule get/create/update/delete/test/export/import/clone |
 | `hub_manage_variables` | 8 | Hub connector and rule engine variables (CRUD + connector + history) |
 | `hub_manage_rooms` | 5 | Room CRUD |
 | `hub_manage_destructive_ops` | 3 | Hub reboot, shutdown, device deletion (write) |
-| `hub_manage_code_read` | 5 | List apps/drivers, get source (app/driver/library), backups (read-only) |
-| `hub_manage_code_write` | 8 | Install/update apps+drivers+libraries, delete item (app/driver/library), restore backup (write) |
-| `hub_manage_logs` | 6 | Logs, performance stats, hub jobs, debug tools |
-| `hub_manage_diagnostics` | 8 | Diagnostics, state capture, radio details (zwave/zigbee), zwave repair, memory history, GC |
+| `hub_manage_code` | 8 | Install/update apps+drivers+libraries, delete item (app/driver/library), restore backup (write) |
+| `hub_manage_devices` | 6 | Device command/update (write) + list/get devices, attributes, events (reads) |
+| `hub_manage_logs` | 6 | Logs, performance stats, hub jobs, debug tools (read + clear/set-level write) |
+| `hub_manage_diagnostics` | 8 | Diagnostics, state capture/delete, radio details (zwave/zigbee), zwave repair, memory history, metrics, GC |
 | `hub_manage_files` | 4 | File Manager CRUD |
-| `hub_manage_installed_apps` | 4 | Built-in + user app visibility, device-in-use-by lookup, app config inspection, page-name directory |
-| `hub_manage_hpm` | 1 | HPM package state introspection (list tracked packages + optional drift signals) -- read-only, Hub Admin Read |
-| `hub_manage_native_rules` | 11 | Rule Machine interop (RMUtils: list/run/set-paused/boolean) + admin-layer CRUD on any classic SmartApp (create/update/delete/clone/export/hub_import_native_app + hub_get_rule_health — works on RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.) |
+| `hub_manage_native_rules_and_apps` | 11 | Rule Machine interop (RMUtils: list/run/set-paused/boolean) + admin-layer CRUD on any classic SmartApp (create/update/delete/clone/export/hub_import_native_app + hub_get_rule_health — works on RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.) |
+| `hub_manage_rule_machine` | 5 | Rule Machine interop (RMUtils: list/run/set-paused/boolean) + rule health |
 | `hub_manage_mcp` | 1 | Developer Mode self-administration — update MCP rule app's own settings (allowlist-gated, requires `enableDeveloperMode`) |
 
 `hub_update_native_app` `clearActions` / `replaceActions` shortcuts: the trashActs delete commits synchronously via a full selectActions page-form submit (the complete form-action envelope plus serialized page state, mirroring the native UI), which runs RM's `trashActs` submitOnChange handler in-band -- the actions are gone by the time the call returns. A thin defensive verify-retry remains: on the rare residual where verification still sees the actions (stuck `state.editAct`, or an uncommon firmware commit lag) the tool returns `partial:true, asyncCommitLikely:true` with a `stage` discriminator and a `safeRecovery` block. Verify via `hub_get_app_config` rather than rolling back if that fires. See TOOL_GUIDE.md for the full response shape.
 
-**Core tools:** `hub_list_devices` (`filter='virtual'` lists only MCP-managed virtual devices), `hub_get_device`, `hub_get_device_attribute` (pass `expectedValue`/`expectedValues` to block-poll the attribute until it matches or times out; `timeoutMs` in MILLISECONDS, default 5000ms = 5 seconds, max 60000ms; polling BLOCKS the MCP request -- use sparingly, prefer event-driven flows), `hub_call_device_command`, `hub_list_device_events` (add `hoursBack` for a window — up to 7 days of device or location event history; omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events), `hub_get_custom_rule` (omit `ruleId` to list all custom-engine rules; `detailed=true` for comprehensive diagnostics on one rule), `hub_create_custom_rule`, `hub_update_custom_rule` (the MCP custom rule engine — distinct from native Rule Machine; native-RM CRUD (and Room Lighting, Button Controllers, Basic Rules, etc.) is in the `hub_manage_native_rules` gateway via `hub_create_native_app` / `hub_update_native_app` / `hub_delete_native_app` / `hub_get_rule_health`), `hub_update_device`, `hub_manage_virtual_device` (action enum: "create", "delete"), `hub_get_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — gated behind Hub Admin Read), `hub_list_modes`, `hub_set_mode`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`, `hub_get_tool_guide`, `hub_search_tools` (BM25 natural language search across all tools)
+**Flat (top-level) tools (11):** `hub_manage_virtual_device` (action enum: "create", "delete"), `hub_get_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — gated behind Hub Admin Read), `hub_list_modes`, `hub_set_mode`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`, `hub_get_tool_guide`, `hub_search_tools` (BM25 natural language search across all tools).
+
+Device tools (`hub_list_devices` with `filter='virtual'` to list only MCP-managed virtual devices, `hub_get_device`, `hub_get_device_attribute` — pass `expectedValue`/`expectedValues` to block-poll the attribute until it matches or times out; `timeoutMs` in MILLISECONDS, default 5000ms = 5 seconds, max 60000ms; polling BLOCKS the MCP request, use sparingly, prefer event-driven flows — `hub_call_device_command`, `hub_update_device`, and `hub_list_device_events` with `hoursBack` for a window up to 7 days of device or location event history; omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events) live in the `hub_read_devices` / `hub_manage_devices` gateways. The MCP custom rule engine tools (`hub_get_custom_rule` — omit `ruleId` to list all custom-engine rules, `detailed=true` for comprehensive diagnostics on one rule — `hub_create_custom_rule`, `hub_update_custom_rule`) live in the `hub_read_rules` / `hub_manage_custom_rules` gateways; this engine is distinct from native Rule Machine, whose CRUD (and Room Lighting, Button Controllers, Basic Rules, etc.) is in the `hub_manage_native_rules_and_apps` gateway via `hub_create_native_app` / `hub_update_native_app` / `hub_delete_native_app` / `hub_get_rule_health`.
 
 **Safety gates are preserved:** All Hub Admin Read/Write checks live in the handler functions (e.g., `requireHubAdminRead()`, `requireHubAdminWrite(args.confirm)`), not in the dispatch layer. The gateway simply calls `executeTool()`, which calls the handler, which enforces the gate. No safety check is bypassed.
 
@@ -553,7 +567,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub/fileManager/json` | Lists all files in File Manager (JSON array: name, size, date) |
 | `/hub2/roomsList` | List of rooms as JSON (alternative to `getRooms()` SDK method) |
 | `/logs/past/json` | Hub log buffer as JSON array of tab-delimited strings (chronological order, oldest first — reverse client-side for newest-first). Accepts optional `?type=dev&id=<deviceId>` or `?type=app&id=<appId>` to scope server-side to a single source. |
-| `/hub2/appsList` | All installed apps (built-in + user) as JSON. Keys: `systemAppTypes[]`, `userAppTypes[]`, `apps[]` (instance tree). Each `apps[]` entry has `{key, id, data: {id, name, type, disabled, user, hidden, appTypeId}, parent: bool, child: bool, children: [...]}`. Used by `hub_list_installed_apps`. |
+| `/hub2/appsList` | All installed apps (built-in + user) as JSON. Keys: `systemAppTypes[]`, `userAppTypes[]`, `apps[]` (instance tree). Each `apps[]` entry has `{key, id, data: {id, name, type, disabled, user, hidden, appTypeId}, parent: bool, child: bool, children: [...]}`. Used by `hub_list_apps` (`scope=instances`). |
 | `/device/fullJson/<id>` | Comprehensive device JSON — includes `appsUsing` array (apps referencing this device: `{id, name, label, trueLabel, disabled}`), `appsUsingCount`, `parentApp`, plus device commands/attributes/settings/dashboards. Used by `hub_list_device_dependents`. |
 | `/installedapp/configure/json/<id>[/<pageName>]` | SDK-level config-page serialization for any installed app using `dynamicPage()`. Returns `{app, configPage: {name, title, sections: [{title, input: [...], body: [...]}]}, settings, childApps}`. `app` carries identity (label, name, appType, disabled, parentAppId). Sections hold typed inputs with current values. The Web UI itself consumes this endpoint. Used by `hub_get_app_config`. |
 | `/installedapp/statusJson/<id>` | Raw Groovy `state` map for any installed app. Returns `{id, appState: [{name, value}, ...], appSettings: [...]}`. `appState[].value` shape varies: live hubs typically return the value already parsed as a Map (JsonSlurper recursively decoded the inner JSON); older firmwares or large payloads may leave it as a JSON-encoded String requiring a second parse. The implementation handles both: if value is already a Map, use it directly; if String, parse again. Used by `hub_list_hpm_packages` (including its `includeDrift=true` mode) to read HPM's `state.manifests` package registry. Requires Hub Admin Read. |
@@ -590,7 +604,7 @@ The server implements MCP protocol version `2024-11-05`:
 - **Methods**: `initialize`, `tools/list`, `tools/call`, `ping`
 - **Notifications**: Handled silently (HTTP 204)
 - **Error codes**: `-32700` (parse), `-32600` (invalid request), `-32601` (method not found), `-32602` (invalid params from `IllegalArgumentException`), `-32603` (internal error)
-- **`tools/list` returns the full catalog in one response.** Pagination was tried (page size 50, cursor-based) but removed because many MCP clients — including the Claude.ai connector — don't iterate `nextCursor`, which silently truncated the flat-mode catalog at 50 tools. The full-catalog response is backstopped by the universal response-size guard at `handleMcpRequest` (124,000-byte threshold) that emits a loud `-32603 "Response too large"` envelope if the catalog ever exceeds the hub cap. Stale clients passing a `cursor` get the full catalog and find no `nextCursor`. Opt-in cursor pagination on `tools/call` (`hub_list_devices`, `hub_list_installed_apps`, `hub_list_rules`, etc.) is unaffected.
+- **`tools/list` returns the full catalog in one response.** Pagination was tried (page size 50, cursor-based) but removed because many MCP clients — including the Claude.ai connector — don't iterate `nextCursor`, which silently truncated the flat-mode catalog at 50 tools. The full-catalog response is backstopped by the universal response-size guard at `handleMcpRequest` (124,000-byte threshold) that emits a loud `-32603 "Response too large"` envelope if the catalog ever exceeds the hub cap. Stale clients passing a `cursor` get the full catalog and find no `nextCursor`. Opt-in cursor pagination on `tools/call` (`hub_list_devices`, `hub_list_apps`, `hub_list_rules`, etc.) is unaffected.
 
 ### Common Pitfalls
 

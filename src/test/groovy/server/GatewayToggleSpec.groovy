@@ -25,9 +25,14 @@ class GatewayToggleSpec extends ToolSpecBase {
         !names.contains('hub_list_files')
         !names.contains('hub_get_logs')
 
-        and: 'core tools still appear'
-        names.contains('hub_list_devices')
-        names.contains('hub_get_device')
+        and: 'device + custom-rule tools are now proxied behind gateways, NOT top-level'
+        !names.contains('hub_list_devices')
+        !names.contains('hub_get_device')
+        !names.contains('hub_get_custom_rule')
+
+        and: 'flat (always top-level) tools still appear'
+        names.contains('hub_get_info')
+        names.contains('hub_get_hsm_status')
         names.contains('hub_search_tools')
     }
 
@@ -59,8 +64,8 @@ class GatewayToggleSpec extends ToolSpecBase {
         !names.contains('hub_manage_files')
         !names.contains('hub_manage_logs')
         !names.contains('hub_manage_diagnostics')
-        !names.contains('hub_manage_rules')
-        !names.contains('hub_manage_native_rules')
+        !names.contains('hub_manage_custom_rules')
+        !names.contains('hub_manage_native_rules_and_apps')
         !names.contains('hub_manage_mcp')
 
         and: 'every previously-proxied sub-tool is now top-level'
@@ -144,7 +149,7 @@ class GatewayToggleSpec extends ToolSpecBase {
             'hub_get_radio_details', 'hub_call_zwave_repair',
             'hub_list_captured_states', 'hub_delete_captured_state',
             'hub_list_files', 'hub_read_file', 'hub_write_file', 'hub_delete_file',
-            'hub_list_installed_apps', 'hub_list_device_dependents', 'hub_get_app_config', 'hub_list_app_pages',
+            'hub_list_device_dependents', 'hub_get_app_config', 'hub_list_app_pages',
             'hub_list_rules', 'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
             'hub_create_native_app', 'hub_update_native_app', 'hub_delete_native_app', 'hub_get_rule_health',
             'hub_update_mcp_settings'
@@ -210,11 +215,12 @@ class GatewayToggleSpec extends ToolSpecBase {
         then: 'built-in-app tools are removed from the flat catalog, not just from gateway entries'
         !names.contains('hub_list_rules')
         !names.contains('hub_create_native_app')
-        !names.contains('hub_list_installed_apps')
+        !names.contains('hub_list_device_dependents')
         !names.contains('hub_get_rule_health')
 
         and: 'tools that do not depend on enableBuiltinApp are still present'
         names.contains('hub_get_app_config')
+        names.contains('hub_list_apps')
         names.contains('hub_list_devices')
     }
 
@@ -255,7 +261,7 @@ class GatewayToggleSpec extends ToolSpecBase {
 
         when:
         def tools = script.getToolDefinitions()
-        def rulesAdmin = tools.find { it.name == 'hub_manage_rules' }
+        def rulesAdmin = tools.find { it.name == 'hub_manage_custom_rules' }
 
         then: 'gateway entry still appears (hub_test_custom_rule remains visible)'
         rulesAdmin != null
@@ -286,8 +292,8 @@ class GatewayToggleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinApp = false
         settingsMap.enableCustomRuleEngine = false
 
-        when: 'every sub-tool of hub_manage_native_rules is hidden by enableBuiltinApp=false'
-        def result = script.executeTool('hub_manage_native_rules', [tool: 'hub_list_rules', args: [:]])
+        when: 'every sub-tool of hub_manage_native_rules_and_apps is hidden by enableBuiltinApp=false'
+        def result = script.executeTool('hub_manage_native_rules_and_apps', [tool: 'hub_list_rules', args: [:]])
 
         then: 'guard fires, hint does not name any of the hidden sub-tools'
         result.isError == true

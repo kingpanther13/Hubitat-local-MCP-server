@@ -4,13 +4,17 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 33 items (20 core + 13 gateways) covering 89 total tools. Use `hub_search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 30 items (11 core + 19 gateways) covering 88 total tools. Use `hub_search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
 2. Call with `tool='<tool_name>'` and `args={...}` to execute a specific tool
 
-**Gateways:** `hub_manage_rules` (5), `hub_manage_variables` (8), `hub_manage_rooms` (5), `hub_manage_destructive_ops` (3), `hub_manage_code_read` (7), `hub_manage_code_write` (10), `hub_manage_logs` (8), `hub_manage_diagnostics` (11), `hub_manage_files` (4), `hub_manage_installed_apps` (4), `hub_manage_hpm` (2), `hub_manage_native_rules` (12), `hub_manage_mcp` (1)
+Gateway verbs encode mutation: **`hub_read_*`** gateways are pure-read (every sub-tool read-only), **`hub_manage_*`** gateways contain at least one write. A read tool may appear in BOTH a `hub_read_*` gateway and a mixed `hub_manage_*` gateway (multi-membership).
+
+**Read gateways:** `hub_read_apps_code` (9), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (4), `hub_read_variables` (3)
+
+**Manage gateways:** `hub_manage_code` (8), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (3), `hub_manage_devices` (6), `hub_manage_diagnostics` (8), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_rooms` (5), `hub_manage_rule_machine` (5), `hub_manage_variables` (8)
 
 All safety gates (Hub Admin Read/Write, confirm, backup checks) are preserved — they are enforced in the handler functions, not the dispatch layer.
 
@@ -24,7 +28,7 @@ Default is **ON** (gateways enabled). Existing installations keep the gateway be
 
 ### `tools/list` Returns the Full Catalog in One Response
 
-`tools/list` returns the complete tool catalog in a single response (no pagination). Pagination was tried briefly (page size 50, cursor-based) but removed because many MCP clients — including the Claude.ai connector — do NOT iterate `nextCursor` automatically, which silently truncated the catalog at the first 50 tools. The full-catalog response is backstopped by the universal response-size guard inside `handleMcpRequest` (124,000-byte threshold) that emits a loud `-32603 "Response too large"` envelope if the catalog ever exceeds the hub's 128KB JSON-RPC limit — better to fail loud than silently lose tools. Stale clients that pass a `cursor` param get the full catalog and find no `nextCursor`, so any iteration loop terminates after one call. Opt-in cursor pagination on `tools/call` (`hub_list_devices`, `hub_list_installed_apps`, `hub_list_rules`, etc.) is unaffected — see the next section.
+`tools/list` returns the complete tool catalog in a single response (no pagination). Pagination was tried briefly (page size 50, cursor-based) but removed because many MCP clients — including the Claude.ai connector — do NOT iterate `nextCursor` automatically, which silently truncated the catalog at the first 50 tools. The full-catalog response is backstopped by the universal response-size guard inside `handleMcpRequest` (124,000-byte threshold) that emits a loud `-32603 "Response too large"` envelope if the catalog ever exceeds the hub's 128KB JSON-RPC limit — better to fail loud than silently lose tools. Stale clients that pass a `cursor` param get the full catalog and find no `nextCursor`, so any iteration loop terminates after one call. Opt-in cursor pagination on `tools/call` (`hub_list_devices`, `hub_list_apps`, `hub_list_rules`, etc.) is unaffected — see the next section.
 
 ### `tools/call` Response-Size Guard (v1.3.x+, fail-soft)
 
@@ -36,7 +40,7 @@ Every `tools/call` response is measured before send. If the wire-encoded respons
   "truncated": true,
   "estimatedBytes": 145320,
   "sizeLimitBytes": 120000,
-  "tool": "hub_list_installed_apps",
+  "tool": "hub_list_apps",
   "suggestion": "Set includeHidden=false (the default), narrow via filter ..., or pass cursor to page through the apps list."
 }
 ```
@@ -50,8 +54,7 @@ These tools follow an explicit opt-in convention so pre-`cursor` callers see no 
 | Tool | Page size | Notes |
 |---|---|---|
 | `hub_list_devices` | 50 (when `limit` unset) | Cursor is an alias for the existing `offset`+`limit` shape; `nextCursor` is emitted alongside `nextOffset`. |
-| `hub_list_installed_apps` | 50 | Cursor respects `filter` — pages the filtered set. |
-| `hub_list_apps` | 50 | Catalog of installable apps on the hub. |
+| `hub_list_apps` | 50 | `scope='types'` (default): catalog of installable apps. `scope='instances'`: installed app instances; cursor respects `filter` — pages the filtered set. |
 | `hub_list_drivers` | 50 | Catalog of installable drivers. |
 | `hub_list_hpm_packages` | 25 | Smaller page because each HPM entry carries the full app/driver/file inventory. |
 | `hub_list_rules` | 50 | RM 4.x + 5.x deduplicated rules. |
@@ -129,13 +132,13 @@ All Hub Admin Write tools require these steps:
 - List affected devices to user before proceeding
 - Dashboard layouts and automations referencing room may be affected
 
-**hub_create_app** (via `hub_manage_code_write`)
+**hub_create_app** (via `hub_manage_code`)
 - Accepts `source` (inline Groovy) OR `sourceFile` (filename in File Manager). Provide exactly one.
 - Token-economy tip: upload large source via local CLI first, then pass the filename as `sourceFile`. Avoids re-sending multi-KB source strings on each install attempt.
 - Performs post-install verification: after the hub creates the item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `appId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `hub_get_source` (type=app, id). If the hub returns no item ID at all (no `Location` header), `appId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
 - Requires Hub Admin Write + confirm + backup <24h.
 
-**hub_create_driver** (via `hub_manage_code_write`)
+**hub_create_driver** (via `hub_manage_code`)
 - Single-driver mode: supply `source` (inline Groovy) OR `sourceFile` (filename in File Manager). Provide exactly one.
 - Bulk mode: supply an `installs` array of objects, each with `source` or `sourceFile`. Cannot combine with single-driver fields.
   - Continue-on-error: errors on individual items do not abort remaining installs. Returns a per-item status array with each item's `driverId`.
@@ -145,13 +148,13 @@ All Hub Admin Write tools require these steps:
 - Performs post-install verification: after the hub creates each item, fetches it back to confirm the Groovy compiled cleanly. Returns `success: false` with `driverId` populated when the hub reports a compile error or the verify response is empty/unparseable, so the error can be inspected via `hub_get_source` (type=driver, id). If the hub returns no item ID at all (no `Location` header), `driverId` is `null`. Transient verify-fetch failures keep `success: true` but set `verified: false` plus `verifyError`.
 - Requires Hub Admin Write + confirm + backup <24h.
 
-**hub_update_app** (via `hub_manage_code_write`)
+**hub_update_app** (via `hub_manage_code`)
 - Supply `appId` + one of `source` / `sourceFile` / `resave`.
 - Self-update guard: applies only when `appId` matches this MCP server's own app instance. Refuses to overwrite that source unless **Enable Developer Mode Tools** is on in the MCP Rule Server app settings (a bad self-update bricks the MCP loop; recovery requires the Hubitat UI or SSH). Every self-update attempt — blocked OR allowed — is audit-logged at WARN under the `hub-admin` component. If the app context is unavailable at call time (rare lifecycle window) the guard fails closed with an ERROR audit log; retry the call.
 - Optional `expectedVersion` (integer): optimistic-lock guard. When supplied and the hub's version differs, the update returns `success: false` + `conflict: true` with both `expectedVersion` and `currentVersion` echoed. Use when an agent's read-modify-write spans turns or runs alongside other agents/tools that could mutate the same app. Backup still happens on conflict (intentional: `backupItemSource` has a 1h cache so the parallel-agent retry costs nothing, and the first caller losing the race still has a recovery point). Stringified integers are coerced; explicit `null` is rejected (omit the field entirely to skip the lock).
 - Requires Hub Admin Write + confirm + backup <24h.
 
-**hub_update_driver** (via `hub_manage_code_write`)
+**hub_update_driver** (via `hub_manage_code`)
 - Single-driver mode (unchanged): supply `driverId` + one of `source` / `sourceFile` / `resave`. Optional `expectedVersion` (integer): same optimistic-lock semantics as `hub_update_app` — conflict envelope carries `driverId` instead of `appId`.
 - Bulk mode: supply an `updates` array of objects, each with `driverId` and one of `sourceFile` / `source` / `resave`, plus optional per-item `expectedVersion`. Cannot combine with single-driver fields (including a top-level `expectedVersion` — put it on each entry instead).
   - Continue-on-error: errors on individual items do not abort remaining updates. Returns a per-item status array. Per-item conflicts (failed lock) carry `conflict: true` + `expectedVersion` + `currentVersion`; per-item thrown errors carry `error` + `errorClass`. Other items in the batch still apply.
@@ -159,7 +162,7 @@ All Hub Admin Write tools require these steps:
   - Practical limit: ~20 drivers per call (each update is a sequential on-hub compilation, ~1-5 seconds each).
   - Token-economy pattern: upload all updated driver files via local CLI (curl -F / PowerShell Invoke-RestMethod), then call bulk `hub_update_driver` once with all `{driverId, sourceFile}` pairs.
 
-**hub_delete_item** (type: app|driver|library, via `hub_manage_code_write`)
+**hub_delete_item** (type: app|driver|library, via `hub_manage_code`)
 - Remove app instances via Hubitat UI first (for apps)
 - Change devices to different driver first (for drivers)
 - Ensure no drivers/apps reference the library via #include before deleting (for libraries)
@@ -200,7 +203,7 @@ All Hub Admin Write tools require these steps:
   "confirm": true
 }
 ```
-Use `hub_manage_code_read(tool="hub_list_drivers")` to see installed drivers and their namespace + name values. The namespace and name must match exactly as registered. If the driver is not found (or any other hub error), the tool surfaces an `IllegalArgumentException` (-32602) pointing to `hub_list_drivers`. If a built-in `deviceType` is not found on the hub, the tool surfaces an isError platform error (firmware gap, not a caller error).
+Use `hub_read_apps_code(tool="hub_list_drivers")` to see installed drivers and their namespace + name values. The namespace and name must match exactly as registered. If the driver is not found (or any other hub error), the tool surfaces an `IllegalArgumentException` (-32602) pointing to `hub_list_drivers`. If a built-in `deviceType` is not found on the hub, the tool surfaces an isError platform error (firmware gap, not a caller error).
 
 **Create response shape** (both modes): `{ success, message, tips, device: { id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, attributes } }`. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code.
 
@@ -307,7 +310,7 @@ Offset is in minutes (positive = after, negative = before)
 ## App/Driver/Library Code Management
 
 ### Reading Source Code
-- `hub_get_source` (type=app|driver|library, id; via `hub_manage_code_read`) supports chunked reading for large files
+- `hub_get_source` (type=app|driver|library, id; via `hub_read_apps_code`) supports chunked reading for large files
 - Large files auto-saved to File Manager as `mcp-source-app-{id}.groovy`, `mcp-source-driver-{id}.groovy`, or `mcp-source-library-{id}.groovy`
 - Use this saved file with `sourceFile` parameter in update tools
 
@@ -339,7 +342,7 @@ curl -b cookies.txt -F "uploadFile=@mylib.groovy" -F "folder=/" http://<HUB_IP>/
 ```
 Then call `hub_create_library` or `hub_update_library` with `sourceFile: 'mylib.groovy'`.
 
-Note: `hub_get_source` (type=library; read-only, Hub Admin Read) lives in `hub_manage_code_read` and serves apps, drivers, and libraries via its `type` discriminator. The write operations (`hub_create_library`, `hub_update_library`, `hub_delete_item` with type=library) live in `hub_manage_code_write` (Hub Admin Write).
+Note: `hub_get_source` (type=library; read-only, Hub Admin Read) lives in `hub_read_apps_code` and serves apps, drivers, and libraries via its `type` discriminator. The write operations (`hub_create_library`, `hub_update_library`, `hub_delete_item` with type=library) live in `hub_manage_code` (Hub Admin Write).
 
 ### After Installation
 - Apps: Add via Apps > Add User App in Hubitat web UI
@@ -370,7 +373,7 @@ Note: `hub_get_source` (type=library; read-only, Hub Admin Read) lives in `hub_m
 ### Native RM Rule Backups (Automatic)
 - `update_rm_rule` and `delete_rm_rule` snapshot configure/json + statusJson to File Manager as `mcp-rm-backup-<ruleId>-<timestamp>.json`
 - Snapshots register in the unified `state.itemBackupManifest` with type=`rm-rule`
-- Use `hub_list_backups` to enumerate, `hub_restore_backup` (in `hub_manage_code_read`) with the backupKey to roll back
+- Use `hub_list_backups` (in `hub_read_apps_code`) to enumerate, `hub_restore_backup` (in `hub_manage_code`) with the backupKey to roll back
 - If the rule still exists, settings are replayed in place; if deleted, a fresh empty rule is recreated and the saved settings replayed onto it
 
 ### Hubitat Built-in Rule Redirect
@@ -379,12 +382,12 @@ with "Rule not found", the error message may include a redirect hint if the ID b
 Hubitat built-in rule-like app (Rule Machine, Room Lighting, Basic Rules, Visual Rules Builder).
 
 Example redirect message:
-> "Rule 832 is a Hubitat built-in Rule-5.1 app. Use `hub_manage_installed_apps -> hub_get_app_config(appId=832)` to read its configuration."
+> "Rule 832 is a Hubitat built-in Rule-5.1 app. Use `hub_read_apps_code -> hub_get_app_config(appId=832)` to read its configuration."
 
 - Read verbs (`hub_get_custom_rule`, `hub_export_custom_rule`, `hub_clone_custom_rule`): points to `hub_get_app_config` and notes these tools only handle MCP's own rule engine.
-- Write verbs (`hub_update_custom_rule`): points to `hub_get_app_config` for inspection and `hub_manage_native_rules -> hub_update_native_app` for programmatic modification (requires Built-in App Tools + Hub Admin Write).
-- Delete verb (`hub_delete_custom_rule`): points to `hub_manage_native_rules -> hub_delete_native_app` for programmatic deletion.
-- Test verb (`hub_test_custom_rule`): points to `hub_manage_installed_apps -> hub_get_app_config` for inspection. For Rule Machine rules specifically, the hint also includes a pointer to `hub_manage_native_rules -> hub_call_rule` to trigger them; non-RM rule-likes (Room Lighting, Basic Rules, Visual Rule Builder) receive only the `hub_get_app_config` pointer because `hub_call_rule` routes through `RMUtils.sendAction` and is RM-only.
+- Write verbs (`hub_update_custom_rule`): points to `hub_get_app_config` for inspection and `hub_manage_native_rules_and_apps -> hub_update_native_app` for programmatic modification (requires Built-in App Tools + Hub Admin Write).
+- Delete verb (`hub_delete_custom_rule`): points to `hub_manage_native_rules_and_apps -> hub_delete_native_app` for programmatic deletion.
+- Test verb (`hub_test_custom_rule`): points to `hub_read_apps_code -> hub_get_app_config` for inspection. For Rule Machine rules specifically, the hint also includes a pointer to `hub_manage_native_rules_and_apps -> hub_call_rule` to trigger them; non-RM rule-likes (Room Lighting, Basic Rules, Visual Rule Builder) receive only the `hub_get_app_config` pointer because `hub_call_rule` routes through `RMUtils.sendAction` and is RM-only.
 - The redirect check is best-effort: if the hub appsList call fails, a plain "Rule not found" message is returned with no secondary error.
 - `hub_get_custom_rule` in list mode (ruleId omitted) and `hub_create_custom_rule` are not affected (they do not take a rule id as input).
 
@@ -462,11 +465,11 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 
 ## Built-in App Tools
 
-Tools in `hub_manage_installed_apps` and `hub_manage_native_rules` gateways have mixed gate requirements. `hub_list_installed_apps` and `hub_list_device_dependents` require the **Enable Built-in App Tools** toggle (`requireBuiltinApp`). `hub_get_app_config` and `hub_list_app_pages` require **Hub Admin Read** (`requireHubAdminRead`). `hub_list_hpm_packages` (including its `includeDrift=true` mode) requires **Hub Admin Read** only -- no Built-in App Tools toggle needed. `hub_manage_native_rules` tools require the **Enable Built-in App Tools** toggle for reads and **Hub Admin Write** (`requireHubAdminWrite`) for the CRUD path (`hub_create_native_app`, `hub_update_native_app`, `hub_delete_native_app`); Hub Admin Write also enforces a backup-within-24h gate before any write. If the user sees "Built-in App Tools are disabled", "Hub Admin Read is disabled", or "Hub Admin Write is disabled" errors, direct them to the MCP Rule Server app settings page to enable the relevant toggle. Note: Hub Admin Write operations additionally require a hub backup within the last 24 hours -- if the write gate blocks with a backup-age message, use `hub_create_backup` first.
+The installed-apps reads (`hub_list_apps` scope=instances, `hub_list_device_dependents`, `hub_get_app_config`, `hub_list_app_pages`, `hub_list_hpm_packages`) live in the `hub_read_apps_code` gateway; the native-rule CRUD lives in `hub_manage_native_rules_and_apps`. These tools have mixed gate requirements. `hub_list_apps` (scope=instances) and `hub_list_device_dependents` require the **Enable Built-in App Tools** toggle (`requireBuiltinApp`). `hub_get_app_config` and `hub_list_app_pages` require **Hub Admin Read** (`requireHubAdminRead`). `hub_list_hpm_packages` (including its `includeDrift=true` mode) requires **Hub Admin Read** only -- no Built-in App Tools toggle needed. `hub_manage_native_rules_and_apps` tools require the **Enable Built-in App Tools** toggle for reads and **Hub Admin Write** (`requireHubAdminWrite`) for the CRUD path (`hub_create_native_app`, `hub_update_native_app`, `hub_delete_native_app`); Hub Admin Write also enforces a backup-within-24h gate before any write. If the user sees "Built-in App Tools are disabled", "Hub Admin Read is disabled", or "Hub Admin Write is disabled" errors, direct them to the MCP Rule Server app settings page to enable the relevant toggle. Note: Hub Admin Write operations additionally require a hub backup within the last 24 hours -- if the write gate blocks with a backup-age message, use `hub_create_backup` first.
 
-### hub_manage_installed_apps (4 tools)
+### Installed-app reads (in `hub_read_apps_code`)
 
-- **`hub_list_installed_apps`** — enumerate ALL apps on the hub (built-in + user) with parent/child tree
+- **`hub_list_apps` (scope=instances)** — enumerate ALL apps on the hub (built-in + user) with parent/child tree (the former `hub_list_installed_apps`, now folded into `hub_list_apps`; pass `scope='instances'`, default `scope='types'` returns the installable-app catalog)
   - `filter="all"` (default) | `"builtin"` | `"user"` | `"disabled"` | `"parents"` | `"children"`
   - Each entry: `id`, `name`, `type`, `disabled`, `user`, `hidden`, `parentId`, `hasChildren`, `childCount`
   - Built-in apps have `user=false` (Rule Machine, Room Lighting, Groups and Scenes, Mode Manager, HSM, Dashboards, Maker API, etc.)
@@ -480,7 +483,7 @@ Tools in `hub_manage_installed_apps` and `hub_manage_native_rules` gateways have
 
 - **`hub_get_app_config`** — read an installed app's configuration page (Hub Admin Read required)
   - See usage tips above for full details on response shape, pageName navigation, and includeSettings flag
-  - Workflow: `hub_list_installed_apps` or `hub_list_rules` to find an `appId`, then `hub_get_app_config` to inspect it
+  - Workflow: `hub_list_apps` (scope=instances) or `hub_list_rules` to find an `appId`, then `hub_get_app_config` to inspect it
 
 - **`hub_list_app_pages`** — list known page names for a multi-page app (Hub Admin Read required)
   - Returns the primary page (introspected from the hub) plus a curated directory of known sub-pages for well-known app types
@@ -489,7 +492,7 @@ Tools in `hub_manage_installed_apps` and `hub_manage_native_rules` gateways have
   - Use this before `hub_get_app_config` on multi-page apps to avoid guessing page names
   - Args: `appId` (required)
 
-### hub_manage_hpm (1 tool)
+### HPM package introspection — `hub_list_hpm_packages` (in `hub_read_apps_code`)
 
 HPM package state introspection. The tool requires **Hub Admin Read** and HPM itself must be installed on the hub. Auto-discovers HPM's installed-app ID unless `hpmAppId` is supplied explicitly. All `IllegalArgumentException`s raised (multi-instance throw, wrong app type, missing HPM, non-numeric `hpmAppId`) are surfaced by the MCP dispatcher as JSON-RPC error `-32602` "Invalid params" -- the response is a JSON-RPC error, **not** a tool-result map with `success=false`.
 
@@ -521,12 +524,12 @@ HPM package state introspection. The tool requires **Hub Admin Read** and HPM it
   - Top-level `skippedMalformed[]`: manifest URLs whose value was not a Map (symmetric with `hub_list_hpm_packages`)
   - When `packageFilter` matched nothing: `filterMatchedZero=true` plus `availablePackages[]` for filter-spelling sanity check; in this case `packagesChecked == 0` and `summary` reads `"No drift detected across 0 tracked packages."`
   - Limitation: heID-presence-only. HPM stores no source hashes, so post-install edits via `hub_update_app` are not detectable.
-  - Example call: `hub_manage_hpm(tool="hub_list_hpm_packages", args={includeDrift: true, packageFilter: "BOND"})` — checks drift for only packages whose name contains "BOND"
+  - Example call: `hub_read_apps_code(tool="hub_list_hpm_packages", args={includeDrift: true, packageFilter: "BOND"})` — checks drift for only packages whose name contains "BOND"
   - Design note: the base package inventory emits `_warning` inline on each component **because** consumers typically enumerate components per-package; the `includeDrift=true` output emits `dataQualityWarnings[]` as a separate aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count
 
-### hub_manage_native_rules (11 tools)
+### hub_manage_native_rules_and_apps (11 tools)
 
-Two surfaces under one gateway: RMUtils-based runtime control for RM rules (RM-only because RMUtils is RM-only) plus admin-layer CRUD that works uniformly across any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.).
+Two surfaces under one gateway: RMUtils-based runtime control for RM rules (RM-only because RMUtils is RM-only) plus admin-layer CRUD that works uniformly across any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.). The four RMUtils control tools below are ALSO surfaced (alongside `hub_get_rule_health`) in the `hub_manage_rule_machine` gateway; the read-only members (`hub_list_rules`, `hub_get_rule_health`) additionally appear in `hub_read_rules`.
 
 **RMUtils control (4 tools, RM-only):**
 
@@ -551,8 +554,8 @@ If a user asks "create a new RM rule" or "modify this Room Lighting instance":
 7. **`hub_get_rule_health(appId)`** — read-only health check on any installed app. Surfaces broken markers, multiple-flag poison, configPage errors. Use after a destructive operation to confirm the app is still well-formed.
 
 **Cross-references** (live in other gateways but commonly used together):
-- **`hub_get_app_config`** (in `hub_manage_installed_apps`) — read any installed app's current page schema, settings, and child apps. Use BEFORE every `hub_update_native_app` to discover the right input names.
-- **`hub_list_backups`** + **`hub_restore_backup`** (in `hub_manage_code_read` / `hub_manage_code_write`) — enumerate and restore native-app snapshots (`type="rm-rule"` entries). Restore re-applies settings in place if the app exists, or recreates the app and replays settings if it was deleted.
+- **`hub_get_app_config`** (in `hub_read_apps_code`) — read any installed app's current page schema, settings, and child apps. Use BEFORE every `hub_update_native_app` to discover the right input names.
+- **`hub_list_backups`** + **`hub_restore_backup`** (in `hub_read_apps_code` / `hub_manage_code`) — enumerate and restore native-app snapshots (`type="rm-rule"` entries). Restore re-applies settings in place if the app exists, or recreates the app and replays settings if it was deleted.
 
 For Room Lighting / Button Controllers / Basic Rules: `hub_update_native_app` and `hub_delete_native_app` already work today (they take any classic-app appId). `hub_create_native_app` will work for them once their entries are added to `_appTypeRegistry()` — same endpoint family, just need namespace + appName + parentTypeName per type.
 

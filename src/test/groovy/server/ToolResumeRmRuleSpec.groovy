@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolSetRulePaused resume path (value:false).
- * Gateway: hub_manage_native_rules -> hub_set_rule_paused.
+ * Gateway: hub_manage_native_rules_and_apps -> hub_set_rule_paused.
  *
  * Covers: gate-throw, missing ruleId, golden-path resumeRule dispatch,
  * and String ruleId coercion.
@@ -183,7 +183,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinApp = true
 
         when:
-        def result = script.handleGateway('hub_manage_native_rules', 'hub_set_rule_paused', [ruleId: 700, value: false])
+        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_rule_paused', [ruleId: 700, value: false])
 
         then:
         result.success == true

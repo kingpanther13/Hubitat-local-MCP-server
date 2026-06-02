@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 89 MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, HPM package state introspection, and Developer Mode self-administration. The tools are organized as **20 core tools** (always visible) plus **13 domain-named gateways** that proxy 69 additional tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute.
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 88 distinct MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, HPM package state introspection, and Developer Mode self-administration. The tools are organized as **11 flat core tools** (always visible) plus **19 domain-named gateways** that proxy the remaining tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute. That makes **30 entries** on `tools/list` in gateway mode (11 flat + 19 gateways). Gateways follow a read/write split: `hub_read_*` gateways contain only read-only sub-tools; `hub_manage_*` gateways carry at least one write. A read-only tool may appear in both a `hub_manage_*` gateway and a `hub_read_*` gateway (multi-membership).
 
 ## Core Principles
 
@@ -20,7 +20,7 @@ All tools in this server follow these conventions. Use the conventions to predic
 
 - Every tool name begins with `hub_`.
 - Tool names follow verb-noun order. The allowed verbs are: `list`, `get`, `search`, `test`, `create`, `update`, `delete`, `set`, `call`, `manage`, `restore`, `import`, `export`, `clone`, plus `read`/`write` for file-manager tools and the destructive-ops exceptions `reboot` / `shutdown`. There is one locked-to-one-tool verb: `report` (used only by `hub_report_issue`).
-- `manage_*` tools are gateways. Call with no args to see the catalog of sub-tools; call with `tool=<name>` and `args={...}` to execute one. There is a narrow exception: a flat tool with a small action enum (e.g. `hub_manage_virtual_device` with `action: "create"/"delete"`) may also use `manage_`.
+- Gateways are named `hub_read_<noun>` or `hub_manage_<noun>`. A `hub_read_*` gateway's every sub-tool is read-only; a `hub_manage_*` gateway contains at least one write (mixed read+write or write-only). Call a gateway with no args to see the catalog of sub-tools; call with `tool=<name>` and `args={...}` to execute one. A read-only tool may be listed in both its mixed `hub_manage_*` gateway and a `hub_read_*` gateway (multi-membership). There is a narrow exception: a flat tool with a small action enum (e.g. `hub_manage_virtual_device` with `action: "create"/"delete"`) may also use `manage_`.
 - Read tools never modify state. Write tools require user confirmation per the safety guide.
 
 ## Device Control
@@ -56,7 +56,7 @@ MCP can create and delete virtual devices (switches, sensors, buttons, dimmers, 
 
 For `action="create"`, provide exactly ONE of (mutually exclusive; supplying both -- including a blank/whitespace `deviceType` alongside `customDriver` -- is an error):
 - `deviceType` -- one of the 15 built-in virtual driver names (see `hub_get_tool_guide` for the full list). Not-found surfaces as an isError platform error (firmware gap).
-- `customDriver={namespace, name}` -- a user-installed driver (HPM or pasted); use `hub_manage_code_read(tool="hub_list_drivers")` to find installed namespace + name values. Not-found surfaces as an input error (-32602) with a `hub_list_drivers` hint.
+- `customDriver={namespace, name}` -- a user-installed driver (HPM or pasted); use `hub_read_apps_code(tool="hub_list_drivers")` to find installed namespace + name values. Not-found surfaces as an input error (-32602) with a `hub_list_drivers` hint.
 
 Create response: `{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, attributes}}`. `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code.
 
@@ -120,20 +120,25 @@ Use `hub_create_custom_rule` with a JSON structure. For the complete rule struct
 
 ### Rule Management
 
-Core tools (always visible):
-- `hub_get_custom_rule` - View rule configuration; omit `ruleId` to list all rules, or pass `detailed=true` for comprehensive diagnostics on a specific rule
-- `hub_update_custom_rule` - Modify triggers, conditions, or actions; also handles enable/disable via `enabled=true/false`
+Custom rules are reached through two gateways. The read-only tools (`hub_get_custom_rule`, `hub_test_custom_rule`) are surfaced in `hub_read_rules` for pure-read access and ALSO in `hub_manage_custom_rules` for workflow cohesion (multi-membership).
 
-Via `hub_manage_rules` gateway:
+Via `hub_read_rules` gateway (read-only):
+- `hub_get_custom_rule` - View rule configuration; omit `ruleId` to list all rules, or pass `detailed=true` for comprehensive diagnostics on a specific rule
 - `hub_test_custom_rule` - Dry-run to see what would happen without executing
-- `hub_export_custom_rule` / `hub_import_custom_rule` / `hub_clone_custom_rule` - Portability operations
+
+Via `hub_manage_custom_rules` gateway (8 tools):
+- `hub_get_custom_rule` - View rule configuration (also in `hub_read_rules`)
+- `hub_create_custom_rule` - Create a rule from a JSON structure
+- `hub_update_custom_rule` - Modify triggers, conditions, or actions; also handles enable/disable via `enabled=true/false`
+- `hub_test_custom_rule` - Dry-run to see what would happen without executing (also in `hub_read_rules`)
+- `hub_export_custom_rule` / `hub_import_custom_rule` / `hub_clone_custom_rule` - Portability operations (`hub_export_custom_rule` persists to File Manager via saveAs, so it is a write)
 - `hub_delete_custom_rule` - Removes a rule (auto-backs up to File Manager first)
 
 Mark test/throwaway rules with `testRule: true` to skip backup on deletion.
 
 ## Room Management
 
-5 tools via `hub_manage_rooms` gateway: `hub_list_rooms`, `hub_get_room`, `hub_create_room`, `hub_delete_room`, `hub_update_room`. Room creation/deletion/renaming requires Hub Admin Write.
+5 tools via `hub_manage_rooms` gateway: `hub_list_rooms`, `hub_get_room`, `hub_create_room`, `hub_delete_room`, `hub_update_room`. Room creation/deletion/renaming requires Hub Admin Write. The read-only pair (`hub_list_rooms`, `hub_get_room`) is also surfaced via the pure-read `hub_read_rooms` gateway (2 tools).
 
 ## Hub Administration
 
@@ -145,11 +150,11 @@ Additional hub admin tools are accessed via gateways:
 
 Destructive write operations (require Hub Admin Write): `hub_reboot`, `hub_shutdown`, `hub_delete_device`
 
-### Via `hub_manage_code_read` gateway (5 tools — read-only)
+### Via `hub_read_apps_code` gateway (9 tools — read-only)
 
-`hub_list_apps`, `hub_list_drivers`, `hub_get_source` (`type`: "app"/"driver"/"library"; `id`; chunked `offset`/`length`), `hub_list_backups`, `hub_get_backup`
+`hub_list_apps` (`scope`: "types"/"instances" — lists installed app types or app instances), `hub_list_drivers`, `hub_get_source` (`type`: "app"/"driver"/"library"; `id`; chunked `offset`/`length`), `hub_list_backups`, `hub_get_backup`, `hub_list_device_dependents`, `hub_get_app_config`, `hub_list_app_pages`, `hub_list_hpm_packages`
 
-### Via `hub_manage_code_write` gateway (8 tools — write operations)
+### Via `hub_manage_code` gateway (8 tools — write operations)
 
 `hub_create_app`, `hub_create_driver`, `hub_update_app`, `hub_update_driver`, `hub_delete_item` (`type`: "app"/"driver"/"library"), `hub_restore_backup`, `hub_create_library`, `hub_update_library`
 
@@ -171,11 +176,13 @@ For complete safety protocols and tool-specific requirements, see [safety-guide.
 - `hub_reboot` - 1-3 min downtime, automations stop
 - `hub_shutdown` - Powers off completely, needs manual restart
 - `hub_delete_device` - No undo, intended for ghost/orphaned devices only
-- `hub_delete_item` (via `hub_manage_code_write`, `type`: "app"/"driver"/"library") - Auto-backs up source first
+- `hub_delete_item` (via `hub_manage_code`, `type`: "app"/"driver"/"library") - Auto-backs up source first
 
 ## Diagnostics and Monitoring
 
-Core tool: `hub_list_device_events` (always visible) - recent events for a device; add `hoursBack` for up to 7 days of device or location event history (omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events)
+`hub_list_device_events` (via `hub_read_devices` / `hub_manage_devices`) - recent events for a device; add `hoursBack` for up to 7 days of device or location event history (omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events)
+
+The pure-read `hub_read_diagnostics` gateway (9 tools) surfaces the read-only diagnostics for safe access: `hub_get_logs`, `hub_get_performance_stats`, `hub_get_jobs`, `hub_get_debug_logs`, `hub_get_metrics`, `hub_get_memory_history`, `hub_get_device_health`, `hub_get_radio_details`, `hub_list_captured_states`. The write-bearing diagnostics live in `hub_manage_logs` and `hub_manage_diagnostics` below (reads multi-membered into both surfaces).
 
 Via `hub_manage_logs` gateway (6 tools):
 - `hub_get_logs` - Hub log entries, most recent first; filter by level/source/pattern (regex) or multi-pattern AND/OR (`patternMode`); time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`, max 30d -- throws if exceeded; use ISO-8601 for longer ranges); or scope server-side to a single `deviceId` / `appId` (mutually exclusive). `pattern` matches the message field only (not source/name). Pathological regex like `(.*)*` may hang the matcher; prefer simple alternation.
@@ -185,7 +192,7 @@ Via `hub_manage_logs` gateway (6 tools):
 - `hub_set_log_level` - Set MCP log level
 
 Via `hub_manage_diagnostics` gateway (8 tools):
-- `hub_get_metrics` - Record/retrieve hub metrics with CSV trend history
+- `hub_get_metrics` - Retrieve hub metrics with CSV trend history (read-only by default; `recordSnapshot` defaults to false — also in `hub_read_diagnostics`)
 - `hub_get_memory_history` - Free OS memory and CPU load history with summary stats (Hub Admin Read)
 - `hub_call_gc` - Force JVM GC; returns before/after free memory (Hub Admin Read)
 - `hub_get_device_health` - Find stale/offline devices; optional ICMP ping for arbitrary IPs
@@ -197,11 +204,11 @@ Via `hub_manage_diagnostics` gateway (8 tools):
 
 ## File Manager
 
-Via `hub_manage_files` gateway: `hub_list_files`, `hub_read_file`, `hub_write_file`, `hub_delete_file`. Write/delete require Hub Admin Write. Files live at `http://<HUB_IP>/local/<filename>`.
+Via `hub_manage_files` gateway (4 tools): `hub_list_files`, `hub_read_file`, `hub_write_file`, `hub_delete_file`. Write/delete require Hub Admin Write. The read-only pair (`hub_list_files`, `hub_read_file`) is also surfaced via the pure-read `hub_read_files` gateway (2 tools). Files live at `http://<HUB_IP>/local/<filename>`.
 
 ## Item Backup System
 
-Source code is automatically backed up before modify/delete operations. Use `hub_list_backups`, `hub_get_backup` (via `hub_manage_code_read` gateway) to view backups, and `hub_restore_backup` (via `hub_manage_code_write` gateway) to restore apps and drivers. For libraries, restore via `hub_update_library` with the backup file.
+Source code is automatically backed up before modify/delete operations. Use `hub_list_backups`, `hub_get_backup` (via `hub_read_apps_code` gateway) to view backups, and `hub_restore_backup` (via `hub_manage_code` gateway) to restore apps and drivers. For libraries, restore via `hub_update_library` with the backup file.
 
 ## System Tools
 
@@ -210,12 +217,17 @@ Core tools (always visible):
 - `hub_list_modes` / `hub_set_mode` - Location modes (Home, Away, Night, etc.)
 - `hub_get_hsm_status` / `hub_set_hsm` - Home Security Monitor
 
-Via `hub_manage_variables` gateway:
-- `hub_list_variables` / `hub_get_variable` / `hub_set_variable` - Hub variables
+Via `hub_manage_variables` gateway (8 tools):
+- `hub_list_variables` / `hub_get_variable` - Read hub variables (also in `hub_read_variables`)
+- `hub_set_variable` / `hub_create_variable` / `hub_delete_variable` - Mutate hub variables
+- `hub_create_connector` / `hub_delete_connector` - Variable connector devices
+- `hub_list_variable_changes` - Variable change history (also in `hub_read_variables`)
+
+The read-only subset (`hub_list_variables`, `hub_get_variable`, `hub_list_variable_changes`) is also surfaced via the pure-read `hub_read_variables` gateway (3 tools).
 
 ## HPM Package Introspection
 
-Via `hub_manage_hpm` gateway (1 tool, Hub Admin Read required):
+Via `hub_read_apps_code` gateway (Hub Admin Read required):
 - `hub_list_hpm_packages` - List all HPM-tracked packages with full component inventory. Data-quality issues (non-scalar heID, empty heID, whitespace-padded heID) emit inline `_warning` on each component **because** consumers enumerate components per-package and need the warning co-located. Pass `includeDrift=true` to also cross-reference HPM state against the hub (results nest under a `drift` key); surfaces `missing-required`, `orphan-app`, `orphan-driver` signals, with data-quality issues kept in a separate `dataQualityWarnings[]` aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count.
 
 ## Performance Tips

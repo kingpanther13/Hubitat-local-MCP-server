@@ -24,9 +24,9 @@ from pathlib import Path
 # (rather than strict) keeps a single mis-encoded character from masking
 # whatever the lint was actually trying to report.
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -715,7 +715,11 @@ def _extract_canonical_counts() -> dict | None:
     tool_names: set[str] = set(raw_name_list)
     total = len(raw_name_list)
 
-    proxied = sum(per_gateway.values())
+    # Count DISTINCT proxied tools, not the sum of per-gateway tool counts:
+    # a tool may belong to more than one gateway (multi-gateway membership --
+    # reads are listed in both their mixed manage_ gateway and a read_ gateway),
+    # so sum(per_gateway.values()) over-counts and would drive `core` negative.
+    proxied = len(proxied_names)
     core = total - proxied
     gateways = len(per_gateway)
     tools_list = core + gateways

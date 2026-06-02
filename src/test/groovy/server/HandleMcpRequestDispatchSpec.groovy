@@ -73,13 +73,16 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.id == 2
         response.result.tools instanceof List
 
-        and: 'at least these well-known entries are in the catalog by name (non-gatewayed base tools + a gateway)'
+        and: 'at least these well-known entries are in the catalog by name (flat top-level tools + a gateway)'
         def names = response.result.tools*.name as Set
-        // hub_list_devices + hub_get_device are base tools (not behind a gateway) — getToolDefinitions
-        // at hubitat-mcp-server.groovy:717-744 folds gatewayed tools under a gateway entry
-        // instead of listing them individually.
-        names.contains('hub_list_devices')
-        names.contains('hub_get_device')
+        // hub_get_info + hub_get_hsm_status are flat (always top-level) tools — getToolDefinitions
+        // at hubitat-mcp-server.groovy folds gatewayed tools (device + custom-rule tools included)
+        // under a gateway entry instead of listing them individually, so device tools are NOT
+        // top-level in gateway mode.
+        names.contains('hub_get_info')
+        names.contains('hub_get_hsm_status')
+        // device tools now live behind the hub_read_devices / hub_manage_devices gateways.
+        !names.contains('hub_list_devices')
         // hub_manage_rooms is a gateway, so it appears by its gateway name, not its sub-tool names.
         names.contains('hub_manage_rooms')
 
@@ -111,9 +114,9 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // A regression in applyDescriptionTransform / JsonOutput that stripped
         // the `annotations` key would silently undo the Read/Write split.
         response.result.tools.every { it.annotations?.readOnlyHint instanceof Boolean }
-        def listDevices = response.result.tools.find { it.name == 'hub_list_devices' }
-        listDevices.annotations.readOnlyHint == true
-        listDevices.annotations.containsKey('destructiveHint') == false
+        def getInfo = response.result.tools.find { it.name == 'hub_get_info' }
+        getInfo.annotations.readOnlyHint == true
+        getInfo.annotations.containsKey('destructiveHint') == false
         def manageDestructive = response.result.tools.find { it.name == 'hub_manage_destructive_ops' }
         manageDestructive.annotations.readOnlyHint == false
         manageDestructive.annotations.destructiveHint == true
@@ -144,7 +147,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // loud -32603 envelope if the catalog exceeds the hub's 124,000-byte
         // cap -- avoids that footgun. Any client that DOES iterate nextCursor
         // simply finds none and terminates after one call. Note: cursor
-        // pagination on tools/call (hub_list_devices, hub_list_installed_apps, etc.
+        // pagination on tools/call (hub_list_devices, hub_list_apps, etc.
         // via _paginateList) is unchanged -- that is opt-in and remains.
         !response.result.containsKey('nextCursor')
 
@@ -159,7 +162,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         and: 'feature-toggle-gated tools also surface (proves the envelope returns the full flat catalog, not just the cores)'
         names.contains('hub_list_rules')
-        names.contains('hub_list_installed_apps')
+        names.contains('hub_list_apps')
         names.contains('hub_create_custom_rule')
 
         and: 'no duplicate tool names in the response'
@@ -298,7 +301,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         given: 'a stubbed sub-tool (hub_get_app_config) that returns a huge config'
         settingsMap.enableBuiltinApp = true
         settingsMap.enableHubAdminRead = true
-        // useGateways=true so hub_manage_installed_apps actually dispatches (PR #187/#191's
+        // useGateways=true so hub_read_apps_code actually dispatches (PR #187/#191's
         // flat-mode matrix would otherwise short-circuit gateway calls with isError).
         settingsMap.useGateways = true
         // Build a hub_get_app_config response large enough to trip the wire-byte guard once
@@ -310,10 +313,10 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
             config: [logLevel: 'debug', maxEntries: 1000]
         ]
         settingsMap.mcpLogLevel = 'debug'
-        // Gateway-routed call: name=hub_manage_installed_apps, args carries tool+args.
+        // Gateway-routed call: name=hub_read_apps_code, args carries tool+args.
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 200, method: 'tools/call',
-            params: [name: 'hub_manage_installed_apps', arguments: [tool: 'hub_get_app_config', args: [appId: '99', includeSettings: true]]]
+            params: [name: 'hub_read_apps_code', arguments: [tool: 'hub_get_app_config', args: [appId: '99', includeSettings: true]]]
         ])
 
         when:
@@ -330,7 +333,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         and: 'debug-log details surface the gateway/sub-tool split for an operator running hub_get_debug_logs'
         def warn = (stateMap.debugLogs?.entries ?: []).find { it.message?.contains('response too large') }
         warn.details.tool == 'hub_get_app_config'
-        warn.details.gateway == 'hub_manage_installed_apps'
+        warn.details.gateway == 'hub_read_apps_code'
     }
 
     def "non-gateway caller passing a stray `tool` arg does NOT route the suggestion to the wrong tool"() {
@@ -421,7 +424,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         where:
         toolName              | expectedFragment
         'hub_list_devices'        | 'filter'
-        'hub_list_installed_apps' | 'cursor'
+        'hub_list_apps'           | 'cursor'
         'hub_get_app_config'      | 'includeSettings'
         'hub_get_device_health' | 'includeHealthy'
         'hub_get_memory_history'  | 'limit'

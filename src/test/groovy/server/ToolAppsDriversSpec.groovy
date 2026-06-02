@@ -3,7 +3,7 @@ package server
 import support.ToolSpecBase
 
 /**
- * Spec for the hub_manage_code_read gateway tools in hubitat-mcp-server.groovy:
+ * Spec for the hub_read_apps_code gateway tools in hubitat-mcp-server.groovy:
  *
  * - toolListHubApps       -> hub_list_apps
  * - toolListHubDrivers    -> hub_list_drivers
@@ -50,7 +50,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('hub_list_apps', [:])
+        def response = mcpDriver.callTool('hub_list_apps', [scope: 'types'])
 
         then:
         response.error.code == -32602
@@ -86,7 +86,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('hub_list_apps', [:])
+        def response = mcpDriver.callTool('hub_list_apps', [scope: 'types'])
 
         then:
         response.error == null
@@ -122,7 +122,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         hubGet.register('/hub2/userAppTypes') { params -> '<html>not json</html>' }
 
         when:
-        def response = mcpDriver.callTool('hub_list_apps', [:])
+        def response = mcpDriver.callTool('hub_list_apps', [scope: 'types'])
 
         then:
         response.error == null
@@ -162,7 +162,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('hub_list_apps', [:])
+        def response = mcpDriver.callTool('hub_list_apps', [scope: 'types'])
 
         then:
         response.error == null

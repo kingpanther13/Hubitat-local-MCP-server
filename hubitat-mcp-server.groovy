@@ -162,7 +162,7 @@ def mainPage() {
                 paragraph "<b>NOTICE: ${existingRuleCount} existing custom MCP rule(s)</b><br>" +
                           "Your ${existingRuleCount} custom MCP rule(s) still fire and work normally. The Custom Rule Engine setting used to be ON by default; it now defaults OFF because the custom MCP rule engine is legacy -- it will continue to receive bug fixes but new feature work goes to native Rule Machine.<br>" +
                           "<b>Current state (toggle OFF):</b>${readonlyNote} Recommended: leave OFF if you have migrated to native Rule Machine. Turn ON only if you actively use your AI to fully manage these rules.<br>" +
-                          "For new rule creation, prefer <code>hub_manage_native_rules</code> hub_create_native_app -- those rules are visible in Hubitat's Rule Machine app list and web UI."
+                          "For new rule creation, prefer <code>hub_manage_native_rules_and_apps</code> hub_create_native_app -- those rules are visible in Hubitat's Rule Machine app list and web UI."
             }
             input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine (legacy)",
                   description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Built-in App Tools ON = read-only mode: hub_get_custom_rule (list/get/diagnostics modes), hub_update_custom_rule(enabled only), hub_test_custom_rule are visible; create/delete/export/import/clone are hidden. OFF + Built-in App Tools OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
@@ -698,7 +698,7 @@ def handleToolsList(msg) {
     // Stale clients that pass a `cursor` param get the full catalog regardless;
     // there is no longer a nextCursor in the response, so any iteration loop
     // terminates after one call. Cursor pagination on tools/call (hub_list_devices,
-    // hub_list_installed_apps, hub_list_rules, etc. via _paginateList) is unchanged
+    // hub_list_apps, hub_list_rules, etc. via _paginateList) is unchanged
     // -- that is opt-in and the size guard's "suggestion" hints already point
     // callers at it when needed.
     def all = getToolDefinitions()
@@ -807,8 +807,8 @@ def _responseTooLargeSuggestion(String toolName) {
     switch (toolName) {
         case "hub_list_devices":
             return "Narrow with filter/labelFilter/capabilityFilter, project fields=['id','label',...], pass a smaller limit, or page with offset+limit. format='ids' is the cheapest shape."
-        case "hub_list_installed_apps":
-            return "Set includeHidden=false (the default), narrow via filter (builtin / user / disabled / parents / children), or pass cursor to page through the apps list."
+        case "hub_list_apps":
+            return "For scope='instances': set includeHidden=false (the default), narrow via filter (builtin / user / disabled / parents / children), or pass cursor to page through the apps list."
         case "hub_get_app_config":
             return "Omit includeSettings -- Room Lighting / RM 5.1 apps can have 500-1000 settings keys. For multi-page apps, call hub_list_app_pages then hub_get_app_config with a specific pageName."
         case "hub_get_device_health":
@@ -878,23 +878,29 @@ def _paginateList(List fullList, cursor, int pageSize, String toolName) {
 
 def getGatewayConfig() {
     return [
-        hub_manage_rules: [
-            description: "Rule administration: delete, test, export, import, and clone rules.",
-            tools: ["hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"],
+        hub_manage_custom_rules: [
+            description: "Legacy MCP custom-rule engine (sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI): create, read, update, delete, test, export, import, and clone. For native Rule Machine rules visible in the hub UI use hub_manage_rule_machine / hub_manage_native_rules_and_apps_and_apps instead. Read-only views are also in hub_read_rules.",
+            tools: ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"],
             summaries: [
-                hub_delete_custom_rule: "Permanently delete a rule (auto-backs up first). Args: ruleId",
-                hub_test_custom_rule: "Dry-run a rule without executing actions. Args: ruleId",
-                hub_export_custom_rule: "Export rule to JSON for backup/sharing. Args: ruleId",
-                hub_import_custom_rule: "Import rule from exported JSON. Args: exportData (JSON string)",
-                hub_clone_custom_rule: "Clone an existing rule (starts disabled). Args: ruleId"
+                hub_get_custom_rule: "List custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
+                hub_create_custom_rule: "Create a new MCP custom (sandbox) rule. Args: name, triggers, actions, conditions?, enabled?",
+                hub_update_custom_rule: "Update a custom rule (enabled toggle, or structural changes when the engine toggle is ON). Args: ruleId, enabled?|triggers?|conditions?|actions?",
+                hub_delete_custom_rule: "Permanently delete a custom rule (auto-backs up first). Args: ruleId, confirm=true",
+                hub_test_custom_rule: "Dry-run a custom rule without executing actions. Args: ruleId",
+                hub_export_custom_rule: "Export a custom rule to JSON and save it to the hub File Manager. Args: ruleId, saveAs? (filename)",
+                hub_import_custom_rule: "Import a custom rule from exported JSON. Args: exportData (JSON string)",
+                hub_clone_custom_rule: "Clone an existing custom rule (starts disabled). Args: ruleId"
             ],
             // BM25 search hints — extra keywords that don't appear in summaries but help discovery
             searchHints: [
-                hub_delete_custom_rule: "remove automation",
-                hub_test_custom_rule: "simulate preview validate check automation",
-                hub_export_custom_rule: "save download share automation",
-                hub_import_custom_rule: "load upload restore automation",
-                hub_clone_custom_rule: "copy duplicate automation"
+                hub_get_custom_rule: "read fetch inspect list show custom mcp sandbox rule automation diagnostics",
+                hub_create_custom_rule: "add new custom mcp sandbox rule automation",
+                hub_update_custom_rule: "modify edit change enable disable custom mcp sandbox rule automation",
+                hub_delete_custom_rule: "remove automation custom mcp sandbox",
+                hub_test_custom_rule: "simulate preview validate check automation custom",
+                hub_export_custom_rule: "save download share automation custom file manager persist",
+                hub_import_custom_rule: "load upload restore automation custom",
+                hub_clone_custom_rule: "copy duplicate automation custom"
             ]
         ],
         hub_manage_variables: [
@@ -956,27 +962,34 @@ def getGatewayConfig() {
                 hub_delete_device: "remove ghost orphan zwave zigbee stuck failed pairing"
             ]
         ],
-        // Option B: hub_manage_code_read split into browse (read) + changes (write)
-        hub_manage_code_read: [
-            description: "Browse installed apps, drivers, and libraries: list, view source code, and view code backups. All operations are read-only. Write operations (install, update, delete) live in the hub_manage_code_write gateway.",
-            tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_backups", "hub_get_backup"],
+        hub_read_apps_code: [
+            description: "Read-only inspection of installed apps, drivers, libraries, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
+            tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
             summaries: [
-                hub_list_apps: "List all installed apps on the hub",
+                hub_list_apps: "List installed apps. scope='types' (installed app code library) or 'instances' (running apps with parent/child tree). Args: scope, filter?, includeHidden?, cursor?",
                 hub_list_drivers: "List all installed drivers on the hub",
                 hub_get_source: "Get app/driver/library Groovy source with chunked reading. Args: type (app|driver|library), id, offset?, length?",
                 hub_list_backups: "List auto-created source code backups",
-                hub_get_backup: "Get source from a backup. Args: backupId"
+                hub_get_backup: "Get source from a backup. Args: backupId",
+                hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
+                hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName?, includeSettings?",
+                hub_list_app_pages: "List known page names for a multi-page app (HPM, Room Lighting, etc.). Args: appId",
+                hub_list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). includeDrift=true surfaces missing-required/orphan components. Args: hpmAppId?, includeDrift?, packageFilter?"
             ],
             searchHints: [
-                hub_list_apps: "show installed applications integrations",
+                hub_list_apps: "show installed applications integrations apps list code types running instances builtin user parent child tree",
                 hub_list_drivers: "show installed device handlers types",
                 hub_get_source: "view read application driver library groovy code namespace include",
                 hub_list_backups: "show saved previous versions revisions",
-                hub_get_backup: "view read saved previous version revision"
+                hub_get_backup: "view read saved previous version revision",
+                hub_list_device_dependents: "which apps use device reference inUseBy appsUsing dependencies affected by",
+                hub_get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager",
+                hub_list_app_pages: "page names sub-pages pageName multi-page hpm navigation discover",
+                hub_list_hpm_packages: "package manager HPM tracked installed manifest version inventory community apps drivers drift orphan missing required"
             ]
         ],
-        hub_manage_code_write: [
-            description: "Install, update, and delete hub apps, drivers, and libraries. All operations modify hub code and require Hub Admin Write. Read-only counterparts (hub_get_source, list_*) live in the hub_manage_code_read gateway.",
+        hub_manage_code: [
+            description: "Install, update, and delete hub apps, drivers, and libraries. All operations modify hub code and require Hub Admin Write. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
             tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_restore_backup", "hub_create_library", "hub_update_library"],
             summaries: [
                 hub_create_app: "Install new app. PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
@@ -1060,34 +1073,50 @@ def getGatewayConfig() {
                 hub_delete_file: "remove clean up stored data"
             ]
         ],
-        hub_manage_installed_apps: [
-            description: "Read-only visibility into all installed apps (built-in + user): enumerate apps with parent/child tree, find apps using a device, inspect an app's configuration page, list page names for multi-page apps. Requires Built-in App Tools enabled in MCP app settings (list/device-in-use-by); hub_get_app_config and hub_list_app_pages require Hub Admin Read.",
-            tools: ["hub_list_installed_apps", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages"],
+        hub_read_diagnostics: [
+            description: "Read-only hub health, logs, and diagnostics: system logs, performance stats, scheduled jobs, MCP debug logs, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear logs, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
+            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_debug_logs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
             summaries: [
-                hub_list_installed_apps: "List all installed apps with parent/child tree. Args: filter (all/builtin/user/disabled/parents/children), includeHidden",
-                hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
-                hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName (optional), includeSettings (optional)",
-                hub_list_app_pages: "List known page names for a multi-page app (HPM, Room Lighting, etc.). Curated directory + live primary page. Args: appId"
+                hub_get_logs: "Get Hubitat system logs, most recent first. Args: level, source, pattern/patterns, since/until, deviceId|appId, limit",
+                hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events). Args: type, sortBy, limit",
+                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions",
+                hub_get_debug_logs: "Get MCP internal debug logs (mode='logs') or logging status (mode='status'). Args: mode, level, limit",
+                hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history. Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
+                hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
+                hub_get_device_health: "Check device staleness, ICMP-ping arbitrary IPs, and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, identifyHub",
+                hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count). Args: radio (zwave|zigbee, omit for both)",
+                hub_list_captured_states: "List saved device state snapshots"
             ],
             searchHints: [
-                hub_list_installed_apps: "rule machine room lighting scenes mode manager hsm dashboards groups button controllers native builtin",
-                hub_list_device_dependents: "which apps use device reference inUseBy appsUsing dependencies affected by",
-                hub_get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager",
-                hub_list_app_pages: "page names sub-pages pageName multi-page hpm prefPkgUninstall prefPkgModify prefOptions navigation discover"
+                hub_get_logs: "errors warnings messages trace syslog output recent latest device app scope regex pattern filter time window since until",
+                hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
+                hub_get_jobs: "scheduled cron timer recurring what is running next automation",
+                hub_get_debug_logs: "mcp internal troubleshoot trace logging status buffer capacity level",
+                hub_get_metrics: "temperature database size trending monitoring memory over time snapshot history",
+                hub_get_memory_history: "ram free used leak trending over time java heap nio",
+                hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router identify led blink locate",
+                hub_get_radio_details: "zwave zigbee mesh network frequency firmware channel pan coordinator radio",
+                hub_list_captured_states: "saved snapshot bookmark remember device values"
             ]
         ],
-        hub_manage_hpm: [
-            description: "Hubitat Package Manager (HPM) state introspection -- read-only. Tracks installed packages, their manifest versions, and (with includeDrift=true) per-component drift signals (missing-required, orphan-app, orphan-driver). HPM-managed code lives in the same Apps/Drivers registries as everything else, but its lifecycle is owned by HPM; this gateway surfaces that ownership state for diagnostic and drift-detection purposes without write side-effects. Requires Hub Admin Read.",
-            tools: ["hub_list_hpm_packages"],
+        hub_read_rules: [
+            description: "Read-only inspection of automation rules: list/inspect MCP custom rules (legacy engine) and list native Rule Machine rules + check rule health. All operations are read-only; rule writes live in hub_manage_custom_rules, hub_manage_rule_machine, and hub_manage_native_rules_and_apps.",
+            tools: ["hub_get_custom_rule", "hub_test_custom_rule", "hub_list_rules", "hub_get_rule_health"],
             summaries: [
-                hub_list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). includeDrift=true also cross-references installed apps/drivers to surface missing-required/orphan components. Args: hpmAppId (optional), includeDrift, packageFilter. Hub Admin Read."
+                hub_get_custom_rule: "List MCP custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
+                hub_test_custom_rule: "Dry-run an MCP custom rule without executing actions. Args: ruleId",
+                hub_list_rules: "List all native Rule Machine rules (RM 4.x + 5.x) with IDs and labels",
+                hub_get_rule_health: "Inspect a native rule/app for broken state (BROKEN markers, configPage errors, multiple-flag corruption). Args: appId"
             ],
             searchHints: [
-                hub_list_hpm_packages: "package manager HPM tracked installed manifest version inventory dcmeglio community apps drivers drift orphan missing required divergence inconsistency check verify"
+                hub_get_custom_rule: "read fetch inspect list show custom mcp sandbox rule automation diagnostics",
+                hub_test_custom_rule: "simulate preview validate check automation custom dry run",
+                hub_list_rules: "rule machine rules native builtin automation list enumerate",
+                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption"
             ]
         ],
-        hub_manage_native_rules: [
-            description: "WHEN TO USE: this is the right path for any user who says 'create a rule machine rule,' 'make a Hubitat rule,' or wants the rule visible in Hubitat's Rule Machine app list / web UI. Use this for default rule-creation requests. The custom_* MCP rule engine (separate surface) is only appropriate when the user EXPLICITLY wants a sandbox MCP-managed rule that does not appear in Hubitat's UI -- uncommon outside power-user / testing scenarios. QUICK FLOW for a default rule create: (1) hub_create_native_app(appType='rule_machine', name='...', confirm=true) returns appId. (2) hub_update_native_app(appId=N, addTrigger={capability:'Certain Time (and optional date)', time:'A specific time', atTime:'17:00'}, confirm=true). (3) hub_update_native_app(appId=N, addAction={capability:'log', message:'...'}, confirm=true). Three calls. Each call returns settingsApplied so you can confirm the rule baked. Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules -- any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified hub_list_backups (in hub_manage_code_read) + hub_restore_backup (in hub_manage_code_write) tools. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via hub_get_app_config(appId=N) and inspect persisted settings before retrying.",
+        hub_manage_native_rules_and_apps: [
+            description: "WHEN TO USE: this is the right path for any user who says 'create a rule machine rule,' 'make a Hubitat rule,' or wants the rule visible in Hubitat's Rule Machine app list / web UI. Use this for default rule-creation requests. The custom_* MCP rule engine (separate surface) is only appropriate when the user EXPLICITLY wants a sandbox MCP-managed rule that does not appear in Hubitat's UI -- uncommon outside power-user / testing scenarios. QUICK FLOW for a default rule create: (1) hub_create_native_app(appType='rule_machine', name='...', confirm=true) returns appId. (2) hub_update_native_app(appId=N, addTrigger={capability:'Certain Time (and optional date)', time:'A specific time', atTime:'17:00'}, confirm=true). (3) hub_update_native_app(appId=N, addAction={capability:'log', message:'...'}, confirm=true). Three calls. Each call returns settingsApplied so you can confirm the rule baked. Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules -- any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified hub_list_backups (in hub_read_apps_code) + hub_restore_backup (in hub_manage_code) tools. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via hub_get_app_config(appId=N) and inspect persisted settings before retrying.",
             tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_create_native_app", "hub_update_native_app", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
@@ -1125,6 +1154,98 @@ def getGatewayConfig() {
             searchHints: [
                 hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableHubAdminRead enableBuiltinApp enableCustomRuleEngine ci automation"
             ]
+        ],
+        hub_read_devices: [
+            description: "Read-only device inspection: list devices with current states, get one device's full detail, read or block-poll a single attribute, and read device/location event history. All operations are read-only; device commands and updates live in hub_manage_devices.",
+            tools: ["hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
+            summaries: [
+                hub_list_devices: "List devices with current states. Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, format (summary/detailed/ids), fields?, limit?, cursor?",
+                hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
+                hub_get_device_attribute: "Read one attribute's value, or block-poll until it reaches expectedValue/expectedValues. Args: deviceId, attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?",
+                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), or location events (mode/HSM/hub-variable; omit deviceId). Args: deviceId?, hoursBack?, attribute?, limit?"
+            ],
+            searchHints: [
+                hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate",
+                hub_get_device: "device detail capabilities attributes commands info inspect one",
+                hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion",
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity"
+            ]
+        ],
+        hub_read_rooms: [
+            description: "Read-only room inspection: list rooms and view a room's assigned devices. All operations are read-only; room create/delete/rename live in hub_manage_rooms.",
+            tools: ["hub_list_rooms", "hub_get_room"],
+            summaries: [
+                hub_list_rooms: "List all rooms with IDs, names, and device counts",
+                hub_get_room: "Get room details with assigned devices. Args: room (name or ID)"
+            ],
+            searchHints: [
+                hub_list_rooms: "show all locations areas groups rooms",
+                hub_get_room: "view location area group room devices"
+            ]
+        ],
+        hub_read_files: [
+            description: "Read-only hub File Manager access: list files and read file content. All operations are read-only; write/delete live in hub_manage_files.",
+            tools: ["hub_list_files", "hub_read_file"],
+            summaries: [
+                hub_list_files: "List files in File Manager (names, sizes, URLs)",
+                hub_read_file: "Read file content. Args: fileName, offset, limit"
+            ],
+            searchHints: [
+                hub_list_files: "show uploaded stored csv json text data files",
+                hub_read_file: "view open contents download stored data file"
+            ]
+        ],
+        hub_read_variables: [
+            description: "Read-only hub-variable inspection: list all variables (with type/connector linkage), get one variable's value + metadata, and watch the recent change timeline. All operations are read-only; variable create/set/delete and connectors live in hub_manage_variables.",
+            tools: ["hub_list_variables", "hub_get_variable", "hub_list_variable_changes"],
+            summaries: [
+                hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables.",
+                hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). Args: name",
+                hub_list_variable_changes: "Recent hub-variable changes since the MCP app last started. Args: name?, sinceMs?, limit?"
+            ],
+            searchHints: [
+                hub_list_variables: "show all global state connector variables",
+                hub_get_variable: "read fetch lookup global state variable",
+                hub_list_variable_changes: "watch observe changes events recent variable timeline"
+            ]
+        ],
+        hub_manage_devices: [
+            description: "Control and inspect devices: send commands and update a device, plus read-only inspection (list/get/attribute/events). Device reads are also in hub_read_devices.",
+            tools: ["hub_call_device_command", "hub_update_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
+            summaries: [
+                hub_call_device_command: "Send a command to a device (verify state after). Args: deviceId, command, parameters?",
+                hub_update_device: "Update a device's label and/or room assignment. Args: deviceId, label?, room?",
+                hub_list_devices: "List devices with current states. Args: detailed?, filter, labelFilter?, capabilityFilter?, format, fields?, limit?, cursor?",
+                hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
+                hub_get_device_attribute: "Read one attribute's value, or block-poll until it reaches expectedValue/expectedValues. Args: deviceId, attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?",
+                hub_list_device_events: "Recent device events, a time-windowed history, or location events. Args: deviceId?, hoursBack?, attribute?, limit?"
+            ],
+            searchHints: [
+                hub_call_device_command: "send command control turn on off set level dim lock unlock device run",
+                hub_update_device: "rename relabel move room device edit",
+                hub_list_devices: "show all devices switches lights sensors locks state inventory",
+                hub_get_device: "device detail capabilities attributes commands info inspect one",
+                hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed",
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity"
+            ]
+        ],
+        hub_manage_rule_machine: [
+            description: "Dedicated Rule Machine gateway: list RM rules, trigger/run them, pause/resume, set the private boolean, and check rule health. RM-only (RMUtils). To CREATE or edit RM rules and other classic apps, use hub_manage_native_rules_and_apps. Read-only views are also in hub_read_rules.",
+            tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_get_rule_health"],
+            summaries: [
+                hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (RMUtils — RM only)",
+                hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId, action (rule/actions/stop/start, default rule)",
+                hub_set_rule_paused: "Pause or resume an RM rule. Args: ruleId, value (true=pause, false=resume)",
+                hub_set_rule_private_boolean: "Set an RM rule's private boolean. Args: ruleId, value (bool)",
+                hub_get_rule_health: "Inspect a rule for broken state (BROKEN markers, configPage errors, multiple-flag corruption). Args: appId"
+            ],
+            searchHints: [
+                hub_list_rules: "rule machine rules native builtin automation list enumerate RM",
+                hub_call_rule: "trigger fire execute run native rule machine rule stop start",
+                hub_set_rule_paused: "pause resume disable enable stop unpause rule machine rule",
+                hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
+                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger multiple flag corruption"
+            ]
         ]
     ]
 }
@@ -1153,8 +1274,8 @@ def getReadOnlyToolNames() {
         // Device introspection
         "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
         // Custom rule reads (legacy MCP engine) -- test_rule is dry-run, no
-        // actions fire; export is a serialization read.
-        "hub_get_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule",
+        // actions fire. (hub_export_custom_rule now persists to File Manager -> write.)
+        "hub_get_custom_rule", "hub_test_custom_rule",
         // Hub state reads
         "hub_get_info", "hub_list_modes", "hub_get_hsm_status", "hub_get_update_status",
         // Variables (reads)
@@ -1166,6 +1287,9 @@ def getReadOnlyToolNames() {
         "hub_get_logs", "hub_get_performance_stats",
         "hub_get_jobs", "hub_get_memory_history",
         "hub_get_radio_details",
+        // hub_get_metrics is read by default (recordSnapshot defaults false;
+        // pass recordSnapshot=true to also persist a CSV snapshot to File Manager).
+        "hub_get_metrics",
         // hub_get_device_health has an optional identifyHub LED blink, but its
         // primary mode is staleness + ICMP-ping observation; treating as read
         // matches user expectation for a "health check" tool.
@@ -1178,14 +1302,14 @@ def getReadOnlyToolNames() {
         "hub_list_rooms", "hub_get_room",
         // Files (read)
         "hub_list_files", "hub_read_file",
-        // Installed apps (read)
-        "hub_list_installed_apps", "hub_list_device_dependents", "hub_get_app_config",
+        // Installed apps (read) -- instances list folded into hub_list_apps(scope='instances').
+        "hub_list_device_dependents", "hub_get_app_config",
         "hub_list_app_pages",
         // HPM (read)
         "hub_list_hpm_packages",
-        // Native rules (read) -- export is appCloner serialization; hub_get_rule_health
-        // inspects only.
-        "hub_list_rules", "hub_export_native_app", "hub_get_rule_health",
+        // Native rules (read) -- hub_get_rule_health inspects only.
+        // (hub_export_native_app instantiates a cloner app + persists -> write.)
+        "hub_list_rules", "hub_get_rule_health",
         // Meta
         "hub_get_tool_guide", "hub_search_tools"
     ] as Set
@@ -1408,13 +1532,16 @@ def getToolDefinitions() {
     def hideByName = [] as Set
 
     if (!builtinAppOn) {
-        // All 14 of these tools require enableBuiltinApp.
-        //   hub_manage_native_rules: ALL 12 sub-tools require it → that
+        // All 13 of these tools require enableBuiltinApp.
+        //   hub_manage_native_rules_and_apps: ALL 12 sub-tools require it → that
         //     gateway empties out and drops entirely.
-        //   hub_manage_installed_apps: 2/4 sub-tools require it (hub_list_installed_apps,
-        //     hub_list_device_dependents); the other 2 (hub_get_app_config, hub_list_app_pages)
-        //     only need Hub Admin Read and stay visible.
-        ["hub_list_installed_apps", "hub_list_device_dependents", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_create_native_app", "hub_update_native_app", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"].each {
+        //   hub_manage_installed_apps: hub_list_device_dependents requires it; the
+        //     others (hub_list_apps, hub_get_app_config, hub_list_app_pages) only need
+        //     Hub Admin Read and stay visible. hub_list_apps stays visible because its
+        //     scope='types' path works with Hub Admin Read alone; the Built-in App Tools
+        //     requirement for scope='instances' is enforced at call time by
+        //     toolListInstalledApps.
+        ["hub_list_device_dependents", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_create_native_app", "hub_update_native_app", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"].each {
             hideByName << it
         }
     }
@@ -1606,7 +1733,7 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
         // Rule Management
         [
             name: "hub_get_custom_rule",
-            description: "Read MCP custom-engine automation rules. Omit ruleId to LIST all rules (summaries; supports cursor pagination). Provide ruleId for one rule's full detail. Add detailed=true (requires ruleId) for comprehensive diagnostics (config + execution history + recent logs + errors). NOTE: when the Custom Rule Engine toggle is OFF, this operates read-only -- you can list/inspect existing custom rules, but create/modify/delete are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via hub_manage_native_rules.",
+            description: "Read MCP custom-engine automation rules. Omit ruleId to LIST all rules (summaries; supports cursor pagination). Provide ruleId for one rule's full detail. Add detailed=true (requires ruleId) for comprehensive diagnostics (config + execution history + recent logs + errors). NOTE: when the Custom Rule Engine toggle is OFF, this operates read-only -- you can list/inspect existing custom rules, but create/modify/delete are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via hub_manage_native_rules_and_apps.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1618,7 +1745,7 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
         ],
         [
             name: "hub_create_custom_rule",
-            description: """*** LEGACY: the custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. For default rule creation requests ("create a Rule Machine rule," "Hubitat rule," anything the user wants visible in Hubitat's RM app list / web UI), use hub_manage_native_rules hub_create_native_app instead. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. ***
+            description: """*** LEGACY: the custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. For default rule creation requests ("create a Rule Machine rule," "Hubitat rule," anything the user wants visible in Hubitat's RM app list / web UI), use hub_manage_native_rules_and_apps hub_create_native_app instead. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. ***
 
 Create a new automation rule (MCP sandbox engine). Call `hub_get_tool_guide(section='rules')` for structure, syntax, and examples.
 
@@ -1918,11 +2045,12 @@ Verify rule after creation.""",
         // Rule Export/Import/Clone Tools
         [
             name: "hub_export_custom_rule",
-            description: "Export a rule to JSON for backup or sharing. Returns full rule data plus a device manifest listing all referenced devices.",
+            description: "Export a custom rule to JSON and save it to the hub File Manager for backup or sharing. Returns the full rule data plus a device manifest listing all referenced devices, and writes a .json file to the File Manager (pass saveAs for the filename; defaults to a generated name).",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "string", description: "Rule ID to export"]
+                    ruleId: [type: "string", description: "Rule ID to export"],
+                    saveAs: [type: "string", description: "File Manager filename to write the export JSON to (\".json\" appended if missing). Omit to use a generated name based on the rule."]
                 ],
                 required: ["ruleId"]
             ]
@@ -1965,11 +2093,24 @@ Verify rule after creation.""",
         // get_hub_details merged into hub_get_info (core tool)
         [
             name: "hub_list_apps",
-            description: "List all installed apps on the hub (not just MCP rules). Requires Hub Admin Read.",
+            description: """List apps on the hub. scope selects what kind of "apps" to return.
+
+scope='instances' (default) — running app INSTANCES (built-in + user) with parent/child tree. Requires Built-in App Tools enabled.
+  Each app entry returns: id, name, type, disabled, user (true=user-installed Groovy app, false=built-in), hidden, parentId (null for top-level), hasChildren, childCount.
+  Use filter to narrow results: 'all' (default), 'builtin' (Hubitat native apps), 'user' (custom Groovy apps), 'disabled' (paused/disabled), 'parents' (apps with children like Rule Machine, Room Lighting, Groups and Scenes), 'children' (individual rules, scenes, etc.).
+  filter, includeHidden, and cursor apply to this mode.
+
+scope='types' — installed app CODE LIBRARY / available app TYPES (the app code installed on the hub, not running instances). Requires Hub Admin Read.
+  filter and includeHidden are ignored in this mode.
+
+Pass cursor (opaque string from a prior call's nextCursor) to page through the list at 50 per page when the full response would exceed the hub's 128KB JSON-RPC cap.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                    scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree (Built-in App Tools). 'types' = installed app code library / available app types (Hub Admin Read).", default: "instances"],
+                    filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: filter apps by category. Default: all"],
+                    includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit to get the full list in a single response (subject to the universal 120KB response-size guard -- oversized responses come back as a response_too_large envelope). Pass the nextCursor value from a prior call to fetch the next page (page size 50). Empty string starts at the first page."]
                 ]
             ]
         ],
@@ -2036,11 +2177,11 @@ Verify rule after creation.""",
         ],
         [
             name: "hub_get_metrics",
-            description: "Record and retrieve hub metrics (memory, temp, DB size) with CSV trend history. Use recordSnapshot=false to read without recording. Requires Hub Admin Read.",
+            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. Read-only by default; pass recordSnapshot=true to ALSO append the current snapshot to the performance-history CSV in the hub File Manager (the only write side-effect). Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    recordSnapshot: [type: "boolean", description: "Record this snapshot to the performance history CSV. Default: true.", default: true],
+                    recordSnapshot: [type: "boolean", description: "If true, also append this snapshot to the performance-history CSV in the hub File Manager (a write side-effect). Default: false (read-only).", default: false],
                     trendPoints: [type: "integer", description: "Number of recent historical data points to include. Default: 10, max: 50.", default: 10]
                 ]
             ]
@@ -2569,24 +2710,6 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
         ],
         // Installed Apps Integration (built-in + user app visibility)
         [
-            name: "hub_list_installed_apps",
-            description: """List all installed apps on the hub (built-in + user) with parent/child tree. Requires Built-in App Tools enabled.
-
-Each app entry returns: id, name, type, disabled, user (true=user-installed Groovy app, false=built-in), hidden, parentId (null for top-level), hasChildren, childCount.
-
-Use filter to narrow results: 'all' (default), 'builtin' (Hubitat native apps), 'user' (custom Groovy apps), 'disabled' (paused/disabled), 'parents' (apps with children like Rule Machine, Room Lighting, Groups and Scenes), 'children' (individual rules, scenes, etc.).
-
-Pass cursor (opaque string from a prior call's nextCursor) to page through the apps list at 50 per page when the full response would exceed the hub's 128KB JSON-RPC cap.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "Filter apps by category. Default: all"],
-                    includeHidden: [type: "boolean", description: "Include hidden apps (typically Hubitat internal). Default: false", default: false],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit to get the full filtered list in a single response (subject to the universal 120KB response-size guard -- oversized responses come back as a response_too_large envelope). Pass the nextCursor value from a prior call to fetch the next page (page size 50). Empty string starts at the first page."]
-                ]
-            ]
-        ],
-        [
             name: "hub_list_device_dependents",
             description: """List all apps that reference a specific device (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.). Requires Built-in App Tools enabled.
 
@@ -2609,15 +2732,15 @@ Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, l
 
 Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value), and `embeddedActions` — clickable button affordances embedded in paragraph HTML (RM 5.1 wizards expose "Create New Trigger", "Edit Trigger", "Delete Trigger" etc. as `<div class='submitOnChange'>` elements rather than schema inputs; this field surfaces them with their button name + stateAttribute so hub_update_native_app can drive them). Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything.
 
-Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after hub_list_installed_apps / hub_list_device_dependents narrows the field.
+Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after hub_list_apps (scope='instances') / hub_list_device_dependents narrows the field.
 
-Workflow: (1) Get the appId from hub_list_installed_apps (all apps), hub_list_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not hub_get_custom_rule, which only handles MCP-native rules), or hub_list_installed_apps with filter=parents to explore app hierarchy. (2) Call hub_get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call hub_list_app_pages first to discover available page names. Common multi-page names: HPM uses prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset only), prefOptions (main menu / navigation); RM and Room Lighting use a single mainPage (no pageName needed).
+Workflow: (1) Get the appId from hub_list_apps (scope='instances', all apps), hub_list_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not hub_get_custom_rule, which only handles MCP-native rules), or hub_list_apps (scope='instances') with filter=parents to explore app hierarchy. (2) Call hub_get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call hub_list_app_pages first to discover available page names. Common multi-page names: HPM uses prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset only), prefOptions (main menu / navigation); RM and Room Lighting use a single mainPage (no pageName needed).
 
 Requires Hub Admin Read.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_installed_apps, hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
+                    appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
                     pageName: [type: "string", description: "Optional sub-page name for multi-page apps. Main page is used when omitted. Call hub_list_app_pages to discover available pages. HPM: prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefOptions (main menu). RM / Room Lighting: mainPage only."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map. Default false -- large apps can have 500-1000 keys with app-specific encoding (e.g. Room Lighting's dm~<deviceId>~<scene>). Set true only for power-user inspection.", default: false]
                 ],
@@ -2639,7 +2762,7 @@ Requires Hub Admin Read.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_installed_apps, hub_list_rules, or the Hubitat UI URL (/installedapp/configure/<id>)."]
+                    appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the Hubitat UI URL (/installedapp/configure/<id>)."]
                 ],
                 required: ["appId"]
             ]
@@ -2804,7 +2927,7 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "integer", description: "Installed-app ID (for RM rules, this is the rule ID; for any other classic app, it's the app's id from hub_list_installed_apps)."],
+                    appId: [type: "integer", description: "Installed-app ID (for RM rules, this is the rule ID; for any other classic app, it's the app's id from hub_list_apps with scope='instances')."],
                     settings: [type: "object", description: "Map {inputName: value}. Use List for multi-device capability inputs — CSV marshaling is automatic."],
                     button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule, refreshActions for RM; analogous buttons for other app types)."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
@@ -3323,7 +3446,7 @@ def executeTool(toolName, args) {
             throw new IllegalArgumentException("${toolName} is not available. Both 'Enable Custom Rule Engine' and 'Enable Built-in App Tools' are OFF. To use the legacy custom-rule tools (hub_*_custom_rule), turn on Custom Rule Engine. To use native Hubitat Rule Machine rules (recommended), turn on Built-in App Tools instead.")
         }
         if (customEngineMode == "readonly" && !customReadonlyTools.contains(toolName)) {
-            throw new IllegalArgumentException("${toolName} is not available in read-only mode. The Custom Rule Engine toggle is OFF. Turn it ON in MCP Rule Server settings to use create/delete/export/import/clone operations. NOTE: the custom MCP rule engine is legacy -- for new rule work prefer hub_manage_native_rules.")
+            throw new IllegalArgumentException("${toolName} is not available in read-only mode. The Custom Rule Engine toggle is OFF. Turn it ON in MCP Rule Server settings to use create/delete/export/import/clone operations. NOTE: the custom MCP rule engine is legacy -- for new rule work prefer hub_manage_native_rules_and_apps.")
         }
     }
     switch (toolName) {
@@ -3400,7 +3523,7 @@ def executeTool(toolName, args) {
 
         // Hub Admin Read Tools
         // get_hub_details merged into hub_get_info
-        case "hub_list_apps": return toolListHubApps(args)
+        case "hub_list_apps": return (args?.scope == "types") ? toolListHubApps(args) : toolListInstalledApps(args)
         case "hub_list_drivers": return toolListHubDrivers(args)
         case "hub_get_radio_details": {
             def radio = args.radio
@@ -3469,7 +3592,6 @@ def executeTool(toolName, args) {
         case "hub_delete_file": return toolDeleteFile(args)
 
         // Installed Apps Integration
-        case "hub_list_installed_apps": return toolListInstalledApps(args)
         case "hub_list_device_dependents": return toolGetDeviceInUseBy(args)
 
         // HPM Package State
@@ -3504,19 +3626,25 @@ def executeTool(toolName, args) {
         case "hub_search_tools": return toolSearchTools(args)
 
         // Category Gateway Proxy Tools
-        case "hub_manage_rules":
-        case "hub_manage_variables":
-        case "hub_manage_rooms":
+        case "hub_read_apps_code":
+        case "hub_read_devices":
+        case "hub_read_diagnostics":
+        case "hub_read_files":
+        case "hub_read_rooms":
+        case "hub_read_rules":
+        case "hub_read_variables":
+        case "hub_manage_code":
+        case "hub_manage_custom_rules":
         case "hub_manage_destructive_ops":
-        case "hub_manage_code_read":
-        case "hub_manage_code_write":
-        case "hub_manage_logs":
+        case "hub_manage_devices":
         case "hub_manage_diagnostics":
         case "hub_manage_files":
-        case "hub_manage_installed_apps":
-        case "hub_manage_hpm":
-        case "hub_manage_native_rules":
+        case "hub_manage_logs":
         case "hub_manage_mcp":
+        case "hub_manage_native_rules_and_apps":
+        case "hub_manage_rooms":
+        case "hub_manage_rule_machine":
+        case "hub_manage_variables":
             // Flat-mode guard: gateways are not advertised on tools/list when useGateways=false,
             // so a gateway-name call here is almost certainly a stale/cached client. Returning
             // the gateway catalog would silently contradict the user's intent — fail loud with
@@ -4315,7 +4443,7 @@ def toolGetRule(ruleId) {
 
     def ruleData = childApp.getRuleData()
     // Inject source marker so callers can distinguish MCP-managed rules from
-    // native RM rules returned by hub_list_rules / hub_manage_native_rules.
+    // native RM rules returned by hub_list_rules / hub_manage_native_rules_and_apps.
     if (ruleData instanceof Map) {
         ruleData = ruleData + [source: "mcp_custom_engine"]
     }
@@ -4439,7 +4567,7 @@ def toolUpdateRule(ruleId, args, String customEngineMode = "full") {
         // Fields in args besides 'enabled' (ruleId is passed as a separate param, not in args)
         def structuralKeys = (args?.keySet() ?: []).findAll { it != "enabled" && it != "ruleId" }
         if (!structuralKeys.isEmpty()) {
-            throw new IllegalArgumentException("In read-only mode (Custom Rule Engine toggle OFF), only the 'enabled' field can be updated. Structural fields provided: ${structuralKeys.sort().join(', ')}. To modify rule structure (triggers/conditions/actions), turn ON the Custom Rule Engine toggle in MCP server settings. The custom rule engine is legacy -- for new rule structure work, use hub_manage_native_rules hub_create_native_app/hub_update_native_app instead.")
+            throw new IllegalArgumentException("In read-only mode (Custom Rule Engine toggle OFF), only the 'enabled' field can be updated. Structural fields provided: ${structuralKeys.sort().join(', ')}. To modify rule structure (triggers/conditions/actions), turn ON the Custom Rule Engine toggle in MCP server settings. The custom rule engine is legacy -- for new rule structure work, use hub_manage_native_rules_and_apps hub_create_native_app/hub_update_native_app instead.")
         }
     }
 
@@ -4677,7 +4805,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `hub_manage_installed_apps -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
                 "`hub_delete_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
-                "Use `hub_manage_native_rules -> hub_delete_native_app(appId=${idStr}, confirm=true)` to delete it programmatically " +
+                "Use `hub_manage_native_rules_and_apps -> hub_delete_native_app(appId=${idStr}, confirm=true)` to delete it programmatically " +
                 "(requires Built-in App Tools + Hub Admin Write)."
         } else if (verb == "test") {
             // hub_call_rule routes through RMUtils and is RM-only. Point non-RM rule-likes at hub_get_app_config instead.
@@ -4685,7 +4813,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
                 return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                     "Use `hub_manage_installed_apps -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
                     "`hub_test_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
-                    "Use `hub_manage_native_rules -> hub_call_rule(ruleId=${idStr})` to trigger it " +
+                    "Use `hub_manage_native_rules_and_apps -> hub_call_rule(ruleId=${idStr})` to trigger it " +
                     "(requires Built-in App Tools)."
             } else {
                 return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
@@ -4700,7 +4828,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `hub_manage_installed_apps -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
                 "`hub_update_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
-                "Use `hub_manage_native_rules -> hub_update_native_app(appId=${idStr})` to modify it programmatically " +
+                "Use `hub_manage_native_rules_and_apps -> hub_update_native_app(appId=${idStr})` to modify it programmatically " +
                 "(requires Built-in App Tools + Hub Admin Write)."
         }
     } catch (Exception e) {
@@ -4757,6 +4885,16 @@ def toolExportRule(args) {
     ]
 
     mcpLog("info", "server", "Exported rule '${ruleData.name}' (ID: ${args.ruleId}) with ${deviceManifest.size()} device references", args.ruleId)
+
+    // hub_export_custom_rule ALWAYS persists the export JSON to the hub File Manager --
+    // that write side-effect is why it is classified a write tool. saveAs sets the filename.
+    def exportFileName = (args.saveAs ?: "mcp-rule-export-${args.ruleId}-${ruleData.name}").toString()
+        .replaceAll(/[^A-Za-z0-9._-]/, "_")
+    if (!exportFileName.toLowerCase().endsWith(".json")) exportFileName += ".json"
+    def jsonContent = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(exportData))
+    uploadHubFile(exportFileName, jsonContent.getBytes("UTF-8"))
+    exportData.savedToFile = exportFileName
+    mcpLog("info", "server", "Saved rule export to File Manager: ${exportFileName}", args.ruleId)
 
     return exportData
 }
@@ -5264,7 +5402,7 @@ private String _validateHubVarType(String type) {
  * Discovery is two-stage because /hub2/appsList omits hidden system apps
  * on at least some firmware versions (verified on 2.5.0.126: Hub Variables
  * is reachable at /installedapp/configure/json/<id> but not listed in
- * /hub2/appsList -- same gap that hides it from hub_list_installed_apps):
+ * /hub2/appsList -- same gap that hides it from hub_list_apps (scope='instances')):
  *   1. Walk /hub2/appsList (cheap, single GET) -- catches hubs that DO
  *      list it.
  *   2. If miss, fall back to scanning installed-app config endpoints up
@@ -9537,7 +9675,7 @@ def toolGetHubJobs(args) {
 def toolGetHubPerformance(args) {
     requireHubAdminRead()
 
-    def recordSnapshot = args.recordSnapshot != false
+    def recordSnapshot = args.recordSnapshot == true
     def trendPoints = Math.min(args.trendPoints ?: 10, 50)
 
     // Gather current metrics
@@ -13031,7 +13169,7 @@ def toolListInstalledApps(args) {
             }
         }
 
-        def paged = _paginateList(filtered, cursor, 50, "hub_list_installed_apps")
+        def paged = _paginateList(filtered, cursor, 50, "hub_list_apps")
         def result = [
             apps: paged.page,
             count: paged.page.size(),
@@ -13049,7 +13187,7 @@ def toolListInstalledApps(args) {
         // Programmer error -- e.g. validFilters / switch drift on the filter whitelist.
         // Don't reframe as a transport failure; surface so the drift gets fixed instead
         // of swallowed under a misleading "hub blip" note.
-        mcpLog("error", "installed-apps", "hub_list_installed_apps internal invariant violated: ${e.message}")
+        mcpLog("error", "installed-apps", "hub_list_apps internal invariant violated: ${e.message}")
         throw e
     } catch (Exception e) {
         // The Built-in-App-Tools gate has already passed by the time we reach here, so
@@ -13057,7 +13195,7 @@ def toolListInstalledApps(args) {
         // (network blip, firmware change to /hub2/appsList) or the flatten/filter pipeline
         // (unexpected shape in a child entry). The error message itself will usually
         // distinguish the two.
-        mcpLog("error", "installed-apps", "hub_list_installed_apps failed: ${e.message}")
+        mcpLog("error", "installed-apps", "hub_list_apps failed: ${e.message}")
         return [success: false, error: "Failed to list installed apps: ${e.message}", note: "Hub transport error or unexpected /hub2/appsList response shape -- retry; if persistent, inspect the raw response for firmware-side drift."]
     }
 }
@@ -14269,7 +14407,7 @@ private Integer normalizeRuleId(def ruleId) {
  *   - rule_machine: namespace=hubitat appName=Rule-5.1 parentType="Rule Machine"
  *
  * Sources for additional entries (per #120 scope expansion notes —
- * confirm namespace+appName via hub_list_installed_apps before enabling):
+ * confirm namespace+appName via hub_list_apps (scope='instances') before enabling):
  *   - button_controller (parent),  Button Controller-5.1, parentType="Button Controllers"
  *   - button_rule (under controller), Button Rule-5.1, parentType=<a specific Button Controller>
  *   - basic_rule, parentType="Basic Rules"
@@ -14280,7 +14418,7 @@ private Integer normalizeRuleId(def ruleId) {
  *
  * Update + delete already work on these today — call hub_update_native_app /
  * hub_delete_native_app with the appId of any existing classic-app instance
- * (read appId via hub_list_installed_apps + hub_get_app_config).
+ * (read appId via hub_list_apps (scope='instances') + hub_get_app_config).
  */
 private Map _appTypeRegistry() {
     return [
@@ -20598,7 +20736,7 @@ def toolCreateNativeApp(args) {
             "The hub rejected namespace='${reg.namespace}' + appName='${reg.appName}' " +
             "(parent app id ${parentId}). Most likely the _appTypeRegistry entry has the " +
             "wrong child appName for this hub's installed parent. To verify the actual " +
-            "child appName, call hub_list_installed_apps and inspect the children of " +
+            "child appName, call hub_list_apps (scope='instances') and inspect the children of " +
             "parentTypeName='${reg.parentTypeName}' — the children's `type` field is the " +
             "child appName the hub expects. Underlying error: ${createExc.message}")
     }
@@ -24005,7 +24143,7 @@ def toolCloneNativeApp(args) {
 
     String note = newAppId
         ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_update_native_app to further customize."
-        : "Clone fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_installed_apps shortly."
+        : "Clone fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
     def result = [
         success: newAppId != null,
         sourceAppId: sourceAppId,
@@ -24256,7 +24394,7 @@ def toolImportNativeApp(args) {
 
     String note = newAppId
         ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_update_native_app to further customize."
-        : "Import fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_installed_apps shortly."
+        : "Import fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
     def result = [
         success: newAppId != null,
         clonerAppId: clonerAppId,
@@ -24926,11 +25064,11 @@ Files stored at http://<HUB_IP>/local/<filename>
 
         builtin_app_tools: '''## Built-in App Tools
 
-Tools in the hub_manage_installed_apps and hub_manage_native_rules gateways have mixed gate requirements. hub_list_installed_apps and hub_list_device_dependents require the "Enable Built-in App Tools (read + write)" toggle (requireBuiltinApp). hub_get_app_config and hub_list_app_pages require Hub Admin Read (requireHubAdminRead). The hub_manage_hpm tool (hub_list_hpm_packages, with optional includeDrift) requires Hub Admin Read. All hub_manage_native_rules tools require the "Enable Built-in App Tools" toggle; the CRUD tools (hub_create_native_app / hub_update_native_app / hub_delete_native_app) ALSO require Hub Admin Write. If the user sees "Built-in App Tools are disabled" or "Hub Admin Read is disabled" errors, direct them to the MCP Rule Server app settings page.
+Tools in the hub_manage_installed_apps and hub_manage_native_rules_and_apps gateways have mixed gate requirements. hub_list_apps with scope='instances' and hub_list_device_dependents require the "Enable Built-in App Tools (read + write)" toggle (requireBuiltinApp); hub_list_apps with scope='types' requires only Hub Admin Read. hub_get_app_config and hub_list_app_pages require Hub Admin Read (requireHubAdminRead). The hub_manage_hpm tool (hub_list_hpm_packages, with optional includeDrift) requires Hub Admin Read. All hub_manage_native_rules_and_apps tools require the "Enable Built-in App Tools" toggle; the CRUD tools (hub_create_native_app / hub_update_native_app / hub_delete_native_app) ALSO require Hub Admin Write. If the user sees "Built-in App Tools are disabled" or "Hub Admin Read is disabled" errors, direct them to the MCP Rule Server app settings page.
 
 **hub_manage_installed_apps (4 tools):**
 
-- **hub_list_installed_apps** — enumerate ALL apps on the hub (built-in + user) with parent/child tree
+- **hub_list_apps (scope='instances')** — enumerate ALL running app instances on the hub (built-in + user) with parent/child tree
   - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"
   - Each entry: id, name, type, disabled, user, hidden, parentId, hasChildren, childCount
   - Built-in apps have user=false (Rule Machine, Room Lighting, Groups and Scenes, Mode Manager, HSM, Dashboards, Maker API, etc.)
@@ -24946,7 +25084,7 @@ Tools in the hub_manage_installed_apps and hub_manage_native_rules gateways have
   - Returns app identity (label, type, disabled), config page sections/inputs/values, and child apps
   - Multi-page apps expose sub-pages via pageName. For HPM: use pageName="prefPkgUninstall" for the FULL installed-package list; pageName="prefPkgModify" returns only the subset with optional components; pageName="prefOptions" is the main-menu navigation (no package data). RM 5.x and Room Lighting use a single mainPage (no pageName needed). Call hub_list_app_pages first to discover available page names for any multi-page app.
   - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
-  - Workflow: hub_list_installed_apps (or hub_list_rules for RM rules specifically -- note that hub_get_custom_rule handles only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then hub_get_app_config to inspect. For multi-page apps, consider hub_list_app_pages first.
+  - Workflow: hub_list_apps (scope='instances'; or hub_list_rules for RM rules specifically -- note that hub_get_custom_rule handles only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then hub_get_app_config to inspect. For multi-page apps, consider hub_list_app_pages first.
 
 - **hub_list_app_pages** — discover what pageNames a given app accepts (Hub Admin Read required)
   - Input: appId
@@ -24968,7 +25106,7 @@ Tools in the hub_manage_installed_apps and hub_manage_native_rules gateways have
   - Data-quality warning types in dataQualityWarnings[]: heid-whitespace-normalized (padded heID normalized; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid, skipped-malformed-component
   - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via hub_update_app are not detectable
 
-**hub_manage_native_rules (12 tools) — read, trigger, AND full CRUD on native RM rules:**
+**hub_manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules:**
 
 RMUtils-based control surface (Built-in App Tools gate only):
 - **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)
