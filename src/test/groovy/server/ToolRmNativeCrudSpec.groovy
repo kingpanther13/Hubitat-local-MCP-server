@@ -737,6 +737,86 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         updatePost.body["deviceList"] == "tDev0"
     }
 
+    def "_rmUpdateAppSettings throws when the hub rejects the settings write (status >= 400) rather than reporting success (issue #105 PR2a #4)"() {
+        given: 'a rule whose settings POST the hub will reject with a 4xx (e.g. a stale version token)'
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        // hubInternalPostForm returns a status Map and does NOT throw on 4xx (its real contract --
+        // siblings _rmClickAppButton/_rmSubmitFullPageForm already guard resp.status >= 400 and throw).
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 409, location: null, data: 'stale version token']
+        }
+
+        when: 'the central settings writer posts and the hub rejects it'
+        script._rmUpdateAppSettings(100, [origLabel: "newlabel"], null)
+
+        then: 'the rejection surfaces as a thrown error -- a rejected write must never be reported as success'
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("409")
+        ex.message.contains("100")
+    }
+
+    def "hub_update_native_app surfaces success:false when the hub rejects the settings write (issue #105 PR2a #4)"() {
+        given: 'a settings update the hub will reject with a 4xx'
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 409, location: null, data: 'stale version token']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, settings: [origLabel: "x"], confirm: true])
+
+        then: 'the tool reports failure -- a hub-rejected write is never surfaced as success'
+        result.success == false
+
+        and: 'the error explains the rejection so the AI can recover'
+        result.error?.toString()?.contains("409") || result.note?.toString()?.contains("re-fetch")
+    }
+
+    def "the sticky-flag RETRY settings write is also 4xx-guarded -- a rejected retry surfaces as failure (issue #105 PR2a #4)"() {
+        given: 'the post-write verify flags divergence (statusJson #2 poisoned), forcing a retry POST that the hub then rejects'
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "tDev0", type: "capability.switch", multiple: true]])
+        }
+        def statusCalls = 0
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusCalls++
+            // call #2 is the post-write verify -- return the poisoned (multiple:false) flag to force a retry
+            if (statusCalls == 2) {
+                statusJson(100, [[name: "tDev0", type: "capability.switch", multiple: false, value: "8,9"]])
+            } else {
+                statusJson(100, [[name: "tDev0", type: "capability.switch", multiple: true, value: "8,9"]])
+            }
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def updatePosts = 0
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                updatePosts++
+                // initial write succeeds; the retry write is rejected with a 4xx
+                return updatePosts >= 2 ? [status: 409, location: null, data: 'stale version token'] : [status: 200, location: null, data: '{"status":"success"}']
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, settings: [tDev0: [8, 9]], confirm: true])
+
+        then: 'the retry actually fired and its rejection was not swallowed'
+        updatePosts == 2
+        result.success == false
+    }
+
     def "_rmClickAppButton emits bracket-form settings[btn]=clicked + form-context fields"() {
         given:
         enableHubAdminWrite()
@@ -4783,7 +4863,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the importRule form refresh uses the ORIGINAL source id (42) as the newName field's <sourceId>, not parentHintAppId (100). With no newName argument the field is still emitted (matches UI behaviour) but its value is empty."
         def importRulePosts = posts.findAll { it.path == "/installedapp/update/json" && it.body?.currentPage == "importRule" }
         importRulePosts.any { it.body?.containsKey("settings[newName42]") }
-        importRulePosts.every { it.body?["settings[newName42]"] == "" }
+        importRulePosts.every { it.body?.getAt("settings[newName42]") == "" }
         !importRulePosts.any { it.body?.containsKey("settings[newName100]") }
     }
 
@@ -11651,6 +11731,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         updatePost.body["tDev0.type"] == "capability.switch"
         updatePost.body["tDev0.multiple"] == "true"
         inner.backup?.backupKey?.startsWith("rm-rule_100_")
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "hub_update_native_app via dispatch surfaces success:false when the hub rejects the write (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 409, location: null, data: 'stale version token']
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_update_native_app', [appId: 100, settings: [origLabel: "x"], confirm: true])
+
+        then: 'the rejected write surfaces as failure through the full dispatch envelope, not as success'
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
 
         where:
         useGateways << [true, false]

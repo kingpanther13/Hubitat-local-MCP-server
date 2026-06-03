@@ -556,6 +556,117 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
+    // Password redaction (issue #105 PR2a #3): type="password" input values must
+    // never surface raw, on EITHER the structured inputs path (always returned)
+    // or the raw settings map (includeSettings=true). The Hubitat UI masks these
+    // inputs; this tool must not de-mask the stored secret into the MCP response.
+    // -------------------------------------------------------------------------
+
+    private static String makePasswordConfigJson() {
+        makeAppConfigJson([
+            configPage: [
+                name: 'mainPage', title: 'Credentials', install: true, refreshInterval: null,
+                sections: [[
+                    title: 'API',
+                    input: [
+                        [name: 'apiKey', type: 'password', title: 'API Key', defaultValue: 'hunter2-SECRET', required: true],
+                        [name: 'username', type: 'text', title: 'Username', defaultValue: 'alice']
+                    ],
+                    body: []
+                ]]
+            ],
+            settings: [apiKey: 'hunter2-SECRET', username: 'alice']
+        ])
+    }
+
+    def "redacts password-type input values on the structured inputs path even without includeSettings"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
+
+        when: 'includeSettings is NOT set (default false) -- the structured inputs path still runs'
+        def result = script.toolGetAppConfig([appId: 35])
+
+        then: 'the password input is still listed (so the AI knows it is set) but its value is redacted, not the raw secret'
+        def pw = result.page.sections[0].inputs.find { it.name == 'apiKey' }
+        pw != null
+        pw.value == '***redacted (password)***'
+
+        and: 'non-password inputs keep their real values'
+        result.page.sections[0].inputs.find { it.name == 'username' }.value == 'alice'
+
+        and: 'the secret never appears anywhere in the serialized result'
+        !JsonOutput.toJson(result).contains('hunter2-SECRET')
+    }
+
+    def "redacts password-type keys in the raw settings map when includeSettings=true"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then: 'the password key is present (so the AI knows it is configured) but its value is redacted'
+        result.settings.containsKey('apiKey')
+        result.settings.apiKey == '***redacted (password)***'
+
+        and: 'non-secret settings are unchanged'
+        result.settings.username == 'alice'
+
+        and: 'no secret in the serialized result'
+        !JsonOutput.toJson(result).contains('hunter2-SECRET')
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_app_config via dispatch redacts password values on both paths (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeSettings: true])
+
+        then:
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.settings.apiKey == '***redacted (password)***'
+        inner.page.sections[0].inputs.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        !JsonOutput.toJson(inner).contains('hunter2-SECRET')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "redacts a password that appears only in the settings map when the input echoes no value (the common masked case)"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // Hubitat masks type=password fields and often does NOT echo them into the config-page
+        // input, yet the secret IS present in the flat settings map. The redaction must still
+        // fire (password names are collected regardless of whether the input carries a value).
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([
+            configPage: [
+                name: 'mainPage', title: 'Credentials', install: true, refreshInterval: null,
+                sections: [[title: 'API', input: [[name: 'apiKey', type: 'password', title: 'API Key', required: true]], body: []]]
+            ],
+            settings: [apiKey: 'hunter2-SECRET']
+        ]) }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then: 'the settings map redacts the password key even though the input carried no value'
+        result.settings.apiKey == '***redacted (password)***'
+
+        and: 'the structured input leaks no value at all'
+        !result.page.sections[0].inputs.find { it.name == 'apiKey' }.containsKey('value')
+
+        and: 'no secret anywhere in the result'
+        !JsonOutput.toJson(result).contains('hunter2-SECRET')
+    }
+
+    // -------------------------------------------------------------------------
     // Error paths
     // -------------------------------------------------------------------------
 

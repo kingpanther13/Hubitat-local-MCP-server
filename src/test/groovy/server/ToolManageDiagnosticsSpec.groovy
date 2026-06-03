@@ -1353,6 +1353,52 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.note.contains('Z-Wave Details')
     }
 
+    // -------- saveCapturedState atomic-store migration (issue #105 PR2a #5) --------
+    // Captured states back restore_state. They must live in atomicState, not the
+    // non-atomic state: subscribed event handlers run concurrently, so a non-atomic
+    // read-modify-write loses captures and can blow past the size cap.
+
+    def "saveCapturedState persists to atomicState (thread-safe store), not the non-atomic state"() {
+        when:
+        def result = script.saveCapturedState('snap1', [dev1: [switch: 'on']])
+
+        then: 'the capture lands in atomicState'
+        atomicStateMap.capturedDeviceStates?.containsKey('snap1')
+
+        and: 'and NOT in the race-prone state store'
+        !stateMap.containsKey('capturedDeviceStates')
+
+        and: 'round-trips through the atomic store'
+        script.getCapturedState('snap1') == [dev1: [switch: 'on']]
+        result.stateId == 'snap1'
+        result.totalStored == 1
+    }
+
+    def "saveCapturedState enforces the size cap via atomicState, evicting the oldest"() {
+        given:
+        settingsMap.maxCapturedStates = 2
+
+        when:
+        script.saveCapturedState('a', [d: [switch: 'on']])
+        script.saveCapturedState('b', [d: [switch: 'on']])
+        script.saveCapturedState('c', [d: [switch: 'on']])   // over cap -> evicts oldest 'a'
+
+        then:
+        atomicStateMap.capturedDeviceStates?.size() == 2
+        !atomicStateMap.capturedDeviceStates?.containsKey('a')
+        atomicStateMap.capturedDeviceStates?.containsKey('b')
+        atomicStateMap.capturedDeviceStates?.containsKey('c')
+    }
+
+    def "getCapturedState reads from atomicState, not the non-atomic state (the restore_state consumer path)"() {
+        given: 'a capture in the atomic store, plus a decoy under the same key in non-atomic state'
+        atomicStateMap.capturedDeviceStates = [snap: [devices: [dev1: [switch: 'on']], timestamp: 1000L, deviceCount: 1]]
+        stateMap.capturedDeviceStates = [snap: [devices: [dev1: [switch: 'DECOY']], timestamp: 1L, deviceCount: 1]]
+
+        expect: 'restore reads the atomic store -- a regression back to state would return the decoy'
+        script.getCapturedState('snap') == [dev1: [switch: 'on']]
+    }
+
     // -------- toolListCapturedStates --------
 
     def "hub_list_captured_states returns an empty list with count when state is empty"() {
@@ -1367,7 +1413,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_list_captured_states returns entries sorted newest-first"() {
         given:
-        stateMap.capturedDeviceStates = [
+        atomicStateMap.capturedDeviceStates = [
             older: [devices: [[id: '1', name: 'D1']], timestamp: 1000L, deviceCount: 1],
             newer: [devices: [[id: '2', name: 'D2'], [id: '3', name: 'D3']], timestamp: 5000L, deviceCount: 2]
         ]
@@ -1386,7 +1432,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "hub_list_captured_states via dispatch returns entries sorted newest-first (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        stateMap.capturedDeviceStates = [
+        atomicStateMap.capturedDeviceStates = [
             older: [devices: [[id: '1', name: 'D1']], timestamp: 1000L, deviceCount: 1],
             newer: [devices: [[id: '2', name: 'D2'], [id: '3', name: 'D3']], timestamp: 5000L, deviceCount: 2]
         ]
@@ -1409,7 +1455,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "hub_list_captured_states surfaces an at-capacity warning"() {
         given: 'override the cap to 5 so filling capacity only takes 5 seed entries'
         settingsMap.maxCapturedStates = 5
-        stateMap.capturedDeviceStates = (1..5).collectEntries { i ->
+        atomicStateMap.capturedDeviceStates = (1..5).collectEntries { i ->
             ["s${i}".toString(), [devices: [], timestamp: (i * 1000L), deviceCount: 0]]
         }
 
@@ -1424,7 +1470,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "hub_list_captured_states surfaces the approaching-limit warning at max-4 slots"() {
         given: 'max=10, 7 entries → count >= max-4 branch (source hubitat-mcp-server.groovy:3174)'
         settingsMap.maxCapturedStates = 10
-        stateMap.capturedDeviceStates = (1..7).collectEntries { i ->
+        atomicStateMap.capturedDeviceStates = (1..7).collectEntries { i ->
             ["s${i}".toString(), [devices: [], timestamp: (i * 1000L), deviceCount: 0]]
         }
 
@@ -1441,7 +1487,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_delete_captured_state with no stateId clears ALL captured states (no-ID = delete all)"() {
         given:
-        stateMap.capturedDeviceStates = [
+        atomicStateMap.capturedDeviceStates = [
             a: [devices: [], timestamp: 1000L, deviceCount: 0],
             b: [devices: [], timestamp: 2000L, deviceCount: 0]
         ]
@@ -1452,12 +1498,12 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.cleared == 2
-        stateMap.capturedDeviceStates == [:]
+        atomicStateMap.capturedDeviceStates == [:]
     }
 
     def "hub_delete_captured_state removes the specified entry"() {
         given:
-        stateMap.capturedDeviceStates = [
+        atomicStateMap.capturedDeviceStates = [
             keep: [devices: [], timestamp: 1000L, deviceCount: 0],
             gone: [devices: [], timestamp: 2000L, deviceCount: 0]
         ]
@@ -1468,15 +1514,15 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.remaining == 1
-        stateMap.capturedDeviceStates.containsKey('keep')
-        !stateMap.capturedDeviceStates.containsKey('gone')
+        atomicStateMap.capturedDeviceStates.containsKey('keep')
+        !atomicStateMap.capturedDeviceStates.containsKey('gone')
     }
 
     @spock.lang.Unroll
     def "hub_delete_captured_state via dispatch removes the specified entry (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        stateMap.capturedDeviceStates = [
+        atomicStateMap.capturedDeviceStates = [
             keep: [devices: [], timestamp: 1000L, deviceCount: 0],
             gone: [devices: [], timestamp: 2000L, deviceCount: 0]
         ]
@@ -1490,8 +1536,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.remaining == 1
-        stateMap.capturedDeviceStates.containsKey('keep')
-        !stateMap.capturedDeviceStates.containsKey('gone')
+        atomicStateMap.capturedDeviceStates.containsKey('keep')
+        !atomicStateMap.capturedDeviceStates.containsKey('gone')
 
         where:
         useGateways << [true, false]
@@ -1499,7 +1545,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_delete_captured_state reports not-found without throwing"() {
         given:
-        stateMap.capturedDeviceStates = [keep: [devices: [], timestamp: 1000L, deviceCount: 0]]
+        atomicStateMap.capturedDeviceStates = [keep: [devices: [], timestamp: 1000L, deviceCount: 0]]
 
         when:
         def result = script.toolDeleteCapturedState('absent')
@@ -1511,9 +1557,9 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     // -------- toolDeleteCapturedState delete-all (clear) path --------
 
-    def "hub_delete_captured_state delete-all empties state.capturedDeviceStates and returns count"() {
+    def "hub_delete_captured_state delete-all empties atomicState.capturedDeviceStates and returns count"() {
         given:
-        stateMap.capturedDeviceStates = [
+        atomicStateMap.capturedDeviceStates = [
             a: [devices: [], timestamp: 1000L, deviceCount: 0],
             b: [devices: [], timestamp: 2000L, deviceCount: 0],
             c: [devices: [], timestamp: 3000L, deviceCount: 0]
@@ -1525,14 +1571,14 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.cleared == 3
-        stateMap.capturedDeviceStates == [:]
+        atomicStateMap.capturedDeviceStates == [:]
     }
 
     @spock.lang.Unroll
     def "hub_delete_captured_state delete-all via dispatch empties state and returns count (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        stateMap.capturedDeviceStates = [
+        atomicStateMap.capturedDeviceStates = [
             a: [devices: [], timestamp: 1000L, deviceCount: 0],
             b: [devices: [], timestamp: 2000L, deviceCount: 0],
             c: [devices: [], timestamp: 3000L, deviceCount: 0]
@@ -1547,7 +1593,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.cleared == 3
-        stateMap.capturedDeviceStates == [:]
+        atomicStateMap.capturedDeviceStates == [:]
 
         where:
         useGateways << [true, false]

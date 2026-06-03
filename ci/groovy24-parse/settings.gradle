@@ -1,0 +1,3 @@
+// Standalone build, isolated from the root project on purpose (issue #105 PR2a). Keeps the
+// Groovy 2.4 parse lane fully separate from the root build.gradle / 3.0 test lane.
+rootProject.name = 'groovy24-parse'

@@ -302,6 +302,18 @@ def updated() {
         mcpLog("info", "engine-migration", "Forced enableCustomRuleEngine=false (one-time rename migration; legacy enableRuleEngine present)")
     }
     state.customEngineMigrated = true
+
+    // ===== One-time captured-states state -> atomicState migration =====
+    // Captured device states moved from `state` to `atomicState`. Carry any
+    // pre-existing captures across so a restore_state that worked before the
+    // update still finds them -- otherwise they'd be orphaned in `state` and
+    // silently disappear. One-shot: only copies when atomicState is still empty.
+    if (state.capturedDeviceStates && !atomicState.capturedDeviceStates) {
+        atomicState.capturedDeviceStates = state.capturedDeviceStates
+        def migratedCount = atomicState.capturedDeviceStates.size()
+        state.remove("capturedDeviceStates")
+        mcpLog("info", "capture-migration", "Migrated ${migratedCount} captured state(s) from state to atomicState")
+    }
 }
 
 def uninstalled() {
@@ -322,8 +334,12 @@ def initialize() {
 
     // Issue #92: subscribe to every hub variable's location event
     // ("variable:NAME") so the AI can see what changed and when via
-    // hub_list_variable_changes. Re-runs on every updated() because Hubitat
-    // calls unsubscribe() implicitly between updated() invocations.
+    // hub_list_variable_changes. Hubitat does NOT implicitly unsubscribe between
+    // updated() invocations, so unsubscribe first -- otherwise every settings save
+    // stacks another duplicate subscription per variable, firing
+    // handleHubVariableEvent N times per change and inflating variableHistory.
+    try { unsubscribe() }
+    catch (Exception e) { mcpLog("warn", "hub-vars", "unsubscribe() before re-subscribe failed: ${e.message} -- duplicate subscriptions may persist") }
     _subscribeToAllHubVariables()
 
     // Issue #96 gap 1: register addInUseGlobalVar for every hub variable
@@ -6655,7 +6671,7 @@ def toolGetHubInfo(args = null) {
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
-    info.mcpCapturedStates = state.capturedDeviceStates?.size() ?: 0
+    info.mcpCapturedStates = atomicState.capturedDeviceStates?.size() ?: 0
 
     // Settings visibility (always available)
     info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -7531,7 +7547,14 @@ def getMaxCapturedStates() {
 // Helper method for child apps to save captured device states (for capture_state action)
 // Returns info about the save operation including any deleted states
 def saveCapturedState(stateId, capturedStates) {
-    if (!state.capturedDeviceStates) state.capturedDeviceStates = [:]
+    // atomicState (not state): the prior in-place mutation of `state` did not reliably persist
+    // (`state` only flushes at handler end, and subscribed event handlers run concurrently), so
+    // captures and evictions were lost. Read into a local, mutate, then write the whole map back
+    // in one assignment -- in-place mutation of a nested atomicState map is not reliably persisted
+    // either. This narrows but does not fully close the race: atomicState has no compare-and-swap,
+    // so two truly-concurrent saves can still lose one. Each write is durable, though -- strictly
+    // better than `state`.
+    def stored = atomicState.capturedDeviceStates ?: [:]
 
     // Add timestamp to the captured state
     def stateEntry = [
@@ -7543,12 +7566,12 @@ def saveCapturedState(stateId, capturedStates) {
     def deletedStates = []
 
     // Check if we need to remove old entries (only if this is a new stateId)
-    if (!state.capturedDeviceStates.containsKey(stateId)) {
-        while (state.capturedDeviceStates.size() >= getMaxCapturedStates()) {
+    if (!stored.containsKey(stateId)) {
+        while (stored.size() >= getMaxCapturedStates()) {
             // Find and remove the oldest entry
             def oldestId = null
             def oldestTime = Long.MAX_VALUE
-            state.capturedDeviceStates.each { id, entry ->
+            stored.each { id, entry ->
                 def entryTime = entry.timestamp ?: 0
                 if (entryTime < oldestTime) {
                     oldestTime = entryTime
@@ -7558,15 +7581,16 @@ def saveCapturedState(stateId, capturedStates) {
             if (oldestId) {
                 log.warn "Captured states at limit (${getMaxCapturedStates()}): Removing oldest state '${oldestId}' to make room for '${stateId}'"
                 deletedStates << oldestId
-                state.capturedDeviceStates.remove(oldestId)
+                stored.remove(oldestId)
             } else {
                 break // Safety: avoid infinite loop
             }
         }
     }
 
-    state.capturedDeviceStates[stateId] = stateEntry
-    def totalStored = state.capturedDeviceStates.size()
+    stored[stateId] = stateEntry
+    atomicState.capturedDeviceStates = stored
+    def totalStored = stored.size()
     log.debug "Saved captured state '${stateId}' with ${capturedStates.size()} devices (total stored: ${totalStored}/${getMaxCapturedStates()})"
 
     return [
@@ -7581,16 +7605,17 @@ def saveCapturedState(stateId, capturedStates) {
 
 // Helper method for child apps to retrieve captured device states (for restore_state action)
 def getCapturedState(stateId) {
-    def entry = state.capturedDeviceStates?.get(stateId)
+    def entry = atomicState.capturedDeviceStates?.get(stateId)
     // Return the devices array for backward compatibility
     return entry?.devices ?: entry
 }
 
 // Helper method to list all captured states with metadata
 def listCapturedStates() {
-    if (!state.capturedDeviceStates) return []
+    def stored = atomicState.capturedDeviceStates
+    if (!stored) return []
 
-    return state.capturedDeviceStates.collect { stateId, entry ->
+    return stored.collect { stateId, entry ->
         [
             stateId: stateId,
             deviceCount: entry.deviceCount ?: entry.devices?.size() ?: (entry instanceof List ? entry.size() : 0),
@@ -7602,23 +7627,25 @@ def listCapturedStates() {
 
 // Helper method to delete a specific captured state
 def deleteCapturedState(stateId) {
-    if (!state.capturedDeviceStates) {
+    def stored = atomicState.capturedDeviceStates
+    if (!stored) {
         return [success: false, message: "No captured states exist"]
     }
 
-    if (!state.capturedDeviceStates.containsKey(stateId)) {
+    if (!stored.containsKey(stateId)) {
         return [success: false, message: "Captured state '${stateId}' not found"]
     }
 
-    state.capturedDeviceStates.remove(stateId)
-    log.debug "Deleted captured state '${stateId}' (remaining: ${state.capturedDeviceStates.size()})"
-    return [success: true, message: "Captured state '${stateId}' deleted", remaining: state.capturedDeviceStates.size()]
+    stored.remove(stateId)
+    atomicState.capturedDeviceStates = stored
+    log.debug "Deleted captured state '${stateId}' (remaining: ${stored.size()})"
+    return [success: true, message: "Captured state '${stateId}' deleted", remaining: stored.size()]
 }
 
 // Helper method to clear all captured states
 def clearAllCapturedStates() {
-    def count = state.capturedDeviceStates?.size() ?: 0
-    state.capturedDeviceStates = [:]
+    def count = atomicState.capturedDeviceStates?.size() ?: 0
+    atomicState.capturedDeviceStates = [:]
     log.debug "Cleared all ${count} captured states"
     return [success: true, message: "Cleared ${count} captured state(s)", cleared: count]
 }
@@ -10503,7 +10530,7 @@ def toolGetHubHealth(args) {
     health.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     health.mcpRuleCount = getChildApps()?.size() ?: 0
     health.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
-    health.mcpCapturedStates = state.capturedDeviceStates?.size() ?: 0
+    health.mcpCapturedStates = atomicState.capturedDeviceStates?.size() ?: 0
 
     mcpLog("info", "hub-admin", "Hub health check completed")
     return health
@@ -12046,6 +12073,14 @@ def toolGetAppConfig(args) {
         installed: parsed.app.installed == true
     ]
 
+    // Redact type="password" input values: the Hubitat UI masks these inputs, so this
+    // tool must not de-mask the stored secret into the MCP response. Password input names
+    // are collected here so the includeSettings settings map below can redact the same
+    // keys. Per-page only: a password on a different page of a multi-page app is not
+    // visible in this configPage (broadening to a name-pattern heuristic is a deliberate
+    // future option, intentionally not done here -- see settingsRedactionNote below).
+    def redactedPw = "***redacted (password)***"
+    def passwordInputNames = [] as Set
     def sections = []
     for (s in parsed.configPage.sections) {
         if (!(s instanceof Map)) continue
@@ -12086,6 +12121,10 @@ def toolGetAppConfig(args) {
             // (observed: firmware 2.3.x-2.4.x; sentinel confirmed on capability.* types)
             if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
             else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
+            if (i.type == "password") {
+                if (i.name) passwordInputNames << i.name.toString()
+                if (input.containsKey("value")) input.value = redactedPw
+            }
             section.inputs << input
         }
         // Paragraph/body content (informational text in the config page). Keep any
@@ -12142,7 +12181,13 @@ def toolGetAppConfig(args) {
     int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0
     result.settingsKeyCount = settingsCount
     if (includeSettings) {
-        result.settings = parsed.settings ?: [:]
+        def rawSettings = (parsed.settings instanceof Map) ? parsed.settings : [:]
+        result.settings = passwordInputNames ? rawSettings.collectEntries { k, v ->
+            [(k): (passwordInputNames.contains(k?.toString()) ? redactedPw : v)]
+        } : rawSettings
+        if (rawSettings) {
+            result.settingsRedactionNote = "Password-type values are redacted using this page's inputs. For a multi-page app, password values defined on OTHER pages are not detectable from this fetch and may appear here unredacted -- redaction is page-scoped (see hub_list_app_pages)."
+        }
     } else if (settingsCount > 0) {
         result.settingsNote = "Raw settings omitted -- pass includeSettings=true to include. Large apps (Room Lighting, RM 5.1) may have 500-1000 keys with app-specific encoding (e.g. \"dm~<deviceId>~<scene>\" for Room Lighting dim presets) that is non-trivial to decode without app-specific knowledge."
     }
@@ -21005,7 +21050,7 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
         body.currentPage = pageName
         body.pageBreadcrumbs = '["mainPage"]'
         if (config?.app?.version != null) body.version = config.app.version.toString()
-        hubInternalPostForm("/installedapp/update/json", body)
+        _rmPostSettings(appId, body)
     } else {
         _rmUpdateAppSettings(appId, settingsMap, schemaForBuild)
     }
@@ -21674,7 +21719,7 @@ private Map _rmWalkStep(Integer appId, Map spec) {
             } catch (Exception verExc) {
                 mcpLog("warn", "rm-native", "walkStep: href-context version fetch for app ${appId} on page '${hrefContext.fromPage ?: page}' failed (${verExc.message}) -- POSTing write without version field; hub may reject on concurrent-edit conflict")
             }
-            hubInternalPostForm("/installedapp/update/json", body)
+            _rmPostSettings(appId, body)
         } else {
             _rmUpdateAppSettings(appId, [(writtenKey): writtenValue], fullSchemaMap)
         }
@@ -22105,6 +22150,19 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
     return resp
 }
 
+// Central settings-write POST + 4xx guard. hubInternalPostForm returns a status Map and does
+// NOT throw on 4xx, so a rejected write -- typically a stale version token -- must be detected
+// here or it silently reports success. Mirrors the status guard in _rmSubmitFullPageForm
+// (same IllegalStateException runtime-error contract).
+private Map _rmPostSettings(Integer appId, Map body) {
+    def resp = hubInternalPostForm("/installedapp/update/json", body)
+    if (resp?.status != null && resp.status >= 400) {
+        def bodyPreview = resp.data?.toString()?.take(200)
+        throw new IllegalStateException("Settings write for app ${appId} failed: status=${resp.status}${bodyPreview ? "; body=" + bodyPreview : ""}. The write was rejected so nothing was committed (a 4xx is usually a stale version token -- re-fetch via hub_get_app_config(appId=${appId}) and retry).")
+    }
+    return resp
+}
+
 /**
  * Write a settings map to an RM rule with the 3-field capability contract
  * enforced automatically. After the POST, verify the multiple flags survive
@@ -22117,7 +22175,7 @@ private Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = nu
         schema = _rmCollectInputSchema(_rmFetchConfigJson(appId)?.configPage)
     }
     def body = _rmBuildSettingsBody(appId, settingsMap, schema)
-    def resp = hubInternalPostForm("/installedapp/update/json", body)
+    def resp = _rmPostSettings(appId, body)
 
     def touched = settingsMap.keySet().collect { it.toString() }
     try {
@@ -22128,7 +22186,7 @@ private Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = nu
         // already carries the .multiple=true sidecar intent from the
         // initial build, so the same body is correct to resend.
         mcpLog("warn", "rm-native", "Marshal divergence on app ${appId} -- retrying: ${divergence.message}")
-        hubInternalPostForm("/installedapp/update/json", body)
+        _rmPostSettings(appId, body)
         _rmVerifyMultipleFlags(appId, schema, touched)
     }
     return resp

@@ -1,0 +1,39 @@
+name: Groovy 2.4 Parse Check
+
+# Additive lane (issue #105 PR2a). Hubitat's hub runtime is Groovy 2.4.x, but the unit-test
+# harness runs Groovy 3.0, so code can pass the 3.0 lane yet fail to LOAD on the hub (3.0-only
+# syntax/operators). This lane parses the two production .groovy files under a stock Groovy
+# 2.4.21 grammar (CONVERSION phase only -- no semantic analysis, so injected hub globals are
+# not false positives) and fails if either file would not load on 2.4.
+#
+# It is fully standalone: a separate build under ci/groovy24-parse/ that never touches the
+# root build.gradle or the existing 3.0 unit-test lane.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '*.groovy'
+      - 'ci/groovy24-parse/**'
+      - '.github/workflows/groovy24-parse.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  groovy24-parse:
+    name: groovy24-parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          # 17 for the Gradle 9 daemon; 11 for the parse runner's toolchain
+          # (Groovy 2.4.x is unhappy on JDK 17/21). Both are auto-detected by
+          # the toolchain resolver.
+          java-version: |
+            11
+            17
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Parse production files under Groovy 2.4.21
+        run: ./gradlew -p ci/groovy24-parse parse24 --console=plain
