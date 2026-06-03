@@ -1390,6 +1390,15 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         atomicStateMap.capturedDeviceStates?.containsKey('c')
     }
 
+    def "getCapturedState reads from atomicState, not the non-atomic state (the restore_state consumer path)"() {
+        given: 'a capture in the atomic store, plus a decoy under the same key in non-atomic state'
+        atomicStateMap.capturedDeviceStates = [snap: [devices: [dev1: [switch: 'on']], timestamp: 1000L, deviceCount: 1]]
+        stateMap.capturedDeviceStates = [snap: [devices: [dev1: [switch: 'DECOY']], timestamp: 1L, deviceCount: 1]]
+
+        expect: 'restore reads the atomic store -- a regression back to state would return the decoy'
+        script.getCapturedState('snap') == [dev1: [switch: 'on']]
+    }
+
     // -------- toolListCapturedStates --------
 
     def "hub_list_captured_states returns an empty list with count when state is empty"() {
@@ -1548,7 +1557,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     // -------- toolDeleteCapturedState delete-all (clear) path --------
 
-    def "hub_delete_captured_state delete-all empties state.capturedDeviceStates and returns count"() {
+    def "hub_delete_captured_state delete-all empties atomicState.capturedDeviceStates and returns count"() {
         given:
         atomicStateMap.capturedDeviceStates = [
             a: [devices: [], timestamp: 1000L, deviceCount: 0],

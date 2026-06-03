@@ -36,7 +36,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "initialize unsubscribes before re-subscribing to hub variables (no duplicate subscription stacking)"() {
         given: 'a clean initialize with the unrelated side-effects neutralised -- no hub vars, so the private subscribe/refresh helpers run but touch nothing'
-        UNSUBSCRIBE_CALL_COUNT[0] = 0
+        UNSUBSCRIBE_CALL_COUNT.set(0)
         stateMap.accessToken = 'tok'                  // skip createAccessToken
         script.metaClass.checkForUpdate = { -> }      // skip the GitHub HTTP check
         script.metaClass.getAllGlobalVars = { -> [:] }
@@ -45,7 +45,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         script.initialize()
 
         then: 'unsubscribe() fires -- Hubitat does NOT implicitly unsubscribe between updated() calls, so without it every settings save stacks duplicate variable subscriptions'
-        UNSUBSCRIBE_CALL_COUNT[0] == 1
+        UNSUBSCRIBE_CALL_COUNT.get() == 1
     }
 
     // -------- toolListVariables --------

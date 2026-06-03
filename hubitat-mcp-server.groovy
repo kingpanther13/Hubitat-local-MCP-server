@@ -302,6 +302,18 @@ def updated() {
         mcpLog("info", "engine-migration", "Forced enableCustomRuleEngine=false (one-time rename migration; legacy enableRuleEngine present)")
     }
     state.customEngineMigrated = true
+
+    // ===== One-time captured-states state -> atomicState migration =====
+    // Captured device states moved from `state` to `atomicState`. Carry any
+    // pre-existing captures across so a restore_state that worked before the
+    // update still finds them -- otherwise they'd be orphaned in `state` and
+    // silently disappear. One-shot: only copies when atomicState is still empty.
+    if (state.capturedDeviceStates && !atomicState.capturedDeviceStates) {
+        atomicState.capturedDeviceStates = state.capturedDeviceStates
+        def migratedCount = atomicState.capturedDeviceStates.size()
+        state.remove("capturedDeviceStates")
+        mcpLog("info", "capture-migration", "Migrated ${migratedCount} captured state(s) from state to atomicState")
+    }
 }
 
 def uninstalled() {
@@ -326,7 +338,8 @@ def initialize() {
     // updated() invocations, so unsubscribe first -- otherwise every settings save
     // stacks another duplicate subscription per variable, firing
     // handleHubVariableEvent N times per change and inflating variableHistory.
-    unsubscribe()
+    try { unsubscribe() }
+    catch (Exception e) { mcpLog("warn", "hub-vars", "unsubscribe() before re-subscribe failed: ${e.message} -- duplicate subscriptions may persist") }
     _subscribeToAllHubVariables()
 
     // Issue #96 gap 1: register addInUseGlobalVar for every hub variable
@@ -6098,10 +6111,13 @@ def getMaxCapturedStates() {
 // Helper method for child apps to save captured device states (for capture_state action)
 // Returns info about the save operation including any deleted states
 def saveCapturedState(stateId, capturedStates) {
-    // atomicState (not state) for thread-safety: subscribed event handlers run concurrently, so
-    // a non-atomic read-modify-write loses captures and can blow past the size cap. Read into a
-    // local, mutate, then write the whole map back in one assignment -- in-place mutation of a
-    // nested atomicState map is not reliably persisted on the hub.
+    // atomicState (not state): the prior in-place mutation of `state` did not reliably persist
+    // (`state` only flushes at handler end, and subscribed event handlers run concurrently), so
+    // captures and evictions were lost. Read into a local, mutate, then write the whole map back
+    // in one assignment -- in-place mutation of a nested atomicState map is not reliably persisted
+    // either. This narrows but does not fully close the race: atomicState has no compare-and-swap,
+    // so two truly-concurrent saves can still lose one. Each write is durable, though -- strictly
+    // better than `state`.
     def stored = atomicState.capturedDeviceStates ?: [:]
 
     // Add timestamp to the captured state
@@ -10673,6 +10689,9 @@ def toolGetAppConfig(args) {
         result.settings = passwordInputNames ? rawSettings.collectEntries { k, v ->
             [(k): (passwordInputNames.contains(k?.toString()) ? redactedPw : v)]
         } : rawSettings
+        if (rawSettings) {
+            result.settingsRedactionNote = "Password-type values are redacted using this page's inputs. For a multi-page app, password values defined on OTHER pages are not detectable from this fetch and may appear here unredacted -- redaction is page-scoped (see hub_list_app_pages)."
+        }
     } else if (settingsCount > 0) {
         result.settingsNote = "Raw settings omitted -- pass includeSettings=true to include. Large apps (Room Lighting, RM 5.1) may have 500-1000 keys with app-specific encoding (e.g. \"dm~<deviceId>~<scene>\" for Room Lighting dim presets) that is non-trivial to decode without app-specific knowledge."
     }
@@ -20600,16 +20619,10 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
     return resp
 }
 
-/**
- * Write a settings map to an RM rule with the 3-field capability contract
- * enforced automatically. After the POST, verify the multiple flags survive
- * and re-POST once if they were flipped (known sticky-bug behavior). Throw
- * if still divergent after retry — the caller should surface this and
- * suggest restore_rm_rule_backup.
- */
 // Central settings-write POST + 4xx guard. hubInternalPostForm returns a status Map and does
 // NOT throw on 4xx, so a rejected write -- typically a stale version token -- must be detected
-// here or it silently reports success. Mirrors _rmClickAppButton / _rmSubmitFullPageForm.
+// here or it silently reports success. Mirrors the status guard in _rmSubmitFullPageForm
+// (same IllegalStateException runtime-error contract).
 private Map _rmPostSettings(Integer appId, Map body) {
     def resp = hubInternalPostForm("/installedapp/update/json", body)
     if (resp?.status != null && resp.status >= 400) {
@@ -20619,6 +20632,13 @@ private Map _rmPostSettings(Integer appId, Map body) {
     return resp
 }
 
+/**
+ * Write a settings map to an RM rule with the 3-field capability contract
+ * enforced automatically. After the POST, verify the multiple flags survive
+ * and re-POST once if they were flipped (known sticky-bug behavior). Throw
+ * if still divergent after retry — the caller should surface this and
+ * suggest restore_rm_rule_backup.
+ */
 private Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = null) {
     if (schema == null) {
         schema = _rmCollectInputSchema(_rmFetchConfigJson(appId)?.configPage)

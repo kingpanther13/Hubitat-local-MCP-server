@@ -2,9 +2,10 @@
 // isolated ci/groovy24-parse Gradle build) and parses each given .groovy file to the CONVERSION
 // phase using the 2.4 grammar. This catches code that compiles on the 3.0 test harness but would
 // fail to LOAD on Hubitat's Groovy 2.4 hub runtime (3.0-only syntax/operators like null-safe
-// indexing `?[`). It deliberately stops at CONVERSION -- no semantic analysis / class generation --
-// so unresolved Hubitat-injected globals (log, state, render, etc.) are NOT false positives; the
-// production files carry zero imports, so there is nothing else to resolve.
+// indexing `?[`). It stops at CONVERSION because only grammar/syntax matters here; this dynamic
+// (non-@CompileStatic) code never resolves its Hubitat-injected globals (log, state, render, ...)
+// at compile time anyway, so they are not false positives -- the production files also carry zero
+// imports, so there is nothing else to resolve.
 import org.codehaus.groovy.control.CompilationUnit
 import org.codehaus.groovy.control.CompilerConfiguration
 import org.codehaus.groovy.control.Phases
@@ -14,12 +15,12 @@ if (!args) {
     System.err.println "usage: parse_check.groovy <file.groovy> [<file.groovy> ...]"
     System.exit(2)
 }
-args.each { String path ->
+for (String path : args) {
     def f = new File(path)
     if (!f.exists()) {
         System.err.println "MISSING: ${path}"
         rc = 1
-        return
+        continue
     }
     def cu = new CompilationUnit(new CompilerConfiguration())
     cu.addSource(f)

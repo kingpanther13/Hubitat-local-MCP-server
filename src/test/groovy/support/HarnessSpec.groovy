@@ -122,8 +122,8 @@ abstract class HarnessSpec extends Specification {
     // Records parent-app unsubscribe() calls. A `1 * appExecutor.unsubscribe()`
     // cardinality check from a then-block doesn't fire reliably on the @Shared
     // AppExecutor mock (see RuleHarnessSpec's note), so route the call through this
-    // mutable holder and assert on it; lifecycle specs reset it in given:.
-    protected static final int[] UNSUBSCRIBE_CALL_COUNT = [0]
+    // counter and assert on it; lifecycle specs reset it in given: with .set(0).
+    protected static final java.util.concurrent.atomic.AtomicInteger UNSUBSCRIBE_CALL_COUNT = new java.util.concurrent.atomic.AtomicInteger(0)
 
     @Shared protected AppExecutor appExecutor
     @Shared protected script
@@ -225,7 +225,7 @@ abstract class HarnessSpec extends Specification {
                 "call and relax this stub. See src/test/groovy/support/HarnessSpec.groovy.")
         }
         // Record unsubscribe() so lifecycle specs (e.g. initialize) can assert it.
-        mock.unsubscribe() >> { UNSUBSCRIBE_CALL_COUNT[0]++ }
+        mock.unsubscribe() >> { UNSUBSCRIBE_CALL_COUNT.incrementAndGet() }
         return mock
     }
 

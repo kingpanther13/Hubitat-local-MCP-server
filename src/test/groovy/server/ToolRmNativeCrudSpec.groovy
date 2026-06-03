@@ -767,6 +767,41 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.toString()?.contains("409") || result.note?.toString()?.contains("re-fetch")
     }
 
+    def "the sticky-flag RETRY settings write is also 4xx-guarded -- a rejected retry surfaces as failure (issue #105 PR2a #4)"() {
+        given: 'the post-write verify flags divergence (statusJson #2 poisoned), forcing a retry POST that the hub then rejects'
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "tDev0", type: "capability.switch", multiple: true]])
+        }
+        def statusCalls = 0
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusCalls++
+            // call #2 is the post-write verify -- return the poisoned (multiple:false) flag to force a retry
+            if (statusCalls == 2) {
+                statusJson(100, [[name: "tDev0", type: "capability.switch", multiple: false, value: "8,9"]])
+            } else {
+                statusJson(100, [[name: "tDev0", type: "capability.switch", multiple: true, value: "8,9"]])
+            }
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def updatePosts = 0
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                updatePosts++
+                // initial write succeeds; the retry write is rejected with a 4xx
+                return updatePosts >= 2 ? [status: 409, location: null, data: 'stale version token'] : [status: 200, location: null, data: '{"status":"success"}']
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, settings: [tDev0: [8, 9]], confirm: true])
+
+        then: 'the retry actually fired and its rejection was not swallowed'
+        updatePosts == 2
+        result.success == false
+    }
+
     def "_rmClickAppButton emits bracket-form settings[btn]=clicked + form-context fields"() {
         given:
         enableHubAdminWrite()
