@@ -8798,7 +8798,7 @@ def requireHubAdminWrite(Boolean confirmParam) {
         throw new IllegalArgumentException("Hub Admin Write access is disabled. Enable 'Enable Hub Admin Write Tools' in MCP Rule Server app settings to use this tool.")
     }
     if (!confirmParam) {
-        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with hub_create_backup first? Review the tool description for the mandatory pre-flight checklist.")
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with hub_create_backup first? Review the tool description for the mandatory pre-flight checklist, or call hub_get_tool_guide for the tool's full reference.")
     }
     // Check for recent hub backup (within 24 hours)
     if (!state.lastBackupTimestamp || (now() - state.lastBackupTimestamp) > 86400000) {
