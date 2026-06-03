@@ -970,7 +970,7 @@ def getGatewayConfig() {
                 hub_list_drivers: "List all installed drivers on the hub",
                 hub_get_source: "Get app/driver/library Groovy source with chunked reading. Args: type (app|driver|library), id, offset?, length?",
                 hub_list_backups: "List auto-created source code backups",
-                hub_get_backup: "Get source from a backup. Args: backupId",
+                hub_get_backup: "Get source from a backup. Args: backupKey",
                 hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
                 hub_get_app_config: "Read an installed app's configuration page (sections, inputs, current values). Works for Rule Machine, Room Lighting, Basic Rules, HPM, etc. Args: appId, pageName?, includeSettings?",
                 hub_list_app_pages: "List known page names for a multi-page app (HPM, Room Lighting, etc.). Args: appId",
@@ -997,7 +997,7 @@ def getGatewayConfig() {
                 hub_update_app: "Modify existing app code (CRITICAL). PREFER curl-upload + sourceFile. Args: appId, source|sourceFile|resave, confirm=true",
                 hub_update_driver: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile},...]). PREFER sourceFile + curl-upload over inline. confirm=true",
                 hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), id, confirm=true",
-                hub_restore_backup: "Restore app/driver to backed-up version. Args: backupId, confirm=true",
+                hub_restore_backup: "Restore app/driver to backed-up version. Args: backupKey, confirm=true",
                 hub_create_library: "Install new Groovy library (#include namespace.Name). PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
                 hub_update_library: "Modify existing library code. PREFER curl-upload + sourceFile. Args: libraryId, source|sourceFile|resave, confirm=true"
             ],
@@ -1126,8 +1126,8 @@ def getGatewayConfig() {
                 hub_create_native_app: "Create a new empty native automation app (RM rule by default; expand via _appTypeRegistry for Room Lighting / Button Controllers / etc.). Args: appType (default rule_machine), name, confirm. Returns appId — use hub_update_native_app next to populate.",
                 hub_update_native_app: "Modify any classic native app: write settings (multiple=true contract automatic), click a page-transition button, or use a high-level structured shortcut (addTrigger / addAction / addRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / walkStep). Auto-backs-up first. Args: appId, settings|button|<shortcut>, pageName (opt), stateAttribute (opt), confirm",
                 hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
-                hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner. Cheaper than rebuilding from scratch via the wizard. Args: sourceAppId, newName (opt), confirm. Returns newAppId.",
-                hub_export_native_app: "Export a rule/app to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns the JSON content (and writes to File Manager if saveAs given).",
+                hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner. Cheaper than rebuilding from scratch via the wizard. Args: appId (alias sourceAppId), newName (opt), confirm. Returns newAppId.",
+                hub_export_native_app: "Export a rule/app to its canonical JSON shape via Hubitat's first-party appCloner. Args: appId (alias sourceAppId), saveAs (opt File Manager filename). Returns the JSON content (and writes to File Manager if saveAs given).",
                 hub_import_native_app: "Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Args: jsonContent | fromFile, parentHintAppId (existing rule under the target parent — used to seed the cloner), newName (opt), confirm. Returns newAppId.",
                 hub_get_rule_health: "Inspect a rule for broken state (label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption). Args: appId. Returns {ok, issues, ...}. Auto-attached to hub_update_native_app responses too."
             ],
@@ -3315,11 +3315,12 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
             inputSchema: [
                 type: "object",
                 properties: [
-                    sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to clone."],
+                    sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to clone. (alias: appId)"],
+                    appId: [type: "integer", description: "Alias for sourceAppId."],
                     newName: [type: "string", description: "Label for the new cloned app. If omitted, the cloner default ('<source-label> clone') is kept."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
-                required: ["sourceAppId", "confirm"]
+                required: ["confirm"]
             ]
         ],
         [
@@ -3328,10 +3329,10 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
             inputSchema: [
                 type: "object",
                 properties: [
-                    sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to export."],
+                    sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to export. (alias: appId)"],
+                    appId: [type: "integer", description: "Alias for sourceAppId."],
                     saveAs: [type: "string", description: "Optional File Manager filename (.json or .txt). When provided, the export is also written to /local/<saveAs>."]
-                ],
-                required: ["sourceAppId"]
+                ]
             ]
         ],
         [
@@ -9474,10 +9475,17 @@ def toolGetDeviceHistory(args) {
     if (!args.deviceId) {
         def locEvents
         try {
-            locEvents = location.eventsSince(sinceDate, [max: limit])
+            // Location history comes from the app-context getLocationEventsSince(Date)
+            // helper. The Location object itself has NO eventsSince(Date, Map)
+            // overload, so the old location.eventsSince(...) call always
+            // NoSuchMethod'd and this whole branch returned an error.
+            locEvents = getLocationEventsSince(sinceDate)
+            if (locEvents != null && limit && locEvents.size() > limit) {
+                locEvents = locEvents.take(limit)
+            }
         } catch (Exception e) {
-            mcpLog("warn", "monitoring", "location.eventsSince failed: ${e.message}")
-            return [error: "location.eventsSince not supported or failed: ${e.message}", source: "location"]
+            mcpLog("warn", "monitoring", "getLocationEventsSince failed: ${e.message}")
+            return [error: "Location event history unavailable: ${e.message}", source: "location"]
         }
 
         def locResults = locEvents?.collect { evt ->
@@ -24094,8 +24102,9 @@ private Integer _appClonerDiscoverNewChild(Integer parentAppId, Set<String> preC
 def toolCloneNativeApp(args) {
     requireBuiltinApp()
     requireHubAdminWrite(args?.confirm as Boolean)
-    if (args?.sourceAppId == null) throw new IllegalArgumentException("sourceAppId is required")
-    def sourceAppId = normalizeRuleId(args.sourceAppId)
+    def _srcRaw = (args?.sourceAppId != null) ? args.sourceAppId : args?.appId
+    if (_srcRaw == null) throw new IllegalArgumentException("sourceAppId (or appId) is required")
+    def sourceAppId = normalizeRuleId(_srcRaw)
     def newName = args?.newName?.toString()?.trim()
 
     def sourceCfg
@@ -24184,8 +24193,9 @@ def toolCloneNativeApp(args) {
  */
 def toolExportNativeApp(args) {
     requireBuiltinApp()
-    if (args?.sourceAppId == null) throw new IllegalArgumentException("sourceAppId is required")
-    def sourceAppId = normalizeRuleId(args.sourceAppId)
+    def _srcRaw = (args?.sourceAppId != null) ? args.sourceAppId : args?.appId
+    if (_srcRaw == null) throw new IllegalArgumentException("sourceAppId (or appId) is required")
+    def sourceAppId = normalizeRuleId(_srcRaw)
     def saveAs = args?.saveAs?.toString()?.trim()
 
     def sourceCfg
