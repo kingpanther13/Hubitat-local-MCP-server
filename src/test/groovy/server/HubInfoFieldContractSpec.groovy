@@ -7,8 +7,8 @@ import support.ToolSpecBase
 
 /**
  * Contract spec asserting that {@code customRuleEngineEnabled} and
- * {@code developerModeEnabled} are present in both {@code getHubInfo()} and
- * {@code getHubDetails()} responses.
+ * {@code developerModeEnabled} are present in the {@code getHubInfo()} response
+ * (the merged successor to the removed {@code getHubDetails()}).
  *
  * Both fields are read by {@code .github/scripts/mcp_setup_env.sh} to capture
  * pre-run state before enabling toggles. If either field is dropped or renamed,
@@ -17,7 +17,6 @@ import support.ToolSpecBase
  *
  * Mocking strategy:
  *   - location.hub -> appExecutor.getLocation() returns sharedLocation
- *   - toolGetHubDetails requires enableHubAdminRead; set in given: per-test
  */
 class HubInfoFieldContractSpec extends ToolSpecBase {
 
@@ -146,45 +145,42 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         result.identifyHubError.toLowerCase().contains('ioexception')
     }
 
-    // -------- toolGetHubDetails --------
+    // -------- toolGetHubInfo toggle-field contract (was toolGetHubDetails, merged in) --------
 
-    def "getHubDetails includes customRuleEngineEnabled=true when enableCustomRuleEngine is true"() {
+    def "getHubInfo (merged from getHubDetails) includes customRuleEngineEnabled=true when enableCustomRuleEngine is true"() {
         given:
-        settingsMap.enableHubAdminRead = true
         settingsMap.enableCustomRuleEngine = true
         sharedLocation.hub = new TestHub()
 
         when:
-        def result = script.toolGetHubDetails([:])
+        def result = script.toolGetHubInfo()
 
         then:
         result.containsKey('customRuleEngineEnabled')
         result.customRuleEngineEnabled == true
     }
 
-    def "getHubDetails includes developerModeEnabled=true when enableDeveloperMode is true"() {
+    def "getHubInfo (merged from getHubDetails) includes developerModeEnabled=true when enableDeveloperMode is true"() {
         given:
-        settingsMap.enableHubAdminRead = true
         settingsMap.enableDeveloperMode = true
         sharedLocation.hub = new TestHub()
 
         when:
-        def result = script.toolGetHubDetails([:])
+        def result = script.toolGetHubInfo()
 
         then:
         result.containsKey('developerModeEnabled')
         result.developerModeEnabled == true
     }
 
-    def "getHubDetails includes both fields as false when toggles are off"() {
+    def "getHubInfo (merged from getHubDetails) includes both fields as false when toggles are off"() {
         given:
-        settingsMap.enableHubAdminRead = true
         settingsMap.enableCustomRuleEngine = false
         settingsMap.enableDeveloperMode = false
         sharedLocation.hub = new TestHub()
 
         when:
-        def result = script.toolGetHubDetails([:])
+        def result = script.toolGetHubInfo()
 
         then:
         result.containsKey('customRuleEngineEnabled')
@@ -193,15 +189,20 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         result.developerModeEnabled == false
     }
 
-    def "getHubDetails throws when Hub Admin Read is disabled"() {
+    def "getHubInfo does NOT throw when Hub Admin Read is disabled and surfaces hubAdminReadRequired"() {
         given:
-        // enableHubAdminRead not set
+        sharedLocation.hub = new TestHub()
+        // enableHubAdminRead not set -- toolGetHubInfo gates only PII (unlike the
+        // removed toolGetHubDetails which threw via requireHubAdminRead()); it
+        // surfaces a hubAdminReadRequired notice and still returns the toggle fields.
 
         when:
-        script.toolGetHubDetails([:])
+        def result = script.toolGetHubInfo()
 
         then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Read')
+        noExceptionThrown()
+        result.containsKey('hubAdminReadRequired')
+        result.hubAdminReadRequired.contains('Hub Admin Read')
+        result.containsKey('customRuleEngineEnabled')
     }
 }

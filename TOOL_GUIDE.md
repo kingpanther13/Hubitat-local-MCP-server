@@ -32,7 +32,7 @@ Default is **ON** (gateways enabled). Existing installations keep the gateway be
 
 ### `tools/call` Response-Size Guard (v1.3.x+, fail-soft)
 
-Every `tools/call` response is measured before send. If the wire-encoded response exceeds the universal 120 KB cap (8 KB headroom under the hub's 128 KB JSON-RPC limit), the inner content is replaced with a structured fail-soft envelope:
+Every `tools/call` response is measured before send. If the wire-encoded response exceeds the universal 120,000-byte cap (~11 KB headroom under the hub's 131072-byte (128 KiB) JSON-RPC limit), the inner content is replaced with a structured fail-soft envelope:
 
 ```json
 {

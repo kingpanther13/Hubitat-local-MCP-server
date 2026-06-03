@@ -1218,7 +1218,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
 
         // mcpLog is a script-defined method (bucket 1 -- purely dynamic; not on
         // AppExecutor/BaseExecutor). Per-instance metaClass overrides intercept
-        // cleanly. The production code calls mcpLog("warn", "device-tools", ...)
+        // cleanly. The production code calls mcpLog("warn", "device", ...)
         // in the interrupt catch block.
         def mcpLogCalls = []
         script.metaClass.mcpLog = { String level, String component, String msg ->
@@ -1242,7 +1242,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         result.success     == false
         result.interrupted == true
         // A warn was emitted via mcpLog naming the poll count and component
-        mcpLogCalls.any { it.level == 'warn' && it.component == 'device-tools' &&
+        mcpLogCalls.any { it.level == 'warn' && it.component == 'device' &&
                           it.msg ==~ /poll_until_attribute interrupted after \d+ poll\(s\).*/ }
     }
 

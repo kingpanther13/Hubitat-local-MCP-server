@@ -57,6 +57,26 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // satisfy a naked truthy check, so pin the actual shape currentVersion()
         // produces.
         response.result.serverInfo.version ==~ /\d+\.\d+\.\d+.*/
+
+        and: 'instructions field is present, non-empty, and survives serialization through the dispatch envelope'
+        // Reading it off parseResponseJson() proves it round-trips
+        // jsonRpcResult -> JsonOutput.toJson -> render -> parse (PR2 owns the
+        // field; PR3 refines the prose, so pin stable keywords, not the text).
+        response.result.instructions instanceof String
+        !response.result.instructions.isEmpty()
+        response.result.instructions.toLowerCase().contains('gateway')
+        response.result.instructions.toLowerCase().contains('pagination')
+    }
+
+    def "hubResponseCapBytes() is the single 131072-byte source and the two derived guards stay ordered inner < outer"() {
+        // Pins the size-cap single-source invariant: the helper is the 128 KiB hub cap,
+        // the outer handleMcpRequest guard (=124000) and inner handleToolsCall guard
+        // (=120000) derive from it, and inner must stay strictly below outer.
+        expect:
+        script.hubResponseCapBytes() == 131072
+        (script.hubResponseCapBytes() - 7072) == 124000   // outer
+        (script.hubResponseCapBytes() - 11072) == 120000  // inner
+        (script.hubResponseCapBytes() - 11072) < (script.hubResponseCapBytes() - 7072)
     }
 
     def "tools/list returns the tool catalog with known tools present"() {
@@ -438,6 +458,55 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         inner.rooms*.name == ['Den']
     }
 
+    def "single tools/call renders correctly via the preserialized fast path with no sentinel leak"() {
+        given:
+        script.metaClass.getRooms = { -> [[id: 1L, name: 'Living Room'], [id: 2L, name: 'Kitchen']] }
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 7, method: 'tools/call', params: [name: 'hub_list_rooms', arguments: [:]]])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'a well-formed JSON-RPC success envelope wrapping the real rooms payload (toolListRooms sorts by name)'
+        mcpDriver.lastRenderArgs.contentType == 'application/json'
+        def response = mcpDriver.parseResponseJson()
+        response.jsonrpc == '2.0'
+        response.id == 7
+        response.error == null
+        mcpDriver.parseInner(response).rooms*.name == ['Kitchen', 'Living Room']
+
+        and: 'the rendered body is well-formed JSON-RPC and the internal sentinel never leaks onto the wire'
+        def raw = mcpDriver.lastRenderArgs.data as String
+        !raw.contains('__preserialized')
+        new groovy.json.JsonSlurper().parseText(raw).result.content[0].type == 'text'
+    }
+
+    def "batch of two tools/call renders a valid array with no preserialized sentinel leaking"() {
+        given:
+        script.metaClass.getRooms = { -> [[id: 1L, name: 'Den']] }
+        mcpDriver.pushBody([
+            [jsonrpc: '2.0', id: 81, method: 'tools/call', params: [name: 'hub_list_rooms', arguments: [:]]],
+            [jsonrpc: '2.0', id: 82, method: 'tools/call', params: [name: 'hub_list_rooms', arguments: [:]]]
+        ])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'no sentinel key in the raw rendered body'
+        def raw = mcpDriver.lastRenderArgs.data as String
+        !raw.contains('__preserialized')
+
+        and: 'a 2-element array of well-formed JSON-RPC success envelopes, each carrying the rooms payload'
+        def response = mcpDriver.parseResponseJson()
+        response instanceof List
+        response.size() == 2
+        response.every { it.jsonrpc == '2.0' && it.error == null }
+        response.each { el ->
+            assert el.id in [81, 82]
+            assert !el.containsKey('__preserialized')
+            assert new groovy.json.JsonSlurper().parseText(el.result.content[0].text).rooms*.name == ['Den']
+        }
+    }
+
     def "tools/call surfaces a structured isError envelope when the tool implementation returns null"() {
         // Defends against a future tool whose last expression evaluates to null -- without
         // the explicit null guard, the wire payload becomes text: "null" which looks like
@@ -547,16 +616,33 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.result.content[0].text.contains('simulated hub failure')
     }
 
-    def "notification (no id) returns 204 no-content"() {
+    def "notification (no id) returns 202 Accepted no-content"() {
         given: 'a notification-shaped request — id field is absent per JSON-RPC 2.0'
         mcpDriver.pushBody([jsonrpc: '2.0', method: 'initialized', params: [:]])
 
         when:
         script.handleMcpRequest()
 
-        then: 'render was called with 204 and empty body — no JSON envelope'
-        mcpDriver.lastRenderArgs.status == 204
+        then: 'render was called with 202 Accepted and empty body — no JSON envelope (MCP Streamable HTTP)'
+        mcpDriver.lastRenderArgs.status == 202
         mcpDriver.lastRenderArgs.data == ''
+    }
+
+    @spock.lang.Unroll
+    def "initialize echoes supported requested protocolVersion=#requested as #expected (echo-allowlist)"() {
+        when:
+        def result = script.handleInitialize([id: 1, params: [protocolVersion: requested]])
+
+        then:
+        result.result.protocolVersion == expected
+
+        where:
+        requested      || expected
+        '2025-06-18'   || '2025-06-18'
+        '2025-03-26'   || '2025-03-26'
+        '2024-11-05'   || '2024-11-05'
+        'garbage-9999' || '2024-11-05'
+        null           || '2024-11-05'
     }
 
     def "batch request returns an array of responses with matching shapes, skipping notifications"() {
@@ -634,6 +720,44 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.error.message == 'Invalid Request: empty batch array'
     }
 
+    def "batch over the 50-element cap returns a single -32600 'batch too large' envelope (no per-element dispatch)"() {
+        given: 'a 51-element batch — one over the inbound cap'
+        // Spy so we can prove the per-element dispatcher was never entered.
+        int perElementCalls = 0
+        script.metaClass.processJsonRpcMessage = { m -> perElementCalls++; null }
+        mcpDriver.pushBody((1..51).collect { i -> [jsonrpc: '2.0', id: i, method: 'ping', params: [:]] })
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'a single error Map (not an array) is rendered'
+        def response = mcpDriver.parseResponseJson()
+        !(response instanceof List)
+        response.jsonrpc == '2.0'
+        response.id == null
+        response.error.code == -32600
+        response.error.message == 'Invalid Request: batch too large (51 elements, max 50)'
+
+        and: 'the cap short-circuited before any per-element dispatch'
+        perElementCalls == 0
+        // No cleanup needed: HarnessSpec.setup() dual-wipes the per-instance
+        // metaClass before each feature, so this override does not leak.
+    }
+
+    def "batch at exactly the 50-element cap dispatches normally and returns an array"() {
+        given: 'exactly 50 ping requests — the boundary is inclusive'
+        mcpDriver.pushBody((1..50).collect { i -> [jsonrpc: '2.0', id: i, method: 'ping', params: [:]] })
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'a 50-element response array, each an empty-map ping success'
+        def response = mcpDriver.parseResponseJson()
+        response instanceof List
+        response.size() == 50
+        response.every { it.jsonrpc == '2.0' && it.error == null && it.result == [:] }
+    }
+
     def "null body returns parse error -32700 (requestBody == null branch)"() {
         given: 'request.JSON is null — production treats this as an unparseable body'
         mcpDriver.pushBody(null)
@@ -695,7 +819,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.id == 5
     }
 
-    def "handleMcpGet returns 405 with the use-POST hint"() {
+    def "handleMcpGet returns 405 with a JSON-RPC -32600 POST-only envelope"() {
         when:
         script.handleMcpGet()
 
@@ -703,7 +827,11 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         mcpDriver.lastRenderArgs.status == 405
         mcpDriver.lastRenderArgs.contentType == 'application/json'
         def body = mcpDriver.parseResponseJson()
-        body.error == 'GET not supported, use POST'
+        body.jsonrpc == '2.0'
+        body.id == null
+        body.error.code == -32600
+        body.error.message.contains('POST')
+        body.error.message.contains('SSE')
     }
 
     def "handleHealth returns status/server/version from currentVersion()"() {
