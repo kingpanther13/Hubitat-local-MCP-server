@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolListAppPages (hubitat-mcp-server.groovy).
- * Gateway tool under hub_manage_installed_apps -- executeTool() dispatches via case "hub_list_app_pages".
+ * Gateway tool under hub_read_apps_code -- executeTool() dispatches via case "hub_list_app_pages".
  *
  * Covers:
  *  - Hub Admin Read gate (throws when disabled)

@@ -12,9 +12,9 @@ import spock.lang.Shared
  *   toolUpdateRmRule          -> update_rm_rule
  *   toolDeleteRmRule          -> delete_rm_rule
  *
- * Reading is via the existing hub_get_app_config (hub_manage_installed_apps gateway).
+ * Reading is via the existing hub_get_app_config (hub_read_apps_code gateway).
  * Backup enumeration + restore is via the existing hub_list_backups +
- * hub_restore_backup (hub_manage_code_read gateway) — rule snapshots use
+ * hub_restore_backup (hub_read_apps_code gateway) — rule snapshots use
  * type="rm-rule" and hub_restore_backup dispatches them through the private
  * _rmRestoreFromBackup helper. The cross-tool restore path is exercised
  * here too to guard the dispatch + replay shape.
@@ -4191,7 +4191,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == true
@@ -4207,7 +4207,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == false
@@ -4248,7 +4248,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == false
@@ -4272,7 +4272,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == false
@@ -4291,7 +4291,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == false
@@ -4310,7 +4310,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == false
@@ -4331,7 +4331,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == false
@@ -4355,7 +4355,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == true
@@ -4378,7 +4378,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == true
@@ -4397,7 +4397,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
 
         when:
-        def result = script.handleGateway("hub_manage_native_rules", "hub_get_rule_health", [appId: 100])
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
 
         then:
         result.ok == true
@@ -5133,7 +5133,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         // All 8 custom_* renames split across dispatch paths:
         //   - executeTool top-level switch: every custom_* has a case there
-        //   - hub_manage_rules gateway:    delete/test/export/import/clone
+        //   - hub_manage_custom_rules gateway:    delete/test/export/import/clone
         // (list + diagnostics folded into hub_get_custom_rule; diagnostics now
         //  ride hub_get_custom_rule with detailed=true, not a hub_manage_diagnostics
         //  sub-tool.)
@@ -5155,11 +5155,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             catch (Exception ignored) { return null }
         }
 
-        // hub_manage_rules gateway lists 5 tools — verify gateway routes them.
+        // hub_manage_custom_rules gateway lists 5 tools — verify gateway routes them.
         def rulesAdminTools = ["hub_delete_custom_rule", "hub_test_custom_rule",
                                "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"]
         def rulesAdminErrors = rulesAdminTools.collect { name ->
-            try { script.handleGateway("hub_manage_rules", name, [:]); return null }
+            try { script.handleGateway("hub_manage_custom_rules", name, [:]); return null }
             catch (IllegalArgumentException e) { return e.message }
             catch (Exception ignored) { return null }
         }
@@ -5167,8 +5167,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "no top-level dispatch returns 'Unknown tool: custom_*' for any of the 8 renames"
         topLevelErrors.every { msg -> msg == null || !msg.contains("Unknown tool") }
 
-        and: "no hub_manage_rules gateway dispatch returns 'Unknown tool ... in hub_manage_rules'"
-        rulesAdminErrors.every { msg -> msg == null || !(msg.contains("Unknown tool") && msg.contains("hub_manage_rules")) }
+        and: "no hub_manage_custom_rules gateway dispatch returns 'Unknown tool ... in hub_manage_custom_rules'"
+        rulesAdminErrors.every { msg -> msg == null || !(msg.contains("Unknown tool") && msg.contains("hub_manage_custom_rules")) }
     }
 
     // ---------- addTrigger/addAction discover mode ----------
@@ -9767,7 +9767,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_get_custom_rule (list mode) includes source: mcp_custom_engine on every rule"() {
         // The source marker lets LLMs distinguish MCP-managed rules from
-        // native RM rules (hub_list_rules / hub_manage_native_rules).
+        // native RM rules (hub_list_rules / hub_manage_native_rules_and_apps).
         given:
         settingsMap.enableCustomRuleEngine = true
         def app1 = new support.TestChildApp(id: 11L, label: "Rule One")
@@ -9833,7 +9833,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("read-only mode")
         ex.message.contains("triggers")
-        ex.message.contains("hub_manage_native_rules")
+        ex.message.contains("hub_manage_native_rules_and_apps")
     }
 
     // ---------- runCommand parameter slot-allocation fix ----------
@@ -10168,7 +10168,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "write tool blocked with read-only mode message"
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("read-only mode")
-        ex.message.contains("hub_manage_native_rules")
+        ex.message.contains("hub_manage_native_rules_and_apps")
     }
 
     def "hub_search_tools filters write custom_* tools in readonly mode"() {

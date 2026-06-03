@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolGetAppConfig (hubitat-mcp-server.groovy approx line 6232).
- * Gateway tool under hub_manage_installed_apps — executeTool() dispatches via case "hub_get_app_config".
+ * Gateway tool under hub_read_apps_code — executeTool() dispatches via case "hub_get_app_config".
  *
  * Covers:
  *  - Hub Admin Read gate (throws when disabled)

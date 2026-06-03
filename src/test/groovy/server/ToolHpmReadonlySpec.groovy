@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolListHpmPackages and toolGetHpmDrift.
- * Gateway: hub_manage_hpm -> hub_list_hpm_packages (drift folds in via includeDrift=true,
+ * Gateway: hub_read_apps_code -> hub_list_hpm_packages (drift folds in via includeDrift=true,
  * which attaches the toolGetHpmDrift result under a `drift` key on the list response).
  *
  * HPM stores its tracked packages in state.manifests. The /installedapp/statusJson
@@ -66,7 +66,8 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     /**
      * /hub2/userAppTypes response: flat JSON array of code definitions.
      * Each entry has at minimum an id field. This is the Apps Code registry
-     * (what hub_list_apps uses), not the installed-instances tree in appsList.
+     * (what hub_list_apps with scope:"types" uses), not the installed-instances
+     * tree in appsList (hub_list_apps with scope:"instances").
      * Child-app templates appear here even with zero running instances.
      */
     private static String makeUserAppTypes(List<String> ids = []) {
@@ -2819,7 +2820,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // Coverage gap: gateway dispatch regression
     // -------------------------------------------------------------------------
 
-    def "gateway dispatch: hub_manage_hpm(tool='hub_list_hpm_packages') produces same shape as direct toolListHpmPackages call"() {
+    def "gateway dispatch: hub_read_apps_code(tool='hub_list_hpm_packages') produces same shape as direct toolListHpmPackages call"() {
         given:
         settingsMap.useGateways = true  // gateway-name dispatch requires gateway mode on
         settingsMap.enableHubAdminRead = true
@@ -2828,7 +2829,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
 
         when:
         def direct  = script.toolListHpmPackages([hpmAppId: "37"])
-        def gateway = script.executeTool('hub_manage_hpm', [tool: 'hub_list_hpm_packages', args: [hpmAppId: "37"]])
+        def gateway = script.executeTool('hub_read_apps_code', [tool: 'hub_list_hpm_packages', args: [hpmAppId: "37"]])
 
         then: 'both paths return success=true with deep structural equality'
         direct.success == true
@@ -2836,7 +2837,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         gateway == direct
     }
 
-    def "gateway dispatch: hub_manage_hpm(tool='hub_list_hpm_packages', includeDrift=true) nests drift block matching direct toolGetHpmDrift call"() {
+    def "gateway dispatch: hub_read_apps_code(tool='hub_list_hpm_packages', includeDrift=true) nests drift block matching direct toolGetHpmDrift call"() {
         given:
         settingsMap.useGateways = true  // gateway-name dispatch requires gateway mode on
         settingsMap.enableHubAdminRead = true
@@ -2858,7 +2859,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
         // toolGetHpmDrift result under a `drift` key. The gateway's nested drift block must
         // deep-equal the direct toolGetHpmDrift call.
         def direct  = script.toolGetHpmDrift([hpmAppId: "37"])
-        def gateway = script.executeTool('hub_manage_hpm', [tool: 'hub_list_hpm_packages', args: [hpmAppId: "37", includeDrift: true]])
+        def gateway = script.executeTool('hub_read_apps_code', [tool: 'hub_list_hpm_packages', args: [hpmAppId: "37", includeDrift: true]])
 
         then: 'both paths return success=true; gateway nests the drift block under a `drift` key'
         direct.success == true
@@ -3000,7 +3001,7 @@ class ToolHpmReadonlySpec extends ToolSpecBase {
     // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
     // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
     // verified end-to-end alongside the direct-call golden paths above. The
-    // direct-call tests (above) and the existing hub_manage_hpm gateway-shape tests
+    // direct-call tests (above) and the existing hub_read_apps_code gateway-shape tests
     // (line ~2821) already pin tool-result deep structure; these tests add the
     // missing JSON-RPC envelope + render(Map) pipeline coverage by routing the
     // same scenarios through mcpDriver.callTool().

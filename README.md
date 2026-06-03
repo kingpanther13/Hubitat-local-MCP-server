@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 89 MCP tools (33 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 88 MCP tools (30 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 89 tools total — 20 core tools are always visible, while 69 additional tools are organized behind 13 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 88 tools total — 11 core tools are always visible, while the rest are organized behind 19 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -221,47 +221,11 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (89 total — 33 on tools/list)
+### MCP Tools (88 total — 30 on tools/list)
 
-The server has 89 tools total. To keep the MCP `tools/list` manageable, **20 core tools** are always visible and **69 additional tools** are organized behind **13 domain-named gateways**. The AI sees 33 items on `tools/list` (20 + 13 gateways). Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 88 tools total. To keep the MCP `tools/list` manageable, **11 core tools** are always visible and the remaining tools are organized behind **19 domain-named gateways** (7 read-only `hub_read_*` gateways + 12 write-bearing `hub_manage_*` gateways). The AI sees 30 items on `tools/list` (11 + 19 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
-#### Core Tools (20) — Always visible on tools/list
-
-<details>
-<summary><b>Devices</b> (5) — Control and query devices</summary>
-
-| Tool | Description |
-|------|-------------|
-| `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) |
-| `hub_get_device` | Full device details: attributes, commands, capabilities |
-| `hub_get_device_attribute` | Get a specific attribute value. Pass `expectedValue` (or `expectedValues`) to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. |
-| `hub_call_device_command` | Send a command (on, off, setLevel, etc.) |
-| `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a time window (up to 7 days of device or location event history); omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. |
-
-</details>
-
-<details>
-<summary><b>Rules</b> (4) — Create and manage automation rules</summary>
-
-| Tool | Description |
-|------|-------------|
-| `hub_get_custom_rule` | Full custom-engine rule details (triggers, conditions, actions). Omit `ruleId` to list all custom-engine rules with status; pass `detailed=true` for comprehensive diagnostics on a specific rule. |
-| `hub_create_custom_rule` | Create a new custom-engine automation rule (separate from native Rule Machine) |
-| `hub_update_custom_rule` | Update custom-engine rule triggers, conditions, actions, or enabled state (`enabled=true/false`) |
-| `hub_create_native_app` | Create a NATIVE classic SmartApp (RM 5.1 by default; `appType` enum extends to Room Lighting / Button Controllers / Basic Rules / etc.). Appears under Apps / Automations like a normally-created app. |
-| `hub_update_native_app` | Modify any classic native app by appId (multiple=true contract automatic, snapshot-before-write) |
-| `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager) |
-
-</details>
-
-<details>
-<summary><b>Device Management</b> (1)</summary>
-
-| Tool | Description |
-|------|-------------|
-| `hub_update_device` | Update device properties (label, room, preferences, etc.) |
-
-</details>
+#### Core Tools (11) — Always visible on tools/list
 
 <details>
 <summary><b>System</b> (5) — Hub modes, HSM, and info</summary>
@@ -306,20 +270,134 @@ The server has 89 tools total. To keep the MCP `tools/list` manageable, **20 cor
 
 </details>
 
-#### Gateway Tools (13) — Each gateway proxies multiple tools
+#### Gateway Tools (19) — Each gateway proxies multiple tools
 
-Call a gateway with no arguments to see full parameter schemas. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
+Call a gateway with no arguments to see full parameter schemas. Call with `tool='<name>'` and `args={...}` to execute a specific tool. Gateways split into 7 read-only `hub_read_*` gateways (every sub-tool is read-only) and 12 write-bearing `hub_manage_*` gateways (mixed read+write or write-only). A tool may be listed in more than one gateway — reads inside a mixed `hub_manage_*` gateway are also surfaced in a `hub_read_*` gateway.
+
+##### Read-only gateways (7)
 
 <details>
-<summary><b>hub_manage_rules</b> (5) — Rule administration</summary>
+<summary><b>hub_read_apps_code</b> (9) — App/driver/library listing, source, backups, and HPM (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `hub_delete_custom_rule` | Permanently delete a custom-engine rule (auto-backs up first) |
+| `hub_list_apps` | List apps on the hub. `scope='types'` lists installed app types (code); `scope='instances'` enumerates all app instances (built-in + user) with parent/child tree, filterable by builtin/user/disabled/parents/children. |
+| `hub_list_drivers` | List all installed drivers on the hub |
+| `hub_get_source` | Get Groovy source code for an app, driver, or library (`type`: "app", "driver", "library"; `id`). Supports chunked reading via `offset`/`length`. |
+| `hub_list_backups` | List auto-created source code backups |
+| `hub_get_backup` | Get source from a backup |
+| `hub_list_device_dependents` | Find all apps that reference a specific device (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.) |
+| `hub_get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.) — sections, inputs, values. Multi-page apps via `pageName`. Read-only. Hub Admin Read. |
+| `hub_list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before `hub_get_app_config` on multi-page apps to avoid guessing page names. Hub Admin Read. |
+| `hub_list_hpm_packages` | List all packages tracked by HPM — name, version, beta flag, author, and full component inventory (apps, drivers, files with heIDs). Top-level `count` and echoed `hpmAppId`. Auto-discovers HPM's app ID. Pass `includeDrift=true` to also cross-reference HPM-tracked packages against installed apps and drivers (surfacing missing-required components, orphan apps, and orphan drivers under a `drift` key; optional `packageFilter` substring; surfaces `orphanDetection` / `orphanDriverDetection` when registry fetches fail; data-quality warning types: `heid-whitespace-normalized`, `heid-non-scalar-dropped`, `empty-heid`, `skipped-malformed-component` — see `hub_get_tool_guide` for full details). Hub Admin Read. |
+
+`hub_list_device_dependents` requires opt-in **Enable Built-in App Tools** setting. `hub_get_app_config`, `hub_list_app_pages`, and `hub_list_hpm_packages` require Hub Admin Read. HPM itself must be installed on the hub.
+
+</details>
+
+<details>
+<summary><b>hub_read_devices</b> (4) — Query devices (read-only)</summary>
+
+| Tool | Description |
+|------|-------------|
+| `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) |
+| `hub_get_device` | Full device details: attributes, commands, capabilities |
+| `hub_get_device_attribute` | Get a specific attribute value. Pass `expectedValue` (or `expectedValues`) to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. |
+| `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a time window (up to 7 days of device or location event history); omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. |
+
+</details>
+
+<details>
+<summary><b>hub_read_diagnostics</b> (9) — Diagnostics, metrics, memory, radio details (read-only)</summary>
+
+| Tool | Description |
+|------|-------------|
+| `hub_get_logs` | Hub log entries (most recent first) with level/source/regex filters, multi-pattern AND/OR, time-window (since/until, max 30d relative -- throws if exceeded; use ISO-8601 for longer ranges), and server-side deviceId/appId scoping. `pattern` matches the message field only; pathological regex like `(.*)*` may hang the matcher. (Device/location event *history* is in `hub_list_device_events` via `hoursBack`.) |
+| `hub_get_performance_stats` | Device/app performance stats (count, % busy, total ms, state size, events, large-state flag) |
+| `hub_get_jobs` | Scheduled jobs, running jobs, and hub actions |
+| `hub_get_debug_logs` | Retrieve MCP debug log entries. Pass `mode='status'` to get logging system status and capacity instead. |
+| `hub_get_metrics` | Retrieve hub metrics with CSV trend history (read-only by default; does not record a new snapshot) |
+| `hub_get_memory_history` | Free OS memory and CPU load history with summary stats (Hub Admin Read) |
+| `hub_get_device_health` | Find stale/offline devices |
+| `hub_get_radio_details` | Radio info — Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. |
+| `hub_list_captured_states` | List saved device state snapshots |
+
+Monitoring tools require Hub Admin Read to be enabled.
+
+</details>
+
+<details>
+<summary><b>hub_read_files</b> (2) — Hub File Manager (read-only)</summary>
+
+| Tool | Description |
+|------|-------------|
+| `hub_list_files` | List all files in File Manager |
+| `hub_read_file` | Read a file's contents |
+
+</details>
+
+<details>
+<summary><b>hub_read_rooms</b> (2) — Room listing (read-only)</summary>
+
+| Tool | Description |
+|------|-------------|
+| `hub_list_rooms` | List all rooms with IDs, names, and device counts |
+| `hub_get_room` | Get room details with assigned devices |
+
+</details>
+
+<details>
+<summary><b>hub_read_rules</b> (4) — Rule introspection (read-only)</summary>
+
+| Tool | Description |
+|------|-------------|
+| `hub_get_custom_rule` | Full custom-engine rule details (triggers, conditions, actions). Omit `ruleId` to list all custom-engine rules with status; pass `detailed=true` for comprehensive diagnostics on a specific rule. |
 | `hub_test_custom_rule` | Dry-run a custom-engine rule without executing actions |
-| `hub_export_custom_rule` | Export custom-engine rule to JSON for backup/sharing |
+| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API |
+| `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. |
+
+</details>
+
+<details>
+<summary><b>hub_read_variables</b> (3) — Hub variable reads (read-only)</summary>
+
+| Tool | Description |
+|------|-------------|
+| `hub_list_variables` | List all hub connector and rule engine variables |
+| `hub_get_variable` | Get a variable value and metadata |
+| `hub_list_variable_changes` | Recent hub-variable changes since the MCP app last started |
+
+</details>
+
+##### Write-bearing gateways (12)
+
+<details>
+<summary><b>hub_manage_custom_rules</b> (8) — Custom rule administration</summary>
+
+| Tool | Description |
+|------|-------------|
+| `hub_get_custom_rule` | Full custom-engine rule details (triggers, conditions, actions). Omit `ruleId` to list all custom-engine rules with status; pass `detailed=true` for comprehensive diagnostics on a specific rule. (Also in `hub_read_rules`.) |
+| `hub_create_custom_rule` | Create a new custom-engine automation rule (separate from native Rule Machine) |
+| `hub_update_custom_rule` | Update custom-engine rule triggers, conditions, actions, or enabled state (`enabled=true/false`) |
+| `hub_delete_custom_rule` | Permanently delete a custom-engine rule (auto-backs up first) |
+| `hub_test_custom_rule` | Dry-run a custom-engine rule without executing actions (also in `hub_read_rules`) |
+| `hub_export_custom_rule` | Export custom-engine rule to JSON and persist it to File Manager via saveAs (write) |
 | `hub_import_custom_rule` | Import custom-engine rule from exported JSON |
 | `hub_clone_custom_rule` | Clone an existing custom-engine rule (starts disabled) |
+
+</details>
+
+<details>
+<summary><b>hub_manage_devices</b> (6) — Control and query devices</summary>
+
+| Tool | Description |
+|------|-------------|
+| `hub_call_device_command` | Send a command (on, off, setLevel, etc.) |
+| `hub_update_device` | Update device properties (label, room, preferences, etc.) |
+| `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) (also in `hub_read_devices`) |
+| `hub_get_device` | Full device details: attributes, commands, capabilities (also in `hub_read_devices`) |
+| `hub_get_device_attribute` | Get a specific attribute value. Pass `expectedValue` (or `expectedValues`) to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. (also in `hub_read_devices`) |
+| `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a time window (up to 7 days of device or location event history); omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. (also in `hub_read_devices`) |
 
 </details>
 
@@ -328,14 +406,14 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_variables` | List all hub connector and rule engine variables |
-| `hub_get_variable` | Get a variable value and metadata |
+| `hub_list_variables` | List all hub connector and rule engine variables (also in `hub_read_variables`) |
+| `hub_get_variable` | Get a variable value and metadata (also in `hub_read_variables`) |
 | `hub_set_variable` | Set a variable value |
 | `hub_create_variable` | Create a new hub variable |
 | `hub_delete_variable` | Permanently delete a hub variable (DESTRUCTIVE) |
 | `hub_create_connector` | Create a virtual-device connector for a hub variable |
 | `hub_delete_connector` | Remove the connector device for a hub variable |
-| `hub_list_variable_changes` | Recent hub-variable changes since the MCP app last started |
+| `hub_list_variable_changes` | Recent hub-variable changes since the MCP app last started (also in `hub_read_variables`) |
 
 </details>
 
@@ -344,8 +422,8 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_rooms` | List all rooms with IDs, names, and device counts |
-| `hub_get_room` | Get room details with assigned devices |
+| `hub_list_rooms` | List all rooms with IDs, names, and device counts (also in `hub_read_rooms`) |
+| `hub_get_room` | Get room details with assigned devices (also in `hub_read_rooms`) |
 | `hub_create_room` | Create a new room (Hub Admin Write + confirm) |
 | `hub_delete_room` | Permanently delete a room (Hub Admin Write + confirm) |
 | `hub_update_room` | Rename a room (Hub Admin Write + confirm) |
@@ -366,20 +444,7 @@ All operations are disruptive. Hub admin tools require Hub Admin Read/Write to b
 </details>
 
 <details>
-<summary><b>hub_manage_code_read</b> (5) — App/driver/library listing, source code, and backups (read-only)</summary>
-
-| Tool | Description |
-|------|-------------|
-| `hub_list_apps` | List all installed apps on the hub |
-| `hub_list_drivers` | List all installed drivers on the hub |
-| `hub_get_source` | Get Groovy source code for an app, driver, or library (`type`: "app", "driver", "library"; `id`). Supports chunked reading via `offset`/`length`. |
-| `hub_list_backups` | List auto-created source code backups |
-| `hub_get_backup` | Get source from a backup |
-
-</details>
-
-<details>
-<summary><b>hub_manage_code_write</b> (8) — Install, update, delete apps/drivers/libraries and restore backups</summary>
+<summary><b>hub_manage_code</b> (8) — Install, update, delete apps/drivers/libraries and restore backups</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -401,10 +466,10 @@ Source code is automatically backed up before any modify/delete operation.
 
 | Tool | Description |
 |------|-------------|
-| `hub_get_logs` | Hub log entries (most recent first) with level/source/regex filters, multi-pattern AND/OR, time-window (since/until, max 30d relative -- throws if exceeded; use ISO-8601 for longer ranges), and server-side deviceId/appId scoping. `pattern` matches the message field only; pathological regex like `(.*)*` may hang the matcher. (Device/location event *history* is in `hub_list_device_events` via `hoursBack`.) |
-| `hub_get_performance_stats` | Device/app performance stats (count, % busy, total ms, state size, events, large-state flag) |
-| `hub_get_jobs` | Scheduled jobs, running jobs, and hub actions |
-| `hub_get_debug_logs` | Retrieve MCP debug log entries. Pass `mode='status'` to get logging system status and capacity instead. |
+| `hub_get_logs` | Hub log entries (most recent first) with level/source/regex filters, multi-pattern AND/OR, time-window (since/until, max 30d relative -- throws if exceeded; use ISO-8601 for longer ranges), and server-side deviceId/appId scoping. `pattern` matches the message field only; pathological regex like `(.*)*` may hang the matcher. (Device/location event *history* is in `hub_list_device_events` via `hoursBack`.) (also in `hub_read_diagnostics`) |
+| `hub_get_performance_stats` | Device/app performance stats (count, % busy, total ms, state size, events, large-state flag) (also in `hub_read_diagnostics`) |
+| `hub_get_jobs` | Scheduled jobs, running jobs, and hub actions (also in `hub_read_diagnostics`) |
+| `hub_get_debug_logs` | Retrieve MCP debug log entries. Pass `mode='status'` to get logging system status and capacity instead. (also in `hub_read_diagnostics`) |
 | `hub_delete_debug_logs` | Clear all MCP debug logs |
 | `hub_set_log_level` | Set MCP log level (debug/info/warn/error) |
 
@@ -417,13 +482,13 @@ Monitoring tools require Hub Admin Read to be enabled.
 
 | Tool | Description |
 |------|-------------|
-| `hub_get_metrics` | Record/retrieve hub metrics with CSV trend history |
-| `hub_get_memory_history` | Free OS memory and CPU load history with summary stats (Hub Admin Read) |
+| `hub_get_metrics` | Retrieve hub metrics with CSV trend history (read-only by default; pass `recordSnapshot=true` to also record a new snapshot). (also in `hub_read_diagnostics`) |
+| `hub_get_memory_history` | Free OS memory and CPU load history with summary stats (Hub Admin Read) (also in `hub_read_diagnostics`) |
 | `hub_call_gc` | Force JVM garbage collection; returns before/after free memory (Hub Admin Read) |
-| `hub_get_device_health` | Find stale/offline devices |
-| `hub_get_radio_details` | Radio info — Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. |
+| `hub_get_device_health` | Find stale/offline devices (also in `hub_read_diagnostics`) |
+| `hub_get_radio_details` | Radio info — Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. (also in `hub_read_diagnostics`) |
 | `hub_call_zwave_repair` | Z-Wave network repair (5-30 min) |
-| `hub_list_captured_states` | List saved device state snapshots |
+| `hub_list_captured_states` | List saved device state snapshots (also in `hub_read_diagnostics`) |
 | `hub_delete_captured_state` | Delete a captured device state snapshot. Omit `stateId` to delete all snapshots. |
 
 </details>
@@ -433,8 +498,8 @@ Monitoring tools require Hub Admin Read to be enabled.
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_files` | List all files in File Manager |
-| `hub_read_file` | Read a file's contents |
+| `hub_list_files` | List all files in File Manager (also in `hub_read_files`) |
+| `hub_read_file` | Read a file's contents (also in `hub_read_files`) |
 | `hub_write_file` | Create or update a file (auto-backs up existing) |
 | `hub_delete_file` | Delete a file (auto-backs up first) |
 
@@ -443,36 +508,26 @@ Write/delete require Hub Admin Write + confirm.
 </details>
 
 <details>
-<summary><b>hub_manage_installed_apps</b> (4) — Built-in app visibility and configuration</summary>
+<summary><b>hub_manage_rule_machine</b> (5) — Rule Machine interop (RMUtils)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_installed_apps` | Enumerate all apps on the hub (built-in + user) with parent/child tree. Filter by builtin/user/disabled/parents/children. |
-| `hub_list_device_dependents` | Find all apps that reference a specific device (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.) |
-| `hub_get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.) — sections, inputs, values. Multi-page apps via `pageName`. Read-only. Hub Admin Read. |
-| `hub_list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before `hub_get_app_config` on multi-page apps to avoid guessing page names. Hub Admin Read. |
+| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API (also in `hub_read_rules`) |
+| `hub_call_rule` | Trigger an RM rule (`action`: "rule"/"actions"/"stop") |
+| `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible) |
+| `hub_set_rule_private_boolean` | Set an RM rule's private boolean variable |
+| `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
 
-`hub_list_installed_apps` and `hub_list_device_dependents` require opt-in **Enable Built-in App Tools** setting. `hub_get_app_config` and `hub_list_app_pages` require Hub Admin Read.
+Requires opt-in **Enable Built-in App Tools** setting.
 
 </details>
 
 <details>
-<summary><b>hub_manage_hpm</b> (1) — Hubitat Package Manager state introspection (read-only)</summary>
+<summary><b>hub_manage_native_rules_and_apps</b> (11) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_hpm_packages` | List all packages tracked by HPM — name, version, beta flag, author, and full component inventory (apps, drivers, files with heIDs). Top-level `count` and echoed `hpmAppId`. Auto-discovers HPM's app ID. Pass `includeDrift=true` to also cross-reference HPM-tracked packages against installed apps and drivers (surfacing missing-required components, orphan apps, and orphan drivers under a `drift` key; optional `packageFilter` substring; surfaces `orphanDetection` / `orphanDriverDetection` when registry fetches fail; data-quality warning types: `heid-whitespace-normalized`, `heid-non-scalar-dropped`, `empty-heid`, `skipped-malformed-component` — see `hub_get_tool_guide` section=hub_manage_hpm for full details). Hub Admin Read. |
-
-Both tools require Hub Admin Read. HPM itself must be installed on the hub.
-
-</details>
-
-<details>
-<summary><b>hub_manage_native_rules</b> (11) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
-
-| Tool | Description |
-|------|-------------|
-| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API |
+| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API (also in `hub_read_rules`) |
 | `hub_call_rule` | Trigger an RM rule (`action`: "rule"/"actions"/"stop") |
 | `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible) |
 | `hub_set_rule_private_boolean` | Set an RM rule's private boolean variable |
@@ -480,9 +535,9 @@ Both tools require Hub Admin Read. HPM itself must be installed on the hub.
 | `hub_update_native_app` | Modify any classic native app by appId (triggers, actions, settings, structured shortcuts). Auto-snapshots before every write. `clearActions` / `replaceActions` commit the delete synchronously via a full selectActions page-form submit (runs RM's trashActs handler in-band), so the actions are gone when the call returns. A thin defensive verify-retry remains: on the rare residual it returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` -- verify via `hub_get_app_config` rather than rolling back. |
 | `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
 | `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. |
-| `hub_export_native_app` | Export a classic SmartApp to JSON (round-trippable with `hub_import_native_app`). |
+| `hub_export_native_app` | Export a classic SmartApp to JSON and persist it to File Manager (round-trippable with `hub_import_native_app`). |
 | `hub_import_native_app` | Import previously-exported app JSON into a new instance. Returns the new `appId`. |
-| `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. |
+| `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
 
 Requires opt-in **Enable Built-in App Tools** setting. Create/update/delete additionally requires Hub Admin Write.
 
@@ -1669,13 +1724,13 @@ The `tests/` directory contains:
 ./gradlew test
 ```
 
-See [docs/testing.md](docs/testing.md) for the full Spock harness overview, how to add new specs, and the RMUtils mocking recipe for `hub_manage_native_rules` tools.
+See [docs/testing.md](docs/testing.md) for the full Spock harness overview, how to add new specs, and the RMUtils mocking recipe for `hub_manage_native_rules_and_apps` tools.
 
 ## Contributing
 
 Contributions welcome! Fork the repo, create a feature branch, make your changes, and submit a pull request.
 
-**New MCP tools must ship with unit tests** — both golden-path and error-path coverage. Tool handler tests go under `src/test/groovy/server/`; rule-engine tests under `src/test/groovy/rules/`. See [docs/testing.md](docs/testing.md) for the harness overview, the recipe for adding a new tool spec, and the RMUtils mocking pattern for `hub_manage_native_rules`-style tools.
+**New MCP tools must ship with unit tests** — both golden-path and error-path coverage. Tool handler tests go under `src/test/groovy/server/`; rule-engine tests under `src/test/groovy/rules/`. See [docs/testing.md](docs/testing.md) for the harness overview, the recipe for adding a new tool spec, and the RMUtils mocking pattern for `hub_manage_native_rules_and_apps`-style tools.
 
 PRs that add tools without tests will be asked to add them before merge. CI (`./gradlew test`) runs on every PR via `.github/workflows/unit-tests.yml`.
 

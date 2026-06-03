@@ -5,7 +5,7 @@ import support.TestChildApp
 import support.ToolSpecBase
 
 /**
- * Spec for the hub_manage_code_write gateway tools in hubitat-mcp-server.groovy:
+ * Spec for the hub_manage_code gateway tools in hubitat-mcp-server.groovy:
  *
  * - toolInstallApp          -> hub_create_app         (source|sourceFile; post-install verification)
  * - toolInstallDriver       -> hub_create_driver      (source|sourceFile; bulk installs[]; post-install verification)

@@ -6,7 +6,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolRunRmRule (hubitat-mcp-server.groovy approx line 7788).
- * Gateway: hub_manage_native_rules -> hub_call_rule.
+ * Gateway: hub_manage_native_rules_and_apps -> hub_call_rule.
  *
  * Covers: gate-throw, missing ruleId, action-to-rmAction mapping (rule/actions
  * via RMUtils; stop/start via the stopRule button toggle because RMUtils has
@@ -484,7 +484,7 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         settingsMap.enableBuiltinApp = true
 
         when:
-        def result = script.handleGateway('hub_manage_native_rules', 'hub_call_rule', [ruleId: 300, action: 'rule'])
+        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_call_rule', [ruleId: 300, action: 'rule'])
 
         then:
         result.success == true

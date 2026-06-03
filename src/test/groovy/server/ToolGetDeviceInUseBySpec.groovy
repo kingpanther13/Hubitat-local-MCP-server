@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolGetDeviceInUseBy (hubitat-mcp-server.groovy approx line 7573).
- * Gateway: hub_manage_installed_apps -> hub_list_device_dependents.
+ * Gateway: hub_read_apps_code -> hub_list_device_dependents.
  *
  * Critical: PR-79-review fix tightened deviceId validation -- findDevice()
  * is called before any HTTP request, so unknown IDs throw
@@ -365,7 +365,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/10') { params -> responseJson }
 
         when:
-        def result = script.handleGateway('hub_manage_installed_apps', 'hub_list_device_dependents', [deviceId: '10'])
+        def result = script.handleGateway('hub_read_apps_code', 'hub_list_device_dependents', [deviceId: '10'])
 
         then:
         result.deviceId == '10'

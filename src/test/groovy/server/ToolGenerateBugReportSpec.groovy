@@ -249,13 +249,13 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         when:
         def result = script.toolGenerateBugReport(baseArgs([
             title       : longTitle,
-            failingTool : 'hub_manage_native_rules',
+            failingTool : 'hub_manage_native_rules_and_apps',
         ]))
 
         then:
         result.suggestedTitle.length() == 140
         result.suggestedTitle.endsWith('...')
-        result.suggestedTitle.startsWith('[bug] hub_manage_native_rules:')
+        result.suggestedTitle.startsWith('[bug] hub_manage_native_rules_and_apps:')
     }
 
     def "suggested title left untouched when under 140 chars"() {
@@ -279,13 +279,13 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         long anchor = 1_700_000_000_000L
         seedLogs([
             logEntry(timestamp: anchor - 500_000, level: 'error', details: [tool: 'other_tool'],                       message: 'unrelated_old_log'),
-            logEntry(timestamp: anchor,           level: 'error', details: [tool: 'hub_manage_native_rules'],     message: 'the_real_failure'),
-            logEntry(timestamp: anchor + 5_000,   level: 'warn',  details: [tool: 'hub_manage_native_rules'],     message: 'followup_warn'),
+            logEntry(timestamp: anchor,           level: 'error', details: [tool: 'hub_manage_native_rules_and_apps'],     message: 'the_real_failure'),
+            logEntry(timestamp: anchor + 5_000,   level: 'warn',  details: [tool: 'hub_manage_native_rules_and_apps'],     message: 'followup_warn'),
             logEntry(timestamp: anchor + 10_000,  level: 'error', details: [tool: 'different_tool'],                   message: 'noise_after'),
         ])
 
         when:
-        def result = script.toolGenerateBugReport(baseArgs([failingTool: 'hub_manage_native_rules']))
+        def result = script.toolGenerateBugReport(baseArgs([failingTool: 'hub_manage_native_rules_and_apps']))
 
         then:
         result.logs.scoped == true
@@ -388,7 +388,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         seedLogs([])
 
         when:
-        def result = script.toolGenerateBugReport(baseArgs([failingTool: 'hub_manage_native_rules']))
+        def result = script.toolGenerateBugReport(baseArgs([failingTool: 'hub_manage_native_rules_and_apps']))
 
         then: 'anchor is null (empty buffer), so fallback path is the unscoped lastN (which is also empty)'
         result.success == true
@@ -403,13 +403,13 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub()
         long anchor = 1_700_000_000_000L
         seedLogs([
-            logEntry(timestamp: anchor,         level: 'error', details: [tool: 'hub_manage_native_rules'], message: 'real_failure'),
+            logEntry(timestamp: anchor,         level: 'error', details: [tool: 'hub_manage_native_rules_and_apps'], message: 'real_failure'),
             logEntry(timestamp: anchor + 5_000, level: 'error', details: [tool: 'different_tool'],               message: 'noise_after_real'),
         ])
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([
-            failingTool                : 'hub_manage_native_rules',
+            failingTool                : 'hub_manage_native_rules_and_apps',
             includeUnrelatedRecentLogs : true,
         ]))
 
@@ -528,12 +528,12 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         given:
         sharedLocation.hub = new TestHub()
         seedLogs([
-            logEntry(timestamp: 1_700_000_000_000L, level: 'error', details: [tool: 'hub_manage_native_rules'], message: 'secret_message_in_log'),
+            logEntry(timestamp: 1_700_000_000_000L, level: 'error', details: [tool: 'hub_manage_native_rules_and_apps'], message: 'secret_message_in_log'),
         ])
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([
-            failingTool : 'hub_manage_native_rules',
+            failingTool : 'hub_manage_native_rules_and_apps',
             privacyMode : 'public',
         ]))
 
@@ -550,12 +550,12 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         given:
         sharedLocation.hub = new TestHub()
         seedLogs([
-            logEntry(timestamp: 1_700_000_000_000L, level: 'error', details: [tool: 'hub_manage_native_rules'], message: 'shown_anyway_in_public_mode'),
+            logEntry(timestamp: 1_700_000_000_000L, level: 'error', details: [tool: 'hub_manage_native_rules_and_apps'], message: 'shown_anyway_in_public_mode'),
         ])
 
         when:
         def result = script.toolGenerateBugReport(baseArgs([
-            failingTool    : 'hub_manage_native_rules',
+            failingTool    : 'hub_manage_native_rules_and_apps',
             privacyMode    : 'public',
             includeRawLogs : true,
         ]))
@@ -636,13 +636,13 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         long anchor = 1_700_000_000_000L
         seedLogs([
             logEntry(timestamp: anchor - 500_000, level: 'error', details: [tool: 'other_tool'],                       message: 'unrelated_old_log'),
-            logEntry(timestamp: anchor,           level: 'error', details: [tool: 'hub_manage_native_rules'],     message: 'the_real_failure'),
-            logEntry(timestamp: anchor + 5_000,   level: 'warn',  details: [tool: 'hub_manage_native_rules'],     message: 'followup_warn'),
+            logEntry(timestamp: anchor,           level: 'error', details: [tool: 'hub_manage_native_rules_and_apps'],     message: 'the_real_failure'),
+            logEntry(timestamp: anchor + 5_000,   level: 'warn',  details: [tool: 'hub_manage_native_rules_and_apps'],     message: 'followup_warn'),
             logEntry(timestamp: anchor + 10_000,  level: 'error', details: [tool: 'different_tool'],                   message: 'noise_after'),
         ])
 
         when:
-        def response = mcpDriver.callTool('hub_report_issue', baseArgs([failingTool: 'hub_manage_native_rules']))
+        def response = mcpDriver.callTool('hub_report_issue', baseArgs([failingTool: 'hub_manage_native_rules_and_apps']))
 
         then:
         response.error == null
@@ -667,12 +667,12 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         sharedLocation.hub = new TestHub()
         seedLogs([
-            logEntry(timestamp: 1_700_000_000_000L, level: 'error', details: [tool: 'hub_manage_native_rules'], message: 'secret_message_in_log'),
+            logEntry(timestamp: 1_700_000_000_000L, level: 'error', details: [tool: 'hub_manage_native_rules_and_apps'], message: 'secret_message_in_log'),
         ])
 
         when:
         def response = mcpDriver.callTool('hub_report_issue', baseArgs([
-            failingTool : 'hub_manage_native_rules',
+            failingTool : 'hub_manage_native_rules_and_apps',
             privacyMode : 'public',
         ]))
 

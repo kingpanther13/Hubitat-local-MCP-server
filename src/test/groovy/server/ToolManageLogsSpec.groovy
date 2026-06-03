@@ -255,28 +255,21 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     // -------- toolGetDeviceHistory --------
 
-    def "hub_list_device_events returns location events when deviceId is omitted"() {
-        given: 'location.eventsSince stubbed to return mode + HSM + hub-variable events'
-        def fixedDate = new Date(1234567880000L)
-        def capturedSince = null
-        def capturedOpts = null
-        sharedLocation.metaClass.eventsSince = { Date since, Map opts ->
-            capturedSince = since
-            capturedOpts = opts
-            [
-                [name: 'mode',        value: 'Night',  unit: null, descriptionText: 'Mode changed to Night', date: fixedDate, isStateChange: true],
-                [name: 'hsmStatus',   value: 'armedAway', unit: null, descriptionText: 'HSM armed away',     date: fixedDate, isStateChange: true],
-                [name: 'guestCount',  value: '3',     unit: null, descriptionText: 'hub variable updated',   date: fixedDate, isStateChange: true]
-            ]
+    def "hub_list_device_events returns location events when deviceId is omitted (reads /logs/eventsJson)"() {
+        given: '/logs/eventsJson stubbed with mode + HSM + hub-variable rows (real wire shape)'
+        hubGet.register('/logs/eventsJson') { params ->
+            '''[
+              {"name":"mode","value":"Night","unit":null,"descriptionText":"Mode changed to Night","isStateChange":true,"type":"API","date":"2026-06-02T20:19:00.073-0400"},
+              {"name":"hsmStatus","value":"armedAway","unit":null,"descriptionText":"HSM armed away","isStateChange":true,"type":"API","date":"2026-06-02T20:18:00.000-0400"},
+              {"name":"variable:guestCount","value":"3","unit":null,"descriptionText":"hub variable updated","isStateChange":true,"type":"HUB_VARIABLE_SET","date":"2026-06-02T20:17:00.000-0400"}
+            ]'''
         }
 
         when:
         def result = script.toolGetDeviceHistory([hoursBack: 6, limit: 25])
 
-        then: 'location.eventsSince receives the hoursBack-derived sinceDate and opts.max'
-        capturedSince != null
-        capturedSince.time == 1234567890000L - (6 * 3600000L)
-        capturedOpts == [max: 25]
+        then: 'it reads the same endpoint the hub Logs page uses'
+        hubGet.calls.any { it.path == '/logs/eventsJson' }
 
         and:
         result.source == 'location'
@@ -284,22 +277,19 @@ class ToolManageLogsSpec extends ToolSpecBase {
         !result.containsKey('deviceId')
         result.hoursBack == 6
         result.count == 3
-        result.events*.name == ['mode', 'hsmStatus', 'guestCount']
+        result.events*.name == ['mode', 'hsmStatus', 'variable:guestCount']
         result.events[0].value == 'Night'
-
-        cleanup:
-        sharedLocation.metaClass = null
+        result.events[0].description == 'Mode changed to Night'
     }
 
     def "hub_list_device_events applies attribute filter to location events"() {
         given:
-        def fixedDate = new Date(1234567880000L)
-        sharedLocation.metaClass.eventsSince = { Date since, Map opts ->
-            [
-                [name: 'mode',      value: 'Night',  date: fixedDate, isStateChange: true],
-                [name: 'hsmStatus', value: 'armedAway', date: fixedDate, isStateChange: true],
-                [name: 'mode',      value: 'Day',   date: fixedDate, isStateChange: true]
-            ]
+        hubGet.register('/logs/eventsJson') { params ->
+            '''[
+              {"name":"mode","value":"Night","descriptionText":"m1","isStateChange":true,"type":"API","date":"2026-06-02T20:19:00.000-0400"},
+              {"name":"hsmStatus","value":"armedAway","descriptionText":"h1","isStateChange":true,"type":"API","date":"2026-06-02T20:18:00.000-0400"},
+              {"name":"mode","value":"Day","descriptionText":"m2","isStateChange":true,"type":"API","date":"2026-06-02T20:17:00.000-0400"}
+            ]'''
         }
 
         when:
@@ -310,14 +300,11 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.attributeFilter == 'mode'
         result.count == 2
         result.events.every { it.name == 'mode' }
-
-        cleanup:
-        sharedLocation.metaClass = null
     }
 
-    def "hub_list_device_events returns an error map when location.eventsSince throws"() {
+    def "hub_list_device_events returns an error map when /logs/eventsJson fetch fails"() {
         given:
-        sharedLocation.metaClass.eventsSince = { Date since, Map opts ->
+        hubGet.register('/logs/eventsJson') { params ->
             throw new RuntimeException('location event store unavailable')
         }
 
@@ -328,9 +315,6 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.source == 'location'
         result.error.contains('failed')
         result.error.contains('location event store unavailable')
-
-        cleanup:
-        sharedLocation.metaClass = null
     }
 
     def "hub_list_device_events throws when device is not found"() {

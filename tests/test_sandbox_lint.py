@@ -53,6 +53,39 @@ def test_self_test_case(desc, source, expected):
 
 
 # ---------------------------------------------------------------------------
+# check_read_write_split — read/write-split invariant (AGENTS.md hard rule)
+# ---------------------------------------------------------------------------
+# A read-only tool must be reachable from a hub_read_* gateway OR be flat; it
+# may NEVER be stranded behind only a hub_manage_* gateway. The main lint
+# (sandbox-lint.yml) enforces the invariant on the real source. These tests run
+# the must-catch / must-not-catch fixtures through the REAL check in pytest (CI)
+# so the guard can never silently no-op -- the `--self-test` runner is dev-only
+# and not wired into any CI job.
+
+@pytest.mark.parametrize("desc,src,expected_codes", sl.READ_WRITE_SPLIT_SELF_TEST_CASES)
+def test_read_write_split_self_test_case(desc, src, expected_codes):
+    """Each READ_WRITE_SPLIT_SELF_TEST_CASES entry: the guard reports exactly the
+    declared rule codes (empty set = must-not-catch, a code = must-catch)."""
+    findings = sl.check_read_write_split(src_override=src)
+    actual_codes = {f["rule"] for f in findings}
+    assert actual_codes == set(expected_codes), (
+        f"[{desc}] expected codes {sorted(set(expected_codes))}, "
+        f"got {sorted(actual_codes)}\n  findings: {findings!r}"
+    )
+
+
+def test_read_write_split_real_source_clean():
+    """The real shipped source must satisfy BOTH directions of the invariant:
+    no read stranded behind only a hub_manage_* gateway, and no write tool inside
+    a hub_read_* gateway. Guards against a future edit that mis-gates a tool."""
+    findings = sl.check_read_write_split()
+    assert findings == [], (
+        "read/write-split violation(s) in the shipped source:\n  "
+        + "\n  ".join(f"[{f['rule']}] {f['message']}" for f in findings)
+    )
+
+
+# ---------------------------------------------------------------------------
 # strip_comments_and_strings — additional direct coverage
 # ---------------------------------------------------------------------------
 

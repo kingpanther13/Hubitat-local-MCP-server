@@ -89,8 +89,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
             uploaded[fileName] = new String(content, 'UTF-8')
         }
 
-        when:
-        def result = script.toolGetHubPerformance([:])
+        when: 'recordSnapshot=true exercises the CSV-recording path (default is read-only now)'
+        def result = script.toolGetHubPerformance([recordSnapshot: true])
 
         then:
         result.current.freeMemoryKB == '123456'
@@ -118,8 +118,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName -> null }
         script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
 
-        when:
-        def response = mcpDriver.callTool('hub_get_metrics', [:])
+        when: 'recordSnapshot=true exercises the CSV-recording dispatch path (default is read-only now)'
+        def response = mcpDriver.callTool('hub_get_metrics', [recordSnapshot: true])
 
         then:
         response.error == null
@@ -128,6 +128,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         inner.current.freeMemoryKB == '123456'
         inner.current.internalTempC == '45.5'
         inner.current.uptimeFormatted == '2d 0h 0m'
+        inner.trendPointsAvailable == 1
 
         where:
         useGateways << [true, false]
@@ -506,7 +507,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         page1.staleDevices.size() == 100
         page1.nextCursor == '100'
 
-        and: 'top-level total mirrors hub_list_installed_apps so paginating clients read the same shape across tools'
+        and: 'top-level total mirrors hub_list_apps so paginating clients read the same shape across tools'
         page1.total == 150
 
         when: 'second page (cursor=100)'

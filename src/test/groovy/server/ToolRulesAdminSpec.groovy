@@ -5,7 +5,7 @@ import support.TestDevice
 import support.ToolSpecBase
 
 /**
- * Spec for the hub_manage_rules gateway tools in hubitat-mcp-server.groovy:
+ * Spec for the hub_manage_custom_rules gateway tools in hubitat-mcp-server.groovy:
  *
  * - toolDeleteRule -> delete_rule
  * - toolTestRule   -> test_rule
@@ -70,6 +70,10 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         ]
         childAppsList << childApp
 
+        and: 'hub_export_custom_rule now always persists the export to File Manager — capture the write'
+        def savedName = null
+        script.metaClass.uploadHubFile = { String name, byte[] content -> savedName = name }
+
         when:
         def result = script.toolExportRule([ruleId: '7'])
 
@@ -82,9 +86,16 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         result.rule.actions[0].type == 'delay'
         result.deviceManifest == []
         result.exportedAt != null
+
+        and: 'the export was written to the hub File Manager and reported back'
+        savedName != null
+        result.savedToFile == savedName
     }
 
     def "export_rule throws when ruleId is missing"() {
+        given:
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+
         when:
         script.toolExportRule([:])
 
@@ -94,6 +105,9 @@ class ToolRulesAdminSpec extends ToolSpecBase {
     }
 
     def "export_rule throws when rule id is unknown"() {
+        given:
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+
         when:
         script.toolExportRule([ruleId: '404'])
 
@@ -208,6 +222,9 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         def cloned = new TestChildApp(id: 6L, label: 'Copy of Original Rule')
         mockChildAppForCreate = cloned
 
+        and: 'clone exports internally, which now persists to File Manager'
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+
         when:
         def result = script.toolCloneRule([ruleId: '5'])
 
@@ -247,6 +264,9 @@ class ToolRulesAdminSpec extends ToolSpecBase {
 
         and:
         mockChildAppForCreate = new TestChildApp(id: 21L, label: 'Morning Backup Check')
+
+        and: 'clone exports internally, which now persists to File Manager'
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
 
         when:
         def result = script.toolCloneRule([ruleId: '20', name: '  Morning Backup Check  '])
@@ -367,7 +387,7 @@ class ToolRulesAdminSpec extends ToolSpecBase {
     // Parallel coverage exercising callTool() so the JSON-RPC envelope, gateway
     // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
     // verified end-to-end alongside the direct-call golden paths above. The
-    // tools live under the hub_manage_rules gateway; their dispatch names are
+    // tools live under the hub_manage_custom_rules gateway; their dispatch names are
     // custom_* (hub_test_custom_rule, hub_export_custom_rule, hub_import_custom_rule,
     // hub_clone_custom_rule, hub_delete_custom_rule) per the gateway config at
     // hubitat-mcp-server.groovy:761.
@@ -430,6 +450,8 @@ class ToolRulesAdminSpec extends ToolSpecBase {
             localVariables: [:]
         ]
         childAppsList << childApp
+        // hub_export_custom_rule now always persists the export to File Manager.
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
 
         when:
         def response = mcpDriver.callTool('hub_export_custom_rule', [ruleId: '7'])
@@ -441,6 +463,7 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         inner.exportVersion == '1.0'
         inner.rule.name == 'Sunset Lights'
         inner.deviceManifest == []
+        inner.savedToFile != null
 
         where:
         useGateways << [true, false]
@@ -451,6 +474,7 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableCustomRuleEngine = true
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
 
         when:
         def response = mcpDriver.callTool('hub_export_custom_rule', [:])
@@ -468,6 +492,7 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         settingsMap.enableCustomRuleEngine = true
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
 
         when:
         def response = mcpDriver.callTool('hub_export_custom_rule', [ruleId: '404'])
@@ -565,6 +590,8 @@ class ToolRulesAdminSpec extends ToolSpecBase {
         childAppsList << source
         def cloned = new TestChildApp(id: 6L, label: 'Copy of Original Rule')
         mockChildAppForCreate = cloned
+        // clone exports internally, which now persists to File Manager
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
 
         when:
         def response = mcpDriver.callTool('hub_clone_custom_rule', [ruleId: '5'])

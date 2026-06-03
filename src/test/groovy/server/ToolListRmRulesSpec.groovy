@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolListRmRules (hubitat-mcp-server.groovy approx line 7644).
- * Gateway: hub_manage_native_rules -> hub_list_rules.
+ * Gateway: hub_manage_native_rules_and_apps -> hub_list_rules.
  *
  * Covers: gate-throw, RM 5.x Map shape with Integer key coercion, RM 4.x
  * explicit-fields shape, dedup when same id in both, the "both-absent quiet
@@ -669,7 +669,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         rmUtils.stubRuleList5 = [[10: 'Test Rule']]
 
         when:
-        def result = script.handleGateway('hub_manage_native_rules', 'hub_list_rules', [:])
+        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_list_rules', [:])
 
         then:
         result.rules instanceof List

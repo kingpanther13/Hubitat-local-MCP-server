@@ -109,7 +109,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
 
         and: 'gateway-catalog response from handleGateway (no toolName) -- this is where gateway-mode callers see full descriptions'
         settingsMap.useGateways = true
-        def gatewayResp = script.handleGateway('hub_manage_native_rules', null, [:])
+        def gatewayResp = script.handleGateway('hub_manage_native_rules_and_apps', null, [:])
         def gwUpdateNative = gatewayResp.tools.find { it.name == 'hub_update_native_app' }
         def gwBytes = JsonOutput.toJson(gwUpdateNative).getBytes('UTF-8').length
 
@@ -150,7 +150,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         enableEveryToggle()
 
         when: 'gateway-catalog disclosure (caller invokes the gateway with no toolName)'
-        def gatewayResp = script.handleGateway('hub_manage_native_rules', null, [:])
+        def gatewayResp = script.handleGateway('hub_manage_native_rules_and_apps', null, [:])
         def updateNative = gatewayResp.tools.find { it.name == 'hub_update_native_app' }
         def addTrigger = updateNative.inputSchema.properties.addTrigger.description
         def addAction = updateNative.inputSchema.properties.addAction.description
@@ -516,7 +516,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         enableEveryToggle()
 
         when:
-        def result = script.handleGateway('hub_manage_native_rules', 'hub_update_native_app', [:])
+        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_update_native_app', [:])
 
         then: 'pre-validation surfaces a structured error envelope'
         result instanceof Map

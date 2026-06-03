@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for toolSetRmRuleBoolean (hubitat-mcp-server.groovy approx line 7837).
- * Gateway: hub_manage_native_rules -> hub_set_rule_private_boolean.
+ * Gateway: hub_manage_native_rules_and_apps -> hub_set_rule_private_boolean.
  *
  * Load-bearing: strict coercion policy. Accepts ONLY Boolean true/false OR
  * the lowercase strings "true"/"false". All other truthy-looking values
@@ -363,7 +363,7 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         settingsMap.enableBuiltinApp = true
 
         when:
-        def result = script.handleGateway('hub_manage_native_rules', 'hub_set_rule_private_boolean', [ruleId: 900, value: true])
+        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_rule_private_boolean', [ruleId: 900, value: true])
 
         then:
         result.success == true

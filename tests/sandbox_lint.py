@@ -24,9 +24,9 @@ from pathlib import Path
 # (rather than strict) keeps a single mis-encoded character from masking
 # whatever the lint was actually trying to report.
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -142,6 +142,20 @@ RULES = [
         "id": "SANDBOX-013",
         "pattern": r"\bnew\s+(?:groovy\s*\.\s*lang\s*\.\s*)?GroovyShell\b|\bGroovyShell\s*\.",
         "message": "GroovyShell blocked in Hubitat sandbox",
+        "severity": "error",
+    },
+    {
+        # The hub runs Groovy 2.4 (antlr2 parser), which rejects a bare `{ ... }`
+        # block immediately after a `case X:` label as an ambiguous
+        # parameterless-closure-vs-open-block. hubitat_ci's Groovy 3.0 (Parrot)
+        # parser accepts it, so the Spock suite compiles clean while the real hub
+        # refuses to save the app ("Ambiguous expression could be either a
+        # parameterless closure expression or an isolated open code block").
+        # Extract the case body into a helper method (or drop the wrapping braces
+        # and declare no locals) so dispatch cases stay plain statements.
+        "id": "SANDBOX-014",
+        "pattern": r"\bcase\b[^:]*:\s*\{",
+        "message": "Bare '{ }' block right after 'case X:' is rejected by the hub's Groovy 2.4 parser (ambiguous closure vs open block) even though hubitat_ci's Groovy 3.0 accepts it -- extract the case body to a method or remove the braces",
         "severity": "error",
     },
 ]
@@ -715,7 +729,11 @@ def _extract_canonical_counts() -> dict | None:
     tool_names: set[str] = set(raw_name_list)
     total = len(raw_name_list)
 
-    proxied = sum(per_gateway.values())
+    # Count DISTINCT proxied tools, not the sum of per-gateway tool counts:
+    # a tool may belong to more than one gateway (multi-gateway membership --
+    # reads are listed in both their mixed manage_ gateway and a read_ gateway),
+    # so sum(per_gateway.values()) over-counts and would drive `core` negative.
+    proxied = len(proxied_names)
     core = total - proxied
     gateways = len(per_gateway)
     tools_list = core + gateways
@@ -1909,6 +1927,305 @@ def _run_envelope_parity_self_test() -> int:
     return failures
 
 
+def check_read_write_split(src_override: str | None = None) -> list[dict]:
+    """Enforce BOTH directions of the gateway read/write-split invariant
+    (AGENTS.md "Gateway read/write split" -- a hard CI failure):
+
+      (A) No stranded read. Every tool in getReadOnlyToolNames() MUST be
+          reachable from a hub_read_* gateway OR be a flat top-level tool. It may
+          NEVER be reachable ONLY through a hub_manage_* gateway.
+          -> rule "read-write-split-stranded-read".
+      (B) No write in a read gateway. Every tool inside a hub_read_* gateway MUST
+          be in getReadOnlyToolNames() (read-only). A single write flips the
+          gateway's rolled-up readOnlyHint to write+destructive
+          (annotationsForGateway), mislabeling the whole read surface.
+          -> rule "read-write-split-write-in-read-gateway".
+
+    Rationale: clients route read-only browsing through the hub_read_* gateways
+    and surface those tools under readOnlyHint=true. A read that lives ONLY inside
+    a hub_manage_* gateway is invisible on the read-browse surface AND inherits
+    the write annotation -- a read mislabeled as a write and hidden from the read
+    path. Multi-gateway membership is fine: a read MAY co-live in a hub_manage_*
+    gateway as long as it is ALSO in a hub_read_* gateway (or is flat).
+
+    Both directions derive the read gateways by the `hub_read_` name prefix (NOT a
+    hard-coded list), so an Nth read gateway is covered automatically -- unlike
+    McpToolAnnotationsSpec's gateway-rollup assertion, which hard-codes its read
+    gateway names. Ships with must-catch + must-not-catch self-test fixtures
+    (READ_WRITE_SPLIT_SELF_TEST_CASES) so the guard provably fires and can never
+    silently no-op.
+
+    src_override lets the self-test drive this with synthetic corpora.
+    """
+    findings: list[dict] = []
+    server = REPO_ROOT / "hubitat-mcp-server.groovy"
+    if src_override is not None:
+        src = src_override
+    else:
+        if not server.exists():
+            return findings
+        src = server.read_text(encoding="utf-8", errors="replace")
+
+    rel = str(server.relative_to(REPO_ROOT))
+
+    def _fail(rule: str, message: str) -> list[dict]:
+        findings.append({
+            "file": rel, "line": 1, "severity": "error",
+            "rule": rule, "message": message, "source": "",
+        })
+        return findings
+
+    # 1. getGatewayConfig() -> {gateway_name: [tool, ...]}. Same two-stage anchor
+    #    _extract_canonical_counts() uses, but we keep the full tool LISTS (not
+    #    just counts) and the gateway names (to split hub_read_ vs hub_manage_).
+    gw_match = re.search(r"^def getGatewayConfig\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE)
+    if not gw_match:
+        return _fail(
+            "read-write-split-no-gateway-config",
+            "Could not locate getGatewayConfig() return literal -- has the function shape "
+            "changed? The read/write-split guard cannot run until the parser is updated.",
+        )
+    gateway_tools: dict[str, list[str]] = {}
+    gateway_pos: dict[str, int] = {}  # absolute src offset of each gateway, for line numbers
+    for m in re.finditer(
+        r"^\s+([a-z_]+):\s*\[\s*description:\s*\".*?\".*?\btools:\s*\[([^\]]+)\]",
+        gw_match.group(1), re.MULTILINE | re.DOTALL,
+    ):
+        no_comments = re.sub(r"//[^\n]*", "", m.group(2))
+        gateway_tools[m.group(1)] = [t.strip().strip("\"'") for t in no_comments.split(",") if t.strip()]
+        gateway_pos[m.group(1)] = gw_match.start(1) + m.start()
+    if not gateway_tools:
+        return _fail(
+            "read-write-split-no-gateway-config",
+            "getGatewayConfig() parsed but yielded zero gateways -- parser/source shape mismatch.",
+        )
+
+    # 2. getReadOnlyToolNames() -> the read-only tool set (the source of truth
+    #    that feeds the readOnlyHint annotations).
+    ro_match = re.search(r"^def getReadOnlyToolNames\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE)
+    if not ro_match:
+        return _fail(
+            "read-write-split-no-readonly-list",
+            "Could not locate getReadOnlyToolNames() return literal -- has the function shape changed?",
+        )
+    read_only = set(re.findall(r'"([a-z_]+)"', re.sub(r"//[^\n]*", "", ro_match.group(1))))
+    if not read_only:
+        return _fail(
+            "read-write-split-no-readonly-list",
+            "getReadOnlyToolNames() parsed but yielded zero tool names -- parser/source shape mismatch.",
+        )
+
+    # 3. Flat (top-level) tools = every getAllToolDefinitions() tool that no
+    #    gateway proxies. A read-only tool that is flat satisfies the invariant.
+    all_match = re.search(r"^def getAllToolDefinitions\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE)
+    if not all_match:
+        return _fail(
+            "read-write-split-no-tool-definitions",
+            "Could not locate getAllToolDefinitions() return literal -- has the function shape changed?",
+        )
+    all_tool_names = set(re.findall(r"^\s*name:\s*['\"]([a-z_]+)['\"]", all_match.group(1), re.MULTILINE))
+    proxied: set[str] = set()
+    for tools in gateway_tools.values():
+        proxied.update(tools)
+    flat_tools = all_tool_names - proxied
+
+    # 4. Read-gateway reach: every tool surfaced by a gateway whose name carries
+    #    the hub_read_ prefix (derived, not hard-coded).
+    read_gateway_tools: set[str] = set()
+    for name, tools in gateway_tools.items():
+        if name.startswith("hub_read_"):
+            read_gateway_tools.update(tools)
+
+    # 5. The invariant. A read-only tool is stranded iff it is neither flat nor in
+    #    any hub_read_* gateway -- i.e. reachable ONLY through hub_manage_*.
+    ro_body_start = ro_match.start(1)
+    for tool in sorted(read_only):
+        if tool in read_gateway_tools or tool in flat_tools:
+            continue
+        holders = sorted(n for n, ts in gateway_tools.items() if tool in ts)
+        where = f"only via hub_manage_* gateway(s) {holders}" if holders else "by no gateway at all (and it is not flat)"
+        idx = src.find(f'"{tool}"', ro_body_start)
+        line_no = (src[:idx].count("\n") + 1) if idx != -1 else (src[:ro_match.start()].count("\n") + 1)
+        findings.append({
+            "file": rel,
+            "line": line_no,
+            "severity": "error",
+            "rule": "read-write-split-stranded-read",
+            "message": (
+                f"Read-only tool '{tool}' is reachable {where}; it is in NO hub_read_* gateway and is "
+                f"not a flat top-level tool. AGENTS.md 'Gateway read/write split' makes this a hard "
+                f"failure: a read-only tool MUST be in a hub_read_* gateway (multi-gateway membership "
+                f"alongside a hub_manage_* gateway is fine) or be flat. Fix: add '{tool}' to the "
+                f"matching hub_read_* gateway's tools[] list, or -- if it is actually a write -- remove "
+                f"it from getReadOnlyToolNames()."
+            ),
+            "source": "",
+        })
+
+    # 6. Mirror invariant (B): a hub_read_* gateway must contain ONLY read-only
+    #    tools. Derived by prefix so an Nth read gateway is covered too (the Spock
+    #    rollup hard-codes its read-gateway names; this does not).
+    for name in sorted(gateway_tools):
+        if not name.startswith("hub_read_"):
+            continue
+        for tool in gateway_tools[name]:
+            if tool in read_only:
+                continue
+            g_abs = gateway_pos.get(name, ro_match.start())
+            idx = src.find(f'"{tool}"', g_abs)
+            line_no = (src[:idx].count("\n") + 1) if idx != -1 else (src[:g_abs].count("\n") + 1)
+            findings.append({
+                "file": rel,
+                "line": line_no,
+                "severity": "error",
+                "rule": "read-write-split-write-in-read-gateway",
+                "message": (
+                    f"Tool '{tool}' is in read gateway '{name}' but is NOT in getReadOnlyToolNames() "
+                    f"(i.e. it is treated as a write). A hub_read_* gateway must contain only "
+                    f"read-only tools -- a single write flips the gateway's rolled-up readOnlyHint to "
+                    f"write+destructive (annotationsForGateway), mislabeling the entire read surface. "
+                    f"Fix: move '{tool}' to the appropriate hub_manage_* gateway, or -- if it is "
+                    f"genuinely read-only -- add it to getReadOnlyToolNames()."
+                ),
+                "source": "",
+            })
+    return findings
+
+
+def _build_read_write_split_corpus(gateways: dict, read_only: list, all_tools: list) -> str:
+    """Construct a minimal Groovy corpus satisfying check_read_write_split's three
+    extractors (getGatewayConfig / getReadOnlyToolNames / getAllToolDefinitions)
+    so self-test fixtures can drive the REAL check. `gateways` maps gateway-name
+    -> list of proxied tool names."""
+    lines = ["def getGatewayConfig() {", "    return ["]
+    for name, tools in gateways.items():
+        csv = ", ".join(f'"{t}"' for t in tools)
+        lines += [
+            f"        {name}: [",
+            f'            description: "{name} facade",',
+            f"            tools: [{csv}]",
+            "        ],",
+        ]
+    lines += ["    ]", "}", "", "def getReadOnlyToolNames() {", "    return ["]
+    lines.append("        " + ", ".join(f'"{t}"' for t in read_only))
+    lines += ["    ] as Set", "}", "", "def getAllToolDefinitions() {", "    return ["]
+    for t in all_tools:
+        lines += ["        [", f'            name: "{t}"', "        ],"]
+    lines += ["    ]", "}"]
+    return "\n".join(lines) + "\n"
+
+
+# Self-test fixtures for check_read_write_split. Drive the real check with
+# synthetic Groovy corpora to cover must-catch + must-not-catch cases
+# (PIPELINE.md Rule 13) so the guard provably fires and never silently no-ops.
+READ_WRITE_SPLIT_SELF_TEST_CASES = [
+    # (description, groovy source, expected_rule_codes)
+    (
+        "read surfaced by a hub_read_* gateway -- no finding (must-not-catch)",
+        _build_read_write_split_corpus(
+            {"hub_read_devices": ["hub_get_device"],
+             "hub_manage_devices": ["hub_get_device", "hub_update_device"]},
+            ["hub_get_device"],
+            ["hub_get_device", "hub_update_device"],
+        ),
+        set(),
+    ),
+    (
+        "read is flat (proxied by no gateway) -- no finding (must-not-catch)",
+        _build_read_write_split_corpus(
+            {"hub_manage_devices": ["hub_update_device"]},
+            ["hub_get_info"],
+            ["hub_get_info", "hub_update_device"],
+        ),
+        set(),
+    ),
+    (
+        "read in BOTH a read and a manage gateway -- multi-membership OK (must-not-catch)",
+        _build_read_write_split_corpus(
+            {"hub_read_rules": ["hub_get_custom_rule"],
+             "hub_manage_custom_rules": ["hub_get_custom_rule", "hub_delete_custom_rule"]},
+            ["hub_get_custom_rule"],
+            ["hub_get_custom_rule", "hub_delete_custom_rule"],
+        ),
+        set(),
+    ),
+    (
+        "read reachable ONLY through a hub_manage_* gateway -- flags stranded (must-catch)",
+        _build_read_write_split_corpus(
+            {"hub_manage_logs": ["hub_get_logs", "hub_delete_debug_logs"]},
+            ["hub_get_logs"],
+            ["hub_get_logs", "hub_delete_debug_logs"],
+        ),
+        {"read-write-split-stranded-read"},
+    ),
+    (
+        "read in no gateway at all and not flat -- flags stranded, empty holders (must-catch)",
+        _build_read_write_split_corpus(
+            {"hub_manage_logs": ["hub_delete_debug_logs"]},
+            ["hub_ghost_read"],
+            ["hub_delete_debug_logs"],
+        ),
+        {"read-write-split-stranded-read"},
+    ),
+    (
+        "no getGatewayConfig() in source -- flags extractor guard (must-catch)",
+        'def getReadOnlyToolNames() {\n    return [ "hub_get_device" ] as Set\n}\n',
+        {"read-write-split-no-gateway-config"},
+    ),
+    # --- Mirror invariant (B): no write tool inside a hub_read_* gateway ---
+    (
+        "write tool inside a hub_read_* gateway -- flags write-in-read (must-catch)",
+        _build_read_write_split_corpus(
+            {"hub_read_devices": ["hub_get_device", "hub_update_device"]},
+            ["hub_get_device"],
+            ["hub_get_device", "hub_update_device"],
+        ),
+        {"read-write-split-write-in-read-gateway"},
+    ),
+    (
+        "only read-only tools inside a hub_read_* gateway -- no finding (must-not-catch)",
+        _build_read_write_split_corpus(
+            {"hub_read_files": ["hub_list_files", "hub_read_file"]},
+            ["hub_list_files", "hub_read_file"],
+            ["hub_list_files", "hub_read_file"],
+        ),
+        set(),
+    ),
+]
+
+
+def _run_read_write_split_self_test() -> int:
+    """Drive check_read_write_split with synthetic corpora and verify dispatch
+    correctness + finding-dict shape correctness."""
+    failures = 0
+    for i, (desc, src, expected_codes) in enumerate(READ_WRITE_SPLIT_SELF_TEST_CASES, start=1):
+        findings = check_read_write_split(src_override=src)
+        shape_ok = True
+        for f in findings:
+            try:
+                _ = format_finding(f)
+            except KeyError as ke:
+                failures += 1
+                shape_ok = False
+                print(
+                    f"READ-WRITE-SPLIT-SELF-TEST FAIL [{i}] {desc}\n"
+                    f"  finding dict missing required key for format_finding: {ke}\n"
+                    f"  finding keys present: {sorted(f.keys())}"
+                )
+        if not shape_ok:
+            continue
+        actual_codes = {f["rule"] for f in findings}
+        if actual_codes != expected_codes:
+            failures += 1
+            print(
+                f"READ-WRITE-SPLIT-SELF-TEST FAIL [{i}] {desc}\n"
+                f"  expected codes: {sorted(expected_codes)}\n"
+                f"  actual codes:   {sorted(actual_codes)}\n"
+                f"  all findings: {findings!r}"
+            )
+    return failures
+
+
 def format_finding(f: dict) -> str:
     """Format a single finding for human-readable output."""
     severity = f["severity"].upper()
@@ -2346,7 +2663,11 @@ COUNT_SELF_TEST_CASES = [
     (
         "proxied in bare `N proxied` (not paren-prefix, named fixture)",
         "Summary: 23 core + 13 gateways, 80 proxied, 103 total tools.",
-        {"proxied": 79}, ["proxied"],
+        # Override the other counts the sentence mentions to their literal in-text
+        # values so ONLY `proxied` drifts (80 vs 79); otherwise the live core /
+        # gateways / total counts -- which changed after PR1B's gateway reshape --
+        # also fire and the fixture stops isolating the proxied pattern.
+        {"proxied": 79, "core": 23, "gateways": 13, "total": 103}, ["proxied"],
     ),
     (
         "total in `N total` punctuation-bounded (named fixture)",
@@ -2697,14 +3018,39 @@ def run_self_test() -> int:
             "Groovy source."
         )
     else:
-        derived = canonical["core"] + sum(canonical["per_gateway"].values())
-        if derived != canonical["total"]:
+        # Self-consistency of the count breakdown. NOTE: sum(per_gateway.values())
+        # is NOT used as `core + sum == total` anymore -- since PR1B introduced
+        # multi-gateway membership (a read listed in both its hub_read_* and a
+        # hub_manage_* gateway), the per-gateway sum DOUBLE-COUNTS those reads and
+        # exceeds the DISTINCT proxied count. The canonical relationship is on the
+        # distinct count: total == core + distinct_proxied (and core is derived as
+        # total - distinct_proxied, so this also guards a future core-formula change).
+        sum_with_dups = sum(canonical["per_gateway"].values())
+        if canonical["core"] < 0:
             failures += 1
             print(
                 f"SELF-TEST FAIL [tool-count extractor]\n"
-                f"  derived total {derived} != reported total "
-                f"{canonical['total']} — internal inconsistency in "
-                "_extract_canonical_counts()"
+                f"  core {canonical['core']} is negative — distinct proxied "
+                f"({canonical['proxied']}) exceeds total ({canonical['total']}); "
+                "_extract_canonical_counts() is inconsistent."
+            )
+        if canonical["core"] + canonical["proxied"] != canonical["total"]:
+            failures += 1
+            print(
+                f"SELF-TEST FAIL [tool-count extractor]\n"
+                f"  core ({canonical['core']}) + distinct proxied "
+                f"({canonical['proxied']}) != total ({canonical['total']}) — "
+                "internal inconsistency in _extract_canonical_counts()."
+            )
+        # Multi-membership means the per-gateway sum must be >= the distinct
+        # proxied count; sum < distinct would mean a gateway tool went uncounted.
+        if sum_with_dups < canonical["proxied"]:
+            failures += 1
+            print(
+                f"SELF-TEST FAIL [tool-count extractor]\n"
+                f"  per-gateway sum ({sum_with_dups}) < distinct proxied "
+                f"({canonical['proxied']}) — a gateway tool is uncounted; "
+                "_extract_canonical_counts() is inconsistent."
             )
         # Compare the raw list length against the de-duplicated set size.
         # `total` is intentionally len(list); `tool_names` is set(list).
@@ -2772,6 +3118,13 @@ def run_self_test() -> int:
     envelope_parity_failures = _run_envelope_parity_self_test()
     failures += envelope_parity_failures
 
+    # Read/write-split must-catch / must-not-catch fixtures (PIPELINE.md Rule 13):
+    # the guard that a read-only tool is never stranded behind only a hub_manage_*
+    # gateway ships with positive + negative fixtures so a regression in the
+    # dispatch logic surfaces here rather than silently weakening the lint.
+    read_write_split_failures = _run_read_write_split_self_test()
+    failures += read_write_split_failures
+
     if failures:
         print(f"--- {failures} self-test failure(s) ---")
         return 1
@@ -2781,13 +3134,15 @@ def run_self_test() -> int:
         + len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)
         + len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)
         + len(ENVELOPE_PARITY_SELF_TEST_CASES)
+        + len(READ_WRITE_SPLIT_SELF_TEST_CASES)
     )
     print(
         f"Self-test: {total_cases} case(s) passed "
         f"({len(SELF_TEST_CASES)} sandbox, {len(COUNT_SELF_TEST_CASES)} count, "
         f"{len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)} tool-guide-anchor, "
         f"{len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)} discrete-event-caps, "
-        f"{len(ENVELOPE_PARITY_SELF_TEST_CASES)} envelope-parity)."
+        f"{len(ENVELOPE_PARITY_SELF_TEST_CASES)} envelope-parity, "
+        f"{len(READ_WRITE_SPLIT_SELF_TEST_CASES)} read-write-split)."
     )
     return 0
 
@@ -2832,6 +3187,13 @@ def main() -> int:
     # the dedicated slots into the return shape" class -- callers cannot detect
     # the not-live state without log-grep otherwise.
     all_findings.extend(check_trailing_updaterule_envelope_parity())
+
+    # Enforce the gateway read/write-split invariant: a read-only tool must be
+    # reachable from a hub_read_* gateway or be flat -- NEVER stranded behind only
+    # a hub_manage_* gateway (AGENTS.md "Gateway read/write split"). Catches the
+    # "a read got added to a manage gateway but never surfaced on the read side"
+    # class, which mislabels the read as a write and hides it from the read path.
+    all_findings.extend(check_read_write_split())
 
     # Sort by file, then line
     all_findings.sort(key=lambda f: (f["file"], f["line"]))

@@ -73,19 +73,19 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         // Sample from each category in getReadOnlyToolNames() -- full set lives in source.
         name << [
             'hub_list_devices', 'hub_get_device', 'hub_get_device_attribute',
-            'hub_get_custom_rule', 'hub_test_custom_rule', 'hub_export_custom_rule',
+            'hub_get_custom_rule', 'hub_test_custom_rule',
             'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status',
             'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
             'hub_list_captured_states',
             'hub_get_debug_logs', 'hub_report_issue',
             'hub_get_logs', 'hub_list_device_events', 'hub_get_performance_stats',
-            'hub_get_radio_details', 'hub_get_device_health',
+            'hub_get_radio_details', 'hub_get_device_health', 'hub_get_metrics',
             'hub_list_apps', 'hub_get_source', 'hub_list_backups', 'hub_get_backup',
             'hub_list_rooms', 'hub_get_room',
             'hub_list_files', 'hub_read_file',
-            'hub_list_installed_apps', 'hub_get_app_config',
+            'hub_get_app_config',
             'hub_list_hpm_packages',
-            'hub_list_rules', 'hub_export_native_app', 'hub_get_rule_health',
+            'hub_list_rules', 'hub_get_rule_health',
             'hub_get_tool_guide'
         ]
     }
@@ -114,7 +114,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         name << [
             'hub_call_device_command',
             'hub_create_custom_rule', 'hub_update_custom_rule', 'hub_delete_custom_rule',
-            'hub_import_custom_rule', 'hub_clone_custom_rule',
+            'hub_import_custom_rule', 'hub_clone_custom_rule', 'hub_export_custom_rule',
             'hub_set_mode',
             'hub_set_variable', 'hub_create_variable', 'hub_delete_variable',
             'hub_create_connector', 'hub_delete_connector',
@@ -122,7 +122,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_update_mcp_settings',
             'hub_delete_captured_state',
             'hub_delete_debug_logs',
-            'hub_create_backup', 'hub_call_gc', 'hub_get_metrics',
+            'hub_create_backup', 'hub_call_gc',
             'hub_reboot', 'hub_shutdown', 'hub_call_zwave_repair', 'hub_delete_device',
             'hub_manage_virtual_device', 'hub_update_device',
             'hub_create_room', 'hub_delete_room', 'hub_update_room',
@@ -133,7 +133,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
             'hub_create_native_app', 'hub_update_native_app', 'hub_clone_native_app',
-            'hub_import_native_app', 'hub_delete_native_app'
+            'hub_import_native_app', 'hub_delete_native_app', 'hub_export_native_app'
         ]
     }
 
@@ -147,7 +147,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         def tools = script.getToolDefinitions()
 
         then: 'gateways whose every sub-tool is in getReadOnlyToolNames()'
-        ['hub_manage_code_read', 'hub_manage_installed_apps', 'hub_manage_hpm'].each { gwName ->
+        ['hub_read_apps_code', 'hub_read_devices', 'hub_read_diagnostics', 'hub_read_files',
+         'hub_read_rooms', 'hub_read_rules', 'hub_read_variables'].each { gwName ->
             def gw = tools.find { it.name == gwName }
             assert gw != null : "${gwName} missing from gateway-mode catalog"
             assert gw.annotations.readOnlyHint == true : "${gwName} should be read-only"
@@ -166,15 +167,17 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         then: 'every gateway with at least one write sub-tool is write+destructive'
         def writeGateways = [
-            'hub_manage_rules',        // hub_delete_custom_rule + others
+            'hub_manage_custom_rules', // hub_delete_custom_rule + others
             'hub_manage_variables',      // set/create/delete + others
             'hub_manage_rooms',              // create/delete/rename + others
             'hub_manage_destructive_ops',// reboot/shutdown/hub_delete_device
-            'hub_manage_code_write',    // install/update/delete code
+            'hub_manage_code',          // install/update/delete code
+            'hub_manage_devices',            // hub_call_device_command, hub_update_device
             'hub_manage_logs',               // hub_delete_debug_logs, hub_set_log_level
             'hub_manage_diagnostics',        // hub_call_zwave_repair, hub_delete_captured_state
             'hub_manage_files',              // hub_write_file, hub_delete_file
-            'hub_manage_native_rules', // create/update/delete/run native rules
+            'hub_manage_native_rules_and_apps', // create/update/delete/run native rules
+            'hub_manage_rule_machine',       // hub_call_rule, set_rule_paused, set_rule_private_boolean
             'hub_manage_mcp'            // hub_update_mcp_settings
         ]
         writeGateways.each { gwName ->
@@ -306,23 +309,23 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         def expectedReadOnly = [
             'hub_list_devices', 'hub_get_device', 'hub_get_device_attribute', 'hub_list_device_events',
-            'hub_get_custom_rule', 'hub_test_custom_rule', 'hub_export_custom_rule',
+            'hub_get_custom_rule', 'hub_test_custom_rule',
             'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status', 'hub_get_update_status',
             'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
             'hub_list_captured_states',
             'hub_get_debug_logs', 'hub_report_issue',
             'hub_get_logs', 'hub_get_performance_stats',
             'hub_get_jobs', 'hub_get_memory_history',
-            'hub_get_radio_details', 'hub_get_device_health',
+            'hub_get_radio_details', 'hub_get_device_health', 'hub_get_metrics',
             'hub_list_apps', 'hub_list_drivers',
             'hub_get_source',
             'hub_list_backups', 'hub_get_backup',
             'hub_list_rooms', 'hub_get_room',
             'hub_list_files', 'hub_read_file',
-            'hub_list_installed_apps', 'hub_list_device_dependents', 'hub_get_app_config',
+            'hub_list_device_dependents', 'hub_get_app_config',
             'hub_list_app_pages',
             'hub_list_hpm_packages',
-            'hub_list_rules', 'hub_export_native_app', 'hub_get_rule_health',
+            'hub_list_rules', 'hub_get_rule_health',
             'hub_get_tool_guide'
             // hub_search_tools is in getReadOnlyToolNames() but suppressed in flat mode.
         ] as Set
@@ -330,7 +333,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         def expectedWrites = [
             'hub_call_device_command',
             'hub_create_custom_rule', 'hub_update_custom_rule', 'hub_delete_custom_rule',
-            'hub_import_custom_rule', 'hub_clone_custom_rule',
+            'hub_import_custom_rule', 'hub_clone_custom_rule', 'hub_export_custom_rule',
             'hub_set_mode',
             'hub_set_variable', 'hub_create_variable', 'hub_delete_variable',
             'hub_create_connector', 'hub_delete_connector',
@@ -340,7 +343,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_delete_debug_logs', 'hub_set_log_level',
             'hub_create_backup',
             'hub_reboot', 'hub_shutdown', 'hub_call_zwave_repair', 'hub_delete_device',
-            'hub_call_gc', 'hub_get_metrics',
+            'hub_call_gc',
             'hub_manage_virtual_device', 'hub_update_device',
             'hub_create_room', 'hub_delete_room', 'hub_update_room',
             'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
@@ -350,7 +353,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
             'hub_create_native_app', 'hub_update_native_app', 'hub_clone_native_app',
-            'hub_import_native_app', 'hub_delete_native_app'
+            'hub_import_native_app', 'hub_delete_native_app', 'hub_export_native_app'
         ] as Set
 
         then:
