@@ -34,18 +34,29 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     // -------- initialize() lifecycle (issue #105 PR2a #6) --------
 
-    def "initialize unsubscribes before re-subscribing to hub variables (no duplicate subscription stacking)"() {
-        given: 'a clean initialize with the unrelated side-effects neutralised -- no hub vars, so the private subscribe/refresh helpers run but touch nothing'
+    def "initialize unsubscribes BEFORE re-subscribing to hub variables (no duplicate subscription stacking)"() {
+        given: 'a clean initialize with the unrelated side-effects neutralised'
         UNSUBSCRIBE_CALL_COUNT.set(0)
         stateMap.accessToken = 'tok'                  // skip createAccessToken
         script.metaClass.checkForUpdate = { -> }      // skip the GitHub HTTP check
-        script.metaClass.getAllGlobalVars = { -> [:] }
+        // The first getAllGlobalVars call happens inside _subscribeToAllHubVariables (the
+        // re-subscribe phase), so capturing the unsubscribe count there proves ordering --
+        // a regression that moved unsubscribe() AFTER _subscribeToAllHubVariables() would see
+        // 0 here and wipe the freshly-established subscriptions.
+        def unsubCountAtResubscribe = -1
+        script.metaClass.getAllGlobalVars = { ->
+            if (unsubCountAtResubscribe < 0) unsubCountAtResubscribe = UNSUBSCRIBE_CALL_COUNT.get()
+            [:]
+        }
 
         when:
         script.initialize()
 
-        then: 'unsubscribe() fires -- Hubitat does NOT implicitly unsubscribe between updated() calls, so without it every settings save stacks duplicate variable subscriptions'
+        then: 'unsubscribe() fires (Hubitat does NOT implicitly unsubscribe between updated() calls, so without it every settings save stacks duplicate subscriptions)'
         UNSUBSCRIBE_CALL_COUNT.get() == 1
+
+        and: 'and it fired BEFORE the re-subscribe phase'
+        unsubCountAtResubscribe == 1
     }
 
     // -------- toolListVariables --------

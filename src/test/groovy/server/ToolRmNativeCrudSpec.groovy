@@ -11720,6 +11720,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    @spock.lang.Unroll
+    def "hub_update_native_app via dispatch surfaces success:false when the hub rejects the write (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 409, location: null, data: 'stale version token']
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_update_native_app', [appId: 100, settings: [origLabel: "x"], confirm: true])
+
+        then: 'the rejected write surfaces as failure through the full dispatch envelope, not as success'
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+
+        where:
+        useGateways << [true, false]
+    }
+
     // ---------- hub_delete_native_app dispatch ----------
 
     @spock.lang.Unroll
