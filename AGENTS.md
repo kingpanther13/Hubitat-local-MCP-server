@@ -101,6 +101,10 @@ Defaults for unannotated tools are deliberately cautious (non-read-only, potenti
 - **Write tools:** safety warning + mandatory pre-flight checklist directly in the description (already required; reaffirmed).
 - **Make implicit context explicit.** Terminology quirks, query-language constraints, resource relationships — write them in. Anthropic: *"Even small refinements to tool descriptions can yield dramatic improvements."*
 - **Semantic names beat opaque UUIDs.** Where a tool returns an identifier, prefer human-meaningful names over raw UUIDs; if a technical ID is needed for chaining, expose both name AND id. Anthropic: *"resolving arbitrary alphanumeric UUIDs to more semantically meaningful and interpretable language… significantly improves Claude's precision in retrieval tasks by reducing hallucinations."*
+- **Length: match it to complexity; cut fluff, not substance.** ~3-4 sentences for a complex tool (Anthropic floor), 1-2 for a simple one (OpenAI). Tool defs are re-sent to the model every turn, so trim redundancy and padding — but NEVER drop load-bearing content (purpose, scope, critical parameter formats, safety, behavioural quirks) to save bytes. Sources: Anthropic *define-tools* (*"at least 3-4 sentences… more if complex"*); OpenAI *GPT-5.2 guide* (*"1-2 sentences for what they do and when to use them"*, 2025-12-11).
+- **`get_tool_guide` is a supplement, not an offload target.** Many agents won't call it even when told to, so anything an agent NEEDS to use the tool correctly stays in the description / parameter descriptions. Route only DEEP reference (exhaustive capability tables, long worked examples) into `get_tool_guide` / `[[FLAT_TRIM]]`.
+- **Examples: not stuffed in the description body.** Put a concrete format example in the relevant *parameter's* description (e.g. `"…e.g. 2026-02-04T14:00"`); route full worked examples to `get_tool_guide`. (`input_examples` is the spec-native home but is incompatible with the Tool Search Tool, so gateway/deferred tools keep example content in description/param text.) Sources: Anthropic *advanced-tool-use* (2025-11-24); OpenAI *GPT-4.1 / GPT-5.2 guides*.
+- **Deferred/gateway tools are also a retrieval surface.** The `tools/list` name + description + parameter descriptions feed the BM25 tool-search index, so include semantic keywords matching how users phrase the task — not just mechanics. Source: Anthropic *tool-search-tool* (matches this repo's gateway / `hub_search_tools` retrieval model).
 
 ### Schema design
 
@@ -116,6 +120,7 @@ Defaults for unannotated tools are deliberately cautious (non-read-only, potenti
 - **Runtime errors** (operation tried and failed for non-arg reasons): return `[success: false, error: <human-readable>, note: <actionable guidance>]`. Don't throw — the AI needs a structured error.
 - **`isError: true` envelope** for tool-execution errors per MCP spec 2025-06-18. Already adopted in v0.7.7+ (see SKILL.md § Version Management for the adoption note).
 - **Specific, actionable, recovery-oriented error text.** Tell the model how to recover. Anthropic recommends steering truncation errors toward recovery strategies like *"many small and targeted searches instead of a single, broad search."*
+- **Point error/recovery text at `get_tool_guide`.** When a tool has a `get_tool_guide` section, its `note` / error text SHOULD reference it (e.g. *"…see `hub_get_tool_guide(section='X')` for the full reference"*). Many agents skip the guide otherwise — an in-context error pointer is an extra nudge to actually consult it, and it lets the live description stay lean without losing the deep reference.
 
 ### Pagination & response-size discipline
 
