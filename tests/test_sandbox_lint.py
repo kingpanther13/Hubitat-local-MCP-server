@@ -53,6 +53,40 @@ def test_self_test_case(desc, source, expected):
 
 
 # ---------------------------------------------------------------------------
+# check_read_write_split — read/write-split invariant (AGENTS.md hard rule)
+# ---------------------------------------------------------------------------
+# A read-only tool must be reachable from a hub_read_* gateway OR be flat; it
+# may NEVER be stranded behind only a hub_manage_* gateway. The main lint
+# (sandbox-lint.yml) enforces the invariant on the real source. These tests run
+# the must-catch / must-not-catch fixtures through the REAL check in pytest (CI)
+# so the guard can never silently no-op -- the `--self-test` runner is dev-only
+# and not wired into any CI job.
+
+@pytest.mark.parametrize("desc,src,expected_codes", sl.READ_WRITE_SPLIT_SELF_TEST_CASES)
+def test_read_write_split_self_test_case(desc, src, expected_codes):
+    """Each READ_WRITE_SPLIT_SELF_TEST_CASES entry: the guard reports exactly the
+    declared rule codes (empty set = must-not-catch, a code = must-catch)."""
+    findings = sl.check_read_write_split(src_override=src)
+    actual_codes = {f["rule"] for f in findings}
+    assert actual_codes == set(expected_codes), (
+        f"[{desc}] expected codes {sorted(set(expected_codes))}, "
+        f"got {sorted(actual_codes)}\n  findings: {findings!r}"
+    )
+
+
+def test_read_write_split_real_source_has_no_stranded_reads():
+    """The real shipped source must satisfy the invariant: zero stranded reads.
+    Guards against a future edit that adds a read-only tool to a hub_manage_*
+    gateway without also surfacing it in a hub_read_* gateway (or flat)."""
+    findings = sl.check_read_write_split()
+    stranded = [f for f in findings if f["rule"] == "read-write-split-stranded-read"]
+    assert stranded == [], (
+        "read-only tool(s) stranded behind only a hub_manage_* gateway:\n  "
+        + "\n  ".join(f["message"] for f in stranded)
+    )
+
+
+# ---------------------------------------------------------------------------
 # strip_comments_and_strings — additional direct coverage
 # ---------------------------------------------------------------------------
 
