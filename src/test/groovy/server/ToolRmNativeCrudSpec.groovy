@@ -1465,10 +1465,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
 
-        then: "the silent no-op is surfaced as success: false with the verify-via-hub_get_app_config recovery hint"
+        then: "the silent no-op is surfaced as success: false with the honest dropped-click / verify-first recovery hint"
         result.success == false
         result.error?.contains("still present in rule")
-        result.error?.contains("Verify via hub_get_app_config")
+        result.error?.contains("DROPPED first wizard click")
+        result.error?.contains("hub_get_app_config")
     }
 
     def "removeAction succeeds immediately when deletion propagates on the first post-click fetch"() {
@@ -2606,9 +2607,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.actionsRequestedForRemoval == null
         result.actionsStillPresent == null
 
-        and: "legacy diagnostic phrase + restoreHint hint shape still present, and the retry-exhaustion discriminator (_rmDeleteAction's 'waited 10 seconds' phrase) pins the spec to the EXHAUSTION path -- catches a wrong-impl that satisfies 'deletion may commit post-response' via an unrelated IllegalArgumentException"
-        result.error?.contains("deletion may commit post-response")
-        result.error?.contains("waited 10 seconds")
+        and: "honest dropped-click diagnostic + restoreHint hint shape still present, and the retry-exhaustion discriminator (_rmDeleteAction's '~10s of polling' phrase) pins the spec to the EXHAUSTION path -- catches a wrong-impl that satisfies the dropped-click message via an unrelated IllegalArgumentException"
+        result.error?.contains("DROPPED first wizard click")
+        result.error?.contains("~10s of polling")
         result.restoreHint != null
         result.verifyHint != null
         result.verifyHint?.contains("hub_get_app_config")
@@ -11316,7 +11317,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "returns success: false after retry budget exhausted"
         result.success == false
-        result.error?.contains("waited 10s")
+        result.error?.contains("~10s of polling")
         result.error?.contains("hub_get_app_config")
         result.error?.contains("hub_restore_backup")
 

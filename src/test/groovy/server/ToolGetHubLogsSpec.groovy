@@ -56,6 +56,39 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         result.count == 3
     }
 
+    def "BUG-9: known-benign RM periodic-render NPE entries are flagged so they aren't read as real errors"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+
+        and: "the hub log contains RM's own benign periodic-render NPE (logged against the rule app) plus an ordinary line"
+        registerLogs([
+            "BAT-VERIFY-PER 1606\terror\tjava.lang.NullPointerException: Cannot get property 'n' on null object on line 1576 (method periodic)\t2026-04-19 10:00:01.000\ttype",
+            'App 1\tinfo\tordinary message\t2026-04-19 10:00:00.000\ttype'
+        ])
+
+        when:
+        def result = script.toolGetHubLogs([:])
+
+        then: "the benign RM-internal noise is counted + explained, without altering the raw entries"
+        result.logs.size() == 2
+        result.benignRmNoiseCount == 1
+        result.benignRmNoiseNote?.contains('NON-FATAL')
+        result.benignRmNoiseNote?.contains('periodic')
+    }
+
+    def "BUG-9: no benign annotation when there is no RM periodic noise"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        registerLogs(['App 1\tinfo\tordinary message\t2026-04-19 10:00:00.000\ttype'])
+
+        when:
+        def result = script.toolGetHubLogs([:])
+
+        then: "the benign-noise fields are absent for an ordinary log set"
+        result.benignRmNoiseCount == null
+        result.benignRmNoiseNote == null
+    }
+
     @spock.lang.Unroll
     def "hub_get_logs via dispatch returns most-recent-first log entries (useGateways=#useGateways)"() {
         given:
