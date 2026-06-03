@@ -34,6 +34,14 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         ex.message.contains('Built-in App')
     }
 
+    def "list_apps name cleaning strips HTML tags AND decodes entities (BUG-12 re-test gap)"() {
+        expect: "stripAppConfigHtml (applied to every list_apps name) handles tags AND the entities RM escapes user-typed names with"
+        script.stripAppConfigHtml("BAT-G3 <span style='color:red'>(Required Expression false)</span>") == "BAT-G3 (Required Expression false)"
+        script.stripAppConfigHtml("Heat On &lt;67 for 3 minute") == "Heat On <67 for 3 minute"
+        script.stripAppConfigHtml("Mini split =&lt;73.6 AND RH &lt;52") == "Mini split =<73.6 AND RH <52"
+        script.stripAppConfigHtml("a &amp; b") == "a & b"
+    }
+
     @spock.lang.Unroll
     def "hub_list_apps scope=instances via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
         given:

@@ -879,7 +879,7 @@ def _paginateList(List fullList, cursor, int pageSize, String toolName) {
 def getGatewayConfig() {
     return [
         hub_manage_custom_rules: [
-            description: "Legacy MCP custom-rule engine (sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI): create, read, update, delete, test, export, import, and clone. For native Rule Machine rules visible in the hub UI use hub_manage_rule_machine / hub_manage_native_rules_and_apps instead. Read-only views are also in hub_read_rules.",
+            description: "Legacy MCP custom-rule engine (sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI): create, read, update, delete, test, export, import, and clone. Write ops (create/delete/export/import/clone) require the Custom Rule Engine toggle ON in MCP settings; when OFF only get/test (and the enabled toggle via update) work. For native Rule Machine rules visible in the hub UI use hub_manage_rule_machine / hub_manage_native_rules_and_apps instead. Read-only views are also in hub_read_rules.",
             tools: ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"],
             summaries: [
                 hub_get_custom_rule: "List custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
@@ -1017,7 +1017,7 @@ def getGatewayConfig() {
             description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, MCP debug logs, and log level configuration. (Device/location event history: use the core hub_list_device_events tool.)",
             tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_debug_logs", "hub_delete_debug_logs", "hub_set_log_level"],
             summaries: [
-                hub_get_logs: "Get Hubitat system logs, most recent first. Args: level (debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex AND/OR), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
+                hub_get_logs: "Get Hubitat system logs, most recent first. Args: level (debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex any/all), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
                 hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions",
                 hub_get_debug_logs: "Get MCP internal debug logs (mode='logs', default) or logging status (mode='status'). Args: mode, level, limit",
@@ -1064,7 +1064,7 @@ def getGatewayConfig() {
                 hub_list_files: "List files in File Manager (names, sizes, URLs)",
                 hub_read_file: "Read file content. Args: fileName, offset, limit",
                 hub_write_file: "Write file to File Manager. Args: fileName, content, confirm=true",
-                hub_delete_file: "Delete file from File Manager. Args: fileName, confirm=true"
+                hub_delete_file: "Delete file from File Manager (auto-backs up first to <name>_backup_<ts>, unless it's already a backup). Args: fileName, confirm=true"
             ],
             searchHints: [
                 hub_list_files: "show uploaded stored csv json text data",
@@ -1116,7 +1116,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_native_rules_and_apps: [
-            description: "WHEN TO USE: this is the right path for any user who says 'create a rule machine rule,' 'make a Hubitat rule,' or wants the rule visible in Hubitat's Rule Machine app list / web UI. Use this for default rule-creation requests. The custom_* MCP rule engine (separate surface) is only appropriate when the user EXPLICITLY wants a sandbox MCP-managed rule that does not appear in Hubitat's UI -- uncommon outside power-user / testing scenarios. QUICK FLOW for a default rule create: (1) hub_create_native_app(appType='rule_machine', name='...', confirm=true) returns appId. (2) hub_update_native_app(appId=N, addTrigger={capability:'Certain Time (and optional date)', time:'A specific time', atTime:'17:00'}, confirm=true). (3) hub_update_native_app(appId=N, addAction={capability:'log', message:'...'}, confirm=true). Three calls. Each call returns settingsApplied so you can confirm the rule baked. Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules -- any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete by appId). Writes snapshot before every change; restore via the unified hub_list_backups (in hub_read_apps_code) + hub_restore_backup (in hub_manage_code) tools. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via hub_get_app_config(appId=N) and inspect persisted settings before retrying.",
+            description: "WHEN TO USE: this is the right path for any user who says 'create a rule machine rule,' 'make a Hubitat rule,' or wants the rule visible in Hubitat's Rule Machine app list / web UI. Use this for default rule-creation requests. The custom_* MCP rule engine (separate surface) is only appropriate when the user EXPLICITLY wants a sandbox MCP-managed rule that does not appear in Hubitat's UI -- uncommon outside power-user / testing scenarios. QUICK FLOW for a default rule create: (1) hub_create_native_app(appType='rule_machine', name='...', confirm=true) returns appId. (2) hub_update_native_app(appId=N, addTrigger={capability:'Certain Time (and optional date)', time:'A specific time', atTime:'17:00'}, confirm=true). (3) hub_update_native_app(appId=N, addAction={capability:'log', message:'...'}, confirm=true). Three calls. Each call returns settingsApplied so you can confirm the rule baked. Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules -- any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete, plus clone/copy/duplicate and export/import, by appId). Writes snapshot before every change; restore via the unified hub_list_backups (in hub_read_apps_code) + hub_restore_backup (in hub_manage_code) tools. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via hub_get_app_config(appId=N) and inspect persisted settings before retrying.",
             tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_create_native_app", "hub_update_native_app", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
@@ -1369,7 +1369,12 @@ def handleGateway(gatewayName, toolName, toolArgs) {
             message: "Call again with tool='<name>' and args={...} to execute a tool.",
             tools: config.tools.collect { name ->
                 def d = defMap[name]
-                [name: name, description: d?.description, inputSchema: d?.inputSchema]
+                def entry = [name: name, description: d?.description, inputSchema: d?.inputSchema]
+                // Forward outputSchema when the tool declares one (PR1C). The flat
+                // tools/list path drops it for size; the gateway catalog is the
+                // disclosure surface where full schemas belong.
+                if (d?.outputSchema != null) entry.outputSchema = d.outputSchema
+                entry
             }
         ]
     }
@@ -1419,7 +1424,18 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
         .collectEntries { [(it.name): it] }
     def toolDef = defMap[toolName]
-    if (toolDef?.inputSchema?.required) {
+    // Gate-bypassing meta-calls return pure static content with NO hub mutation and
+    // short-circuit at the very top of their handler (before any gate / appId check),
+    // so they must also bypass this required-param pre-validation -- otherwise the
+    // gateway rejects them for missing appId/confirm before the handler ever runs.
+    // hub_update_native_app(guide:true) returns the capability reference inline;
+    // addTrigger/addAction {discover:true} return the live machine-readable schema.
+    def isGatedMetaCall = toolName == "hub_update_native_app" && (
+        safeArgs.guide == true ||
+        (safeArgs.addTrigger instanceof Map && safeArgs.addTrigger.discover == true) ||
+        (safeArgs.addAction instanceof Map && safeArgs.addAction.discover == true)
+    )
+    if (toolDef?.inputSchema?.required && !isGatedMetaCall) {
         def missing = toolDef.inputSchema.required.findAll { !safeArgs.containsKey(it) }
         if (missing) {
             def props = toolDef.inputSchema.properties ?: [:]
@@ -1582,7 +1598,11 @@ def getToolDefinitions() {
         // [[FLAT_TRIM]] markers to recover headroom under the hub's 124,000-byte cap.
         def transformed = applyDescriptionTransform(filtered, true)
         return transformed.collect { tool ->
-            tool + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames)]
+            // Flat mode drops outputSchema to protect the 124,000-byte tools/list cap
+            // (this is the all-tools-individually surface). outputSchema is still
+            // published in gateway mode (base tools) and the gateway catalog disclosure,
+            // where the per-response budget has headroom.
+            tool.findAll { it.key != 'outputSchema' } + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames)]
         }
     }
 
@@ -1636,6 +1656,10 @@ def getToolDefinitions() {
 
 // Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)
 def getAllToolDefinitions() {
+    return _getAllToolDefinitions_part1() + _getAllToolDefinitions_part2() + _getAllToolDefinitions_part3() + _getAllToolDefinitions_part4() + _getAllToolDefinitions_part5() + _getAllToolDefinitions_part6() + _getAllToolDefinitions_part7() + _getAllToolDefinitions_part8()
+}
+
+def _getAllToolDefinitions_part1() {
     return [
         // Device Tools
         [
@@ -1647,9 +1671,7 @@ DEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> sugges
 Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.
 
 [[FLAT_TRIM]]
-Summary response always includes: id, name (driver type), label (user name), room, disabled (bool), deviceNetworkId, lastActivity (ISO timestamp), parentDeviceId (or null). Summary mode also returns currentStates (dict); detailed mode replaces currentStates with capabilities, attributes, and commands.
-
-Server-side filtering (all applied before pagination): filter for enabled/disabled/stale; labelFilter for case-insensitive substring match on device label; capabilityFilter for case-insensitive exact match on capability name (e.g. 'Switch'). Use format='ids' for a flat ID array (cheapest shape). Use fields=[...] to project only named fields and skip expensive hub reads (e.g. fields=['id','label'] skips currentStates). To count children of a parent device, group the response by parentDeviceId.
+Summary mode returns currentStates; detailed mode replaces that with capabilities, attributes, and commands (field list in outputSchema). Server-side filtering (all applied before pagination) is configured via the filter / labelFilter / capabilityFilter params (documented on those params). format='ids' is the cheapest shape; fields=[...] projects named fields and skips expensive hub reads. To count a parent's children, group the response by parentDeviceId.
 [[/FLAT_TRIM]]
 Call `hub_get_tool_guide(section='performance')` for response-shape details, filter/projection semantics, and field-name reference.""",
             inputSchema: [
@@ -1665,19 +1687,73 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object.[[FLAT_TRIM]] Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section='performance')` for valid field names and projection semantics."],
                     cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor returned alongside nextOffset."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    devices: [type: "array", description: "Device objects (summary/detailed modes). Per-field projection applies", items: [type: "object", properties: [
+                        id: [type: "string", description: "Device ID (always present)"],
+                        name: [type: "string", description: "Driver type / device name"],
+                        label: [type: "string", description: "User-assigned label"],
+                        room: [type: "string", description: "Assigned room name"],
+                        disabled: [type: "boolean", description: "Device disabled"],
+                        deviceNetworkId: [type: "string", description: "Device network ID"],
+                        lastActivity: [type: "string", description: "Last-activity ISO timestamp, or null"],
+                        parentDeviceId: [type: "string", description: "Parent device ID, or null"],
+                        mcpManaged: [type: "boolean", description: "Present and true for this app's virtual devices"],
+                        currentStates: [type: "object", description: "Summary mode: common attribute values"],
+                        capabilities: [type: "array", description: "Detailed mode: capability names", items: [type: "string"]],
+                        attributes: [type: "array", description: "Detailed mode: attribute name/value pairs", items: [type: "object"]],
+                        commands: [type: "array", description: "Detailed mode: command names", items: [type: "string"]]
+                    ]]],
+                    deviceIds: [type: "array", description: "format='ids' mode: flat array of integer device IDs", items: [type: "integer"]],
+                    count: [type: "integer", description: "Devices in this response"],
+                    total: [type: "integer", description: "Total devices after filtering"],
+                    unfilteredTotal: [type: "integer", description: "Total before filters; present when a filter is active"],
+                    filter: [type: "string", description: "Echoed filter; present when non-default"],
+                    labelFilter: [type: "string", description: "Echoed labelFilter; present when set"],
+                    capabilityFilter: [type: "string", description: "Echoed capabilityFilter; present when set"],
+                    capabilityFilterMatchedKnownCapability: [type: "boolean", description: "When capabilityFilter yields 0: whether the capability exists on any device"],
+                    offset: [type: "integer", description: "Page start index; present when paginated"],
+                    limit: [type: "integer", description: "Page size; present when paginated"],
+                    hasMore: [type: "boolean", description: "More pages remain; present when paginated"],
+                    nextOffset: [type: "integer", description: "Next page offset; present when more remain"],
+                    nextCursor: [type: "string", description: "Opaque cursor; present in cursor mode when more remain"],
+                    message: [type: "string", description: "Present when no devices or offset out of range"]
+                ]
             ]
         ],
         [
             name: "hub_get_device",
-            description: """Get detailed information about a specific device.
+            description: """Get one device's full detail: capabilities, all attributes with current values, and supported commands (with argument types). Use when you need a single device's complete profile — e.g. to discover which commands/attributes it supports before calling hub_call_device_command or hub_get_device_attribute. For a multi-device listing use hub_list_devices instead.
 
 Only query devices the user has mentioned or that are relevant to their request. Do not probe random devices.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from hub_list_devices"]
+                    deviceId: [type: "string", description: "Device ID from hub_list_devices, e.g. \"42\""]
                 ],
                 required: ["deviceId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    id: [type: "string", description: "Device ID"],
+                    name: [type: "string", description: "Driver type / device name"],
+                    label: [type: "string", description: "User-assigned label"],
+                    room: [type: "string", description: "Assigned room name"],
+                    capabilities: [type: "array", description: "Capability names", items: [type: "string"]],
+                    attributes: [type: "array", description: "Attributes with current values", items: [type: "object", properties: [
+                        name: [type: "string", description: "Attribute name"],
+                        dataType: [type: "string", description: "Attribute data type"],
+                        value: [description: "Current value"]
+                    ]]],
+                    commands: [type: "array", description: "Supported commands", items: [type: "object", properties: [
+                        name: [type: "string", description: "Command name"],
+                        arguments: [type: "array", description: "Argument name/type pairs, or null. Each `type` is Hubitat's raw declared arg type (e.g. NUMBER, STRING, ENUM, DATE) or 'unknown' when the driver doesn't declare one.", items: [type: "object"]]
+                    ]]]
+                ],
+                required: ["id", "name", "label", "capabilities", "attributes", "commands"]
             ]
         ],
         [
@@ -1694,25 +1770,50 @@ Only query devices the user has mentioned or that are relevant to their request.
                     attribute: [type: "string", description: "Attribute name"],
                     expectedValue: [type: "string", description: "If set, block-poll until currentValue equals this string. Enables poll mode. At least one of expectedValue/expectedValues enables polling."],
                     expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue is any of these strings (OR with expectedValue). Enables poll mode."],
-                    timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000],
-                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.", default: 200]
+                    timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
+                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.", default: 200, minimum: 50, maximum: 5000]
                 ],
                 required: ["deviceId", "attribute"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    device: [type: "string", description: "One-shot mode: device label"],
+                    attribute: [type: "string", description: "One-shot mode: attribute name"],
+                    value: [description: "One-shot mode: current attribute value"],
+                    success: [type: "boolean", description: "Poll mode: true if a matching value was observed"],
+                    finalValue: [description: "Poll mode: last value read"],
+                    elapsedMs: [type: "integer", description: "Poll mode: elapsed time in milliseconds"],
+                    polledCount: [type: "integer", description: "Poll mode: number of reads performed"],
+                    timedOut: [type: "boolean", description: "Poll mode: true if the timeout elapsed without a match"],
+                    neverReported: [type: "boolean", description: "Poll mode: present and true if the attribute never reported a value in the window"],
+                    interrupted: [type: "boolean", description: "Poll mode: present and true if the poll was interrupted (hub reload)"]
+                ]
             ]
         ],
         [
             name: "hub_call_device_command",
-            description: """Send a command to a device. Always verify state changed after.
+            description: """Send a command (e.g. on, off, setLevel) to a device. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead. Always verify the state changed after sending (commands are fire-and-forget — the hub returns acceptance, not effect).
 
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match"],
-                    command: [type: "string", description: "Command name"],
-                    parameters: [type: "array", description: "Command parameters", items: [type: "string"]]
+                    command: [type: "string", description: "Command name, e.g. \"setLevel\". Must be one of the device's supported commands (see hub_get_device)."],
+                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor. Omit for no-arg commands like on/off. Each element is a string; numbers and JSON-object values are passed as strings (e.g. [\"{\\\"hue\\\":0,\\\"saturation\\\":100,\\\"level\\\":50}\"]) and coerced hub-side.", items: [type: "string"]]
                 ],
                 required: ["deviceId", "command"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the command was sent"],
+                    device: [type: "string", description: "Device label"],
+                    command: [type: "string", description: "Command sent"],
+                    parameters: [type: "array", description: "Normalized parameters passed to the command"]
+                ],
+                required: ["success", "device", "command"]
             ]
         ],
         [
@@ -1728,6 +1829,27 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch'). Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name."],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500). Higher values may slow hub.", default: 10]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    events: [type: "array", description: "Event rows (most recent first)", items: [type: "object", properties: [
+                        name: [type: "string", description: "Event/attribute name"],
+                        value: [description: "Event value"],
+                        unit: [type: "string", description: "Unit of measure, if any"],
+                        description: [type: "string", description: "Human-readable description text"],
+                        date: [type: "string", description: "Event timestamp (ISO)"],
+                        type: [type: "string", description: "Location mode only: event type"],
+                        isStateChange: [type: "boolean", description: "Whether this event was a state change"]
+                    ]]],
+                    count: [type: "integer", description: "Events returned"],
+                    device: [type: "string", description: "Device label; present in device modes"],
+                    deviceId: [type: "string", description: "Device ID; present in history mode"],
+                    source: [type: "string", description: "'device' or 'location'; present in history mode"],
+                    hoursBack: [type: "integer", description: "History window in hours; present in history mode"],
+                    attributeFilter: [type: "string", description: "Echoed attribute filter; present in history mode"],
+                    sinceTimestamp: [type: "string", description: "Window start (ISO); present in history mode"]
+                ]
             ]
         ],
         // Rule Management
@@ -1740,6 +1862,69 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
                     ruleId: [type: "string", description: "Rule ID. Omit to list all rules; provide for one rule's detail."],
                     detailed: [type: "boolean", description: "Requires ruleId. Returns comprehensive diagnostics (execution history, recent logs, errors) instead of plain rule data. Rejected if set without a ruleId.", default: false],
                     cursor: [type: "string", description: "List mode only (ruleId omitted): opt-in pagination cursor. Pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    rules: [type: "array", description: "List mode (ruleId omitted): rule summaries", items: [type: "object", properties: [
+                        id: [type: "string", description: "Rule ID"],
+                        name: [type: "string", description: "Rule name"],
+                        description: [type: "string", description: "Rule description"],
+                        enabled: [type: "boolean", description: "Whether the rule is enabled"],
+                        triggerCount: [type: "integer", description: "Number of triggers"],
+                        conditionCount: [type: "integer", description: "Number of conditions"],
+                        actionCount: [type: "integer", description: "Number of actions"],
+                        lastTriggered: [description: "Last trigger timestamp"],
+                        executionCount: [type: "integer", description: "Times executed"],
+                        source: [type: "string", description: "Always 'mcp_custom_engine'"]
+                    ]]],
+                    count: [type: "integer", description: "List mode: rules in this page"],
+                    total: [type: "integer", description: "List mode (paginated): total rule count"],
+                    nextCursor: [type: "string", description: "List mode: present when more results remain"],
+                    id: [type: "string", description: "Single-rule mode: rule ID"],
+                    name: [type: "string", description: "Single-rule mode: rule name"],
+                    description: [type: "string", description: "Single-rule mode: rule description"],
+                    enabled: [type: "boolean", description: "Single-rule mode: enabled state"],
+                    testRule: [type: "boolean", description: "Single-rule mode: skips backup on deletion"],
+                    triggers: [type: "array", description: "Single-rule mode: trigger definitions"],
+                    conditions: [type: "array", description: "Single-rule mode: condition definitions"],
+                    conditionLogic: [type: "string", description: "Single-rule mode: 'all' or 'any'"],
+                    actions: [type: "array", description: "Single-rule mode: action definitions"],
+                    localVariables: [type: "object", description: "Single-rule mode: local variables"],
+                    createdAt: [description: "Single-rule mode: creation timestamp"],
+                    updatedAt: [description: "Single-rule mode: last update timestamp"],
+                    lastTriggered: [description: "Single-rule mode: last trigger timestamp"],
+                    executionCount: [type: "integer", description: "Single-rule mode: times executed"],
+                    source: [type: "string", description: "Single/detailed mode: always 'mcp_custom_engine'"],
+                    rule: [type: "object", description: "Detailed mode (detailed=true): rule identity", properties: [
+                        id: [type: "string", description: "Rule ID"],
+                        name: [type: "string", description: "Rule name"],
+                        description: [type: "string", description: "Rule description"],
+                        enabled: [type: "boolean", description: "Enabled state"],
+                        createdAt: [type: "string", description: "Creation timestamp"],
+                        updatedAt: [type: "string", description: "Last update timestamp"]
+                    ]],
+                    execution: [type: "object", description: "Detailed mode: execution stats", properties: [
+                        count: [type: "integer", description: "Times executed"],
+                        lastTriggered: [type: "string", description: "Last trigger timestamp"]
+                    ]],
+                    structure: [type: "object", description: "Detailed mode: trigger/condition/action structure", properties: [
+                        triggerCount: [type: "integer", description: "Number of triggers"],
+                        conditionCount: [type: "integer", description: "Number of conditions"],
+                        actionCount: [type: "integer", description: "Number of actions"],
+                        triggers: [type: "array", description: "Trigger definitions"],
+                        conditions: [type: "array", description: "Condition definitions"],
+                        actions: [type: "array", description: "Action definitions"],
+                        conditionLogic: [type: "string", description: "'all' or 'any'"]
+                    ]],
+                    state: [type: "object", description: "Detailed mode: rule state (localVariables)"],
+                    logs: [type: "object", description: "Detailed mode: recent logs and errors", properties: [
+                        recentCount: [type: "integer", description: "Recent log entries returned"],
+                        errorCount: [type: "integer", description: "Total error log entries"],
+                        recent: [type: "array", description: "Recent log entries"],
+                        errors: [type: "array", description: "Recent error log entries"]
+                    ]]
                 ]
             ]
         ],
@@ -1757,35 +1942,58 @@ Verify rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Rule name"],
-                    description: [type: "string", description: "Rule description"],
-                    enabled: [type: "boolean", description: "Enable rule immediately", default: true],
+                    name: [type: "string", description: "Rule name, e.g. \"Porch light at sunset\""],
+                    description: [type: "string", description: "Optional human-readable rule description"],
+                    enabled: [type: "boolean", description: "Enable rule immediately on creation", default: true],
                     testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion. Use for temporary/experimental rules.", default: false],
-                    triggers: [type: "array", description: "List of triggers"],
-                    conditions: [type: "array", description: "List of conditions"],
-                    conditionLogic: [type: "string", enum: ["all", "any"], default: "all"],
-                    actions: [type: "array", description: "List of actions"]
+                    triggers: [type: "array", description: "Trigger objects (at least one required), each a {type, ...} object. See the type list in the tool description and hub_get_tool_guide(section='rules') for per-type fields, e.g. {\"type\":\"time\",\"time\":\"sunset\"}."],
+                    conditions: [type: "array", description: "Optional condition objects gating the actions, each {type, ...}. See type list above and the rules guide, e.g. {\"type\":\"mode\",\"mode\":\"Night\"}."],
+                    conditionLogic: [type: "string", enum: ["all", "any"], description: "How to combine multiple conditions: 'all' = AND, 'any' = OR.", default: "all"],
+                    actions: [type: "array", description: "Action objects to run when triggered (at least one required), each {type, ...}. See type list above and the rules guide, e.g. {\"type\":\"device_command\",\"deviceId\":\"42\",\"command\":\"on\"}."]
                 ],
                 required: ["name", "triggers", "actions"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the rule was created"],
+                    ruleId: [type: "string", description: "ID of the new rule"],
+                    message: [type: "string", description: "Human-readable result"],
+                    diagnostics: [type: "object", description: "Persistence verification", properties: [
+                        storedTriggers: [type: "integer", description: "Triggers persisted"],
+                        storedActions: [type: "integer", description: "Actions persisted"],
+                        durationMs: [type: "integer", description: "Creation duration in ms"]
+                    ]]
+                ],
+                required: ["success", "ruleId"]
             ]
         ],
         [
             name: "hub_update_custom_rule",
-            description: "Update an existing rule. Use enabled=true/false to enable/disable. Always verify changes after. NOTE: when the Custom Rule Engine toggle is OFF (read-only mode), only the 'enabled' field is accepted -- structural changes (triggers/conditions/actions/name) require the toggle to be ON.",
+            description: "Update an existing MCP custom-engine rule in place; only the fields you supply are changed. Use enabled=true/false to enable or disable. Replacing triggers/conditions/actions overwrites that whole array (it is not a merge) -- get the current rule via hub_get_custom_rule first if you only want to tweak part of it, and see hub_get_tool_guide(section='rules') for trigger/condition/action structure. Verify changes after. NOTE: when the Custom Rule Engine toggle is OFF (read-only mode), only the 'enabled' field is accepted -- structural changes (triggers/conditions/actions/name) require the toggle to be ON.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "string", description: "Rule ID"],
-                    name: [type: "string"],
-                    description: [type: "string"],
-                    enabled: [type: "boolean"],
+                    ruleId: [type: "string", description: "ID of the rule to update (from hub_get_custom_rule)"],
+                    name: [type: "string", description: "New rule name"],
+                    description: [type: "string", description: "New rule description"],
+                    enabled: [type: "boolean", description: "Enable (true) or disable (false) the rule"],
                     testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion"],
-                    triggers: [type: "array"],
-                    conditions: [type: "array"],
-                    conditionLogic: [type: "string", enum: ["all", "any"]],
-                    actions: [type: "array"]
+                    triggers: [type: "array", description: "Replacement trigger objects (overwrites all triggers); see the rules guide for structure"],
+                    conditions: [type: "array", description: "Replacement condition objects (overwrites all conditions); see the rules guide for structure"],
+                    conditionLogic: [type: "string", enum: ["all", "any"], description: "How to combine conditions: 'all' = AND, 'any' = OR"],
+                    actions: [type: "array", description: "Replacement action objects (overwrites all actions); see the rules guide for structure"]
                 ],
                 required: ["ruleId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the update succeeded"],
+                    ruleId: [type: "string", description: "ID of the updated rule"],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success", "ruleId"]
             ]
         ],
         [
@@ -1799,45 +2007,134 @@ Verify rule after creation.""",
                     skipBackupCheck: [type: "boolean", description: "Force skip backup even for non-test rules. Rarely needed since testRule flag handles this. Default: false."]
                 ],
                 required: ["ruleId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the rule was deleted"],
+                    message: [type: "string", description: "Human-readable result"],
+                    backupFile: [type: "string", description: "File Manager backup filename (present when a backup was written)"]
+                ],
+                required: ["success"]
             ]
         ],
         // enable_rule and disable_rule merged into hub_update_custom_rule (use enabled=true/false)
         [
             name: "hub_test_custom_rule",
-            description: "Test a rule without executing actions (dry run)",
+            description: "Dry-run an MCP custom-engine rule: evaluate its conditions against current device/hub state and report whether it would fire, WITHOUT executing any actions (no devices change, no side effects). Use this to validate a rule's logic after creating or updating it. Returns per-condition results, wouldEvaluate, and the list of actions that would have run. Applies only to MCP custom rules; for native Rule Machine use hub_manage_native_rules_and_apps.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "string", description: "Rule ID"]
+                    ruleId: [type: "string", description: "ID of the custom rule to dry-run (from hub_get_custom_rule)"]
                 ],
                 required: ["ruleId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    ruleId: [type: "string", description: "Rule ID tested"],
+                    ruleName: [type: "string", description: "Rule name"],
+                    conditionsMet: [type: "boolean", description: "Whether all conditions evaluated true"],
+                    wouldExecute: [type: "boolean", description: "Whether the rule would fire its actions"],
+                    conditionResults: [type: "array", description: "Per-condition evaluation results"],
+                    actions: [type: "array", description: "Actions that would run (none executed)"]
+                ],
+                required: ["ruleId", "wouldExecute"]
             ]
         ],
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub info: model, firmware, uptime, memory, temperature, database size, MCP stats, and settings. Location/PII data (name, IP, timezone, coordinates, zip code) requires Hub Admin Read.",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, free memory, internal temperature, database size, MCP server stats, and current security/toggle settings. Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Hub Admin Read is enabled; otherwise they are omitted.",
             inputSchema: [
                 type: "object",
                 properties: [
                     identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    temperatureScale: [type: "string", description: "Hub temperature scale (F/C)"],
+                    model: [type: "string", description: "Hardware ID/model"],
+                    firmwareVersion: [type: "string", description: "Firmware version string"],
+                    zigbeeChannel: [type: "string", description: "Zigbee radio channel"],
+                    zwaveVersion: [type: "string", description: "Z-Wave firmware version"],
+                    zigbeeId: [type: "string", description: "Zigbee ID"],
+                    type: [type: "string", description: "Hub type"],
+                    uptimeSeconds: [description: "Uptime in seconds (or 'unavailable' if the SDK lookup failed)"],
+                    uptimeFormatted: [type: "string", description: "Human-readable uptime"],
+                    freeMemoryKB: [type: "string", description: "Free OS memory in KB"],
+                    memoryWarning: [type: "string", description: "Present when memory is low"],
+                    memoryNote: [type: "string", description: "Present when memory is moderate"],
+                    internalTempCelsius: [type: "string", description: "Internal temperature in Celsius"],
+                    temperatureWarning: [type: "string", description: "Present when temperature is high"],
+                    temperatureNote: [type: "string", description: "Present when temperature is warm"],
+                    databaseSizeKB: [type: "string", description: "Database size in KB"],
+                    databaseWarning: [type: "string", description: "Present when database is large"],
+                    mcpServerVersion: [type: "string", description: "Installed MCP server version"],
+                    mcpDeviceCount: [type: "integer", description: "Selected device count"],
+                    mcpRuleCount: [type: "integer", description: "MCP rule child-app count"],
+                    mcpLogEntries: [type: "integer", description: "Buffered MCP log entry count"],
+                    mcpCapturedStates: [type: "integer", description: "Captured device state count"],
+                    hubSecurityConfigured: [type: "boolean", description: "Whether hub security is configured"],
+                    hubAdminReadEnabled: [type: "boolean", description: "Hub Admin Read toggle state"],
+                    hubAdminWriteEnabled: [type: "boolean", description: "Hub Admin Write toggle state"],
+                    builtinAppEnabled: [type: "boolean", description: "Built-in app toggle state"],
+                    customRuleEngineEnabled: [type: "boolean", description: "Custom rule engine toggle state"],
+                    developerModeEnabled: [type: "boolean", description: "Developer Mode toggle state"],
+                    name: [type: "string", description: "Hub name (Hub Admin Read only)"],
+                    localIP: [type: "string", description: "Hub local IP (Hub Admin Read only)"],
+                    timeZone: [type: "string", description: "Time zone ID (Hub Admin Read only)"],
+                    latitude: [type: "number", description: "Latitude (Hub Admin Read only)"],
+                    longitude: [type: "number", description: "Longitude (Hub Admin Read only)"],
+                    zipCode: [type: "string", description: "Zip code (Hub Admin Read only)"],
+                    hubData: [type: "object", description: "Hub data map (Hub Admin Read only)"],
+                    hubAdminReadRequired: [type: "string", description: "Present when Hub Admin Read is disabled; PII excluded"],
+                    identifyHubTriggered: [type: "boolean", description: "Present when identifyHub requested; LED blink result"],
+                    identifyHubError: [type: "string", description: "Present when identifyHub blink failed"]
+                ]
+            ]
+        ],
+    ]
+}
+
+def _getAllToolDefinitions_part2() {
+    return [
+        [
+            name: "hub_list_modes",
+            description: "List the hub's available location modes and report the current one. Use this before hub_set_mode to discover valid mode names (they are hub-specific, e.g. Day/Night/Away).",
+            inputSchema: [type: "object", properties: [:]],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    currentMode: [type: "string", description: "Current location mode name"],
+                    modes: [type: "array", description: "Available modes", items: [type: "object", properties: [
+                        id: [type: "string", description: "Mode ID"],
+                        name: [type: "string", description: "Mode name"]
+                    ]]]
+                ],
+                required: ["currentMode", "modes"]
             ]
         ],
         [
-            name: "hub_list_modes",
-            description: "Get available location modes and current mode",
-            inputSchema: [type: "object", properties: [:]]
-        ],
-        [
             name: "hub_set_mode",
-            description: "Set the location mode. Always verify mode changed after.",
+            description: "Set the location mode. Valid mode names are hub-specific — get them from hub_list_modes first. Always verify the mode changed after.",
             inputSchema: [
                 type: "object",
                 properties: [
                     mode: [type: "string", description: "Mode name"]
                 ],
                 required: ["mode"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the mode was set"],
+                    previousMode: [type: "string", description: "Mode before the change"],
+                    newMode: [type: "string", description: "Mode after the change"]
+                ],
+                required: ["success", "previousMode", "newMode"]
             ]
         ],
         [
@@ -1848,17 +2145,53 @@ Verify rule after creation.""",
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor for the hubVariables list (ruleVariables stays in full alongside the page). Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    hubVariables: [type: "array", description: "Hub variables (page when paginated)", items: [type: "object", properties: [
+                        name: [type: "string", description: "Variable name"],
+                        value: [description: "Current value"],
+                        type: [type: "string", description: "Number/Decimal/String/Boolean/DateTime"],
+                        deviceId: [type: "string", description: "Connector device id when present"],
+                        attribute: [type: "string", description: "Connector attribute when present"],
+                        source: [type: "string", description: "Always 'hub'"]
+                    ]]],
+                    ruleVariables: [type: "array", description: "Rule-engine variables", items: [type: "object", properties: [
+                        name: [type: "string", description: "Variable name"],
+                        value: [description: "Current value"],
+                        source: [type: "string", description: "Always 'rule_engine'"]
+                    ]]],
+                    totalHubVariables: [type: "integer", description: "Total hub variables"],
+                    totalRuleVariables: [type: "integer", description: "Total rule-engine variables"],
+                    total: [type: "integer", description: "Combined total"],
+                    hubVariablesError: [type: "string", description: "Present when the hub variable API failed"],
+                    nextCursor: [type: "string", description: "Present when more hub variables remain"]
+                ],
+                required: ["hubVariables", "ruleVariables", "total"]
             ]
         ],
         [
             name: "hub_get_variable",
-            description: "Get a variable's current value plus metadata (type, deviceId, attribute) if it's a hub variable.",
+            description: "Get one variable's current value by name. Searches the hub-variable namespace first, then falls back to rule-engine variables; the returned source field says which matched. For hub variables it also returns metadata (type, plus deviceId/attribute when a connector is linked). Use hub_list_variables to enumerate; use this when you already know the name.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Variable name"]
+                    name: [type: "string", description: "Exact variable name to look up, e.g. \"vacationMode\". Case-sensitive."]
                 ],
                 required: ["name"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    name: [type: "string", description: "Variable name"],
+                    value: [description: "Current value"],
+                    type: [type: "string", description: "Variable type as Hubitat reports it (hub variables only); its naming/casing may differ from the hub_create_variable type enum (Number/Decimal/String/Boolean/DateTime)."],
+                    deviceId: [type: "string", description: "Connector device id (hub variables with connector only)"],
+                    attribute: [type: "string", description: "Connector attribute (hub variables with connector only)"],
+                    source: [type: "string", description: "'hub' or 'rule_engine'"]
+                ],
+                required: ["name", "value", "source"]
             ]
         ],
         [
@@ -1871,20 +2204,42 @@ Verify rule after creation.""",
                     value: [type: "string", description: "Variable value (string, number, or boolean as string)"]
                 ],
                 required: ["name", "value"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the set succeeded"],
+                    name: [type: "string", description: "Variable name"],
+                    value: [description: "Value that was set"],
+                    source: [type: "string", description: "'hub' or 'rule_engine'"]
+                ],
+                required: ["success", "name", "value", "source"]
             ]
         ],
         [
             name: "hub_create_variable",
-            description: "Create a new hub variable. Args: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm. Drives Settings → Hub Variables wizard (Hubitat does not expose creation via the public app API). Forbidden chars in name: ' \" \\ ~ [ : ] < >.",
+            description: "Create a new hub variable (global variable visible to apps and Rule Machine). Use this before hub_set_variable for a name that doesn't exist yet — Hubitat's setGlobalVar cannot create, only update. Drives the Settings → Hub Variables wizard, since creation isn't exposed via the public app API. Name must not contain any of these characters: ' \" \\ ~ [ : ] < >. To also expose the variable to device-only apps, follow up with hub_create_connector.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Variable name"],
-                    type: [type: "string", description: "One of: Number, Decimal, String, Boolean, DateTime"],
-                    value: [description: "Initial value (must match the chosen type)"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true"]
+                    name: [type: "string", description: "New variable name, e.g. \"vacationMode\". Must not contain: ' \" \\ ~ [ : ] < >"],
+                    type: [type: "string", description: "Variable type — one of: Number, Decimal, String, Boolean, DateTime"],
+                    value: [description: "Initial value, must match the chosen type (e.g. 72 for Number, true for Boolean, \"away\" for String, a DateTime string for DateTime)"],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true to perform the creation"]
                 ],
                 required: ["name", "type", "value", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether creation succeeded"],
+                    name: [type: "string", description: "Variable name"],
+                    type: [type: "string", description: "Variable type"],
+                    value: [description: "Initial value after creation"],
+                    source: [type: "string", description: "Always 'hub'"],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success", "name", "type", "source"]
             ]
         ],
         [
@@ -1898,30 +2253,71 @@ Verify rule after creation.""",
                     confirm: [type: "boolean", description: "REQUIRED: must be true"]
                 ],
                 required: ["name", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the connector exists/was created"],
+                    name: [type: "string", description: "Variable name"],
+                    deviceId: [type: "string", description: "Connector device id"],
+                    attribute: [type: "string", description: "Connector attribute"],
+                    connectorType: [type: "string", description: "Connector type chosen (newly created connectors)"],
+                    alreadyExists: [type: "boolean", description: "True when a connector already existed (no-op)"],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success", "name", "deviceId"]
             ]
         ],
         [
             name: "hub_delete_connector",
-            description: "Delete the connector device backing a hub variable. The variable itself is unchanged. No-op if no connector exists.",
+            description: "Delete the connector device backing a hub variable. DESTRUCTIVE and not undoable — the connector device is removed (apps that read/write the variable through that device lose access), but the hub variable itself and its value are unchanged. Confirm with the caller before running, since confirm=true is required. No-op (returns alreadyRemoved) if the variable has no connector.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Hub-variable name whose connector to remove"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true"]
+                    name: [type: "string", description: "Hub-variable name whose connector device to remove, e.g. \"vacationMode\""],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true to perform the deletion"]
                 ],
                 required: ["name", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the removal succeeded"],
+                    name: [type: "string", description: "Variable name"],
+                    deviceId: [type: "string", description: "Removed connector device id (when one existed)"],
+                    deviceDeleted: [type: "boolean", description: "True when a connector device was deleted"],
+                    alreadyRemoved: [type: "boolean", description: "True when there was no connector to remove (no-op)"],
+                    message: [type: "string", description: "Human-readable result"],
+                    note: [type: "string", description: "Advisory about the known Hubitat StackOverflowError log noise"]
+                ],
+                required: ["success", "name"]
             ]
         ],
         [
             name: "hub_list_variable_changes",
-            description: "Recent hub-variable changes captured by the MCP app's location-event subscription. Buffer caps at 200 most recent changes (oldest dropped). Cleared on app restart.",
+            description: "List recent hub-variable change events captured by the MCP app's location-event subscription, most-recent first. Use this to audit or debug what changed a variable and when, without polling hub_get_variable. The buffer holds at most the 200 most recent changes (oldest dropped) and is cleared on app restart, so it is not a complete history — an empty or partial result does NOT mean the variable never changed. For the hub's authoritative, complete change log (survives restarts) call hub_list_device_events with no deviceId (location-event mode). Filter by variable name and/or timestamp.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Optional: filter to changes for this variable name only"],
-                    sinceMs: [type: "integer", description: "Optional: only return changes whose timestamp >= this epoch-millis"],
-                    limit: [type: "integer", description: "Optional: max entries to return (default: 50)"]
+                    name: [type: "string", description: "Optional: filter to changes for this variable name only, e.g. \"vacationMode\". Omit to include all variables."],
+                    sinceMs: [type: "integer", description: "Optional: only return changes whose timestamp >= this epoch-millis value, e.g. 1717459200000"],
+                    limit: [type: "integer", description: "Optional: max entries to return (default 50)"]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    entries: [type: "array", description: "Recent variable changes, most-recent first", items: [type: "object", properties: [
+                        name: [type: "string", description: "Variable name"],
+                        value: [description: "New value at change time"],
+                        timestamp: [type: "integer", description: "Change time (epoch millis)"],
+                        descriptionText: [type: "string", description: "Event description text"]
+                    ]]],
+                    total: [type: "integer", description: "Entries returned"],
+                    bufferSize: [type: "integer", description: "Total changes currently buffered"],
+                    bufferCap: [type: "integer", description: "Max buffer capacity (200)"]
+                ],
+                required: ["entries", "total", "bufferSize", "bufferCap"]
             ]
         ],
         [
@@ -1935,11 +2331,28 @@ Verify rule after creation.""",
                     force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable. Without force, the tool refuses and lists the consumers."]
                 ],
                 required: ["name", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether deletion succeeded"],
+                    name: [type: "string", description: "Variable name"],
+                    deleted: [type: "boolean", description: "True when the variable was removed"],
+                    source: [type: "string", description: "'hub' or 'rule_engine'"],
+                    type: [type: "string", description: "Variable type (hub variables only)"],
+                    previousValue: [description: "Value before deletion"],
+                    connectorDeleted: [type: "boolean", description: "True when a connector device was also deleted (hub only)"],
+                    brokenConsumers: [type: "array", description: "Rules referencing this variable (populated when force=true), else null", items: [type: "object", properties: [
+                        id: [type: "string", description: "Rule app id"],
+                        label: [type: "string", description: "Rule label"]
+                    ]]]
+                ],
+                required: ["success", "name", "deleted", "source"]
             ]
         ],
         [
             name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters). First tool under the Developer Mode self-administration surface — additional Developer Mode tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same `enableDeveloperMode` gate.\n\nGated on `enableDeveloperMode` + requireHubAdminWrite + recent backup. Every successful write is logged at WARN level for audit.\n\nAllowlisted settings (intentionally conservative for v1): mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableHubAdminRead, enableBuiltinApp, enableCustomRuleEngine, useGateways.\n\nExcluded from v1 allowlist (require future explicit security-model discussion): enableHubAdminWrite (footgun: would disable own write path mid-session), enableDeveloperMode (lockout protection — must remain UI-only to disable), selectedDevices (different wire format, will get its own tool).\n\nAfter changing any enable* toggle or useGateways, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema.",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters) in place. Use this to self-administer the MCP app without the Hubitat UI. Gated on enableDeveloperMode + requireHubAdminWrite + a recent backup; every successful write is logged at WARN for audit. Allowlisted keys only: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableHubAdminRead, enableBuiltinApp, enableCustomRuleEngine, useGateways — any other key is rejected. After changing any enable* toggle or useGateways, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema. Deliberately NOT allowlisted: enableHubAdminWrite (would disable the tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), and selectedDevices (different wire format, has its own tool).",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1947,12 +2360,36 @@ Verify rule after creation.""",
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["settings", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the settings were updated"],
+                    updated: [type: "object", description: "Map of applied setting key → coerced new value"],
+                    message: [type: "string", description: "Human-readable result, including reconnect note"]
+                ],
+                required: ["success", "updated", "message"]
             ]
         ],
+    ]
+}
+
+def _getAllToolDefinitions_part3() {
+    return [
         [
             name: "hub_get_hsm_status",
-            description: "Get the current HSM (Hubitat Safety Monitor) status",
-            inputSchema: [type: "object", properties: [:]]
+            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands. Use this to check the security-system state or to confirm a change made via hub_set_hsm.",
+            inputSchema: [type: "object", properties: [:]],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    status: [type: "string", description: "Current HSM status (disarmed/armedAway/armedHome/armedNight); may be null if HSM is disabled or hasn't reported yet"],
+                    statusText: [type: "string", description: "Human-readable status; interprets a null/empty status"],
+                    alert: [type: "string", description: "Current HSM alert, if any"],
+                    armCommands: [type: "array", description: "Valid arm commands for hub_set_hsm (NOT hub Day/Night/Away location modes)", items: [type: "string"]]
+                ],
+                required: ["status", "statusText", "armCommands"]
+            ]
         ],
         [
             name: "hub_set_hsm",
@@ -1963,27 +2400,58 @@ Verify rule after creation.""",
                     mode: [type: "string", description: "HSM mode: armAway, armHome, armNight, disarm"]
                 ],
                 required: ["mode"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the HSM arm event was sent"],
+                    previousStatus: [type: "string", description: "HSM status before the change"],
+                    newMode: [type: "string", description: "Requested HSM mode"]
+                ],
+                required: ["success", "previousStatus", "newMode"]
             ]
         ],
         // Captured State Management
         [
             name: "hub_list_captured_states",
-            description: "List captured device states. Storage limit configurable (default 20); oldest auto-deleted when full.",
+            description: "List saved device-state snapshots (point-in-time captures of device attributes used to restore or compare state later). Returns each entry's stateId for use with hub_delete_captured_state. Storage limit configurable (default 20); oldest auto-deleted when full.",
             inputSchema: [
                 type: "object",
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    capturedStates: [type: "array", description: "Captured state entries", items: [type: "object"]],
+                    count: [type: "integer", description: "Entries on this page"],
+                    maxLimit: [type: "integer", description: "Max captured states retained"],
+                    total: [type: "integer", description: "Total entries; present in cursor mode"],
+                    nextCursor: [type: "string", description: "Present when more results remain"],
+                    warning: [type: "string", description: "Present at/near capacity"]
+                ],
+                required: ["capturedStates", "count"]
             ]
         ],
         [
             name: "hub_delete_captured_state",
-            description: "Delete a captured device state by its stateId, OR delete ALL captured states when stateId is omitted (use the all-delete with caution).",
+            description: "Delete a saved device-state snapshot by its stateId, OR delete ALL captured states when stateId is omitted. Get stateIds from hub_list_captured_states. Cannot be undone; use the all-delete (omitted stateId) with caution.",
             inputSchema: [
                 type: "object",
                 properties: [
                     stateId: [type: "string", description: "The ID of the captured state to delete. Omit to delete ALL captured states."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the delete succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    remaining: [type: "integer", description: "States remaining; present on single delete"],
+                    cleared: [type: "integer", description: "States cleared; present on delete-all"]
+                ],
+                required: ["success", "message"]
             ]
         ],
 
@@ -2001,12 +2469,47 @@ Verify rule after creation.""",
                     ruleId: [type: "string", description: "logs mode: filter by specific rule ID"],
                     cursor: [type: "string", description: "logs mode: opt-in pagination cursor. Filters and limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    entries: [type: "array", description: "logs mode: stored log entries", items: [type: "object", properties: [
+                        timestamp: [type: "integer", description: "Epoch millis"],
+                        time: [type: "string", description: "Formatted timestamp"],
+                        level: [type: "string", description: "Log level"],
+                        component: [type: "string", description: "Source component"],
+                        message: [type: "string", description: "Log message"],
+                        ruleId: [type: "string", description: "Associated rule ID, when present"],
+                        ruleName: [type: "string", description: "Associated rule name, when present"]
+                    ]]],
+                    count: [type: "integer", description: "logs mode: entries on this page"],
+                    totalStored: [type: "integer", description: "logs mode: total entries stored"],
+                    maxEntries: [type: "integer", description: "Buffer capacity"],
+                    currentLogLevel: [type: "string", description: "Current minimum log level"],
+                    total: [type: "integer", description: "logs mode: filtered total; present in cursor mode"],
+                    nextCursor: [type: "string", description: "logs mode: present when more results remain"],
+                    version: [type: "string", description: "status mode: app version"],
+                    availableLevels: [type: "array", description: "status mode: valid log levels", items: [type: "string"]],
+                    totalEntries: [type: "integer", description: "status mode: total entries stored"],
+                    entriesByLevel: [type: "object", description: "status mode: per-severity counts"],
+                    oldestEntry: [type: "string", description: "status mode: oldest entry timestamp"],
+                    newestEntry: [type: "string", description: "status mode: newest entry timestamp"],
+                    updateAvailable: [type: "string", description: "Newer version, when one exists"]
+                ]
             ]
         ],
         [
             name: "hub_delete_debug_logs",
-            description: "Clear all stored debug log entries. Cannot be undone.",
-            inputSchema: [type: "object", properties: [:]]
+            description: "Clear all entries from the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs). Use to reset that buffer before reproducing an issue or to free space. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state). Cannot be undone.",
+            inputSchema: [type: "object", properties: [:]],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the clear succeeded"],
+                    clearedCount: [type: "integer", description: "Number of entries removed"]
+                ],
+                required: ["success", "clearedCount"]
+            ]
         ],
         [
             name: "hub_set_log_level",
@@ -2017,11 +2520,20 @@ Verify rule after creation.""",
                     level: [type: "string", enum: ["debug", "info", "warn", "error"], description: "Minimum log level to store"]
                 ],
                 required: ["level"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the level was set"],
+                    previousLevel: [type: "string", description: "Log level before the change"],
+                    newLevel: [type: "string", description: "Log level after the change"]
+                ],
+                required: ["success", "previousLevel", "newLevel"]
             ]
         ],
         [
             name: "hub_report_issue",
-            description: "File a bug, report a bug, open an issue, open a github issue, request a feature/enhancement, or flag agent-behavior issues. Returns a prefilled GitHub issue link (template + title).",
+            description: "File a bug, report a bug, open an issue, open a github issue, request a feature/enhancement, or flag agent-behavior issues against this MCP server. Does NOT submit the issue itself: it gathers context (scoped recent logs, hub/version info) and returns a prefilled GitHub issue link (template + title) plus the report body for the user to open and post. Use privacyMode='public' to placeholder the hub name and suppress raw logs before sharing.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2036,10 +2548,30 @@ Verify rule after creation.""",
                     llmClient: [type: "string", description: "Claude / ChatGPT / Gemini / etc."],
                     privacyMode: [type: "string", enum: ["private", "public"], description: "'public' placeholders hub name, suppresses raw logs."],
                     includeRawLogs: [type: "boolean", description: "Default: true private, false public."],
-                    includeUnrelatedRecentLogs: [type: "boolean"],
+                    includeUnrelatedRecentLogs: [type: "boolean", description: "When the report is scoped (failingTool/ruleId/nativeAppId set), also attach recent logs outside that scope; default false. With NO scope set there is nothing to scope by, so the ~20 most recent log entries are attached as context regardless (this flag has no effect then). Set privacyMode='public' or includeRawLogs=false to suppress raw log text."],
                     logWindowSeconds: [type: "integer", description: "Default 120."]
                 ],
                 required: ["title", "expected", "actual"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the report was generated"],
+                    issueType: [type: "string", description: "Normalized issue type (bug/enhancement/agent_behavior)"],
+                    privacyMode: [type: "string", description: "Resolved privacy mode (private/public)"],
+                    suggestedTitle: [type: "string", description: "Pre-filled GitHub issue title"],
+                    submitUrl: [type: "string", description: "Prefilled GitHub issue link to open"],
+                    report: [type: "string", description: "Markdown issue report body to paste into the form"],
+                    logs: [type: "object", description: "Scoped log summary", properties: [
+                        scoped: [type: "boolean", description: "Whether logs were narrowed to a context anchor"],
+                        relevantCount: [type: "integer", description: "Count of context-relevant log entries"],
+                        otherRecentLogCount: [type: "integer", description: "Count of omitted unrelated recent entries"],
+                        hint: [type: "string", description: "Guidance to include omitted entries, when applicable"]
+                    ]],
+                    instructions: [type: "string", description: "How to submit the report"],
+                    updateAvailable: [type: "string", description: "Latest available version, present when an update exists"]
+                ],
+                required: ["success", "submitUrl", "report"]
             ]
         ],
         // Rule Export/Import/Clone Tools
@@ -2053,11 +2585,37 @@ Verify rule after creation.""",
                     saveAs: [type: "string", description: "File Manager filename to write the export JSON to (\".json\" appended if missing). Omit to use a generated name based on the rule."]
                 ],
                 required: ["ruleId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    exportVersion: [type: "string", description: "Export format version"],
+                    exportedAt: [type: "string", description: "Export timestamp"],
+                    serverVersion: [type: "string", description: "MCP server version at export"],
+                    rule: [type: "object", description: "Exported rule definition", properties: [
+                        name: [type: "string", description: "Rule name"],
+                        description: [type: "string", description: "Rule description"],
+                        enabled: [type: "boolean", description: "Enabled state"],
+                        conditionLogic: [type: "string", description: "'all' or 'any'"],
+                        triggers: [type: "array", description: "Trigger definitions"],
+                        conditions: [type: "array", description: "Condition definitions"],
+                        actions: [type: "array", description: "Action definitions"],
+                        localVariables: [type: "object", description: "Local variables"]
+                    ]],
+                    deviceManifest: [type: "array", description: "Referenced devices", items: [type: "object", properties: [
+                        deviceId: [type: "string", description: "Device ID"],
+                        usedIn: [type: "array", description: "Sections referencing the device", items: [type: "string"]],
+                        label: [type: "string", description: "Device label or fallback"],
+                        capabilities: [type: "array", description: "Device capabilities", items: [type: "string"]]
+                    ]]],
+                    savedToFile: [type: "string", description: "File Manager filename the export was written to"]
+                ],
+                required: ["exportVersion", "rule", "deviceManifest", "savedToFile"]
             ]
         ],
         [
             name: "hub_import_custom_rule",
-            description: """Import a rule from exported JSON (from hub_export_custom_rule). Optional deviceMapping remaps old device IDs to new: {"oldId": "newId"}.""",
+            description: """Import a custom rule from exported JSON (produced by hub_export_custom_rule), creating a NEW rule with a fresh ruleId (it does not overwrite an existing rule). Use this to restore a backup or copy a rule between hubs. Optional deviceMapping remaps the exported device IDs onto this hub's devices; unmapped IDs are kept as-is, so verify device references after import. Verify the rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2066,11 +2624,28 @@ Verify rule after creation.""",
                     deviceMapping: [type: "object", description: "Map old device IDs to new ones: {\"old_id\": \"new_id\"} (optional)"]
                 ],
                 required: ["exportData"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the rule was imported"],
+                    ruleId: [type: "string", description: "ID of the newly created rule"],
+                    message: [type: "string", description: "Human-readable result"],
+                    diagnostics: [type: "object", description: "Persistence verification", properties: [
+                        storedTriggers: [type: "integer", description: "Triggers persisted"],
+                        storedActions: [type: "integer", description: "Actions persisted"],
+                        durationMs: [type: "integer", description: "Creation duration in ms"]
+                    ]],
+                    imported: [type: "boolean", description: "Always true on success"],
+                    sourceExportVersion: [type: "string", description: "Export format version of the source"],
+                    devicesMapped: [type: "integer", description: "Device IDs remapped (present when deviceMapping supplied)"]
+                ],
+                required: ["success", "ruleId"]
             ]
         ],
         [
             name: "hub_clone_custom_rule",
-            description: "Clone an existing rule. The cloned rule starts disabled to allow review before activation.",
+            description: "Duplicate an existing MCP custom-engine rule into a new, independent rule with its own ruleId (same triggers/conditions/actions and device references as the source). The clone starts DISABLED so you can review and adjust it before activating via hub_update_custom_rule(enabled=true). Use this to base a new rule on an existing one.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2078,14 +2653,48 @@ Verify rule after creation.""",
                     name: [type: "string", description: "Name for the clone (defaults to 'Copy of <original>')"]
                 ],
                 required: ["ruleId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the clone was created"],
+                    ruleId: [type: "string", description: "ID of the new cloned rule"],
+                    message: [type: "string", description: "Human-readable result"],
+                    clonedFrom: [type: "string", description: "Source rule ID"],
+                    diagnostics: [type: "object", description: "Persistence verification", properties: [
+                        storedTriggers: [type: "integer", description: "Triggers persisted"],
+                        storedActions: [type: "integer", description: "Actions persisted"],
+                        durationMs: [type: "integer", description: "Creation duration in ms"]
+                    ]],
+                    imported: [type: "boolean", description: "Always true on success (clone routes through import)"],
+                    sourceExportVersion: [type: "string", description: "Export format version of the source"]
+                ],
+                required: ["success", "ruleId", "clonedFrom"]
             ]
         ],
+    ]
+}
+
+def _getAllToolDefinitions_part4() {
+    return [
         [
             name: "hub_get_update_status",
-            description: "Check if a newer version of MCP Rule Server is available on GitHub",
+            description: "Check if a newer version of MCP Rule Server is available on GitHub. The check is asynchronous: the first call usually returns latestVersion='unknown (check in progress)' — call again in a few seconds for the result.",
             inputSchema: [
                 type: "object",
                 properties: [:]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the check ran"],
+                    installedVersion: [type: "string", description: "Currently installed version"],
+                    latestVersion: [type: "string", description: "Latest version on GitHub; 'unknown' while async check pending"],
+                    updateAvailable: [type: "boolean", description: "Whether a newer version is available"],
+                    lastChecked: [type: "string", description: "When the check last completed"],
+                    note: [type: "string", description: "Async-check guidance"]
+                ],
+                required: ["success", "installedVersion"]
             ]
         ],
 
@@ -2112,6 +2721,31 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit to get the full list in a single response (subject to the universal 120KB response-size guard -- oversized responses come back as a response_too_large envelope). Pass the nextCursor value from a prior call to fetch the next page (page size 50). Empty string starts at the first page."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    apps: [type: "array", description: "App entries (shape depends on scope)", items: [type: "object", properties: [
+                        id: [description: "App ID"],
+                        name: [type: "string", description: "App name"],
+                        type: [type: "string", description: "App type (scope='instances'); 'MCP Rule' on the fallback path"],
+                        disabled: [type: "boolean", description: "scope='instances': app is paused/disabled"],
+                        user: [type: "boolean", description: "scope='instances': true=user Groovy app, false=built-in"],
+                        hidden: [type: "boolean", description: "scope='instances': app is hidden"],
+                        parentId: [description: "scope='instances': parent app ID, null at top level"],
+                        hasChildren: [type: "boolean", description: "scope='instances': app has child apps"],
+                        childCount: [type: "integer", description: "scope='instances': number of child apps"]
+                    ]]],
+                    count: [type: "integer", description: "Apps returned"],
+                    filter: [type: "string", description: "scope='instances': filter applied"],
+                    totalOnHub: [type: "integer", description: "scope='instances': total apps before filtering"],
+                    source: [type: "string", description: "scope='types': hub_api / hub_api_raw / mcp_only"],
+                    note: [type: "string", description: "Status note when the hub API was unavailable or returned a non-JSON shape"],
+                    rawResponse: [type: "string", description: "scope='types': raw body when response was not JSON"],
+                    total: [type: "integer", description: "Total matched (present when paginating)"],
+                    nextCursor: [type: "string", description: "Present when more results remain"]
+                ],
+                required: ["apps"]
             ]
         ],
         [
@@ -2122,6 +2756,19 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    drivers: [type: "array", description: "Installed driver entries as returned by the hub", items: [type: "object"]],
+                    count: [type: "integer", description: "Drivers returned"],
+                    source: [type: "string", description: "hub_api / hub_api_raw / unavailable"],
+                    note: [type: "string", description: "Status note when the hub API was unavailable or returned a non-JSON shape"],
+                    rawResponse: [type: "string", description: "Raw body when response was not JSON"],
+                    total: [type: "integer", description: "Total matched (present when paginating)"],
+                    nextCursor: [type: "string", description: "Present when more results remain"]
+                ],
+                required: ["drivers"]
             ]
         ],
         [
@@ -2131,6 +2778,22 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                 type: "object",
                 properties: [
                     radio: [type: "string", enum: ["zwave", "zigbee"], description: "Which radio to query. Omit to return both."]
+                ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    zwave: [type: "object", description: "Z-Wave details; present when both radios requested"],
+                    zigbee: [type: "object", description: "Zigbee details; present when both radios requested"],
+                    zwaveVersion: [description: "Z-Wave SDK version; present for radio='zwave'"],
+                    zwaveData: [type: "object", description: "Parsed Z-Wave info; present for radio='zwave'"],
+                    zigbeeChannel: [description: "Zigbee channel; present for radio='zigbee'"],
+                    zigbeeId: [description: "Zigbee ID; present for radio='zigbee'"],
+                    zigbeeData: [type: "object", description: "Parsed Zigbee info; present for radio='zigbee'"],
+                    source: [type: "string", description: "Where data came from: hub_api, hub_api_raw, or sdk_only"],
+                    endpoint: [type: "string", description: "Internal API endpoint used"],
+                    rawResponse: [type: "string", description: "Raw body when response was not JSON"],
+                    note: [type: "string", description: "Status note when extended info unavailable"]
                 ]
             ]
         ],
@@ -2145,6 +2808,33 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                     sortBy: [type: "string", description: "Sort results by field. Default: pct (% busy).", enum: ["pct", "count", "stateSize", "totalMs", "name"], default: "pct"],
                     limit: [type: "integer", description: "Max entries to return. Default: 20, 0 for all.", default: 20]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    uptime: [description: "Hub uptime"],
+                    deviceSummary: [type: "object", description: "Device totals; present for type device/both", properties: [
+                        totalRuntime: [description: "Total device runtime"],
+                        pctOfUptime: [description: "Device % of uptime"],
+                        deviceCount: [type: "integer", description: "Devices reported"]
+                    ]],
+                    deviceStats: [type: "array", description: "Per-device stats; present for type device/both", items: [type: "object", properties: [
+                        id: [description: "Device ID"],
+                        name: [type: "string", description: "Device name"],
+                        count: [description: "Method call count"],
+                        pctBusy: [description: "% busy"],
+                        stateSize: [description: "State size"],
+                        totalMs: [description: "Total ms"]
+                    ]]],
+                    appSummary: [type: "object", description: "App totals; present for type app/both", properties: [
+                        totalRuntime: [description: "Total app runtime"],
+                        pctOfUptime: [description: "App % of uptime"],
+                        appCount: [type: "integer", description: "Apps reported"]
+                    ]],
+                    appStats: [type: "array", description: "Per-app stats; present for type app/both", items: [type: "object"]],
+                    note: [type: "string", description: "Present when limit=0"]
+                ],
+                required: ["uptime"]
             ]
         ],
         [
@@ -2153,6 +2843,31 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
             inputSchema: [
                 type: "object",
                 properties: [:]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    uptime: [description: "Hub uptime"],
+                    scheduledJobs: [type: "object", description: "Scheduled jobs", properties: [
+                        count: [type: "integer", description: "Number of scheduled jobs"],
+                        jobs: [type: "array", items: [type: "object", properties: [
+                            id: [description: "Job ID"],
+                            name: [type: "string", description: "Job name"],
+                            recurring: [description: "Whether the job recurs"],
+                            method: [type: "string", description: "Method invoked"],
+                            nextRun: [description: "Next scheduled run"]
+                        ]]]
+                    ]],
+                    runningJobs: [type: "object", description: "Currently running jobs", properties: [
+                        count: [type: "integer", description: "Number of running jobs"],
+                        jobs: [type: "array", items: [type: "object"]]
+                    ]],
+                    hubActions: [type: "object", description: "Pending hub actions", properties: [
+                        count: [type: "integer", description: "Number of hub actions"],
+                        actions: [type: "array", items: [type: "object"]]
+                    ]]
+                ],
+                required: ["scheduledJobs", "runningJobs", "hubActions"]
             ]
         ],
         [
@@ -2167,28 +2882,77 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                     appId: [type: "string", description: "Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
                     limit: [type: "integer", description: "Max entries to return. Default: 100, max: 500.", default: 100],
                     pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only -- use source for app/device-name substring matching. Entry is kept when it matches. Compiled once before the loop. Throws on invalid regex syntax. Note: pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes."],
-                    patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns applied to the log message field only -- use source for app/device-name substring matching. Use with patternMode to control AND/OR logic. Each pattern compiled once. Throws on invalid regex syntax. Compatible with pattern (both apply). Note: pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes."],
+                    patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns, same matching rules and caveats as `pattern` (message-field only; throws on invalid regex). Combine via patternMode ('any'=OR, default / 'all'=AND). Compatible with `pattern` (both apply)."],
                     patternMode: [type: "string", description: "How patterns array is combined: 'any' (default) = OR -- entry kept if any pattern matches; 'all' = AND -- entry kept only if every pattern matches. Case-insensitive ('ANY' and 'any' both work).", enum: ["any", "all"]],
                     since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d'). Relative offset is subtracted from now. Max relative offset: 30d (throws if exceeded -- use ISO-8601 for longer ranges). Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise."],
                     until: [type: "string", description: "Return only entries at or before this time. Same format as since (relative offsets are subtracted from now, same as since; max 30d). Default: now (no upper bound). Use since='2h', until='1h' to mean '1 to 2 hours ago'."],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Filters + limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    logs: [type: "array", description: "Log entries, most recent first", items: [type: "object", properties: [
+                        name: [type: "string", description: "Source name"],
+                        level: [type: "string", description: "Log level"],
+                        message: [type: "string", description: "Log message"],
+                        time: [type: "string", description: "Entry timestamp"],
+                        type: [type: "string", description: "Entry type"]
+                    ]]],
+                    count: [type: "integer", description: "Entries on this page"],
+                    totalParsed: [type: "integer", description: "Total entries parsed from the hub"],
+                    appliedLimit: [type: "integer", description: "Limit applied before pagination"],
+                    total: [type: "integer", description: "Filtered total; present in cursor mode"],
+                    nextCursor: [type: "string", description: "Present when more results remain"],
+                    truncated: [type: "boolean", description: "Present when messages were trimmed for size"],
+                    note: [type: "string", description: "Present when truncated"],
+                    filteredOut: [type: "integer", description: "Entries excluded by active filters"],
+                    appliedFilters: [type: "object", description: "Echo of active filter args"],
+                    timeFilterUnparseable: [type: "integer", description: "Entries kept despite unparseable timestamps"],
+                    benignRmNoiseCount: [type: "integer", description: "Count of returned entries that are known-benign RM-internal noise (non-fatal, not an MCP bug); present only when >0"],
+                    benignRmNoiseNote: [type: "string", description: "Explanation of the benign RM-internal noise; present only when benignRmNoiseCount>0"]
+                ],
+                required: ["logs", "count"]
             ]
         ],
         [
             name: "hub_get_metrics",
-            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. Read-only by default; pass recordSnapshot=true to ALSO append the current snapshot to the performance-history CSV in the hub File Manager (the only write side-effect). Requires Hub Admin Read.",
+            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. The trend reflects ONLY previously-recorded snapshots — the hub does not auto-sample, so it can be sparse or stale (and resets if the CSV is cleared) unless recordSnapshot=true is called periodically. Read-only by default; pass recordSnapshot=true to ALSO append the current snapshot to the performance-history CSV in the hub File Manager (the only write side-effect). Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
                     recordSnapshot: [type: "boolean", description: "If true, also append this snapshot to the performance-history CSV in the hub File Manager (a write side-effect). Default: false (read-only).", default: false],
                     trendPoints: [type: "integer", description: "Number of recent historical data points to include. Default: 10, max: 50.", default: 10]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    current: [type: "object", description: "Current snapshot", properties: [
+                        timestamp: [type: "string", description: "Snapshot time"],
+                        timestampEpoch: [type: "integer", description: "Snapshot time in epoch millis"],
+                        freeMemoryKB: [description: "Free OS memory (KB)"],
+                        internalTempC: [description: "Internal temperature (C)"],
+                        databaseSizeKB: [description: "Database size (KB)"],
+                        uptimeSeconds: [description: "Hub uptime in seconds"],
+                        uptimeFormatted: [type: "string", description: "Human-readable uptime"]
+                    ]],
+                    trends: [type: "array", description: "Recent historical data points", items: [type: "object", properties: [
+                        timestamp: [type: "string", description: "Point time"],
+                        freeMemoryKB: [description: "Free OS memory (KB)"],
+                        internalTempC: [description: "Internal temperature (C)"],
+                        databaseSizeKB: [description: "Database size (KB)"],
+                        uptimeSeconds: [description: "Uptime in seconds"]
+                    ]]],
+                    trendPointsAvailable: [type: "integer", description: "Total history rows available"],
+                    historyFile: [type: "string", description: "CSV history filename in File Manager"]
+                ],
+                required: ["current", "trends"]
             ]
         ],
         [
             name: "hub_get_device_health",
-            description: "Check device staleness and (optionally) ICMP-ping arbitrary hosts. Stale check flags MCP devices with no activity in staleHours. Ping check uses hubitat.helper.NetworkUtils.ping() to verify network reachability of any IPs in pingHosts (router, NAS, server, LAN-attached devices). Either or both may be used in a single call. Pass cursor (opaque string from a prior nextCursor) to page the staleDevices list at 100 per page when the full response would be too large.",
+            description: "Check device staleness and (optionally) ICMP-ping arbitrary hosts. Stale check covers only devices authorized for MCP access (the app's selected device list) with no activity in staleHours; MCP-managed virtual/child devices (from hub_create_virtual_device) are a SEPARATE population and are NOT included here — list those via hub_list_devices(filter='virtual'). Ping check uses hubitat.helper.NetworkUtils.ping() to verify network reachability of any IPs in pingHosts (router, NAS, server, LAN-attached devices). Either or both may be used in a single call. Pass cursor (opaque string from a prior nextCursor) to page the staleDevices list at 100 per page when the full response would be too large.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2199,17 +2963,78 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                     identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the staleDevices array. Omit to get all stale devices in one response (subject to the universal response-size guard). Pass nextCursor from a prior call to fetch the next page (page size 100). unknownDevices and healthyDevices are always returned in full alongside the page."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    summary: [type: "object", description: "Health counts", properties: [
+                        totalDevices: [type: "integer", description: "Devices checked"],
+                        healthyCount: [type: "integer", description: "Healthy devices"],
+                        staleCount: [type: "integer", description: "Stale devices"],
+                        unknownCount: [type: "integer", description: "Devices with no/unreadable activity"],
+                        staleThresholdHours: [type: "integer", description: "Staleness threshold used"],
+                        checkedAt: [type: "string", description: "Check timestamp"],
+                        staleDevicesInPage: [type: "integer", description: "Stale devices on this page; present in cursor mode"]
+                    ]],
+                    staleDevices: [type: "array", description: "Stale device entries (paginated)", items: [type: "object", properties: [
+                        id: [type: "string", description: "Device ID"],
+                        name: [type: "string", description: "Device label"],
+                        lastActivity: [type: "string", description: "Last-activity ISO timestamp or 'never'"],
+                        hoursAgo: [type: "number", description: "Hours since last activity, or null"]
+                    ]]],
+                    unknownDevices: [type: "array", description: "Devices with no readable activity", items: [type: "object"]],
+                    healthyDevices: [type: "array", description: "Present when includeHealthy=true", items: [type: "object"]],
+                    pingResults: [type: "array", description: "Present when pingHosts supplied", items: [type: "object", properties: [
+                        ipAddress: [type: "string", description: "Target IP"],
+                        reachable: [type: "boolean", description: "Whether the host responded"],
+                        packetLoss: [description: "Packet-loss percentage"],
+                        rttAvg: [description: "Average round-trip time"]
+                    ]]],
+                    recommendation: [type: "string", description: "Present when stale/unknown devices exist"],
+                    total: [type: "integer", description: "Total stale devices; present in cursor mode"],
+                    nextCursor: [type: "string", description: "Pagination cursor; present when more stale devices remain"],
+                    identifyHubTriggered: [type: "boolean", description: "Present when identifyHub=true: LED blink result"],
+                    identifyHubError: [type: "string", description: "Present when the LED-blink request failed"],
+                    message: [type: "string", description: "Present when no devices are selected"]
+                ],
+                required: ["summary"]
             ]
         ],
         [
             name: "hub_get_memory_history",
-            description: "Get free OS memory and CPU load history. Returns timestamped entries with freeMemoryKB and cpuLoad5min. Requires Hub Admin Read.",
+            description: "Get the hub's free-memory and CPU-load history (the platform's own timestamped ring buffer, each entry with freeMemoryKB and cpuLoad5min). Use to diagnose memory leaks or load trends over time. For a single current snapshot plus temp/DB-size, use hub_get_metrics instead. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
                     limit: [type: "integer", description: "Max entries to return (most recent). Default: 100, 0 for all. Hub may have thousands of entries.", default: 100],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Pages within the limit-filtered entries (limit=0 + cursor pages the full ring buffer). Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    entries: [type: "array", description: "Memory history entries", items: [type: "object", properties: [
+                        timestamp: [type: "string", description: "Entry timestamp"],
+                        freeMemoryKB: [type: "integer", description: "Free OS memory (KB)"],
+                        cpuLoad5min: [type: "string", description: "5-minute CPU load average"],
+                        totalJavaKB: [type: "integer", description: "Total Java heap (KB), when present"],
+                        freeJavaKB: [type: "integer", description: "Free Java heap (KB), when present"],
+                        directJavaKB: [type: "integer", description: "Direct Java memory (KB), when present"]
+                    ]]],
+                    summary: [type: "object", description: "Aggregate stats over all entries", properties: [
+                        totalEntries: [type: "integer", description: "Total entries available"],
+                        currentMemoryKB: [type: "integer", description: "Most recent free memory (KB)"],
+                        minMemoryKB: [type: "integer", description: "Minimum free memory (KB)"],
+                        maxMemoryKB: [type: "integer", description: "Maximum free memory (KB)"],
+                        avgMemoryKB: [type: "integer", description: "Average free memory (KB)"],
+                        memoryWarning: [type: "string", description: "Present when memory is low"],
+                        truncated: [type: "boolean", description: "Present when entries were limited"],
+                        message: [type: "string", description: "Present when no history available"]
+                    ]],
+                    total: [type: "integer", description: "Candidate entry count; present in cursor mode"],
+                    nextCursor: [type: "string", description: "Present when more results remain"]
+                ],
+                required: ["entries", "summary"]
             ]
         ],
         [
@@ -2218,10 +3043,27 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
             inputSchema: [
                 type: "object",
                 properties: [:]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    beforeFreeMemoryKB: [type: "integer", description: "Free memory before GC (KB), or null"],
+                    afterFreeMemoryKB: [type: "integer", description: "Free memory after GC (KB), or null"],
+                    timestamp: [type: "string", description: "When GC ran"],
+                    deltaKB: [type: "integer", description: "Memory delta (KB); present when both readings succeeded"],
+                    memoryReclaimed: [type: "boolean", description: "Whether free memory increased; present when both readings succeeded"],
+                    summary: [type: "string", description: "Human-readable GC result"]
+                ],
+                required: ["timestamp", "summary"]
             ]
         ],
 
         // ==================== HUB ADMIN WRITE TOOLS ====================
+    ]
+}
+
+def _getAllToolDefinitions_part5() {
+    return [
         [
             name: "hub_create_backup",
             description: """Create a full hub backup. REQUIRED before any Hub Admin Write operation (24h validity).
@@ -2233,6 +3075,17 @@ Requires Hub Admin Write + confirm. This is the only write tool that doesn't req
                     confirm: [type: "boolean", description: "Must be true to confirm you want to create a backup"]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the backup was created"],
+                    message: [type: "string", description: "Human-readable result"],
+                    backupTimestamp: [type: "string", description: "Formatted backup time"],
+                    backupTimestampEpoch: [type: "integer", description: "Backup time in epoch millis"],
+                    note: [type: "string", description: "Where to download the backup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2247,6 +3100,17 @@ Requires Hub Admin Write.""",
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the reboot was initiated"],
+                    message: [type: "string", description: "Human-readable result"],
+                    lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
+                    warning: [type: "string", description: "Downtime warning"],
+                    response: [type: "string", description: "Truncated hub response body"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2261,6 +3125,17 @@ Requires Hub Admin Write.""",
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the shutdown."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the shutdown was initiated"],
+                    message: [type: "string", description: "Human-readable result"],
+                    lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
+                    warning: [type: "string", description: "Power-off warning; hub will not auto-restart"],
+                    response: [type: "string", description: "Truncated hub response body"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2277,6 +3152,19 @@ Requires Hub Admin Write.""",
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the Z-Wave repair."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the repair was started"],
+                    message: [type: "string", description: "Human-readable result"],
+                    duration: [type: "string", description: "Expected repair duration"],
+                    lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
+                    warning: [type: "string", description: "Disruption warning during repair"],
+                    note: [type: "string", description: "Where to check repair progress"],
+                    response: [type: "string", description: "Truncated hub response body"]
+                ],
+                required: ["success"]
             ]
         ],
         // Device Admin
@@ -2293,6 +3181,24 @@ Device + history lost, automations break. Requires Hub Admin Write.""",
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created, device was verified, and user explicitly approved the deletion."]
                 ],
                 required: ["deviceId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether deletion was verified"],
+                    deviceId: [type: "string", description: "Deleted device ID"],
+                    deviceName: [type: "string", description: "Device label/name"],
+                    message: [type: "string", description: "Human-readable result"],
+                    warnings: [type: "array", description: "Pre-delete warnings (active device, radio membership, rule references)", items: [type: "string"]],
+                    auditInfo: [type: "object", description: "Audit trail", properties: [
+                        deletedAt: [type: "string", description: "Deletion timestamp"],
+                        deviceType: [type: "string", description: "Driver/type name"],
+                        deviceNetworkId: [type: "string", description: "Deleted device's DNI"],
+                        driverName: [type: "string", description: "Driver name"],
+                        lastHubBackup: [type: "string", description: "Last hub backup timestamp"]
+                    ]]
+                ],
+                required: ["success", "deviceId", "deviceName", "message"]
             ]
         ],
 
@@ -2326,6 +3232,30 @@ action="delete": Provide deviceNetworkId of device to delete. Use hub_list_devic
                 // action-discriminated tool and a top-level oneOf would also reject valid delete
                 // calls (which carry neither field). Consistent with every other manage_* tool,
                 // which enforce action-conditional args at runtime.
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the operation succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    device: [type: "object", description: "create only: the new virtual device", properties: [
+                        id: [type: "string", description: "New device ID"],
+                        name: [type: "string", description: "Driver type / device name"],
+                        label: [type: "string", description: "Display label"],
+                        deviceNetworkId: [type: "string", description: "Device network ID"],
+                        driverNamespace: [type: "string", description: "Driver namespace"],
+                        driverType: [type: "string", description: "Driver type name"],
+                        typeName: [type: "string", description: "Deprecated alias for driverType"],
+                        capabilities: [type: "array", description: "Capability names", items: [type: "string"]],
+                        commands: [type: "array", description: "Command names", items: [type: "string"]],
+                        attributes: [type: "array", description: "Attribute name/value pairs", items: [type: "object"]]
+                    ]],
+                    tips: [type: "array", description: "create only: usage tips", items: [type: "string"]],
+                    deviceId: [type: "string", description: "delete only: deleted device ID"],
+                    deviceNetworkId: [type: "string", description: "delete only: deleted device DNI"],
+                    deviceLabel: [type: "string", description: "delete only: deleted device label"]
+                ],
+                required: ["success", "message"]
             ]
         ],
         [
@@ -2347,42 +3277,106 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
                     preferences: [type: "object", description: "Device preferences to update. Each value must be an object with 'type' and 'value'. Example: {\"pollInterval\": {\"type\": \"number\", \"value\": 30}}"]
                 ],
                 required: ["deviceId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "True when all requested changes applied without error"],
+                    device: [type: "string", description: "Device label"],
+                    deviceId: [type: "string", description: "Device ID"],
+                    changes: [type: "array", description: "Applied changes", items: [type: "object", properties: [
+                        property: [type: "string", description: "Property changed"],
+                        oldValue: [description: "Prior value, when known"],
+                        newValue: [description: "New value"]
+                    ]]],
+                    errors: [type: "array", description: "Per-property failures, or null when none", items: [type: "object", properties: [
+                        property: [type: "string", description: "Property that failed"],
+                        error: [type: "string", description: "Failure reason"]
+                    ]]],
+                    message: [type: "string", description: "Human-readable summary"]
+                ],
+                required: ["success", "device", "deviceId", "message"]
             ]
         ],
 
         // Room Management Tools
         [
             name: "hub_list_rooms",
-            description: "List all rooms with IDs, names, and device counts.",
+            description: "List all rooms on the hub, each with its ID, name, device count, and assigned device IDs. Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only — call hub_get_room for per-device states.",
             inputSchema: [
                 type: "object",
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    rooms: [type: "array", description: "Rooms on the hub", items: [type: "object", properties: [
+                        id: [type: "string", description: "Room ID"],
+                        name: [type: "string", description: "Room name"],
+                        deviceCount: [type: "integer", description: "Devices assigned"],
+                        deviceIds: [type: "array", description: "Assigned device IDs", items: [type: "string"]]
+                    ]]],
+                    count: [type: "integer", description: "Rooms returned this page"],
+                    total: [type: "integer", description: "Total rooms; present only in paginated mode"],
+                    nextCursor: [type: "string", description: "Pagination cursor; present when more results remain"],
+                    message: [type: "string", description: "Present when no rooms configured"]
+                ],
+                required: ["rooms", "count"]
             ]
         ],
         [
             name: "hub_get_room",
-            description: "Get room details with assigned devices and their states. Specify by name or ID.",
+            description: "Get one room's details: its ID, name, and the full list of assigned devices with each device's current attribute states. Use when you need device-level detail for a single room; for a name-and-count overview of all rooms use hub_list_rooms instead. Read-only and parallel-safe. Devices unreachable via MCP are returned with accessible=false and no states.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    room: [type: "string", description: "Room name (case-insensitive) or room ID"]
+                    room: [type: "string", description: "Room name (case-insensitive) or room ID, e.g. \"Living Room\" or \"5\""]
                 ],
                 required: ["room"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    id: [type: "string", description: "Room ID"],
+                    name: [type: "string", description: "Room name"],
+                    deviceCount: [type: "integer", description: "Devices in room"],
+                    devices: [type: "array", description: "Assigned devices", items: [type: "object", properties: [
+                        id: [type: "string", description: "Device ID"],
+                        label: [type: "string", description: "Device label"],
+                        name: [type: "string", description: "Device name"],
+                        currentStates: [type: "object", description: "Current attribute values; present when accessible"],
+                        accessible: [type: "boolean", description: "False when device not reachable via MCP"]
+                    ]]]
+                ],
+                required: ["id", "name", "deviceCount", "devices"]
             ]
         ],
         [
             name: "hub_create_room",
-            description: "Create a new room. Optionally assign devices at creation. Requires Hub Admin Write + confirm + backup <24h.",
+            description: "Create a new room on the hub, optionally assigning devices to it at creation. Use when a needed room does not yet exist; to only move devices into an existing room, use hub_update_room/room-assignment flows instead. Write operation: requires Hub Admin Write, a backup taken within the last 24h, and confirm=true. Returns the new room's ID and assigned device count.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Name for the new room"],
-                    deviceIds: [type: "array", description: "Optional list of device IDs to assign to the room", items: [type: "string"]],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                    name: [type: "string", description: "Name for the new room, e.g. \"Garage\""],
+                    deviceIds: [type: "array", description: "Optional device IDs to assign to the room at creation, e.g. [\"12\",\"34\"]. Omit to create an empty room.", items: [type: "string"]],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved creating this room."]
                 ],
                 required: ["name", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether creation succeeded"],
+                    room: [type: "object", description: "Created room", properties: [
+                        id: [type: "string", description: "New room ID"],
+                        name: [type: "string", description: "Room name"],
+                        deviceCount: [type: "integer", description: "Devices assigned"]
+                    ]],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2394,23 +3388,54 @@ Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    room: [type: "string", description: "Room name (case-insensitive) or room ID"],
+                    room: [type: "string", description: "Room name (case-insensitive) or room ID to delete, e.g. \"Garage\" or \"5\""],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]
                 ],
                 required: ["room", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether deletion succeeded"],
+                    deletedRoom: [type: "object", description: "Deleted room", properties: [
+                        id: [type: "string", description: "Room ID"],
+                        name: [type: "string", description: "Room name"]
+                    ]],
+                    devicesUnassigned: [type: "integer", description: "Devices now unassigned"],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
             ]
         ],
+    ]
+}
+
+def _getAllToolDefinitions_part6() {
+    return [
         [
             name: "hub_update_room",
             description: "Rename a room. Device assignments preserved. Automations/dashboards referencing room by name may need updating. Requires Hub Admin Write + confirm + backup <24h.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    room: [type: "string", description: "Current room name (case-insensitive) or room ID"],
-                    newName: [type: "string", description: "New name for the room"],
+                    room: [type: "string", description: "Current room name (case-insensitive) or room ID, e.g. \"Garage\" or \"5\""],
+                    newName: [type: "string", description: "New name for the room, e.g. \"Workshop\""],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["room", "newName", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether rename succeeded"],
+                    room: [type: "object", description: "Renamed room", properties: [
+                        id: [type: "string", description: "Room ID"],
+                        name: [type: "string", description: "New room name"],
+                        previousName: [type: "string", description: "Prior room name"]
+                    ]],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
             ]
         ],
 
@@ -2427,6 +3452,31 @@ Requires Hub Admin Write.""",
                     length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
                 ],
                 required: ["type", "id"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the source was read"],
+                    appId: [description: "App ID (type='app')"],
+                    driverId: [description: "Driver ID (type='driver')"],
+                    libraryId: [description: "Library ID (type='library')"],
+                    source: [type: "string", description: "Source chunk for the requested offset/length"],
+                    version: [description: "Item version"],
+                    status: [type: "string", description: "Hub status field (app/driver)"],
+                    name: [type: "string", description: "Library name (type='library')"],
+                    namespace: [type: "string", description: "Library namespace (type='library')"],
+                    totalLength: [type: "integer", description: "Total source length in chars"],
+                    offset: [type: "integer", description: "Start offset of this chunk"],
+                    chunkLength: [type: "integer", description: "Chars returned in this chunk"],
+                    hasMore: [type: "boolean", description: "More chunks remain"],
+                    nextOffset: [type: "integer", description: "Offset for next chunk; present when hasMore"],
+                    remainingChars: [type: "integer", description: "Chars left; present when hasMore"],
+                    hint: [type: "string", description: "Next-chunk guidance; present when hasMore"],
+                    sourceFile: [type: "string", description: "File Manager filename full source was auto-saved to (large sources)"],
+                    sourceFileHint: [type: "string", description: "Guidance for using sourceFile mode; present with sourceFile"],
+                    sourceFileError: [type: "string", description: "Present (library) when auto-save to File Manager failed"]
+                ],
+                required: ["success"]
             ]
         ],
         // Hub Admin App/Driver Management Write Tools
@@ -2452,6 +3502,24 @@ Verifies install succeeded: if the hub accepted the request but the app failed t
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the install/instantiation succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    appId: [description: "New app code ID (code-install mode)"],
+                    sourceMode: [type: "string", description: "Source mode used: source / sourceFile / importUrl"],
+                    sourceLength: [type: "integer", description: "Chars of source installed"],
+                    verified: [type: "boolean", description: "Whether post-install compile verification passed"],
+                    verifyError: [type: "string", description: "Verification fetch error; present when verify could not run"],
+                    codeAppId: [description: "installAsUserApp mode: source code app ID"],
+                    instanceAppId: [description: "installAsUserApp mode: new running instance ID"],
+                    mode: [type: "string", description: "installAsUserApp mode marker"],
+                    note: [type: "string", description: "Recovery/source-mode guidance"],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2487,6 +3555,31 @@ Verifies install succeeded: if the hub accepted the request but the driver faile
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the install (or all bulk installs) succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    driverId: [description: "New driver code ID (single-driver mode)"],
+                    sourceMode: [type: "string", description: "Source mode used (single-driver mode)"],
+                    sourceLength: [type: "integer", description: "Chars installed (single-driver mode)"],
+                    verified: [type: "boolean", description: "Post-install verification passed (single-driver mode)"],
+                    verifyError: [type: "string", description: "Verification fetch error (single-driver mode)"],
+                    note: [type: "string", description: "Recovery/source-mode guidance"],
+                    installs: [type: "array", description: "Per-driver results (bulk mode)", items: [type: "object", properties: [
+                        driverId: [description: "Driver code ID, null if it failed"],
+                        success: [type: "boolean", description: "Whether this driver installed"],
+                        sourceMode: [type: "string", description: "Source mode used"],
+                        sourceLength: [type: "integer", description: "Chars installed"],
+                        verified: [type: "boolean", description: "Verification passed"],
+                        verifyError: [type: "string", description: "Verification fetch error"],
+                        error: [type: "string", description: "Failure reason; present when success=false"],
+                        note: [type: "string", description: "Per-item guidance"]
+                    ]]],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2515,6 +3608,27 @@ Self-update guard: refuses to overwrite the MCP server's own app source unless D
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["appId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the update succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    appId: [description: "App ID updated"],
+                    previousVersion: [description: "Version prior to the update"],
+                    sourceMode: [type: "string", description: "Source mode used: source / sourceFile / importUrl / resave"],
+                    sourceLength: [type: "integer", description: "Chars written"],
+                    note: [type: "string", description: "Source-mode / recovery guidance"],
+                    triggerUpdated: [description: "Instance appId updated() was fired on; present when requested"],
+                    updatedFired: [type: "boolean", description: "Whether updated() fired on the instance"],
+                    partial: [type: "boolean", description: "Code saved but the opt-in lifecycle refresh failed"],
+                    repairHints: [type: "array", description: "Recovery steps; present on partial/lifecycle failure", items: [type: "string"]],
+                    expectedVersion: [type: "integer", description: "Optimistic-lock expected version; present on conflict"],
+                    currentVersion: [type: "integer", description: "Hub's actual version; present on conflict"],
+                    conflict: [type: "boolean", description: "True when an optimistic-lock conflict aborted the update"],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2558,6 +3672,34 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the update (or all bulk updates) succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    driverId: [description: "Driver ID updated (single-driver mode)"],
+                    previousVersion: [description: "Version prior to the update (single-driver mode)"],
+                    sourceMode: [type: "string", description: "Source mode used (single-driver mode)"],
+                    sourceLength: [type: "integer", description: "Chars written (single-driver mode)"],
+                    note: [type: "string", description: "Source-mode / recovery guidance"],
+                    conflict: [type: "boolean", description: "Optimistic-lock conflict aborted the update (single-driver mode)"],
+                    expectedVersion: [type: "integer", description: "Expected version on conflict (single-driver mode)"],
+                    currentVersion: [type: "integer", description: "Hub's actual version on conflict (single-driver mode)"],
+                    updates: [type: "array", description: "Per-driver results (bulk mode)", items: [type: "object", properties: [
+                        driverId: [type: "string", description: "Driver ID"],
+                        success: [type: "boolean", description: "Whether this driver updated"],
+                        sourceMode: [type: "string", description: "Source mode used"],
+                        sourceLength: [type: "integer", description: "Chars written"],
+                        error: [type: "string", description: "Failure reason; present when success=false"],
+                        note: [type: "string", description: "Per-item guidance"],
+                        conflict: [type: "boolean", description: "Optimistic-lock conflict for this item"],
+                        expectedVersion: [type: "integer", description: "Expected version on conflict"],
+                        currentVersion: [type: "integer", description: "Hub's actual version on conflict"]
+                    ]]],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2575,6 +3717,21 @@ Tell the user the item name/ID, warn it's permanent, get confirmation. Requires 
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["type", "id", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the deletion succeeded"],
+                    message: [type: "string", description: "Human-readable result, including backup status"],
+                    appId: [description: "Deleted app ID (type='app')"],
+                    driverId: [description: "Deleted driver ID (type='driver')"],
+                    libraryId: [description: "Deleted library ID (type='library')"],
+                    backupFile: [type: "string", description: "Pre-delete backup filename"],
+                    restoreHint: [type: "string", description: "How to recover the deleted item"],
+                    backupWarning: [type: "string", description: "Present when the pre-delete backup could not be created"],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
 
@@ -2598,6 +3755,22 @@ Library source must include a library() definition block with 4 required fields:
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the library installed"],
+                    message: [type: "string", description: "Human-readable result"],
+                    libraryId: [description: "New library ID"],
+                    version: [description: "Library version"],
+                    sourceMode: [type: "string", description: "Source mode used: source / sourceFile / importUrl"],
+                    sourceLength: [type: "integer", description: "Chars installed"],
+                    verified: [type: "boolean", description: "Post-install verification passed"],
+                    verifyError: [type: "string", description: "Verification fetch error; present when verify could not run"],
+                    note: [type: "string", description: "Recovery guidance"],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2622,31 +3795,99 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["libraryId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the update succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    libraryId: [description: "Library ID updated"],
+                    previousVersion: [description: "Version prior to the update"],
+                    newVersion: [description: "Version after the update"],
+                    sourceMode: [type: "string", description: "Source mode used: source / sourceFile / importUrl / resave"],
+                    sourceLength: [type: "integer", description: "Chars written"],
+                    note: [type: "string", description: "Source-mode / recovery guidance"],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
         // ==================== Item Backup Tools ====================
         [
             name: "hub_list_backups",
-            description: "List auto-created source backups from app/driver modifications. Stored in File Manager, max 20 kept.",
+            description: "List auto-created source backups (apps, drivers, libraries, and RM rules) that the write tools snapshot before each modify/delete. Stored in the File Manager, newest first, max 20 retained. Use this to find a backupKey (e.g. 'app_123') to pass to hub_get_backup or hub_restore_backup. Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ],
                 required: []
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    backups: [type: "array", description: "Backup entries, newest first", items: [type: "object", properties: [
+                        backupKey: [type: "string", description: "Restore key (e.g. app_123)"],
+                        type: [type: "string", description: "app / driver / library / rm-rule"],
+                        id: [type: "string", description: "Item ID"],
+                        fileName: [type: "string", description: "Backup file in File Manager"],
+                        timestampEpoch: [type: "integer", description: "Backup time (epoch ms)"],
+                        timestamp: [type: "string", description: "Formatted backup time"],
+                        age: [type: "string", description: "Human-readable age"],
+                        sourceLength: [type: "integer", description: "Backed-up source length in chars"],
+                        directDownload: [type: "string", description: "Local download URL"],
+                        version: [description: "Item version (app/driver/library entries)"],
+                        ruleId: [description: "Rule ID (rm-rule entries)"],
+                        appLabel: [type: "string", description: "Rule label (rm-rule entries)"],
+                        reason: [type: "string", description: "Snapshot reason (rm-rule entries)"]
+                    ]]],
+                    count: [type: "integer", description: "Backups returned"],
+                    total: [type: "integer", description: "Total backups tracked"],
+                    maxBackups: [type: "integer", description: "Max backups retained"],
+                    storage: [type: "string", description: "Where backups are stored"],
+                    howToRestore: [type: "string", description: "Restore guidance"],
+                    manualRestore: [type: "string", description: "Manual restore guidance"],
+                    message: [type: "string", description: "Present when no backups exist yet"],
+                    nextCursor: [type: "string", description: "Present when more results remain"]
+                ],
+                required: ["backups", "count"]
             ]
         ],
         [
             name: "hub_get_backup",
-            description: "Get source code from a backup. Use hub_list_backups to find backup keys (e.g., 'app_123').",
+            description: "Read the saved source code from one backup. Call hub_list_backups first to find the backupKey (e.g. 'app_123', 'driver_456', 'library_42'). Use this to inspect or diff a prior version before restoring. Large sources are omitted from the response (sourceTooLargeForResponse=true) with a File Manager download link instead. To re-apply a backup, use hub_restore_backup, not this tool. Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
                     backupKey: [type: "string", description: "The backup key from hub_list_backups (e.g., 'app_123', 'driver_456', or 'library_42')"]
                 ],
                 required: ["backupKey"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    backupKey: [type: "string", description: "Backup key read"],
+                    type: [type: "string", description: "app / driver / library"],
+                    id: [type: "string", description: "Item ID"],
+                    fileName: [type: "string", description: "Backup file in File Manager"],
+                    version: [description: "Item version"],
+                    timestamp: [type: "string", description: "Formatted backup time"],
+                    age: [type: "string", description: "Human-readable age"],
+                    sourceLength: [type: "integer", description: "Source length in chars"],
+                    directDownload: [type: "string", description: "Local download URL"],
+                    source: [type: "string", description: "Backed-up source; present when small enough to inline"],
+                    sourceTooLargeForResponse: [type: "boolean", description: "True when source omitted for size"],
+                    manualDownload: [type: "string", description: "Download guidance; present when source omitted"],
+                    howToRestore: [type: "string", description: "Restore guidance for this item type"],
+                    message: [type: "string", description: "Note when source omitted for size"]
+                ]
             ]
         ],
+    ]
+}
+
+def _getAllToolDefinitions_part7() {
+    return [
         [
             name: "hub_restore_backup",
             description: "⚠️ Restore app/driver to backed-up version. Tell user first. If item was DELETED, use hub_create_app/hub_create_driver/hub_create_library instead. Library backups return a clear error directing you to hub_update_library. Requires Hub Admin Write + confirm.",
@@ -2657,22 +3898,54 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the restore."]
                 ],
                 required: ["backupKey", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the restore succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    type: [type: "string", description: "Item type restored"],
+                    id: [description: "Item ID restored"],
+                    restoredVersion: [description: "Version restored to"],
+                    preRestoreBackup: [type: "string", description: "Backup key of the pre-restore snapshot (undo path)"],
+                    preRestoreFile: [type: "string", description: "Pre-restore snapshot filename"],
+                    undoHint: [type: "string", description: "How to undo this restore"],
+                    backupKey: [type: "string", description: "Backup key (echoed on failure)"],
+                    directDownload: [type: "string", description: "Local download URL (present on failure paths)"]
+                ],
+                required: ["success"]
             ]
         ],
         // File Manager Tools
         [
             name: "hub_list_files",
-            description: "List files in hub's File Manager. Returns names, sizes, download URLs.",
+            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only. For large stores, opt into pagination via the cursor parameter (page size 100).",
             inputSchema: [
                 type: "object",
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    files: [type: "array", description: "Files in File Manager", items: [type: "object", properties: [
+                        name: [type: "string", description: "File name"],
+                        directDownload: [type: "string", description: "Local download URL"],
+                        size: [type: "integer", description: "Size in bytes; present when known"],
+                        lastModified: [type: "string", description: "Last-modified date; present when known"]
+                    ]]],
+                    total: [type: "integer", description: "Total files matched"],
+                    storage: [type: "string", description: "Storage location note"],
+                    note: [type: "string", description: "Present on HTML-fallback parse"],
+                    nextCursor: [type: "string", description: "Pagination cursor; present when more results remain"]
+                ],
+                required: ["files", "total"]
             ]
         ],
         [
             name: "hub_read_file",
-            description: "Read file from File Manager. Supports chunked reading (offset/length) for large files.",
+            description: "Read the text content of a single file from the hub's File Manager by exact file name. Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV). Read-only. Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default/max chunk 60000 chars).",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2681,11 +3954,28 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 60000"]
                 ],
                 required: ["fileName"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the read succeeded"],
+                    fileName: [type: "string", description: "File read"],
+                    totalLength: [type: "integer", description: "Total file length in chars"],
+                    offset: [type: "integer", description: "Start offset of this chunk"],
+                    chunkLength: [type: "integer", description: "Chars returned in this chunk"],
+                    hasMore: [type: "boolean", description: "More chunks remain"],
+                    content: [type: "string", description: "Chunk content"],
+                    directDownload: [type: "string", description: "Local download URL"],
+                    nextOffset: [type: "integer", description: "Offset for next chunk; present when hasMore"],
+                    remainingChars: [type: "integer", description: "Chars left; present when hasMore"],
+                    hint: [type: "string", description: "Next-call guidance; present when hasMore"]
+                ],
+                required: ["success", "fileName", "totalLength", "offset", "chunkLength", "hasMore", "content"]
             ]
         ],
         [
             name: "hub_write_file",
-            description: "⚠️ Write file to File Manager. Auto-backs up existing files. Requires Hub Admin Write + confirm.",
+            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery). Requires Hub Admin Write and confirm=true — confirm the write with the user before calling. Returns the file name, chars written, and download URL.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2694,11 +3984,24 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the write."]
                 ],
                 required: ["fileName", "content", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the write succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    fileName: [type: "string", description: "File written"],
+                    contentLength: [type: "integer", description: "Chars written"],
+                    directDownload: [type: "string", description: "Local download URL"],
+                    backupFile: [type: "string", description: "Backup name; present when an existing file was overwritten"],
+                    backupDownload: [type: "string", description: "Backup download URL; present with backupFile"]
+                ],
+                required: ["success"]
             ]
         ],
         [
             name: "hub_delete_file",
-            description: "⚠️ Delete file from File Manager. Auto-backs up before deletion. Tell user first. Requires Hub Admin Write + confirm.",
+            description: "⚠️ Permanently delete a file from the hub's File Manager. The file is auto-backed up before deletion (see backupFile/undoHint in the result for recovery), but the original is removed. Tell the user and get approval first. Requires Hub Admin Write and confirm=true.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2706,6 +4009,19 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the deletion."]
                 ],
                 required: ["fileName", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the deletion succeeded"],
+                    message: [type: "string", description: "Human-readable result, including backup status"],
+                    fileName: [type: "string", description: "Name of the file that was deleted"],
+                    backupFile: [type: "string", description: "Name of the auto-created backup file (present when a backup was made)"],
+                    backupDownload: [type: "string", description: "URL to download the backup (present when a backup was made)"],
+                    undoHint: [type: "string", description: "Guidance for recovering the deleted file (present when a backup was made)"],
+                    warning: [type: "string", description: "Present when the file could not be backed up before deletion"]
+                ],
+                required: ["success", "message", "fileName"]
             ]
         ],
         // Installed Apps Integration (built-in + user app visibility)
@@ -2723,6 +4039,26 @@ Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, l
                     cursor: [type: "string", description: "Opt-in pagination cursor for the appsUsing list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ],
                 required: ["deviceId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    deviceId: [type: "string", description: "Device queried"],
+                    deviceName: [type: "string", description: "Device display name"],
+                    appsUsing: [type: "array", description: "Apps referencing this device", items: [type: "object", properties: [
+                        id: [description: "App ID"],
+                        name: [type: "string", description: "App type name (e.g. Room Lights, Rule-5.1)"],
+                        label: [type: "string", description: "User-visible label (may contain HTML)"],
+                        trueLabel: [type: "string", description: "Label stripped of HTML"],
+                        disabled: [type: "boolean", description: "App is disabled"]
+                    ]]],
+                    count: [type: "integer", description: "Number of apps using the device"],
+                    parentApp: [description: "Parent app reference, when present"],
+                    countMismatch: [type: "string", description: "Present when firmware count disagrees with the array length"],
+                    total: [type: "integer", description: "Total matched (present when paginating)"],
+                    nextCursor: [type: "string", description: "Present when more results remain"]
+                ],
+                required: ["deviceId", "appsUsing", "count"]
             ]
         ],
         // Hub Admin App Configuration Read (grouped with installed-apps peers)
@@ -2734,7 +4070,7 @@ Returns the app's identity (label, type, parent, disabled state) and its current
 
 Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after hub_list_apps (scope='instances') / hub_list_device_dependents narrows the field.
 
-Workflow: (1) Get the appId from hub_list_apps (scope='instances', all apps), hub_list_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not hub_get_custom_rule, which only handles MCP-native rules), or hub_list_apps (scope='instances') with filter=parents to explore app hierarchy. (2) Call hub_get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call hub_list_app_pages first to discover available page names. Common multi-page names: HPM uses prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset only), prefOptions (main menu / navigation); RM and Room Lighting use a single mainPage (no pageName needed).
+Workflow: (1) Get the appId from hub_list_apps (scope='instances', all apps), hub_list_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not hub_get_custom_rule, which only handles MCP-native rules), or hub_list_apps (scope='instances') with filter=parents to explore app hierarchy. (2) Call hub_get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call hub_list_app_pages first to discover available page names (the pageName param lists the common HPM / RM / Room Lighting pages).
 
 Requires Hub Admin Read.""",
             inputSchema: [
@@ -2745,6 +4081,52 @@ Requires Hub Admin Read.""",
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map. Default false -- large apps can have 500-1000 keys with app-specific encoding (e.g. Room Lighting's dm~<deviceId>~<scene>). Set true only for power-user inspection.", default: false]
                 ],
                 required: ["appId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the config was read"],
+                    app: [type: "object", description: "App identity", properties: [
+                        id: [description: "App ID"],
+                        label: [type: "string", description: "User-visible label"],
+                        name: [type: "string", description: "App type name"],
+                        appType: [type: "object", description: "App-type metadata (name, namespace, author, etc.)"],
+                        disabled: [type: "boolean", description: "App is disabled"],
+                        parentAppId: [description: "Parent app ID, when a child"],
+                        installed: [type: "boolean", description: "App is installed"]
+                    ]],
+                    page: [type: "object", description: "The config page", properties: [
+                        name: [type: "string", description: "Page name"],
+                        title: [type: "string", description: "Page title"],
+                        install: [type: "boolean", description: "Page is the install page"],
+                        refreshInterval: [description: "Auto-refresh interval"],
+                        sections: [type: "array", description: "Page sections", items: [type: "object", properties: [
+                            title: [type: "string", description: "Section title"],
+                            inputs: [type: "array", description: "Input fields", items: [type: "object", properties: [
+                                name: [type: "string", description: "Setting name"],
+                                type: [type: "string", description: "Input type"],
+                                title: [type: "string", description: "Input title"],
+                                multiple: [type: "boolean", description: "Accepts multiple values"],
+                                required: [type: "boolean", description: "Input is required"],
+                                description: [type: "string", description: "Input description"],
+                                options: [description: "Allowed values, when an enum/capability picker"],
+                                value: [description: "Current configured value"]
+                            ]]],
+                            paragraphs: [type: "array", description: "Informational text blocks", items: [type: "string"]],
+                            embeddedActions: [type: "array", description: "Clickable wizard affordances embedded in HTML", items: [type: "object"]]
+                        ]]]
+                    ]],
+                    childApps: [type: "array", description: "Child apps", items: [type: "object", properties: [
+                        id: [description: "Child app ID"],
+                        label: [type: "string", description: "Child label"],
+                        name: [type: "string", description: "Child type name"]
+                    ]]],
+                    endpoint: [type: "string", description: "Internal API endpoint used"],
+                    settingsKeyCount: [type: "integer", description: "Number of raw settings keys"],
+                    settings: [type: "object", description: "Raw app-internal settings; present when includeSettings=true"],
+                    settingsNote: [type: "string", description: "Note when raw settings were omitted"]
+                ],
+                required: ["success", "app", "page"]
             ]
         ],
         // Hub Admin App Pages Directory
@@ -2765,6 +4147,30 @@ Requires Hub Admin Read.""",
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the Hubitat UI URL (/installedapp/configure/<id>)."]
                 ],
                 required: ["appId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the page list was built"],
+                    app: [type: "object", description: "App identity", properties: [
+                        id: [description: "App ID"],
+                        label: [type: "string", description: "User-visible label"],
+                        name: [type: "string", description: "App type name"],
+                        appTypeName: [type: "string", description: "App-type display name"]
+                    ]],
+                    primaryPage: [type: "object", description: "Live-introspected primary page", properties: [
+                        name: [type: "string", description: "Page name"],
+                        title: [type: "string", description: "Page title"],
+                        role: [type: "string", description: "Page role"]
+                    ]],
+                    pages: [type: "array", description: "Known page directory", items: [type: "object", properties: [
+                        name: [type: "string", description: "Page name"],
+                        title: [type: "string", description: "Page title"],
+                        role: [type: "string", description: "Page role"]
+                    ]]],
+                    note: [type: "string", description: "Guidance for uncurated or single-page app types"]
+                ],
+                required: ["success", "pages"]
             ]
         ],
         // HPM Package State Tools
@@ -2772,13 +4178,11 @@ Requires Hub Admin Read.""",
             name: "hub_list_hpm_packages",
             description: """List all packages tracked by Hubitat Package Manager (HPM). Returns the installed name, version, beta flag, author, and the full component inventory (apps, drivers, files) as HPM last recorded at install or update time.
 
-App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). If a component's heID value is an empty/whitespace-only string, heID is cleared to null and a _warning field is added to that component entry (e.g. "empty heID string '' normalized to null" for an empty string, or "empty heID string '  ' normalized to null" for a whitespace-only string). If heID is a whitespace-padded string (e.g. ' 142 '), it is normalized to the trimmed value and _warning records the normalization (e.g. "whitespace-padded heID ' 142 ' normalized to '142'"); heID remains non-null. If heID is a non-scalar type (not Number or String), heID is cleared to null and a _warning field is added.
+App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). File components include only id and name (File Manager assets are tracked by name only). [[FLAT_TRIM]]If a component's heID is an empty/whitespace-only string, heID is cleared to null and a _warning field is added to that entry (e.g. "empty heID string '' normalized to null"). A whitespace-padded heID (e.g. ' 142 ') is trimmed, heID stays non-null, and _warning records the normalization. A non-scalar heID (not Number or String) is cleared to null with a _warning.[[/FLAT_TRIM]]
 
-File components include only: id and name. Files carry no heID, required flag, or version (File Manager assets are tracked by name only).
+Response also includes: count (packages returned); hpmAppId (HPM's installed-app ID, echoed so callers can cache it and skip discovery); skippedMalformed (manifest URLs whose top-level value was not a Map -- package skipped); per-package skippedAppCount/skippedDriverCount/skippedFileCount (non-Map entries skipped, each omitted when 0).
 
-Response also includes: count (number of packages returned); hpmAppId (HPM's installed-app ID, echoed so callers can cache it and skip discovery on subsequent calls); skippedMalformed (array of manifest URLs whose top-level value was not a Map -- package skipped entirely); per-package skippedAppCount, skippedDriverCount, skippedFileCount (each omitted when 0) -- count of app/driver/file entries that were not Maps and thus skipped.
-
-If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app instance tree for an entry whose type is 'Hubitat Package Manager'. Pass hpmAppId explicitly to skip the discovery call. When multiple HPM instances are found, throws IllegalArgumentException listing up to 10 instance IDs in bracket notation (e.g. [37, 99]) with a "and N more (total M)" suffix when more than 10 exist. When hpmAppId is supplied explicitly but points at an app that is not Hubitat Package Manager, the tool throws IllegalArgumentException with the actual type disclosed (e.g. "hpmAppId N is not Hubitat Package Manager (actual type: Simple Automation Rules) -- verify the ID or omit hpmAppId to use auto-discovery"). All IllegalArgumentExceptions surface to the wire as JSON-RPC error -32602, not a success=false map.
+If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app tree for type='Hubitat Package Manager'; pass hpmAppId explicitly to skip that call. Multiple HPM instances throw IllegalArgumentException listing up to 10 instance IDs with "and N more (total M)"; an hpmAppId pointing at a non-HPM app throws disclosing the actual type (all such IllegalArgumentExceptions surface as JSON-RPC error -32602).
 
 Set includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan-app / orphan-driver signals; optional packageFilter narrows which packages are analyzed). Off by default (adds 1-2 hub calls). Drift is heID-presence-only -- post-install source edits are NOT surfaced. Call `hub_get_tool_guide(section='builtin_app_tools')` for the full drift-signal taxonomy, response-field reference, and under-count caveats.
 
@@ -2791,6 +4195,49 @@ Requires Hub Admin Read. HPM itself must be installed.""",
                     packageFilter: [type: "string", description: "Drift mode only (includeDrift=true): case-insensitive substring filter on packageName; only matching packages are analyzed for drift."],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the packages list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 25 -- HPM entries carry full app/driver/file inventories so each entry can be large)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the package list was built"],
+                    hpmAppId: [description: "HPM installed-app ID (echo for caching)"],
+                    count: [type: "integer", description: "Packages returned"],
+                    packages: [type: "array", description: "Tracked HPM packages", items: [type: "object", properties: [
+                        manifestUrl: [type: "string", description: "Manifest URL"],
+                        packageName: [type: "string", description: "Package name"],
+                        version: [type: "string", description: "Package version"],
+                        beta: [type: "boolean", description: "Beta flag"],
+                        author: [type: "string", description: "Author"],
+                        apps: [type: "array", description: "App components", items: [type: "object", properties: [
+                            id: [type: "string", description: "Manifest-internal component ID"],
+                            name: [type: "string", description: "Component name"],
+                            required: [type: "boolean", description: "Component is required"],
+                            version: [type: "string", description: "Component version, when present"],
+                            heID: [type: "string", description: "Hubitat internal code ID; null if never installed"],
+                            _warning: [type: "string", description: "heID normalization note, when applied"]
+                        ]]],
+                        drivers: [type: "array", description: "Driver components", items: [type: "object", properties: [
+                            id: [type: "string", description: "Manifest-internal component ID"],
+                            name: [type: "string", description: "Component name"],
+                            required: [type: "boolean", description: "Component is required"],
+                            version: [type: "string", description: "Component version, when present"],
+                            heID: [type: "string", description: "Hubitat internal code ID; null if never installed"],
+                            _warning: [type: "string", description: "heID normalization note, when applied"]
+                        ]]],
+                        files: [type: "array", description: "File components", items: [type: "object", properties: [
+                            id: [type: "string", description: "Component ID"],
+                            name: [type: "string", description: "File name"]
+                        ]]],
+                        skippedAppCount: [type: "integer", description: "Non-Map app entries skipped (omitted when 0)"],
+                        skippedDriverCount: [type: "integer", description: "Non-Map driver entries skipped (omitted when 0)"],
+                        skippedFileCount: [type: "integer", description: "Non-Map file entries skipped (omitted when 0)"]
+                    ]]],
+                    skippedMalformed: [type: "array", description: "Manifest URLs skipped entirely (non-Map top level)", items: [type: "string"]],
+                    drift: [type: "object", description: "Drift cross-reference block; present when includeDrift=true"],
+                    total: [type: "integer", description: "Total matched (present when paginating)"],
+                    nextCursor: [type: "string", description: "Present when more results remain"]
+                ],
+                required: ["success"]
             ]
         ],
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
@@ -2802,6 +4249,27 @@ Requires Hub Admin Read. HPM itself must be installed.""",
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    rules: [type: "array", description: "Rule Machine rules", items: [type: "object", properties: [
+                        id: [type: "integer", description: "Rule app ID"],
+                        label: [type: "string", description: "Rule label"],
+                        name: [type: "string", description: "Rule name"],
+                        type: [type: "string", description: "Rule type, or null"],
+                        rmVersion: [type: "string", description: "RM version, 4.x or 5.x"]
+                    ]]],
+                    count: [type: "integer", description: "Rules returned"],
+                    total: [type: "integer", description: "Total rules; paginated mode only"],
+                    nextCursor: [type: "string", description: "Cursor; present when more remain"],
+                    ghostsFiltered: [type: "array", description: "RMUtils cache ghost IDs dropped", items: [type: "integer"]],
+                    ghostNote: [type: "string", description: "Present when ghosts were filtered"],
+                    note: [type: "string", description: "Present when RM not detected or informational"],
+                    warning: [type: "string", description: "Present on partial RMUtils failure"],
+                    success: [type: "boolean", description: "Present only on failure/partial paths"],
+                    error: [type: "string", description: "Present on hard failure"]
+                ]
             ]
         ],
         [
@@ -2811,11 +4279,28 @@ Requires Hub Admin Read. HPM itself must be installed.""",
                 type: "object",
                 properties: [
                     ruleId: [type: "integer", description: "Rule ID from hub_list_rules"],
-                    action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. 'rule'=runRule, 'actions'=runRuleAct, 'stop'/'start'=toggle stopRule button (routes through the RM UI button, not RMUtils, because RMUtils has no startRule verb; 'start' also resets the private boolean). Default: rule"]
+                    action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. 'rule'=runRule (re-evaluate the rule's conditions, then run the matching true/false action set); 'actions'=runRuleAct (run the action list directly, skipping condition evaluation); 'stop'=halt the rule's in-progress actions; 'start'=re-enable a stopped rule (also resets its private boolean). stop/start toggle the stopRule UI button, not RMUtils (RMUtils has no startRule verb). Default: rule"]
                 ],
                 required: ["ruleId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the action succeeded"],
+                    ruleId: [type: "integer", description: "Rule app ID acted on"],
+                    rmAction: [type: "string", description: "RM action performed (runRule, runRuleAct, stopRule toggle, noop)"],
+                    fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
+                    note: [type: "string", description: "Present on no-op or informational"],
+                    error: [type: "string", description: "Present on failure"]
+                ],
+                required: ["success"]
             ]
         ],
+    ]
+}
+
+def _getAllToolDefinitions_part8() {
+    return [
         [
             name: "hub_set_rule_paused",
             description: "Pause or resume a Rule Machine rule (paused rules don't fire on triggers). value=true pauses, value=false resumes (idempotent on the hub). Requires Built-in App Tools enabled.",
@@ -2826,6 +4311,19 @@ Requires Hub Admin Read. HPM itself must be installed.""",
                     value: [type: "boolean", description: "true = pause the rule; false = resume it."]
                 ],
                 required: ["ruleId", "value"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the pause/resume succeeded"],
+                    ruleId: [type: "integer", description: "Rule app ID"],
+                    paused: [type: "boolean", description: "Applied pause state (true=paused, false=resumed)"],
+                    rmAction: [type: "string", description: "pauseRule or resumeRule"],
+                    fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
+                    error: [type: "string", description: "Present on failure"],
+                    note: [type: "string", description: "Present on failure"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2838,6 +4336,18 @@ Requires Hub Admin Read. HPM itself must be installed.""",
                     value: [type: "boolean", description: "true sets the boolean to TRUE, false sets it to FALSE"]
                 ],
                 required: ["ruleId", "value"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the set succeeded"],
+                    ruleId: [type: "integer", description: "Rule app ID"],
+                    rmAction: [type: "string", description: "setRuleBooleanTrue or setRuleBooleanFalse"],
+                    fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
+                    error: [type: "string", description: "Present on failure"],
+                    note: [type: "string", description: "Present on failure"]
+                ],
+                required: ["success"]
             ]
         ],
         // Native classic-app CRUD (hub admin-layer, bypasses SmartApp parent-type check).
@@ -2847,13 +4357,7 @@ Requires Hub Admin Read. HPM itself must be installed.""",
         // get added to _appTypeRegistry().
         [
             name: "hub_create_native_app",
-            description: """Create a NEW empty native automation app of the given appType. The shell is created via the hub's admin-layer createchild endpoint, which bypasses the SmartApp parent-type check that blocks third-party `addChildApp('hubitat', ...)` calls. The new app appears under Apps / Automations exactly as if created via the native UI.
-
-[[FLAT_TRIM]]
-appType (default: rule_machine): which class of native app to create.
-  - "rule_machine" — Rule Machine 5.1 (the only registered type today; verified live)
-  - Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in _appTypeRegistry to enable creation. Update and delete already work on them via hub_update_native_app / hub_delete_native_app with their appId.
-[[/FLAT_TRIM]]
+            description: """Create a NEW empty native automation app of the given appType. The shell is created via the hub's admin-layer createchild endpoint, which bypasses the SmartApp parent-type check that blocks third-party `addChildApp('hubitat', ...)` calls. The new app appears under Apps / Automations exactly as if created via the native UI. appType (enum below) defaults to rule_machine — the only fully-registered type today; the other classic SmartApp types share the same endpoint family (see hub_get_tool_guide(section='create_native_app_reference')).
 
 This is COMPLETELY SEPARATE from the MCP custom rule engine (hub_get_custom_rule / hub_create_custom_rule). Use hub_create_native_app for native automations that show up in the hub UI; use hub_create_custom_rule for MCP-managed rules.
 
@@ -2863,14 +4367,7 @@ Optional `triggers` array: pass a list of trigger specs and the tool creates the
 
 Optional `actions` array: same pattern but for actions (each item shaped like hub_update_native_app's `addAction` parameter).
 
-[[FLAT_TRIM]]
-PARTIAL-SUCCESS HANDLING (important for LLM drivers): the tool ALWAYS creates the rule shell (you get an `appId` back) even if some triggers/actions fail to fully bake. Inspect the result:
-  - `partial: true` + `partialTriggers: [N, ...]` / `partialActions: [N, ...]` → some pieces are incomplete (this includes any per-item result with `partial: true` OR `success: false`)
-  - `repairHints: [...]` → concrete next-step instructions
-  - Each per-trigger / per-action result has its own `success`, `partial`, `settingsSkipped`, `repairHints`, and `health` block. `success: true, partial: true` on an inner result means the row was written but needs repair.
-The right move when `partial: true` is to follow the repairHints, NOT to delete the rule and retry from scratch. Tool-only repair via hub_update_native_app(walkStep={...}) / replaceActions / removeAction can usually finish the job. Only declare failure after exhausting those repair attempts.
-[[/FLAT_TRIM]]
-Partial-success: triggers/actions can land with `partial: true` -- inspect `partialTriggers`/`partialActions`/`repairHints` in the result. Call `hub_get_tool_guide(section='create_native_app_reference')` for the full repair protocol.
+Partial-success: the tool ALWAYS creates the rule shell (you get an `appId` back) even if some triggers/actions fail to bake; inspect `partial` / `partialTriggers` / `partialActions` / `repairHints` and follow the repairHints (tool-only repair via hub_update_native_app walkStep/replaceActions/removeAction usually finishes the job — don't delete and retry). Full repair protocol: hub_get_tool_guide(section='create_native_app_reference').
 
 Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
             inputSchema: [
@@ -2891,105 +4388,67 @@ Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Hub Admin Write operations."]
                 ],
                 required: ["name", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "True when created and healthy with no partials"],
+                    partial: [type: "boolean", description: "True when some triggers/actions failed"],
+                    partialTriggers: [type: "array", description: "Indices of triggers that failed", items: [type: "integer"]],
+                    partialActions: [type: "array", description: "Indices of actions that failed", items: [type: "integer"]],
+                    repairHints: [type: "array", description: "Suggested fixes", items: [type: "string"]],
+                    appId: [type: "integer", description: "New app ID"],
+                    appType: [type: "string", description: "App type created"],
+                    name: [type: "string", description: "App label"],
+                    parentAppId: [type: "integer", description: "Parent app ID"],
+                    statusSummary: [type: "object", description: "eventSubscriptions and scheduledJobs counts"],
+                    health: [type: "object", description: "Rule health (ok, brokenMarkers, issues, ...)"],
+                    triggers: [type: "array", description: "Per-trigger results; present when triggers passed", items: [type: "object"]],
+                    actions: [type: "array", description: "Per-action results; present when actions passed", items: [type: "object"]],
+                    note: [type: "string", description: "Human-readable result"],
+                    error: [type: "string", description: "Present on setup failure"],
+                    orphanCleanup: [type: "string", description: "Present on setup-failure cleanup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
             name: "hub_update_native_app",
-            description: """Modify any classic native automation app on the hub (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them, so this one tool covers writes to any classic SmartApp instance addressed by appId. Two modes (provide settings, button, or both):
+            description: """Modify any classic native automation app on the hub (RM rule, Room Lighting, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.) — one tool for any classic SmartApp instance, addressed by appId.
 
-settings: Map of {inputName: value}. Values: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs. The multiple=true 3-field contract (settings[name]=csv + name.type=capability.X + name.multiple=true) is emitted automatically — you don't need to think about it. Post-write verification checks that the multiple flag survived; one automatic retry on divergence.
+Prefer the high-level structured shortcuts, each of which orchestrates the full RM 5.1 wizard in one call: addTrigger / addAction / addRequiredExpression; bulk addTriggers / addActions / replaceActions; and removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / addLocalVariable / patches. For a capability the shortcuts don't cover, walkStep drives one wizard page at a time, or write page inputs via settings and click page-transition buttons via button directly (raw mode).
 
-button: page-transition button name (e.g. \"editCond\", \"editAct\", \"pausRule\", \"updateRule\", \"refreshActions\" for RM; equivalent buttons exist for other app types — discover via hub_get_app_config).
+BEFORE EVERY WRITE a full snapshot (configure/json + statusJson) is saved to File Manager; the response carries backup.backupKey for hub_restore_backup (in hub_manage_code) if a write goes wrong.
 
-pageName: optional — target a specific sub-page whose schema drives the settings marshaling. Defaults to the app's main page.
-
-stateAttribute: optional string passed with the button click (e.g., RM uses this for editCond/editAct to identify which trigger/action).
-
-BEFORE EVERY WRITE: a full snapshot (configure/json + statusJson) is saved to File Manager. Response includes backup.backupKey for use with hub_restore_backup (in hub_manage_code) if the write goes wrong.
-
-Auto-updateRule: main-page settings writes are followed by an implicit updateRule button click so initialize() re-fires. Sub-page writes (pageName=selectTriggers, selectActions, etc.) skip the auto-click so the wizard's stateAttribute (moreCond, editCond, editAct, ...) survives — commit the wizard via its own Done button (RM triggers: hasAll; RM actions: actionDone) and issue a final hub_update_native_app(button='updateRule') to re-initialize.
-
-Wizard-Done auto-finalize: clicking hasAll on selectTriggers commits the trigger to the rule's summary row but RM 5.1 leaves a single residual `isCondTrig.<N>` ("Conditional Trigger?") prompt on the page. This tool auto-writes `isCondTrig.<N>=false` after the click to clear the prompt without consuming an extra trigger index. Reported in the response as wizardDoneAutoRetry: 'OK' / 'OK after finalize ...' / 'WARN: ...'. (Earlier versions clicked hasAll twice instead, which inadvertently allocated phantom "**Broken Trigger**" rows; the finalize-via-isCondTrig path keeps trigger indices contiguous: 1, 2, 3 instead of 1, 3, 5.)
-
-RM 5.1 trigger flow (example — adding a multi-device switch trigger via raw settings/button mode):
-  1. hub_update_native_app(appId, button='true', stateAttribute='moreCond', pageName='selectTriggers') — opens the trigger editor.
-  2. hub_update_native_app(appId, settings={tCapab1: 'Switch'}, pageName='selectTriggers') — picks the capability; page re-renders with the device picker.
-  3. hub_update_native_app(appId, settings={tDev1: [<deviceId>, ...]}, pageName='selectTriggers') — writes devices (multi-device 3-field contract is automatic).
-  4. hub_update_native_app(appId, settings={tstate1: 'on'}, pageName='selectTriggers') — sets the attribute/value.
-  5. hub_update_native_app(appId, button='hasAll', pageName='selectTriggers') — commits the trigger; the residual Conditional? prompt is auto-finalized.
-  6. hub_update_native_app(appId, button='updateRule') — re-initialize so subscriptions populate.
-
-NOTE: the addTrigger={...} shortcut handles steps 1-6 automatically (including the updateRule at the end). Only the raw settings/button flow above requires the explicit step 6 call.
-
-Adding a second trigger uses the SAME flow with index 2 (tCapab2, tDev2, tstate2), then a third uses index 3, etc. After the auto-finalize fix the indices are sequential.
+Full capability reference — trigger/action/expression families, extended condition shapes, the raw settings/button wizard flow, and walkStep — is one call away: pass guide:true to get it back inline (no separate tool call), or see hub_get_tool_guide(section='update_native_app_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
 
 Requires Hub Admin Write + confirm=true + recent hub backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "Installed-app ID (for RM rules, this is the rule ID; for any other classic app, it's the app's id from hub_list_apps with scope='instances')."],
-                    settings: [type: "object", description: "Map {inputName: value}. Use List for multi-device capability inputs — CSV marshaling is automatic."],
-                    button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule, refreshActions for RM; analogous buttons for other app types)."],
+                    settings: [type: "object", description: "Map {inputName: value}: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs. The multiple=true 3-field contract (settings[name]=csv + name.type=capability.X + name.multiple=true) is emitted automatically and post-write verified with one auto-retry — you don't manage it."],
+                    button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule, refreshActions for RM; analogous buttons for other app types — discover them via hub_get_app_config)."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
                         description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or call `hub_get_tool_guide(section='update_native_app_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed.[[FLAT_TRIM]] (Exception: if updateRule itself is rejected the response carries `subscriptionsNotLive: true` -- see PARTIAL-SUCCESS HANDLING for the recovery path.)[[/FLAT_TRIM]] (Bulk addTriggers[] fires updateRule once at the end of the batch.)
 
-[[FLAT_TRIM]]
-Capability families and the spec fields each accepts:
-  - Device-state (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source):
-    capability, deviceIds, state ('on', 'active', 'open', 'unlocked', etc.)
-  - Multi-device 'all of these': add allOfThese=true to the device-state spec
-  - Numeric (Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints):
-    capability, deviceIds, comparator ('=', '<', '>', '<=', '>=', '*changed*'), value
-  - Button (Button capability):
-    capability='Button', deviceIds, buttonNumber, state ('pushed' | 'held' | 'doubleTapped' | 'released')
-  - Custom Attribute (any device's non-built-in attribute):
-    capability='Custom Attribute', deviceIds, attribute (the attribute name), comparator, value
-  - And-stays sticky modifier (works on any device-state or numeric trigger):
-    add andStays={hours, minutes, seconds} to the spec
-  - Time / Sunrise / Sunset (Certain Time and optional date):
-    capability='Certain Time (and optional date)', time ('A specific time' | 'Sunrise' | 'Sunset'), atTime — see SEMANTIC choice below; offset (minutes for sunrise/sunset)
-       atTime SEMANTIC: 'HH:mm' form (e.g. '17:00') = DAILY-recurring trigger that fires every day at that wall-clock time; full ISO datetime (e.g. '2026-04-29T17:00:00' or '2026-04-29T17:00:00.000-0500') = ONE-SHOT dated trigger that fires once on that specific date. Forms without timezone are auto-normalized to hub local tz; explicit-offset and Zulu forms are normalized to UTC equivalent.
-  - Mode (hub mode change trigger):
-    capability='Mode', state='Night' OR state=['Away','Night'] (mode names, case-insensitive)
-    OR modeIds=['3'] OR modeIds=['3','5'] (IDs directly, from hub_list_modes).
-    IMPORTANT: writes modesX<N> internally -- do NOT pass tstate or rawSettings.tstate for Mode triggers (silently ignored; trigger renders as Broken Trigger). Use hub_list_modes to list valid mode names/IDs.
-  - Periodic Schedule (recurring schedule via the dedicated periodic sub-page):
-    capability='Periodic Schedule', periodic={frequency: 'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String',
-      everyN: <int>,           // "every N <unit>" mode (Seconds/Minutes/Hourly/Daily). REQUIRED even when =1 for Daily AND Hourly (omitting it renders null). Seconds/Minutes: whole number from restricted enum [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer). Fractional truncates (5.5->5).
-      startingTime: 'HH:mm',   // start-time (Hourly/Daily/Weekly/Monthly/Yearly). For Hourly-everyN, pass it: omitting renders a cosmetic trailing "starting at " blank. (Seconds exposes no startingTime.)
-      weekdaysOnly: <bool>,    // Daily-only
-      selectedHours: [9,12],   // Hourly-only, alternative to everyN
-      selectedMinutes: [0,30], // Minutes-only, "at specific minutes", alternative to everyN
-      selectedDaysOfMonth: [1,15], // Daily-only, alternative to everyN/weekdays
-      daysOfWeek: ['Monday','Friday'], // Weekly-only, MULTI day-of-week
-      dayOfWeek: 'Monday',     // Monthly/Yearly nth-weekday mode, SINGLE day-of-week (distinct from Weekly's daysOfWeek)
-      dayOfMonth: <int>,       // Monthly by-day "on day number" (pair with everyNMonths; exclusive with weekOfMonth)
-      everyNMonths: <int>,     // "of every N months" (Monthly, both modes; free integer)
-      months: 'December',      // Yearly only -- single month String (the nth-weekday month)
-      weekOfMonth: 'First',    // Monthly/Yearly nth-weekday: First|Second|Third|Fourth|Last (presence selects nth-weekday mode)
-      minutesOffset: <int>,    // Hourly-only, when not using everyN (startingHCX<n>)
-      cronString: '0 * * * *', // Cron String mode
-      rawSettings: {…}         // escape hatch for periodic-page fields not yet mapped
-    }
-    Monthly has TWO mutually-exclusive modes: by-day (dayOfMonth + everyNMonths -- BOTH required or it renders null) and nth-weekday (weekOfMonth + dayOfWeek + everyNMonths). Passing both dayOfMonth and weekOfMonth is rejected. Yearly is ALWAYS nth-weekday (weekOfMonth + dayOfWeek + months-single) because RM 5.1 exposes no by-day calendar-day field for Yearly -- only the nth-weekday picker. Monthly "specific months" ("on day N of selected months") is NOT yet supported (an order-sensitive third sub-mode) -- use rawSettings if needed.
-    Without `periodic`, RM commits a phantom row with description="?". The tool walks the periodic sub-page (whichPeriod<N> -> everyN/select -> time -> Done, where <N> is the per-trigger sub-page index) so the trigger description bakes correctly.
-[[/FLAT_TRIM]]
+Capability families (NAMES here; full per-field specs via addTrigger:{discover:true} or hub_get_tool_guide(section='update_native_app_reference')): Device-state (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source) = capability + deviceIds + state, optional allOfThese for "all of these"; Numeric (Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints) = capability + deviceIds + comparator + value; Button = capability='Button' + deviceIds + buttonNumber + state; Custom Attribute = capability='Custom Attribute' + deviceIds + attribute + comparator + value; Time / Sunrise / Sunset = capability='Certain Time (and optional date)' + time + atTime ('HH:mm' = daily-recurring, full ISO datetime = one-shot dated) + offset; Mode = capability='Mode' + state (name) or modeIds; Periodic Schedule = capability='Periodic Schedule' + periodic={frequency, everyN, ...}. Modifier: andStays={hours,minutes,seconds} on any device-state/numeric trigger.
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
-  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate hub_update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`).[[FLAT_TRIM]] Narrower extended-shape support than addRequiredExpression/addAction: Mode-via-picker, Between two times, and compareToDevice are NOT supported on `trigger.condition` -- use those tools instead. Supported extended shapes on this row: Variable (incl. `compareToVariable`), Custom Attribute (`attribute`+`comparator`+`state`/`value`), enum/numeric device-state. `_rmBuildCondition` is a static direct-write helper, not the shared `_rmWalkConditionReveal` walker -- that is why Mode-via-picker (`modeIds`), Between two times (`start`/`end`), and `compareToDevice` Maps don't yet work here. `compareToVariable` (variable-vs-variable) works on `addTrigger.condition`, `addRequiredExpression`, AND `addAction` IF-expressions: on this row the `selectTriggers` sub-wizard writes the fixed `xVarR_<N>` field, while the walker pages (STPage/doActPage) toggle `isVar_<N>=true` and discover the firmware-assigned right-hand picker from the live schema. On Variable conditions, for value-comparison comparators supply exactly one of `value`/`compareToVariable` (they are mutually exclusive; passing both is rejected); omit the RHS entirely for state-change comparators (`*changed*`/`*became*`).[[/FLAT_TRIM]]
+  - condition — Map driving the conditional-trigger sub-wizard: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?} (handled inline; no separate call). `conditional` is implied true when set. Custom Attribute needs attribute+comparator; Variable needs variable (+ compareToVariable for a variable-vs-variable RHS, mutually exclusive with value). NOTE: trigger.condition supports a NARROWER set than addRequiredExpression/addAction — Variable, Custom Attribute, and enum/numeric device-state only; Mode-via-picker, Between two times, and compareToDevice are NOT supported here (use addRequiredExpression for those). Wire-format details: guide:true.
   - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.). Use `@N` token to substitute the auto-assigned trigger/condition index — e.g. {'xVar@N': 'myVar'} writes `xVar1` when the trigger lands at index 1.
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
 
-PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at least one setting was written to the rule (the trigger skeleton exists). `success: false` means a hard failure -- API errored or nothing was written at all. `partial: true` is ORTHOGONAL to success and means some caller-requested fields didn't land OR the row carries a *BROKEN* marker. A `success: true, partial: true` result is the normal partial-success state -- the trigger row exists, but needs repair. The result includes `repairHints` with concrete next steps. Common repair: pass missing capability-specific fields via rawSettings={fieldName: value, ...} and re-add the trigger, OR use hub_update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see what fields are live and write them one at a time. Don't treat `partial: true` as failure -- exhaust tool-only repair before declaring failure.[[FLAT_TRIM]] Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The trigger row IS in the rule's appSettings but the running rule instance never subscribed to its device events -- retry via `hub_update_native_app(button='updateRule', confirm=true)`. (`subscriptionsNotLive` rather than `expressionNotLive` because the failure consequence is device-event subscription, not gate-evaluator re-pick-up -- see addAction PARTIAL-SUCCESS HANDLING for the full naming rationale.)[[/FLAT_TRIM]]"""
+PARTIAL-SUCCESS HANDLING: success:true = the call completed and the trigger skeleton was written; partial:true (orthogonal) = some fields didn't land or the row carries a *BROKEN* marker — the trigger exists but needs repair via repairHints. Common repair: pass missing fields via rawSettings and re-add, or walkStep introspect on selectTriggers to see the live fields. Don't treat partial as failure — exhaust tool-only repair first. On a rejected trailing updateRule the trigger is written but not subscribed (subscriptionsNotLive:true) — retry hub_update_native_app(button='updateRule', confirm=true). Full slot reference: guide:true."""
                     ],
                     addTriggers: [
                         type: "array",
-                        description: "Bulk-add multiple triggers in one tool call. Each item is the same shape as addTrigger. updateRule fires ONCE at the end (not after each trigger), so subscriptions populate from a fully-loaded rule. Pairs naturally with addActions for building a complete rule in a single call. Empty/omitted falls back to the single addTrigger path.[[FLAT_TRIM]] Trailing-updateRule failure: if the post-bulk `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed to its device events -- retry via `hub_update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]",
+                        description: "Bulk-add multiple triggers in one tool call. Each item is the same shape as addTrigger. updateRule fires ONCE at the end (not after each trigger), so subscriptions populate from a fully-loaded rule. Pairs naturally with addActions for building a complete rule in a single call. Empty/omitted falls back to the single addTrigger path. On a rejected post-bulk updateRule the adds are committed but not subscribed (subscriptionsNotLive:true) — retry hub_update_native_app(button='updateRule', confirm=true); full slot reference: guide:true.",
                         items: [type: "object"]
                     ],
                     addRequiredExpression: [
@@ -3010,69 +4469,25 @@ RM 5.1 spec: AND/OR/XOR have equal precedence, evaluated left-to-right.
 Use `operators` (list) for mixed-operator expressions like 'P1 AND P2 OR P3 XOR P4'.
 
 Per-condition spec fields:
-  - capability — required. Call `hub_get_tool_guide(section='update_native_app_reference')` for the full STPage capability list.[[FLAT_TRIM]] RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.[[/FLAT_TRIM]]
-  - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, Last Event Device, time-based).[[FLAT_TRIM]] Convenience: pass singular deviceId: N and the dispatcher normalizes to deviceIds: [N] because RM 5.1 expects the array form in rDev_<N> -- passing a bare integer bypasses the pre-validation device-exist check and silently stores {N: null} in the setting (rule renders but never fires). If both deviceId and deviceIds are provided, deviceIds (array form) takes precedence. This normalization also applies recursively inside nested subExpression.conditions[] of arbitrary depth.[[/FLAT_TRIM]]
-  - state — enum value matching the capability ('on'/'off' for Switch, 'active'/'inactive' for Motion, 'open'/'closed' for Contact, 'locked'/'unlocked' for Lock, 'present'/'not present' for Presence, 'true'/'false' for Private Boolean, etc.). Omit for numeric capabilities.
-  - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!='). REQUIRED when capability='Custom Attribute' and attribute is set (both must be provided together; omitting comparator causes the condition to render incomplete in RM 5.1 and will throw an error).[[FLAT_TRIM]] ASCII forms '!=' / '<>' / '==' are accepted and auto-mapped to RM's Unicode glyphs '≠' / '='. ALSO required together with `variable` and `value` when capability='Variable'; state-change comparators ('*changed*' / '*became*') are the only exemption from the RHS-value requirement on Variable conditions.[[/FLAT_TRIM]]
+  - capability — required (full STPage capability list: guide:true).
+  - deviceIds — required for device capabilities (Switch / Motion / Contact / Lock / Temperature / etc.); omit for non-device capabilities (Mode, Private Boolean, Last Event Device, time-based).
+  - state — enum value matching the capability ('on'/'off' Switch, 'active'/'inactive' Motion, 'open'/'closed' Contact, 'locked'/'unlocked' Lock, etc.); omit for numeric.
+  - comparator — numeric capabilities ('=', '<', '>', '<=', '>=', '!='); REQUIRED together with attribute for Custom Attribute, and with variable+value for Variable (ASCII !=/<>/== auto-map to RM glyphs).
   - value — numeric threshold paired with comparator.
-  - attribute — for capability='Custom Attribute', the attribute name (e.g., 'humidity', 'energy', any attribute exposed by the device). REQUIRED when using Custom Attribute; must be paired with comparator. Example: {capability:'Custom Attribute', deviceIds:[N], attribute:'water', comparator:'=', state:'empty'}.
-  - not — boolean (default false). Set true to invert this condition.
-  - rawSettings — escape hatch dict {fieldName: value} for fields not yet mapped above.
+  - attribute — Custom Attribute name (e.g. 'humidity'); REQUIRED and paired with comparator. Example: {capability:'Custom Attribute', deviceIds:[N], attribute:'water', comparator:'=', state:'empty'}.
+  - not — boolean (default false), inverts the condition.
+  - rawSettings — escape hatch {fieldName: value} for fields not yet mapped.
 
-Extended per-capability spec shapes:
-
-Mode: {capability:'Mode', state:'Night'} or {capability:'Mode', modeIds:['3']}
-  The walker resolves mode names to IDs via location.modes and writes the firmware-assigned
-  modes<N> picker (e.g. modes1) discovered from the live schema (not hardcoded).
-  Note: triggers use modesX<N>; STPage/doActPage conditions use modes<N> (no X prefix).
-
-Between two times: {capability:'Between two times',
-  start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>},
-  end:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}}
-  time is required when type='clock' (walker converts HH:mm to ISO datetime with hub-local TZ offset internally);
-  offset is required when type='sunrise' or 'sunset'.
-  User-supplied HH:mm is interpreted as hub-local wall-clock time; the walker constructs ISO datetime with the
-  anchor-date timezone offset internally so DST shifts between now and the January anchor do not affect rendering.
-  Firmware fields: starting<N> (type enum), startingA<N> (clock time), ending<N>, endingA<N>/endSunriseOffset<N>.[[FLAT_TRIM]]
-  Precondition: hub timezone must be configured (Settings > Location and Modes). If location.timeZone is null, the walker throws before touching the wizard -- set hub timezone first.[[/FLAT_TRIM]]
-
-Variable comparison: {capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}
-  (constant RHS), OR {capability:'Variable', variable:'<hubVarName>', comparator:'=',
-  compareToVariable:'<otherHubVarName>'} (variable-vs-variable RHS). For value-comparison
-  comparators supply exactly one of value/compareToVariable -- they are mutually exclusive
-  (passing both is rejected); omit the RHS entirely for state-change comparators
-  (*changed*/*became*).
-  Writes the firmware-assigned variable-name picker discovered from the live schema.
-  For the variable RHS the walker toggles isVar_<N>=true and discovers the right-hand
-  picker from the live schema (does NOT hardcode xVarR_<N> -- discovers whatever the page
-  reveals; the walker pages can use a differently-suffixed field than selectTriggers).
-  Fail-loud if the variable name is not in the revealed enum; an empty RHS option list
-  degrades with a compareToVariable-validation / api_unavailable sentinel (partial=true).
-
-Device-relative comparison: {capability:'Temperature', deviceIds:[N], comparator:'>',
-  compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}
-  Compares a device's attribute to another device's attribute (with optional numeric offset)
-  rather than a literal threshold. The RHS-type selector is discovered from the live schema.[[FLAT_TRIM]]
-  (Firmware-variant field names the walker discovers between: rDev2_<N>/refDev_<N>/compareDevId_<N> for reference-device, rCustomAttr2_<N>/refAttr_<N>/compareAttr_<N> for reference-attribute, offset_<N>/devOffset_<N> for optional offset; the walker fails loud if reference-device or reference-attribute is absent post-rhsType, and degrades with `offset_field_not_revealed` sentinel if offset is absent.)[[/FLAT_TRIM]]
-
-Sub-expressions (parens) -- for nested expressions like "P1 AND (P2 OR P3)", a condition entry can also be:
-  {subExpression: {conditions: [<inner conds>], operator?: 'AND'|'OR'|'XOR', operators?: [...]}}
-The walker recursively handles nested sub-expressions of arbitrary depth.
+Extended per-capability spec shapes — Mode, Between two times, Variable comparison (incl. compareToVariable for a variable-vs-variable RHS), device-relative compareToDevice, and nested subExpression (parens, arbitrary depth) — and the full STPage capability list: pass guide:true or hub_get_tool_guide(section='update_native_app_reference').
 
 The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately. The cond counter is shared at the Rule Machine parent app's atomicState level (the parent app's id varies per hub) — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
 
-PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, some condition fields didn't land. settingsSkipped entries are plain field names or {key, reason, condIdx} Maps for degraded writes; repairHints names the next step. Common repair: pass missing fields via rawSettings on the affected condition.[[FLAT_TRIM]] Sentinel reasons callers may see in settingsSkipped: `rhs_type_not_revealed` (compareToDevice RHS-type toggle absent on firmware; entry also carries fallbackApplied: true if a literal state_<N> fallback was written, or false if neither state nor value was available and the condition will be incomplete), `offset_field_not_revealed` (compareToDevice optional offset field absent; degrades partial:true with the offset value preserved on the entry), `api_unavailable` paired with `key: "variable-validation"` (Variable picker returned an empty option list so the schema-side name validation was skipped; write still proceeds), `reveal_fallback_to_existing_field` (walker matched an already-visible field instead of a newly-revealed one -- INFORMATIONAL, does NOT flip partial by itself).[[/FLAT_TRIM]]
-
-On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call hub_update_native_app(button='cancelCapab', pageName='STPage', confirm=true) before retry; restoreHint has the exact command.[[FLAT_TRIM]]
-
-Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The condition slots are written (the rule's STPage state is committed) but the rule's evaluator will not re-pick-up the gate until updateRule fires. Retry via `hub_update_native_app(button='updateRule', confirm=true)`. (`expressionNotLive` rather than `subscriptionsNotLive` because the failure consequence is gate-evaluator re-pick-up, not device-event subscription -- see addAction PARTIAL-SUCCESS HANDLING for the full naming rationale.)[[/FLAT_TRIM]]
-
-Note: some sensor capabilities report discrete events -- use capability-specific state names ('wet'/'dry' for Water, 'detected'/'clear' for Smoke/CO, 'active'/'inactive' for Acceleration, 'detected'/'clear' for Tamper).[[FLAT_TRIM]] Carbon dioxide sensor is intentionally EXCLUDED: the `CarbonDioxideMeasurement` capability is numeric ppm (use comparator + value), not a discrete enum; CO2 looks superficially symmetric to CO but RM 5.1 rejects the state-based shape.[[/FLAT_TRIM]] Full table in TOOL_GUIDE.md."""
+PARTIAL-SUCCESS HANDLING: partial:true means some condition fields didn't land (settingsSkipped names them); repairHints names the next step — pass missing fields via rawSettings on the affected condition. On a rejected trailing updateRule the expression is committed but not live (expressionNotLive:true) — retry hub_update_native_app(button='updateRule', confirm=true). If wizardStuck:true the wizard couldn't auto-cancel — call hub_update_native_app(button='cancelCapab', pageName='STPage', confirm=true) first (restoreHint has the exact command). Discrete-event sensor state names (wet/dry, detected/clear, etc.) and the full settingsSkipped-sentinel reference: guide:true."""
                     ],
 
                     addActions: [
                         type: "array",
-                        description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so subscriptions populate from a fully-loaded rule (actions self-bake via doActPage->selectActions per-item). Pairs naturally with addTriggers -- pass both to add many triggers + many actions in a single tool call.[[FLAT_TRIM]] Trailing-updateRule failure: if the post-bulk `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed to its device events -- retry via `hub_update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]",
+                        description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so subscriptions populate from a fully-loaded rule (actions self-bake via doActPage->selectActions per-item). Pairs naturally with addTriggers -- pass both to add many triggers + many actions in a single tool call. On a rejected post-bulk updateRule the adds are committed but not subscribed (subscriptionsNotLive:true) — retry hub_update_native_app(button='updateRule', confirm=true); full slot reference: guide:true.",
                         items: [type: "object"]
                     ],
                     addLocalVariable: [
@@ -3095,11 +4510,11 @@ Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/s
                     ],
                     clearActions: [
                         type: "boolean",
-                        description: "Pass true to delete every action on the rule (highest index first). Useful for the 'wipe and rebuild' pattern. The delete commits synchronously (a full selectActions page-form submit runs RM's trashActs handler in-band), so the actions are gone when the call returns. updateRule fires after the clear.[[FLAT_TRIM]] Defensive recovery (rare): a thin verify-retry follows the submit. If it still sees the actions present (stuck state.editAct, or an uncommon firmware commit lag) the response carries `asyncCommitLikely: true, partial: true, stage: 'clearActions.verify_absent', httpWriteStatus: 200, wizardStuck: false` plus `actionsRequestedForRemoval` / `actionsStillPresent` / `possibleStateEditAct` and a `safeRecovery` block `{recommended: 'verify-then-decide', verifyVia: 'hub_get_app_config(appId: <id>)', ifActionsAbsent, ifActionsPresent, avoid: ['cancelTrash']}`. Recovery: call `hub_get_app_config(appId)` to check whether the clear committed. Do NOT call `cancelTrash` -- in trash-confirmation mode it may commit pending deletes rather than abort.[[/FLAT_TRIM]]"
+                        description: "Pass true to delete every action on the rule (highest index first). Useful for the 'wipe and rebuild' pattern. The delete commits synchronously (a full selectActions page-form submit runs RM's trashActs handler in-band), so the actions are gone when the call returns. updateRule fires after the clear. Defensive recovery (rare): if the response carries asyncCommitLikely:true the clear may have committed late — verify via hub_get_app_config(appId) and do NOT call cancelTrash (it can commit pending deletes); full protocol: guide:true."
                     ],
                     replaceActions: [
                         type: "array",
-                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions (synchronous trashActs submit), then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Useful for updating existing actions or reordering by passing actions in the new order. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true).[[FLAT_TRIM]] Defensive recovery (rare): if the inner clearActions verify-retry still sees the actions present after its submit, the response carries `asyncCommitLikely: true, partial: true, stage: 'replaceActions.clear_committed_late_no_add'` and the add half is NOT attempted (prevents double-write if the clear did commit). Original specs are echoed as `pendingActionsToAdd`; the inner clearActions fingerprint is exposed via `clearActionsResult`, a subset `{stage, asyncCommitLikely, actionsRequestedForRemoval, actionsStillPresent, error}` (the outer envelope carries the `safeRecovery` / `backup` / `restoreHint` / `verifyHint` slots). `verifyHint` and `error` are overridden with copy that names the data-loss-protection rationale. Recovery: call `hub_get_app_config(appId)`; if actions are absent the clear committed, call `addAction` (or bulk `addActions`) with the echoed specs to finish the replace. Do NOT call `cancelTrash`.[[/FLAT_TRIM]]",
+                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions (synchronous trashActs submit), then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Useful for updating existing actions or reordering by passing actions in the new order. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true). Defensive recovery (rare): if the response carries asyncCommitLikely:true the inner clear may have committed late and the add half is skipped (original specs echoed as pendingActionsToAdd) — verify via hub_get_app_config(appId), re-add the echoed specs if the clear committed, and do NOT call cancelTrash; full protocol: guide:true.",
                         items: [type: "object"]
                     ],
                     moveAction: [
@@ -3136,13 +4551,7 @@ Operations:
   - navigate: forward into a sub-page via its href
   - done: BACK-NAVIGATE from a sub-page to its parent via _action_previous=Done. Carries ALL the sub-page's current settings in the form. REQUIRED for sub-pages (Periodic Schedule, etc.) whose parent's row description otherwise renders as "?". Pass hrefContext={fromPage: <parent>, hrefParams: {n: <idx>}} so RM routes correctly.
 
-Recommended driving loop for an LLM:
-  1. operation:"introspect" to see what fields the page exposes
-  2. operation:"navigate" to enter a sub-page if one is exposed
-  3. operation:"write" each required field (with hrefContext on sub-pages)
-  4. Inspect diff.appeared / valueEcho.match / silentRejection between writes
-  5. operation:"done" to back out of a sub-page (this is what bakes the trigger/action description)
-  6. operation:"click" hasAll/actionDone on the parent to finalize the row
+Recommended driving loop (introspect to see fields -> navigate into a sub-page if exposed -> write each required field -> inspect diff.appeared/valueEcho.match/silentRejection -> done to bake the row -> click hasAll/actionDone to finalize): full walkthrough via guide:true or hub_get_tool_guide(section='update_native_app_reference').
 
 Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the response — these are the fail-loud signals."""
                     ],
@@ -3150,163 +4559,86 @@ Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the respon
                         type: "object",
                         description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: docs/rm_action_subtype_schemas.md (or pass `addAction: {discover: true}` for the live structured schema -- returns immediately, no hub mutation). Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. No trailing updateRule call is needed from the caller: doActPage->selectActions navigation self-bakes the action into the rule's actions[] map.
 
-[[FLAT_TRIM]]
-Capability families and the spec fields each accepts:
-
-  - Switch (capability='switch'):
-      action='on'/'off'/'toggle'/'flash' + deviceIds
-      action='setPerMode' + deviceIds + perMode={modeIdOrName: 'on'|'off', ...}
-      action='choosePerMode' + perMode={modeIdOrName: {on: [devIds], off: [devIds]}, ...}
-      NOTE: action='flash' starts a flash schedule on devices that
-      support .flash() (Hue groups, many Z-Wave/Zigbee dimmer modules).
-      RM 5.1 has NO native "stop flash" action subtype — calling
-      switch.on/.off afterward does NOT cancel the flash schedule. To
-      stop a running flash from within a rule, use capability='runCommand'
-      (documented below) with command='flashOff' on the same device list.
-
-  - Dimmer (capability='dimmer'):
-      action='setLevel'   + deviceIds + level (0-100) [required] + optional fadeSeconds
-      action='toggle'     + deviceIds + level (0-100) [required — the level to set when toggling from off to on] + optional fadeSeconds
-      action='adjust'     + deviceIds + adjustBy (-100..100) [required] + optional fadeSeconds
-      action='fade'       + deviceIds + targetLevel [required] + minutes [required] + direction='raise'|'lower' + optional intervalSeconds
-      action='stopFade'   (no fields)
-      action='startRaiseLower' + deviceIds + direction='raise'|'lower'
-      action='stopChanging'    + deviceIds
-      action='setLevelPerMode' + deviceIds + perMode={modeIdOrName: level, ...} + optional fadeSeconds
-
-  - Color (capability='color', RGBW bulbs):
-      action='setColor'    + deviceIds + colorName + optional level
-      action='toggleColor' + deviceIds + colorName + optional level
-      action='setColorPerMode' + deviceIds + perMode={modeIdOrName: {color: 'Red', level: 70}, ...}
-
-  - Color Temperature (capability='colorTemp'):
-      action='setColorTemp'    + deviceIds + kelvin + optional level
-      action='toggleColorTemp' + deviceIds + kelvin + optional level
-      action='fadeColorTemp'   + deviceIds + targetKelvin + minutes + direction
-      action='stopColorTempFade'
-      action='setColorTempPerMode' + deviceIds + perMode={modeIdOrName: {kelvin: 2700, level: 70}, ...}
-
-  - Button (capability='button', capability.pushableButton devices):
-      action='push'           + deviceIds + buttonNumber
-      action='pushPerMode'    + deviceIds + perMode={modeIdOrName: buttonNumber, ...}
-      action='choosePerMode'  + buttonNumber + perMode={modeIdOrName: [deviceIds], ...}
-
-  - Run Custom Action (capability='runCommand'):
-      command + deviceIds + capabilityFilter (default 'Switch') + optional useLastEventDevice
-      parameters: literal value    -> [{type:'number', value:75}, ...]
-                  hub variable ref -> [{type:'number', variable:'myHubVar'}, ...]  (RM wire: uVar<P>.N=true, xVar<P>.N=varName; P is RM-assigned per moreParams click)
-      Calls any device-driver command (off/on/setLevel/flashOff/refresh/etc.) on the device list. Use this to call commands not exposed by the higher-level capability mappings (e.g. flashOff to stop a flash, custom-driver verbs).
-
-  - File IO (capability='fileWrite' / 'fileAppend' / 'fileDelete'):
-      fileWrite   + fileName + content (overwrites)
-      fileAppend  + fileName + content (file must already exist; localFile is an enum picker)
-      fileDelete  + fileName
-
-  - Z-Wave Polling (capability='zwavePoll'):
-      action='start'/'stop' + deviceIds (Z-Wave switches/dimmers only) + target='switches'|'dimmers'
-
-  - Lock (capability='lock'):
-      action='lock'/'unlock' + deviceIds
-
-  - Thermostat (capability='thermostat'):
-      action= (any) + deviceIds + optional mode/fanMode/heatingSetpoint/
-        coolingSetpoint/adjustHeating/adjustCooling
-
-  - Shade/blind (capability='shade'):
-      action='open'/'close'/'stop' + deviceIds
-      action='setPosition' + deviceIds + position (0-100)
-
-  - Fan (capability='fan'):
-      action='setSpeed' + deviceIds + speed (low/med/high/auto/etc.)
-      action='cycle'    + deviceIds
-
-  - Mode (capability='mode'):
-      action='setMode' + modeId (Integer) OR modeName (String, case-insensitive, resolved to ID)
-      Note: modeName is resolved to a numeric mode ID before submission -- unknown names fail fast with the valid mode list. Degenerate: if location.modes is empty, error reads "(none -- hub returned no modes; verify hub state via hub_list_modes)".
-      Note: addAction uses 'modeName' for name-based resolution; addTrigger uses a generic 'state' field for the mode name instead, because triggers represent a superset of device-state events where a single field covers mode, switch, presence, and similar state values.
-
-  - Hub Variable (capability='setVariable', also accepted as 'variable'):
-      variable=<hubVarName> + value=<numericConstant>  (Set variable to a numeric constant; string/boolean/datetime targets not supported via 'value' -- use sourceVariable or rawSettings)
-      variable=<hubVarName> + sourceVariable=<varName> (Copy from another variable)
-
-  - Logging / Messaging:
-      capability='log' + message
-      capability='notification' + deviceIds + message
-      capability='httpGet'  + url
-      capability='httpPost' + url + body + optional contentType
-      capability='ping'     + ip
-
-  - Music/Sound (capability='volume'/'mute'/'chime'/'siren'):
-      capability='volume' + deviceIds + level
-      capability='mute'   + action='mute'/'unmute' + deviceIds
-      capability='chime'  + deviceIds + optional playStop/soundNumber
-      capability='siren'  + deviceIds + optional sirenAction
-
-  - Rules (capability='privateBoolean'/'runRule'/'cancelTimers'/'pauseRule'):
-      capability='privateBoolean' + ruleIds + value (Boolean)
-      capability='runRule'        + ruleIds   (run actions of named rules)
-      capability='cancelTimers'   + ruleIds   (cancel timed actions)
-      capability='pauseRule' + action='pause'/'resume' + ruleIds
-
-  - Device control:
-      capability='capture'        + deviceIds (capture state)
-      capability='restore'                      (restore captured state)
-      capability='refresh'        + deviceIds
-      capability='poll'           + deviceIds
-      capability='disableDevice'  + action='disable'/'enable' + deviceIds
-
-  - Flow control (delay/wait/repeat/exit/comment/conditional):
-      capability='delay'         + hours/minutes/seconds + optional cancelable/random   OR  variable=<varName> (variable-sourced seconds)
-      capability='delayPerMode'  + perMode={modeIdOrName: {hours, minutes, seconds}, ...}
-      capability='cancelDelay'   (no fields)
-      capability='exitRule'      (no fields)
-      capability='comment'       + text
-      capability='repeat'        + hours/minutes/seconds + optional times + stoppable
-      capability='stopRepeat'    (no fields)
-      capability='repeatWhile'   + expression={conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]} + optional hours/minutes/seconds/times/stoppable
-      capability='waitExpression'+ expression={conditions:[...], operator?:..., operators?:[...]} + optional delay={hours,minutes,seconds} + useDuration=true|false
-      capability='waitEvents'    + events=[{capability, deviceIds, state, andStays?}, ...]   (LIMIT: only ONE waitEvents action per rule; RM 5.1 stores wait events in global per-rule settings, NOT per-action — adding a second waitEvents action would silently overwrite the first. Combine multiple waits into one action's events array, or split into chained sub-rules.)
-      capability='ifThen'        + expression={conditions:[...], operator?:..., operators?:[...]}    (opens IF block; close with 'endIf')
-      capability='elseIf'        + expression={...}                                                  (continues IF block; needs preceding 'ifThen')
-      capability='else'          (no fields; needs preceding 'ifThen' or 'elseIf')
-      capability='endIf'         (no fields; closes the IF block)
-[[/FLAT_TRIM]]
+Capability families (NAMES here; full per-field specs via addAction:{discover:true} or hub_get_tool_guide(section='update_native_app_reference')): switch (on/off/toggle/flash, setPerMode/choosePerMode); dimmer (setLevel/toggle/adjust/fade/stopFade/startRaiseLower/stopChanging/setLevelPerMode); color; colorTemp; button (push/pushPerMode/choosePerMode); runCommand (any driver command + deviceIds + parameters, literal or hub-variable-sourced); lock; thermostat; shade; fan; mode (setMode + modeName or modeId); setVariable (variable + value or sourceVariable); log / notification / httpGet / httpPost / ping; volume / mute / chime / siren; privateBoolean / runRule / cancelTimers / pauseRule (+ ruleIds); capture / restore / refresh / poll / disableDevice; fileWrite / fileAppend / fileDelete; zwavePoll; flow control (delay [hours/minutes/seconds or a variable-sourced seconds] / delayPerMode / cancelDelay / repeat / stopRepeat / repeatWhile / waitExpression / waitEvents / ifThen / elseIf / else / endIf / exitRule / comment). Most take deviceIds + action + fields; the expression-based ones (ifThen / elseIf / repeatWhile / waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents action per rule (RM stores wait events globally, not per-action).
 
   Per-condition shape inside any expression:
     {capability: <RM-condition-cap>, deviceIds?: [<id>], state?: <enum-value>, comparator?: <op>, value?: <num>, attribute?: <name>, not?: true, rawSettings?: {...}}[[FLAT_TRIM]]
     Convenience: pass singular deviceId: N instead of deviceIds: [N] -- the dispatcher normalizes because RM 5.1 expects the array form in rDev_<N> (bare integer bypasses pre-validation and silently stores {N: null}, rule renders but never fires). If both are provided, deviceIds wins.[[/FLAT_TRIM]]
     [[FLAT_TRIM]]Nested subExpression: NOT supported on addAction -- rejected with a targeted error. Use addRequiredExpression for nested expressions, or flatten. The doActPage walker rejects nested subExpression with the message "nested subExpression on this row is not yet supported"; the addAction pre-pass also rejects to surface a clear error before any wizard write. addRequiredExpression supports nesting of arbitrary depth today.[[/FLAT_TRIM]]
-    Extended per-capability shapes (Mode modeIds, Between two times, Variable, Custom Attribute, compareToDevice) and discrete-event sensor state names: see addRequiredExpression's "Extended per-capability spec shapes" above -- the shared walker _rmWalkConditionReveal handles all per-capability reveal sequences here; result envelopes differ (see PARTIAL-SUCCESS HANDLING for each tool's specific response shape). Full discrete-event state-value table in TOOL_GUIDE.md.
+    Extended per-capability shapes (Mode, Between two times, Variable, Custom Attribute, compareToDevice) and discrete-event sensor state names: pass guide:true or hub_get_tool_guide(section='update_native_app_reference') -- the shared walker _rmWalkConditionReveal handles all per-capability reveal sequences here; result envelopes differ per tool (see PARTIAL-SUCCESS HANDLING below).
 
-Variable-sourced values (works on dimmer.setLevel, delay):
-  - dimmer.setLevel: pass `levelVariable: '<hubVarName>'` instead of `level`
-  - delay:           pass `variable: '<hubVarName>'` instead of hours/minutes/seconds
-  Both write the wizard's uVar=true + xVar=<varName> pair so the value is
-  resolved at fire time from a hub variable.
+Optional on any spec: delay {hours, minutes, seconds, cancelable}; rawSettings {fieldName: value, ...} escape hatch — use the '@N' token for the auto-assigned action index (e.g. {'flashRate.@N': 750}). Action index is auto-assigned. Variable-sourced values (dimmer setLevel levelVariable, delay variable), the HSM/Garage/Valve "not yet mapped" rawSettings workarounds, and the doActPage wire-format quirks the helper handles are in the guide (guide:true).
 
-NOT yet mapped (use rawSettings escape hatch with @N placeholder):
-  - HSM Arm/Disarm/Cancel All Alerts (separate actSubType not in lockActs dropdown — only appears when HSM is installed and may need a different actType)
-  - Garage door open/close (different lockActs subtype, only visible with garage device)
-  - Valve open/close (similar)
-
-Optional fields on every spec:
-  - delay { hours, minutes, seconds, cancelable } — sets delayAct.<N>='hrs:min:sec' plus duration sub-fields
-  - rawSettings { fieldName: value, ... } — escape hatch for advanced fields not yet mapped. Use the literal token '@N' anywhere in a field name to substitute the auto-assigned action index (e.g. {'flashRate.@N': 750}).
-
-Action index is auto-assigned (next available). One addAction call replaces the 6-7 calls of the manual doActPage flow.
-
-Wire-format quirks the helper handles for you (so callers don't need to know):
-  1. The 'Create New Action' button (name=N) requires stateAttribute='doActN' (concatenated), not 'doAct'. The Hubitat UI's buttonClick() handler concatenates data-stateAttribute='doAct' + button name 'N' → doActN before POSTing; sending stateAttribute='doAct' alone leaves state.doActN null and doActPage NPEs.
-  2. doActPage's schema is incremental: actionDone only appears AFTER all required type-specific fields are set. The helper re-fetches the schema before each write.
-  3. selectActions' page hook initializes state.actNdx. On a freshly created rule with zero actions, state.actNdx is null and doActPage renders with actType.null (broken). The helper fires an idempotent empty POST to selectActions FIRST.
-
-PARTIAL-SUCCESS HANDLING: `partial: true` is ORTHOGONAL to success -- the action row exists but needs repair. repairHints names next steps. Common repair: walkStep introspect on doActPage to see the LIVE schema (settingsSkipped[].available shows present fields), then write missing fields via settings=... . For unrecoverable rows (hubRenderError=true), use removeAction(index:N) then retry.[[FLAT_TRIM]] When a compareToDevice RHS-type toggle is absent in an expression condition, settingsSkipped entries carry fallbackApplied: true/false (true = literal state_<N> was written as fallback; false = no fallback available, condition is incomplete). For expression-action conditions (ifThen/elseIf/repeatWhile/waitExpression), settingsSkipped sentinel reasons are the same set the shared `_rmWalkConditionReveal` walker emits on the addRequiredExpression side -- see addRequiredExpression PARTIAL-SUCCESS HANDLING above for the full enumeration (`rhs_type_not_revealed`, `offset_field_not_revealed`, `api_unavailable` paired with `variable-validation`, `reveal_fallback_to_existing_field`). Naming-divergence rationale (one slot per dispatcher, picked to name the caller-visible consequence): `expressionNotLive` (addRequiredExpression -- gate evaluator does not re-pick-up the new expression), `subscriptionsNotLive` (addTrigger / bulk addTriggers+addActions / action-mutation / trigger-mutation -- rule does not re-subscribe to device events), `variableNotLive` (addLocalVariable -- variable created but rule action map cannot read it), `patchesNotLive` (patches -- catch-all because patches can bundle any mix). All four share `updateRuleFailed` and `updateRuleError` for the common facts.[[/FLAT_TRIM]]
+PARTIAL-SUCCESS HANDLING: partial:true is orthogonal to success — the action row exists but needs repair; repairHints names next steps. Common repair: walkStep introspect on doActPage to see the live schema, then write the missing fields; for unrecoverable rows (hubRenderError=true) use removeAction(index:N) then retry. Full settingsSkipped-sentinel + not-live slot reference: guide:true.
 
 On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call hub_update_native_app(button='cancelCapab', pageName='doActPage', confirm=true) before retry; restoreHint has the exact command."""
                     ],
+                    guide: [type: "boolean", description: "Set true to return the full hub_update_native_app capability reference (trigger/action/expression families, extended condition shapes, the raw settings/button wizard flow, and walkStep) inline — same content as hub_get_tool_guide(section='update_native_app_reference'), without a separate tool call. Makes NO change to any rule."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["appId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the update succeeded (absent in discover mode)"],
+                    appId: [type: "integer", description: "App ID updated"],
+                    backup: [type: "object", description: "Pre-update backup metadata (backupKey, type, fileName, ...)"],
+                    settingsApplied: [type: "array", description: "Settings applied (settings mode)", items: [type: "string"]],
+                    settingsSkipped: [type: "array", description: "Settings skipped", items: [type: "string"]],
+                    unknownSettingsWarning: [type: "string", description: "Present when unknown settings supplied"],
+                    subPageNote: [type: "string", description: "Sub-page note"],
+                    buttonClicked: [type: "string", description: "Button clicked (button mode)"],
+                    health: [type: "object", description: "Rule health summary"],
+                    subscriptionSettle: [type: "string", description: "Subscription settle note"],
+                    removedIndex: [type: "integer", description: "removeAction/removeTrigger result index"],
+                    beforeIndices: [type: "array", description: "Indices before edit", items: [type: "integer"]],
+                    afterIndices: [type: "array", description: "Indices after edit", items: [type: "integer"]],
+                    index: [type: "integer", description: "moveAction index"],
+                    direction: [type: "string", description: "moveAction direction"],
+                    beforePosition: [type: "integer", description: "moveAction position before"],
+                    afterPosition: [type: "integer", description: "moveAction position after"],
+                    indicesAfter: [type: "array", description: "Indices after move", items: [type: "integer"]],
+                    partial: [type: "boolean", description: "Bulk add partial flag"],
+                    triggers: [type: "array", description: "Bulk addTriggers results", items: [type: "object"]],
+                    actions: [type: "array", description: "Bulk addActions results", items: [type: "object"]],
+                    updateRuleFailed: [type: "boolean", description: "Trailing updateRule click failed"],
+                    subscriptionsNotLive: [type: "boolean", description: "Subscriptions not live after update"],
+                    updateRuleError: [type: "string", description: "updateRule error detail"],
+                    repairHints: [type: "array", description: "Suggested fixes", items: [type: "string"]],
+                    note: [type: "string", description: "Human-readable result"],
+                    error: [type: "string", description: "Present on failure"],
+                    restoreHint: [type: "string", description: "Present on failure"],
+                    wizardStuck: [type: "boolean", description: "Present when wizard is stuck"],
+                    removedIndices: [type: "array", description: "replace/clear-all: indices removed", items: [type: "integer"]],
+                    addedActions: [type: "array", description: "replace/clear-all: actions added", items: [type: "object"]],
+                    modifiedIndex: [type: "integer", description: "modifyTrigger: modified trigger index"],
+                    verifiedState: [description: "modifyTrigger: post-edit verified state"],
+                    verificationFetchFailed: [type: "boolean", description: "modifyTrigger: verification fetch failed"],
+                    triggerIndex: [type: "integer", description: "addTrigger: new trigger index"],
+                    configPageError: [description: "Config-page read error, when present"],
+                    hubRenderError: [type: "string", description: "addTrigger: hub render error"],
+                    actionIndex: [type: "integer", description: "addAction: new action index"],
+                    capability: [type: "string", description: "addAction: capability"],
+                    action: [type: "string", description: "addAction: action verb"],
+                    actType: [type: "string", description: "addAction: action type"],
+                    actSubType: [type: "string", description: "addAction: action subtype"],
+                    patches: [type: "array", description: "patches: per-patch results", items: [type: "object"]],
+                    patchesNotLive: [type: "boolean", description: "patches: not live after update"],
+                    variable: [type: "object", description: "addLocalVariable: created variable"],
+                    variableNotLive: [type: "boolean", description: "addLocalVariable: not live after update"],
+                    conditionIndices: [type: "array", description: "addRequiredExpression: condition indices", items: [type: "integer"]],
+                    expressionNotLive: [type: "boolean", description: "addRequiredExpression: not live after update"],
+                    wizardDoneAutoRetry: [type: "boolean", description: "settings/button: wizard-done auto-retry fired"],
+                    warning: [type: "string", description: "Non-fatal warning"],
+                    asyncCommitLikely: [type: "boolean", description: "clearActions: async commit likely"],
+                    httpWriteStatus: [description: "clearActions: HTTP write status"],
+                    actionsRequestedForRemoval: [type: "integer", description: "clearActions: actions requested for removal"],
+                    actionsStillPresent: [type: "integer", description: "clearActions: actions still present after"],
+                    possibleStateEditAct: [description: "clearActions: possible state-edit action"],
+                    verifyHint: [type: "string", description: "clearActions: verification hint"],
+                    safeRecovery: [type: "object", description: "clearActions: safe-recovery guidance"]
+                ]
             ]
         ],
         [
@@ -3321,6 +4653,19 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "True when a new child app was created"],
+                    sourceAppId: [type: "integer", description: "Source app ID"],
+                    clonerAppId: [type: "integer", description: "Temporary cloner app ID (auto-deleted after the operation)"],
+                    newAppId: [type: "integer", description: "New cloned app ID, or null on soft failure"],
+                    isError: [type: "boolean", description: "Present (true) on soft failure"],
+                    error: [type: "string", description: "Present on soft failure"],
+                    note: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -3333,6 +4678,22 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
                     appId: [type: "integer", description: "Alias for sourceAppId."],
                     saveAs: [type: "string", description: "Optional File Manager filename (.json or .txt). When provided, the export is also written to /local/<saveAs>."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether export succeeded"],
+                    sourceAppId: [type: "integer", description: "Source app ID"],
+                    sourceLabel: [type: "string", description: "Source app label"],
+                    clonerAppId: [type: "integer", description: "Temporary cloner app ID (auto-deleted after the operation)"],
+                    contentLength: [type: "integer", description: "Exported JSON length"],
+                    jsonContent: [type: "string", description: "Exported rule JSON"],
+                    savedAs: [type: "string", description: "File Manager filename; present with saveAs"],
+                    savedUrl: [type: "string", description: "File URL; present when hub IP known"],
+                    saveError: [type: "string", description: "Present if File Manager save failed"],
+                    note: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -3356,6 +4717,21 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
                 // forward). Tool + property descriptions document the OR for
                 // LLM tool-selection.
                 required: ["parentHintAppId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "True when a new child app was created"],
+                    clonerAppId: [type: "integer", description: "Temporary cloner app ID (auto-deleted after the operation)"],
+                    newAppId: [type: "integer", description: "New imported app ID, or null on soft failure"],
+                    originalSourceId: [type: "integer", description: "Original source app ID from the export"],
+                    originalLabel: [type: "string", description: "Original app label, or null"],
+                    contentLength: [type: "integer", description: "Imported JSON length"],
+                    isError: [type: "boolean", description: "Present (true) on soft failure"],
+                    error: [type: "string", description: "Present on soft failure"],
+                    note: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -3377,6 +4753,19 @@ Returns {ok: bool, label, configPageError, brokenMarkers: [...], multipleFlagPoi
                     appId: [type: "integer", description: "Installed-app ID to check."]
                 ],
                 required: ["appId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    ok: [type: "boolean", description: "True when no issues found"],
+                    label: [type: "string", description: "Rule label, or null"],
+                    configPageError: [type: "string", description: "Config page error, or null"],
+                    brokenMarkers: [type: "array", description: "Broken Trigger/Action/Condition markers", items: [type: "string"]],
+                    multipleFlagPoison: [type: "array", description: "Poisoned setting names", items: [type: "string"]],
+                    structuralIssues: [type: "array", description: "Structural issues", items: [type: "string"]],
+                    issues: [type: "array", description: "All issues; ok is false iff non-empty", items: [type: "string"]]
+                ],
+                required: ["ok"]
             ]
         ],
         [
@@ -3398,17 +4787,40 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["appId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the delete succeeded"],
+                    appId: [type: "integer", description: "App ID"],
+                    mode: [type: "string", description: "delete or forcedelete"],
+                    backup: [type: "object", description: "Pre-delete backup metadata"],
+                    hubMessage: [type: "string", description: "Present when hub refused soft delete"],
+                    note: [type: "string", description: "Human-readable result"],
+                    error: [type: "string", description: "Present on exception"]
+                ],
+                required: ["success"]
             ]
         ],
         // Tool Guide
         [
             name: "hub_get_tool_guide",
-            description: "Get detailed reference for MCP tools. USE SPARINGLY - tool descriptions should suffice for most cases. When needed, ALWAYS specify a section to minimize token usage.",
+            description: "Get the deep-reference guide for an MCP tool topic (exhaustive capability tables, wire formats, worked examples) when a tool's own description and parameter descriptions are not enough. Supplement only - those descriptions are self-sufficient for normal use, so reach for this just for the named sections. Always pass a section to minimize tokens; omit it only to discover the available section keys.",
             inputSchema: [
                 type: "object",
                 properties: [
                     section: [type: "string", description: "REQUIRED for efficiency: device_authorization, hub_admin_write, virtual_devices, hub_update_device, rules, backup, file_manager, performance, builtin_app_tools, update_native_app_reference, create_native_app_reference. Full guide only if absolutely necessary.", enum: ["device_authorization", "hub_admin_write", "virtual_devices", "hub_update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "update_native_app_reference", "create_native_app_reference"]]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the guide was returned"],
+                    section: [type: "string", description: "Section key returned, or 'full' for the whole guide"],
+                    content: [type: "string", description: "Requested guide content (section or full)"],
+                    availableSections: [type: "array", description: "All section keys, present in full-guide mode", items: [type: "string"]]
+                ],
+                required: ["success"]
             ]
         ],
         // Tool Search (BM25)
@@ -3422,10 +4834,28 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
                     maxResults: [type: "integer", description: "Max results to return. Default: 5.", default: 5]
                 ],
                 required: ["query"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    query: [type: "string", description: "Echoed search query"],
+                    resultsCount: [type: "integer", description: "Number of ranked results returned"],
+                    totalToolsSearched: [type: "integer", description: "Size of the searched tool corpus"],
+                    results: [type: "array", description: "Ranked matching tools", items: [type: "object", properties: [
+                        tool: [type: "string", description: "Tool name"],
+                        description: [type: "string", description: "Tool description"],
+                        relevance: [type: "number", description: "BM25 relevance score"],
+                        gateway: [type: "string", description: "Owning gateway, present for proxied tools"],
+                        callAs: [type: "string", description: "How to invoke the tool"]
+                    ]]],
+                    message: [type: "string", description: "Note when the query yields no searchable terms"]
+                ],
+                required: ["results"]
             ]
         ]
     ]
 }
+
 
 def executeTool(toolName, args) {
     // Custom Rule Engine gate. The tools also disappear from tools/list
@@ -3441,8 +4871,14 @@ def executeTool(toolName, args) {
                                "hub_update_custom_rule"] as Set
     // Legacy custom-rule tools are named hub_<verb>_custom_rule (the `custom`
     // qualifier moved into the noun during the issue #105 hub_ rename), so detect
-    // them by the _custom_rule suffix rather than a custom_ prefix.
-    if (toolName?.contains("_custom_rule")) {
+    // them by the _custom_rule suffix rather than a custom_ prefix. Use endsWith,
+    // NOT contains: the gateway name `hub_manage_custom_rules` (plural) contains the
+    // substring `_custom_rule`, so `contains` mis-fired this read-only gate on the
+    // gateway itself -- bricking the entire hub_manage_custom_rules gateway in
+    // readonly mode (engine OFF) before handleGateway could dispatch its allowed
+    // read sub-tools (get/test/update). All 8 leaf tools end with `_custom_rule`;
+    // the gateway ends with `_custom_rules`, so endsWith cleanly excludes it.
+    if (toolName?.endsWith("_custom_rule")) {
         if (customEngineMode == "off") {
             throw new IllegalArgumentException("${toolName} is not available. Both 'Enable Custom Rule Engine' and 'Enable Built-in App Tools' are OFF. To use the legacy custom-rule tools (hub_*_custom_rule), turn on Custom Rule Engine. To use native Hubitat Rule Machine rules (recommended), turn on Built-in App Tools instead.")
         }
@@ -6193,8 +7629,14 @@ def toolGetHsmStatus() {
 
     return [
         status: hsmStatus,
+        // Interpret a null/empty status so callers don't see a bare null (HSM may
+        // be disabled, or hasn't reported a status yet). Known values: disarmed,
+        // armedAway, armedHome, armedNight.
+        statusText: hsmStatus ?: "unknown — HSM may be disabled or has not reported a status yet",
         alert: hsmAlerts,
-        modes: ["disarm", "armAway", "armHome", "armNight"]
+        // Renamed from the overloaded `modes`: these are the HSM ARM commands for
+        // hub_set_hsm, NOT hub Day/Night/Away location modes (a separate concept).
+        armCommands: ["disarm", "armAway", "armHome", "armNight"]
     ]
 }
 
@@ -7381,7 +8823,7 @@ def requireHubAdminWrite(Boolean confirmParam) {
         throw new IllegalArgumentException("Hub Admin Write access is disabled. Enable 'Enable Hub Admin Write Tools' in MCP Rule Server app settings to use this tool.")
     }
     if (!confirmParam) {
-        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with hub_create_backup first? Review the tool description for the mandatory pre-flight checklist.")
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with hub_create_backup first? Review the tool description for the mandatory pre-flight checklist, or call hub_get_tool_guide for the tool's full reference.")
     }
     // Check for recent hub backup (within 24 hours)
     if (!state.lastBackupTimestamp || (now() - state.lastBackupTimestamp) > 86400000) {
@@ -8064,7 +9506,12 @@ def toolDeleteFile(args) {
         ]
         if (backedUp) {
             result.backupFile = backupFileName
-            result.backupDownload = "http://<HUB_IP>/local/${backupFileName}"
+            // Resolve the hub's real IP for a clickable URL; fall back to the
+            // documented <HUB_IP> placeholder (the same convention the other
+            // file-manager tools use) when location.hub.localIP is unavailable.
+            String hubIp = null
+            try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall through */ }
+            result.backupDownload = "http://${hubIp ?: '<HUB_IP>'}/local/${backupFileName}"
             result.undoHint = "To recover: use 'hub_read_file' on '${backupFileName}' to view contents, or 'hub_write_file' to recreate '${args.fileName}' from the backup."
         }
         if (!backedUp && !isBackupFile) {
@@ -8607,7 +10054,28 @@ private String _bugReportFormatLogEntry(entry) {
     def lvl = entry.level?.toString()?.toUpperCase()
     def tool = entry.details?.tool ? " [tool=${entry.details.tool}]" : ""
     def ruleRef = entry.ruleId ? " (Rule: ${entry.ruleId})" : ""
-    return "[${ts}] ${lvl}${tool}: ${entry.message}${ruleRef}"
+    // Tag known-benign RM-internal noise so a maintainer reading this report
+    // doesn't chase it as a real failure (see _isBenignRmInternalNoise).
+    def benignTag = _isBenignRmInternalNoise(entry.message) ? " [KNOWN-BENIGN RM-internal noise — non-fatal, not an MCP bug]" : ""
+    return "[${ts}] ${lvl}${tool}: ${entry.message}${ruleRef}${benignTag}"
+}
+
+/**
+ * Recognizes log lines that are benign Rule-Machine-internal noise (RM's own
+ * code logging against the rule app, non-fatal, NOT an MCP-tool failure) so our
+ * log-consuming tools can annotate them instead of mis-surfacing them as errors.
+ *
+ * Currently matches: RM 5.1's `periodic` page method (ruleApp51) logging an
+ * unguarded NullPointerException on params.n while RM RENDERS the periodic
+ * sub-page during a periodic-trigger build. Verified live 2026-06-03: logged
+ * against the rule app (not app 194/MCP) and non-fatal — the trigger bakes
+ * cleanly. Our POSTs already carry n; the noise is on RM's own render path.
+ */
+private boolean _isBenignRmInternalNoise(message) {
+    def m = message?.toString()
+    if (m == null) return false
+    // RM periodic-render NPE: "...Cannot get property 'n' on null object ... (method periodic)"
+    return m.contains("method periodic") && m.contains("Cannot get property 'n' on null")
 }
 
 private String _bugReportBuildMarkdown(Map params) {
@@ -9466,6 +10934,16 @@ def toolGetHubLogs(args) {
         result.timeFilterUnparseable = timeFilterUnparseable
     }
 
+    // Flag known-benign RM-internal noise so callers don't read it as a real
+    // error. RM 5.1's own `periodic` page method logs an unguarded NPE on
+    // params.n (against the rule app, not us) while RM renders the periodic
+    // sub-page during a periodic-trigger build -- non-fatal; the trigger bakes.
+    def benignRmNoiseCount = paged.page.count { _isBenignRmInternalNoise(it.message) }
+    if (benignRmNoiseCount > 0) {
+        result.benignRmNoiseCount = benignRmNoiseCount
+        result.benignRmNoiseNote = "${benignRmNoiseCount} of these entr${benignRmNoiseCount == 1 ? 'y is' : 'ies are'} known-benign RM-internal noise (RM 5.1's own 'periodic' method logging an NPE on params.n while it renders the periodic sub-page during a periodic-trigger build). NON-FATAL, NOT an MCP-tool failure -- the trigger bakes correctly. Safe to ignore."
+    }
+
     mcpLog("info", "monitoring", "Retrieved ${logs.size()} hub log entries (${totalParsed} total parsed)")
     return result
 }
@@ -10041,7 +11519,9 @@ def toolDeviceHealthCheck(args) {
                 try {
                     entry.lastActivity = lastActivity.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
                     def activityTime = lastActivity.getTime()
-                    entry.hoursAgo = Math.round((now() - activityTime) / 3600000.0 * 10) / 10.0
+                    // `as double`: Groovy decimal literals are BigDecimal, so 0/10.0
+                    // renders as "0E+1" for fresh devices -- coerce to a plain double.
+                    entry.hoursAgo = (Math.round((now() - activityTime) / 3600000.0 * 10) / 10.0) as double
 
                     if (activityTime < staleThreshold) {
                         stale << entry
@@ -10349,8 +11829,23 @@ def toolGetItemSource(String type, String idParam, args) {
 private String stripAppConfigHtml(value) {
     if (value == null) return null
     def s = value.toString()
-    if (!s.contains("<")) return s
-    return s.replaceAll(/<[^>]+>/, "").trim()
+    // Strip HTML tags, then any leftover CSS-rule / inline-script bodies that
+    // Hubitat embeds via <style>/<script>: the tags strip above but the
+    // "selector{...}" / "fn(){...}" bodies remain mashed into the text (e.g. the
+    // Local Variables `lvTable` page). Only blocks containing ; or : inside the
+    // braces are removed, so prose like "{x}" is preserved.
+    if (s.contains("<")) {
+        s = s.replaceAll(/<[^>]+>/, "").replaceAll(/[^{}]*\{[^{}]*[;:][^{}]*\}/, "")
+    }
+    // Decode the common HTML entities Hubitat escapes user-typed names with: a
+    // rule the user named "Heat On <67" is stored (and listed) as "Heat On &lt;67".
+    // Decode &amp; LAST so a single-encoded "&lt;" resolves correctly.
+    if (s.contains("&")) {
+        s = s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+             .replace("&#39;", "'").replace("&apos;", "'").replace("&nbsp;", " ")
+             .replace("&amp;", "&")
+    }
+    return s.trim()
 }
 
 /**
@@ -11997,7 +13492,7 @@ def toolDeleteDevice(args) {
         if (selectedDevice) {
             def lastActivity = selectedDevice.lastActivity
             if (lastActivity) {
-                def hoursAgo = Math.round((now() - lastActivity.time) / 3600000.0 * 10) / 10.0
+                def hoursAgo = (Math.round((now() - lastActivity.time) / 3600000.0 * 10) / 10.0) as double
                 if (hoursAgo < 24) {
                     warnings << "ACTIVE DEVICE: Last activity was ${hoursAgo} hours ago at ${lastActivity.format("yyyy-MM-dd'T'HH:mm:ss")}. This device may still be functional."
                 }
@@ -13180,7 +14675,9 @@ def toolListInstalledApps(args) {
             if (included) {
                 flat << [
                     id: d.id,
-                    name: d.name,
+                    // Strip embedded HTML some apps put in their list name (e.g.
+                    // strikethrough/color spans), mirroring hub_get_app_config.
+                    name: stripAppConfigHtml(d.name),
                     type: d.type,
                     disabled: d.disabled == true,
                     user: d.user == true,
@@ -14308,8 +15805,13 @@ def toolSetRulePaused(args) {
     else if (args.value == "false") paused = false
     else throw new IllegalArgumentException("value must be boolean true/false (got: ${args.value})")
     def ruleId = normalizeRuleId(args.ruleId)
-    return paused ? sendRmAction(ruleId, "pauseRule", "hub_set_rule_paused")
-                  : sendRmAction(ruleId, "resumeRule", "hub_set_rule_paused")
+    def result = paused ? sendRmAction(ruleId, "pauseRule", "hub_set_rule_paused")
+                        : sendRmAction(ruleId, "resumeRule", "hub_set_rule_paused")
+    // Echo the applied pause state so callers can confirm the outcome without a
+    // follow-up read. RMUtils pause/resume is fire-and-forget, so this is the
+    // requested/applied value, not a hub read-back.
+    if (result instanceof Map) result.paused = paused
+    return result
 }
 
 /**
@@ -15526,6 +17028,16 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // AND a non-JSON response (the latter is benign -- the caller plain-fetches),
         // so null is ambiguous here. A genuine nav failure surfaces deterministically
         // anyway via the writePeriodic persistence checks below (every field skips).
+        //
+        // BUG-9 (verified live 2026-06-03, app 1606): RM 5.1's OWN `periodic` page
+        // method (ruleApp51, ~line 1576) logs a benign NullPointerException
+        // ("Cannot get property 'n' on null object ... method periodic") against the
+        // RULE app -- not ours (app 194) -- 2-3x while RM renders the periodic
+        // sub-page during these interactions. It is RM-internal (RM doesn't null-
+        // guard its own params.n on a render path) and NON-FATAL: the trigger bakes
+        // cleanly (settingsApplied populated, health.ok). Our POSTs already carry n
+        // via hrefParams; the noise is on RM's render, which we do not control. Do
+        // NOT chase it into this fragile sub-page flow to silence RM's own log line.
         _rmNavigateToPage(appId, "selectTriggers", "periodic", periodicHrefIndex, periodicHrefName, hrefParams)
         // Closure that wraps _rmWriteSubPageField with applied/skipped routing
         // based on the helper's persistence verification (Map return). Use this
@@ -16880,7 +18392,7 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
             return [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
         }
     }
-    throw new IllegalStateException("removeAction(${actionIdx}) waited 10 seconds and action ${actionIdx} is still present in rule ${appId}'s actions list (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). This is likely an extreme propagation lag (state.editAct was clear at pre-flight). Verify via hub_get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response.")
+    throw new IllegalStateException("removeAction(${actionIdx}): after the delAct click and ~10s of polling, action ${actionIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). state.editAct was clear at pre-flight, so the most likely cause is a DROPPED first wizard click -- RM 5.1 occasionally silently no-ops the first delAct click, in which case the action was NOT removed and nothing is pending. Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check action ${actionIdx}. If still present -> the click dropped; safe to call removeAction(index:${actionIdx}) again. If gone -> the original click committed late (rare extreme lag); the removal already succeeded, do not retry. Indices shift on deletion, so retrying without this check can delete the wrong action.")
 }
 
 /**
@@ -16960,7 +18472,7 @@ private Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
             return [success: true, removedIndex: triggerIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
         }
     }
-    throw new IllegalStateException("removeTrigger(${triggerIdx}) waited 10s and trigger ${triggerIdx} is still present in rule ${appId}'s trigger list (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). This is likely an extreme propagation lag. Verify via hub_get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. If the issue persists, use hub_restore_backup to roll back to the pre-operation snapshot.")
+    throw new IllegalStateException("removeTrigger(${triggerIdx}): after the delete click and ~10s of polling, trigger ${triggerIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). The most likely cause is a DROPPED first wizard click (RM 5.1 occasionally silently no-ops it), in which case the trigger was NOT removed and nothing is pending. Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check trigger ${triggerIdx}. If still present -> safe to call removeTrigger(index:${triggerIdx}) again. If gone -> the original click committed late (rare); the removal already succeeded, do not retry. If a retry also fails, hub_restore_backup to the pre-operation snapshot. Indices shift on deletion, so retrying without this check can delete the wrong trigger.")
 }
 
 /**
@@ -17650,7 +19162,7 @@ private void _rmInitSelectActionsPage(Integer appId) {
  * Returns: [success, actionIndex, capability, action, settingsApplied,
  * configPageError]
  */
-private Map _rmAddAction(Integer appId, Map actionSpec) {
+private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false) {
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
     // Discover mode -- return static schema without touching the hub.
     // No capability field required; no Hub Admin Write gate; no backup.
@@ -19177,6 +20689,24 @@ private Map _rmAddAction(Integer appId, Map actionSpec) {
     def err = finalConfig?.configPage?.error
 
     def health = _rmCheckRuleHealth(appId)
+    if (intraBatch && health instanceof Map && (health.structuralIssues as List)) {
+        // Bundled multi-action build (create_native_app actions[], addActions,
+        // replaceActions, patches): an open block (IF before its END-IF, Repeat
+        // before its End-Repeat) is legitimately unbalanced until the closer
+        // bakes later in the SAME call, so the structural-imbalance signal on
+        // this INTERMEDIATE per-action snapshot is a transient false alarm that
+        // nudges a needless hub_restore_backup. Drop ONLY structuralIssues from
+        // this snapshot (plus the single combined "structural imbalance..." line
+        // in issues, and recompute ok) -- brokenMarkers / multipleFlagPoison /
+        // configPageError are kept, partial keys off brokenMarkers not this, and
+        // the caller's FINAL post-batch _rmCheckRuleHealth still asserts any real,
+        // persisting imbalance. Single addAction passes the default
+        // intraBatch=false, so a lone unclosed block still surfaces correctly.
+        def filteredIssues = ((health.issues as List) ?: []).findAll {
+            !(it?.toString()?.startsWith("structural imbalance in action block nesting"))
+        }
+        health = health + [structuralIssues: [], issues: filteredIssues, ok: filteredIssues.isEmpty()]
+    }
 
     // Post-commit silent-failure detection. Same class of issue as
     // addTrigger / addRequiredExpression: RM 5.1's doActPage silently
@@ -19921,7 +21451,7 @@ private Map _rmCheckRuleHealth(Integer appId) {
         // post-response-commit race for non-structural deletes).
         structuralIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(settingsByName))
         if (structuralIssues) {
-            issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — likely caused by a raw settings write or a mutation that committed post-response. Use hub_restore_backup to roll back, or add the missing closer via addAction(capability='endIf'|'stopRepeat').".toString())
+            issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — if you are still building this rule (adding an IF/ELSE or Repeat block across separate calls), this is EXPECTED until you add the closer, and the fix is simply to add it via addAction(capability='endIf'|'stopRepeat') — do NOT restore. Only if the rule was already complete does this indicate damage (a raw settings write or a mutation that committed post-response), in which case use hub_restore_backup to roll back.".toString())
         }
     } catch (Exception e) {
         issues << "health check failed: ${e.message}".toString()
@@ -20718,6 +22248,27 @@ private Map _rmForceDeleteApp(Integer appId) {
 }
 
 /**
+ * Best-effort teardown of a temporary appCloner instance. _appClonerInit spins up
+ * a fresh "Export/Import/Clone" system app per call; left installed, every export/
+ * clone/import strands a hidden cloner and they accumulate. Force-delete it (no
+ * child apps/devices, so forcedelete is safe) and swallow failures -- a stranded
+ * cloner is cosmetic clutter, not worth failing the user's operation over. Returns
+ * true if the delete call succeeded. Callers invoke this in a finally so the cloner
+ * is reaped on both the success and error paths.
+ */
+private boolean _appClonerCleanup(Integer clonerAppId) {
+    if (clonerAppId == null) return false
+    try {
+        _rmForceDeleteApp(clonerAppId)
+        mcpLog("debug", "rm-native", "appCloner: cleaned up temporary cloner ${clonerAppId}")
+        return true
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "appCloner: cleanup of temporary cloner ${clonerAppId} failed: ${e.message} -- a hidden 'Export/Import/Clone' app may remain; delete via hub_delete_native_app(appId=${clonerAppId}, force=true)")
+        return false
+    }
+}
+
+/**
  * Soft delete via /installedapp/delete/<id>. Refuses if the app has
  * child devices or child apps (hub-side safety). Returns the hub's JSON
  * response verbatim so callers can surface the reason on refusal.
@@ -20838,7 +22389,7 @@ def toolCreateNativeApp(args) {
                     return
                 }
                 try {
-                    actionResults << _rmAddAction(newId, spec as Map)
+                    actionResults << _rmAddAction(newId, spec as Map, true)
                 } catch (Exception ae) {
                     actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
                     mcpLog("warn", "rm-native", "hub_create_native_app: action ${i} (${spec.capability}/${spec.action}) failed -- ${ae.message}")
@@ -20885,6 +22436,7 @@ def toolCreateNativeApp(args) {
         if (partialTriggers || partialActions) {
             repairHints << "Rule ${newId} was created BUT some pieces are incomplete — see partialTriggers / partialActions arrays for indices. Each partial result has its own repairHints list with concrete next steps."
             repairHints << "Repair pattern: 1) hub_get_app_config(${newId}, includeSettings=true) to inspect current state. 2) For each partial trigger/action, follow its repairHints. 3) hub_update_native_app(walkStep={...}) for incremental field writes; replaceActions(...) or removeAction(index) + addAction(...) for whole-action retries. 4) hub_update_native_app(button='updateRule') after fixes to commit. 5) Re-run hub_get_rule_health to verify. Don't conclude failure until tool-only repair attempts are exhausted."
+            repairHints << "Full trigger/action field reference: call hub_update_native_app(guide:true), or hub_get_tool_guide(section='create_native_app_reference')."
         }
         def result = [
             success: health.ok && !partialTriggers && !partialActions,
@@ -21440,8 +22992,12 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         }
         def startTypeField = startTypeReveal.input.name.toString()
 
-        // Reveal 2: write start type as the trigger -> startingA<cIdx> value field appears
-        def startValReveal = revealStep(appId, page, /startingA\d+/, {
+        // Reveal 2: write start type as the trigger -> start value field appears.
+        // Clock: startingA<cIdx>; Sunrise/Sunset: startSunriseOffset<cIdx>/startSunsetOffset<cIdx>
+        // (RM names the sun-event offset field per event, NOT a shared name). The offset is
+        // optional, but the field still appears on type selection so writeST can fill it when an
+        // offset is given. Matching only startingA here silently broke every Sunrise/Sunset start.
+        def startValReveal = revealStep(appId, page, /startingA\d+|startSunriseOffset\d+|startSunsetOffset\d+/, {
             writeST(hrefParams, startTypeField, startTypeWire)
         })
         if (!startValReveal.input) {
@@ -21463,9 +23019,11 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         }
         def endTypeField = endTypeReveal.input.name.toString()
 
-        // Reveal 4: write end type as the trigger -> endingA<cIdx> or endSunriseOffset<cIdx> appears
-        // Clock: endingA<cIdx>; sunrise/sunset: endSunriseOffset<cIdx> for offset minutes.
-        def endValReveal = revealStep(appId, page, /endingA\d+|endSunriseOffset\d+/, {
+        // Reveal 4: write end type as the trigger -> end value field appears.
+        // Clock: endingA<cIdx>; Sunrise: endSunriseOffset<cIdx>; Sunset: endSunsetOffset<cIdx>
+        // (RM names the sun-event offset field per event; offset minutes, optional). The prior
+        // regex matched Sunrise but not Sunset on the end side -- end-type='Sunset' silently failed.
+        def endValReveal = revealStep(appId, page, /endingA\d+|endSunriseOffset\d+|endSunsetOffset\d+/, {
             writeST(hrefParams, endTypeField, endTypeWire)
         })
         if (!endValReveal.input) {
@@ -22479,6 +24037,12 @@ def toolUpdateNativeApp(args) {
     if (args?.addAction instanceof Map && args.addAction.discover == true) {
         return _rmAddAction(0, args.addAction as Map)
     }
+    // Guide short-circuit: {guide: true} returns the update_native_app capability
+    // reference inline (same content as hub_get_tool_guide), with no hub interaction
+    // and no rule change -- bypasses ALL gates exactly like discover mode above.
+    if (args?.guide == true) {
+        return toolGetToolGuide('update_native_app_reference')
+    }
     requireBuiltinApp()
     requireHubAdminWrite(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
@@ -22697,7 +24261,7 @@ def toolUpdateNativeApp(args) {
                         addedResults << [success: false, error: "replaceActions[${i}] is not a Map", spec: spec]
                         return
                     }
-                    try { addedResults << _rmAddAction(appId, spec as Map) }
+                    try { addedResults << _rmAddAction(appId, spec as Map, true) }
                     catch (Exception ae) {
                         addedResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
                         mcpLog("warn", "rm-native", "hub_update_native_app: replaceActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
@@ -22777,13 +24341,16 @@ def toolUpdateNativeApp(args) {
                 return shape
             }
             def result = _rmBuildUpdateErrorResponse(appId, e.message, backup)
-            // The "deletion may commit post-response" exhaustion path needs
-            // an extra hint that the helper doesn't know about. This branch
-            // now only fires for removeAction exhaustion: the clearActions /
-            // replaceActions async-commit case is handled by the structured
-            // envelope above. removeAction stays on the legacy flat shape
-            // because it's single-row and the async race is rarer in practice.
-            def isRetryExhaustion = e.message?.contains("deletion may commit post-response")
+            // The removeAction retry-exhaustion path needs an extra hint that
+            // the helper doesn't know about. This branch now only fires for
+            // removeAction exhaustion: the clearActions / replaceActions async-
+            // commit case is handled by the structured envelope above.
+            // removeAction stays on the legacy flat shape because it's single-
+            // row and the dropped-click race is rarer in practice. Detected by
+            // the distinctive "DROPPED first wizard click" phrase in
+            // _rmDeleteAction's exhaustion throw (BUG-13 rewrote this from the
+            // old, misleading "deletion may commit post-response" wording).
+            def isRetryExhaustion = e.message?.contains("DROPPED first wizard click")
             if (isRetryExhaustion) {
                 result.restoreHint = "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')."
                 result.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
@@ -22888,8 +24455,11 @@ def toolUpdateNativeApp(args) {
             // (clearActions / replaceActions) where the async-GC race is
             // live-verified and the replace-half data-loss case justifies the
             // richer recovery contract. Trigger-mutation exhaustion is rare and
-            // single-row, so the flat shape stays sufficient here.
-            def isRetryExhaustion = e.message?.contains("deletion may commit post-response")
+            // single-row, so the flat shape stays sufficient here. Detected by the
+            // distinctive "DROPPED first wizard click" phrase in removeTrigger's
+            // exhaustion throw (BUG-13 rewrote the old "deletion may commit
+            // post-response" wording on both the action and trigger paths).
+            def isRetryExhaustion = e.message?.contains("DROPPED first wizard click")
             def trigResult = [
                 success: false,
                 appId: appId,
@@ -23137,11 +24707,11 @@ def toolUpdateNativeApp(args) {
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
                         patchResults << [success: innerOk, op: "addTriggers", results: innerResults]
                     } else if (pm.containsKey("addAction")) {
-                        patchResults << ([op: "addAction"] + _rmAddAction(appId, pm.addAction as Map))
+                        patchResults << ([op: "addAction"] + _rmAddAction(appId, pm.addAction as Map, true))
                     } else if (pm.containsKey("addActions")) {
                         def innerResults = []
                         (pm.addActions as List).each { aspec ->
-                            try { innerResults << _rmAddAction(appId, aspec as Map) }
+                            try { innerResults << _rmAddAction(appId, aspec as Map, true) }
                             catch (Exception e) { innerResults << [success: false, error: e.message] }
                         }
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
@@ -23234,7 +24804,7 @@ def toolUpdateNativeApp(args) {
                         }
                         def innerResults = []
                         (pm.replaceActions as List).each { aspec ->
-                            try { innerResults << _rmAddAction(appId, aspec as Map) }
+                            try { innerResults << _rmAddAction(appId, aspec as Map, true) }
                             catch (Exception e) { innerResults << [success: false, error: e.message] }
                         }
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
@@ -23506,7 +25076,7 @@ def toolUpdateNativeApp(args) {
                     actionResults << [success: false, error: "addActions[${i}] is not a Map", spec: spec]
                     return
                 }
-                try { actionResults << _rmAddAction(appId, spec as Map) }
+                try { actionResults << _rmAddAction(appId, spec as Map, true) }
                 catch (Exception ae) {
                     actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
                     mcpLog("warn", "rm-native", "hub_update_native_app: addActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
@@ -24160,49 +25730,56 @@ def toolCloneNativeApp(args) {
     String referrer = initRes.referrer
     String configUrl = initRes.configUrl
 
-    // Step 2: click cloneRuleButton + form refresh — TWICE. Hubitat's
-    // appCloner state machine drops the first click event silently
-    // (verified live via Chrome XHR sniffing — same race the
-    // hub_delete_variable wizard works around with a retry-once loop).
-    // The second click+refresh commits the state transition to the
-    // confirmation page.
-    def btnBody = [
-        id: clonerAppId.toString(),
-        name: "cloneRuleButton",
-        ("settings[cloneRuleButton]".toString()): "clicked",
-        ("cloneRuleButton.type".toString()): "button"
-    ]
-    for (int attempt = 0; attempt < 2; attempt++) {
-        hubInternalPostForm("/installedapp/btn", btnBody)
-        pauseExecution(500)
-        _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, null)
-        pauseExecution(500)
+    try {
+        // Step 2: click cloneRuleButton + form refresh — TWICE. Hubitat's
+        // appCloner state machine drops the first click event silently
+        // (verified live via Chrome XHR sniffing — same race the
+        // hub_delete_variable wizard works around with a retry-once loop).
+        // The second click+refresh commits the state transition to the
+        // confirmation page.
+        def btnBody = [
+            id: clonerAppId.toString(),
+            name: "cloneRuleButton",
+            ("settings[cloneRuleButton]".toString()): "clicked",
+            ("cloneRuleButton.type".toString()): "button"
+        ]
+        for (int attempt = 0; attempt < 2; attempt++) {
+            hubInternalPostForm("/installedapp/btn", btnBody)
+            pauseExecution(500)
+            _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, null)
+            pauseExecution(500)
+        }
+
+        // Steps 3-5: navigate importRule, optional rename, click importNow.
+        _appClonerCommitImportRule(clonerAppId, sourceAppId, newName, referrer, configUrl)
+
+        Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, sourceLabel, newName)
+
+        String note = newAppId
+            ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_update_native_app to further customize."
+            : "Clone fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
+        def result = [
+            success: newAppId != null,
+            sourceAppId: sourceAppId,
+            clonerAppId: clonerAppId,
+            newAppId: newAppId,
+            note: note
+        ]
+        if (newAppId == null) {
+            // Cloner fired but child discovery returned no match. Surface the
+            // structured isError/error fields callers branching on the
+            // file-wide error contract expect (handleToolsCall flags isError
+            // on the JSON-RPC envelope; LLM clients use it to route retries).
+            result.isError = true
+            result.error = note
+        }
+        return result
+    } finally {
+        // Reap the transient cloner on every path. The cloned rule is already a
+        // child of the RM parent (discovered above), not of the cloner, so this
+        // is safe. Prevents accumulating hidden 'Export/Import/Clone' apps (BUG-8).
+        _appClonerCleanup(clonerAppId)
     }
-
-    // Steps 3-5: navigate importRule, optional rename, click importNow.
-    _appClonerCommitImportRule(clonerAppId, sourceAppId, newName, referrer, configUrl)
-
-    Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, sourceLabel, newName)
-
-    String note = newAppId
-        ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_update_native_app to further customize."
-        : "Clone fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
-    def result = [
-        success: newAppId != null,
-        sourceAppId: sourceAppId,
-        clonerAppId: clonerAppId,
-        newAppId: newAppId,
-        note: note
-    ]
-    if (newAppId == null) {
-        // Cloner fired but child discovery returned no match. Surface the
-        // structured isError/error fields callers branching on the
-        // file-wide error contract expect (handleToolsCall flags isError
-        // on the JSON-RPC envelope; LLM clients use it to route retries).
-        result.isError = true
-        result.error = note
-    }
-    return result
 }
 
 /**
@@ -24235,57 +25812,63 @@ def toolExportNativeApp(args) {
     String referrer = initRes.referrer
     String configUrl = initRes.configUrl
 
-    // Step 2: click exportRuleButton, then capture the form-refresh response.
-    // Unlike clone (which writes persistent state and needs a double-click
-    // to commit the state transition), export's serialized JSON is rendered
-    // INTO the form-refresh POST response itself as
-    // configPage.sections[].input[].filecontent — session-keyed and not
-    // persisted to the cloner's settings. So we must capture the response
-    // body of the same POST that fires the click rather than fetching the
-    // cloner's state in a subsequent request (different session = bare view,
-    // no JSON). One click is sufficient here.
-    def btnBody = [
-        id: clonerAppId.toString(),
-        name: "exportRuleButton",
-        ("settings[exportRuleButton]".toString()): "clicked",
-        ("exportRuleButton.type".toString()): "button"
-    ]
-    hubInternalPostForm("/installedapp/btn", btnBody)
-    pauseExecution(500)
-    def refreshResp = _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, null)
-    String jsonContent = _appClonerExtractJsonFromResponse(refreshResp?.data)
-    if (!jsonContent) {
-        throw new IllegalStateException("appCloner export fired but no JSON content could be extracted from cloner ${clonerAppId} — wire format may have changed (looked for configPage.sections[].input[].filecontent)")
-    }
-
-    def result = [
-        success: true,
-        sourceAppId: sourceAppId,
-        sourceLabel: sourceLabel,
-        clonerAppId: clonerAppId,
-        contentLength: jsonContent.length(),
-        jsonContent: jsonContent,
-        note: "Exported source ${sourceAppId} via appCloner. Pass jsonContent to hub_import_native_app to re-create the rule."
-    ]
-    if (saveAs) {
-        try {
-            uploadHubFile(saveAs, jsonContent.getBytes("UTF-8"))
-            result.savedAs = saveAs
-            String hubIp = null
-            try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall through */ }
-            if (hubIp) {
-                result.savedUrl = "http://${hubIp}/local/${saveAs}"
-            } else {
-                // Don't emit a literally-broken http://<HUB_IP>/... URL — flag
-                // the lookup failure instead.
-                mcpLog("warn", "rm-native", "hub_export_native_app: location.hub.localIP unavailable; savedUrl omitted from result")
-            }
-        } catch (Exception fileErr) {
-            result.saveError = fileErr.message
-            mcpLog("warn", "rm-native", "hub_export_native_app: saveAs '${saveAs}' upload failed: ${fileErr.message}")
+    try {
+        // Step 2: click exportRuleButton, then capture the form-refresh response.
+        // Unlike clone (which writes persistent state and needs a double-click
+        // to commit the state transition), export's serialized JSON is rendered
+        // INTO the form-refresh POST response itself as
+        // configPage.sections[].input[].filecontent — session-keyed and not
+        // persisted to the cloner's settings. So we must capture the response
+        // body of the same POST that fires the click rather than fetching the
+        // cloner's state in a subsequent request (different session = bare view,
+        // no JSON). One click is sufficient here.
+        def btnBody = [
+            id: clonerAppId.toString(),
+            name: "exportRuleButton",
+            ("settings[exportRuleButton]".toString()): "clicked",
+            ("exportRuleButton.type".toString()): "button"
+        ]
+        hubInternalPostForm("/installedapp/btn", btnBody)
+        pauseExecution(500)
+        def refreshResp = _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, null)
+        String jsonContent = _appClonerExtractJsonFromResponse(refreshResp?.data)
+        if (!jsonContent) {
+            throw new IllegalStateException("appCloner export fired but no JSON content could be extracted from cloner ${clonerAppId} — wire format may have changed (looked for configPage.sections[].input[].filecontent)")
         }
+
+        def result = [
+            success: true,
+            sourceAppId: sourceAppId,
+            sourceLabel: sourceLabel,
+            clonerAppId: clonerAppId,
+            contentLength: jsonContent.length(),
+            jsonContent: jsonContent,
+            note: "Exported source ${sourceAppId} via appCloner. Pass jsonContent to hub_import_native_app to re-create the rule."
+        ]
+        if (saveAs) {
+            try {
+                uploadHubFile(saveAs, jsonContent.getBytes("UTF-8"))
+                result.savedAs = saveAs
+                String hubIp = null
+                try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall through */ }
+                if (hubIp) {
+                    result.savedUrl = "http://${hubIp}/local/${saveAs}"
+                } else {
+                    // Don't emit a literally-broken http://<HUB_IP>/... URL — flag
+                    // the lookup failure instead.
+                    mcpLog("warn", "rm-native", "hub_export_native_app: location.hub.localIP unavailable; savedUrl omitted from result")
+                }
+            } catch (Exception fileErr) {
+                result.saveError = fileErr.message
+                mcpLog("warn", "rm-native", "hub_export_native_app: saveAs '${saveAs}' upload failed: ${fileErr.message}")
+            }
+        }
+        return result
+    } finally {
+        // Reap the transient cloner on every path (success or throw) so repeated
+        // exports don't accumulate hidden 'Export/Import/Clone' apps (BUG-8).
+        _appClonerCleanup(clonerAppId)
     }
-    return result
 }
 
 /**
@@ -24410,51 +25993,58 @@ def toolImportNativeApp(args) {
 
     def initRes = _appClonerInit(parentHintAppId)
     Integer clonerAppId = initRes.clonerAppId
-    // For import the cloner's state machine validates session against the
-    // local config URL (the page the user uploaded from). The OAuth source-
-    // context URL the init returns is correct for clone (that's where the
-    // cloneRuleButton lives) but trips a session check on the import path.
-    // Verified live: same wire shape with OAuth referrer → no rule created;
-    // with local-URL referrer → rule created. Use configUrl for both.
-    String referrer = initRes.configUrl
-    String configUrl = initRes.configUrl
+    try {
+        // For import the cloner's state machine validates session against the
+        // local config URL (the page the user uploaded from). The OAuth source-
+        // context URL the init returns is correct for clone (that's where the
+        // cloneRuleButton lives) but trips a session check on the import path.
+        // Verified live: same wire shape with OAuth referrer → no rule created;
+        // with local-URL referrer → rule created. Use configUrl for both.
+        String referrer = initRes.configUrl
+        String configUrl = initRes.configUrl
 
-    // Step 2: stage the JSON via settings[ruleUpload]= — single POST. The
-    // UI fires this exactly once (file picker change → FileReader → one
-    // jsonSubmit). A second pass is harmful here: the cloner has already
-    // transitioned to restore-or-import state and the source-state form
-    // body no longer matches.
-    _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, [
-        ("settings[ruleUpload]".toString()): jsonContent
-    ])
-    // Cloner needs ~2s to JSON-parse large uploads + transition to
-    // restore-or-import; <1s races on multi-KB exports.
-    pauseExecution(2000)
+        // Step 2: stage the JSON via settings[ruleUpload]= — single POST. The
+        // UI fires this exactly once (file picker change → FileReader → one
+        // jsonSubmit). A second pass is harmful here: the cloner has already
+        // transitioned to restore-or-import state and the source-state form
+        // body no longer matches.
+        _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, [
+            ("settings[ruleUpload]".toString()): jsonContent
+        ])
+        // Cloner needs ~2s to JSON-parse large uploads + transition to
+        // restore-or-import; <1s races on multi-KB exports.
+        pauseExecution(2000)
 
-    // Steps 3-5: navigate importRule, optional rename, click importNow.
-    _appClonerCommitImportRule(clonerAppId, originalSourceId, newName, referrer, configUrl)
+        // Steps 3-5: navigate importRule, optional rename, click importNow.
+        _appClonerCommitImportRule(clonerAppId, originalSourceId, newName, referrer, configUrl)
 
-    Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, originalLabel, newName)
+        Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, originalLabel, newName)
 
-    String note = newAppId
-        ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_update_native_app to further customize."
-        : "Import fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
-    def result = [
-        success: newAppId != null,
-        clonerAppId: clonerAppId,
-        newAppId: newAppId,
-        originalSourceId: originalSourceId,
-        originalLabel: originalLabel,
-        contentLength: jsonContent.length(),
-        note: note
-    ]
-    if (newAppId == null) {
-        // Wizard fired but child discovery returned no match. Same shape as
-        // toolCloneNativeApp on the soft-failure path — see comment there.
-        result.isError = true
-        result.error = note
+        String note = newAppId
+            ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_update_native_app to further customize."
+            : "Import fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
+        def result = [
+            success: newAppId != null,
+            clonerAppId: clonerAppId,
+            newAppId: newAppId,
+            originalSourceId: originalSourceId,
+            originalLabel: originalLabel,
+            contentLength: jsonContent.length(),
+            note: note
+        ]
+        if (newAppId == null) {
+            // Wizard fired but child discovery returned no match. Same shape as
+            // toolCloneNativeApp on the soft-failure path — see comment there.
+            result.isError = true
+            result.error = note
+        }
+        return result
+    } finally {
+        // Reap the transient cloner on every path. The imported rule is already a
+        // child of the target parent (discovered above), not of the cloner.
+        // Prevents accumulating hidden 'Export/Import/Clone' apps (BUG-8).
+        _appClonerCleanup(clonerAppId)
     }
-    return result
 }
 
 /**
@@ -25201,7 +26791,7 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
         update_native_app_reference: '''## `hub_update_native_app` capability reference
 
-Reference for the three `hub_update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`). The schema descriptions point here so flat-mode `tools/list` can stay under the 124 KB cap (issue #181); gateway-mode catalog responses still carry the full enumerations inline. For machine-readable schemas, pass `{discover: true}` on `addTrigger` or `addAction` — both return live structured Maps from the running code.
+Reference for the `hub_update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`), the lower-level `walkStep` walker, and the raw `settings`/`button` wizard flow. The tool's schema descriptions point here so BOTH the flat and gateway `tools/list` catalogs stay lean (issue #181) without losing this reference. Get this whole section back inline at call time with `hub_update_native_app(guide: true)` (no separate tool call), or pass `{discover: true}` on `addTrigger`/`addAction` for the live machine-readable schema.
 
 ### `addTrigger` capability families
 
@@ -25320,6 +26910,44 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 
 `addTrigger.condition` supports a narrower subset: Variable (incl. `compareToVariable`), Custom Attribute, and enum/numeric device-state. Mode-via-picker / Between two times / compareToDevice are NOT yet supported on `selectTriggers` -- the `_rmBuildCondition` helper is a static direct-write path, not the shared `_rmWalkConditionReveal` walker.
 
+### `addRequiredExpression` operator contract
+
+Combine multiple conditions with `operator: 'AND'|'OR'|'XOR'` (one operator applied to every gap) OR `operators: ['AND','OR', ...]` (one per gap; length = `conditions.size()-1`) for mixed expressions like `P1 AND P2 OR P3 XOR P4`. RM 5.1: AND/OR/XOR have equal precedence, evaluated left-to-right.
+
+### `addAction` variable-sourced values, not-yet-mapped capabilities, wire-format quirks
+
+- **Variable-sourced values**: `dimmer setLevel` accepts `levelVariable:'<hubVarName>'` instead of `level`; `delay` accepts `variable:'<hubVarName>'` instead of `hours`/`minutes`/`seconds`. Both write the wizard's `uVar=true` + `xVar=<varName>` pair so the value resolves at fire time from a hub variable.
+- **Not yet mapped -- use the `rawSettings` escape hatch with the `@N` index token**: HSM Arm/Disarm/Cancel-All-Alerts (separate actSubType, only present when HSM is installed and may need a different actType), Garage door open/close, Valve open/close (different lockActs subtypes, only visible with the corresponding device).
+- **Wire-format quirks the helper handles for you**: (1) the 'Create New Action' button (`name=N`) requires `stateAttribute='doActN'` concatenated, not `'doAct'` -- sending `'doAct'` alone leaves `state.doActN` null and `doActPage` NPEs. (2) `doActPage`'s schema is incremental -- `actionDone` only appears after all required type-specific fields are set; the helper re-fetches the schema before each write. (3) `selectActions` initializes `state.actNdx`; on a freshly created zero-action rule `state.actNdx` is null and `doActPage` renders `actType.null` (broken), so the helper fires an idempotent empty POST to `selectActions` first.
+
+### `walkStep` schema-aware wizard walker
+
+`walkStep` is the lowest-level escape hatch: drive one wizard page/operation at a time when the high-level `addTrigger`/`addAction` helpers don't cover the capability you need (Periodic Schedule sub-pages, conditional-trigger binding, IF/THEN/ELSE flow control, features added in a later firmware). Each call returns a structured snapshot -- schema before/after, schema diff (inputs appeared/disappeared), value-echo (catches silent enum case normalization), sub-page hrefs, action/trigger list-count change (disambiguates 'committed' from 'broke and lost the row'), and a health check.
+
+Spec: `{page, operation, write?:{<field>:<value>}, click?:{name,stateAttribute?}, navigate?:{targetPage}, validateEnum?:<bool>, hrefContext?:{fromPage,hrefName,hrefParams?,hrefIndex?}}` where `page` is e.g. `selectTriggers`/`selectActions`/`doActPage`/`mainPage`/`periodic` and `operation` is one of:
+- `introspect` -- fetch schema; no mutation.
+- `write` -- write one field's value (exactly one key per call; `hrefContext` for sub-pages).
+- `click` -- click a regular button (`cancelCapab`, `hasAll`, `moreCond`, ...).
+- `navigate` -- forward into a sub-page via its href.
+- `done` -- BACK-navigate from a sub-page to its parent (`_action_previous=Done`), carrying ALL the sub-page's current settings. REQUIRED for sub-pages (Periodic, etc.) whose parent row otherwise renders `?`. Pass `hrefContext={fromPage:<parent>, hrefParams:{n:<idx>}}`.
+
+Recommended driving loop: `introspect` to see the page's fields -> `navigate` into a sub-page if one is exposed -> `write` each required field (with `hrefContext` on sub-pages) -> inspect `diff.appeared`/`valueEcho.match`/`silentRejection` between writes -> `done` to back out of a sub-page (this bakes the trigger/action description) -> `click` `hasAll`/`actionDone` on the parent to finalize the row. Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the response -- they are the fail-loud signals.
+
+### Raw `settings`/`button` mode (manual wizard flow)
+
+Prefer the structured shortcuts above. Raw mode is the unstructured escape hatch: write page inputs via `settings` and click page-transition buttons via `button` directly.
+
+- **Auto-updateRule**: main-page `settings` writes are auto-followed by an implicit `updateRule` click so `initialize()` re-fires. Sub-page writes (`pageName=selectTriggers`/`selectActions`/...) SKIP the auto-click so the wizard's `stateAttribute` (`moreCond`, `editCond`, `editAct`, ...) survives -- commit the wizard via its own Done button (RM triggers: `hasAll`; RM actions: `actionDone`), then issue a final `hub_update_native_app(button='updateRule')` yourself to re-initialize.
+- **Wizard-Done auto-finalize**: clicking `hasAll` on `selectTriggers` commits the trigger but RM 5.1 leaves a residual `isCondTrig.<N>` ("Conditional Trigger?") prompt; the tool auto-writes `isCondTrig.<N>=false` to clear it without consuming a trigger index, reported as `wizardDoneAutoRetry: 'OK' | 'OK after finalize ...' | 'WARN: ...'`. (Earlier versions clicked `hasAll` twice, which allocated phantom **Broken Trigger** rows; the finalize-via-`isCondTrig` path keeps indices contiguous 1, 2, 3.)
+- **Worked example -- multi-device switch trigger via raw mode**:
+  1. `hub_update_native_app(appId, button='true', stateAttribute='moreCond', pageName='selectTriggers')` -- opens the trigger editor.
+  2. `hub_update_native_app(appId, settings={tCapab1:'Switch'}, pageName='selectTriggers')` -- picks the capability; page re-renders the device picker.
+  3. `hub_update_native_app(appId, settings={tDev1:[<deviceId>, ...]}, pageName='selectTriggers')` -- writes devices (multi-device 3-field contract automatic).
+  4. `hub_update_native_app(appId, settings={tstate1:'on'}, pageName='selectTriggers')` -- sets the attribute/value.
+  5. `hub_update_native_app(appId, button='hasAll', pageName='selectTriggers')` -- commits; residual Conditional? prompt auto-finalized.
+  6. `hub_update_native_app(appId, button='updateRule')` -- re-initialize so subscriptions populate.
+  The `addTrigger={...}` shortcut performs steps 1-6 automatically. A second trigger uses index 2 (`tCapab2`/`tDev2`/`tstate2`), a third index 3, etc.
+
 ### Partial-success and trailing-updateRule response slots
 
 `settingsSkipped[]` sentinel reasons callers may see:
@@ -25335,7 +26963,15 @@ Trailing-updateRule failure slots (`addRequiredExpression`, `addTrigger`, `addLo
 - `addLocalVariable`: `updateRuleFailed: true` + `variableNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The variable IS created on the hub but the rule's action map never re-evaluates against the new variable until updateRule fires -- retry as above.
 - `addTriggers` / `addActions` (bulk path): `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed -- retry as above.
 - `patches`: `updateRuleFailed: true` + `patchesNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The patch ops landed but the rule will not re-evaluate / re-subscribe until updateRule fires -- retry as above.
-- `removeTrigger` / `modifyTrigger` / `removeAction` / `clearActions` / `replaceActions` / `moveAction`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The mutation IS committed but the rule never re-subscribed -- retry as above.''',
+- `removeTrigger` / `modifyTrigger` / `removeAction` / `clearActions` / `replaceActions` / `moveAction`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The mutation IS committed but the rule never re-subscribed -- retry as above.
+
+### deviceId vs deviceIds normalization (all condition writes)
+
+Conditions accept either `deviceIds: [N]` (array) or singular `deviceId: N`; the dispatcher normalizes the singular form to the array RM 5.1 expects in `rDev_<N>`. A bare integer passed where the array is expected bypasses pre-validation and silently stores `{N: null}` (the rule renders but never fires), so prefer `deviceIds`. If both are supplied, `deviceIds` (array) wins. Applies recursively inside nested `subExpression.conditions[]`.
+
+### Action-mutation defensive recovery (clearActions / replaceActions)
+
+The action-clear path commits synchronously, but a thin verify-retry guards against a stuck `state.editAct` or a rare firmware commit lag. If the verify still sees the actions present, the response carries `asyncCommitLikely: true, partial: true` plus a `safeRecovery` block. clearActions adds `stage: 'clearActions.verify_absent', httpWriteStatus: 200, wizardStuck: false` and `actionsRequestedForRemoval` / `actionsStillPresent` / `possibleStateEditAct`. replaceActions, on a late inner-clear, sets `stage: 'replaceActions.clear_committed_late_no_add'`, does NOT attempt the add half (prevents a double-write if the clear did commit), echoes the original specs as `pendingActionsToAdd`, and exposes the inner clear fingerprint via `clearActionsResult`. Recovery for both: call `hub_get_app_config(appId)` to check whether the clear committed -- if the actions are absent it committed (for replaceActions, then call `addAction`/`addActions` with the echoed specs to finish). Do NOT call `cancelTrash`: in trash-confirmation mode it may commit pending deletes rather than abort.''',
 
         create_native_app_reference: '''## `hub_create_native_app` reference
 

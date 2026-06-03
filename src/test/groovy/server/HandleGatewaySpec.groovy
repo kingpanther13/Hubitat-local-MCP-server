@@ -24,6 +24,9 @@ class HandleGatewaySpec extends ToolSpecBase {
         result.tools instanceof List
         result.tools*.name == ['hub_list_rooms', 'hub_get_room', 'hub_create_room', 'hub_delete_room', 'hub_update_room']
         result.tools.every { it.description && it.inputSchema }
+        // PR1C: the catalog disclosure forwards outputSchema when the tool declares one
+        // (the flat tools/list path strips it for size; the gateway catalog keeps it).
+        result.tools.every { it.outputSchema instanceof Map && it.outputSchema.type == 'object' }
     }
 
     def "throws IllegalArgumentException for unknown gateway"() {

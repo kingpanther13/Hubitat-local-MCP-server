@@ -712,20 +712,26 @@ def _extract_canonical_counts() -> dict | None:
     if not per_gateway:
         return None
 
-    # Carve out getAllToolDefinitions() and extract tool names
-    all_match = re.search(
-        r"^def getAllToolDefinitions\(\) \{(.*?)^}",
+    # Carve out getAllToolDefinitions() and its chunk helpers, then extract tool
+    # names. PR1C split the over-64KB-bytecode getAllToolDefinitions() body into
+    # _getAllToolDefinitions_part1..N() chunk methods that the public method just
+    # concatenates; the tool defs now live in those chunks, so gather them all.
+    # (The dispatcher body carries no `name:` lines, so including it is harmless;
+    # a pre-split source with all defs in getAllToolDefinitions() still matches.)
+    all_bodies = re.findall(
+        r"^def (?:getAllToolDefinitions|_getAllToolDefinitions_part\d+)\(\) \{(.*?)^}",
         src,
         re.DOTALL | re.MULTILINE,
     )
-    if not all_match:
+    if not all_bodies:
         return None
+    all_defs_text = "\n".join(all_bodies)
     # Keep raw list separate from the set so a duplicate `name:` entry
     # in getAllToolDefinitions() is detectable: the count check sees
     # total = len(list) > len(docs) and fires; the self-test cross-
     # checks list-len vs set-len. If we collapsed both into len(set),
     # duplicate-name regressions would be silent on both gates.
-    raw_name_list = re.findall(r"^\s*name:\s*['\"]([a-z_]+)['\"]", all_match.group(1), re.MULTILINE)
+    raw_name_list = re.findall(r"^\s*name:\s*['\"]([a-z_]+)['\"]", all_defs_text, re.MULTILINE)
     tool_names: set[str] = set(raw_name_list)
     total = len(raw_name_list)
 
@@ -2017,13 +2023,18 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
 
     # 3. Flat (top-level) tools = every getAllToolDefinitions() tool that no
     #    gateway proxies. A read-only tool that is flat satisfies the invariant.
-    all_match = re.search(r"^def getAllToolDefinitions\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE)
-    if not all_match:
+    #    PR1C split the defs across _getAllToolDefinitions_part1..N() chunk
+    #    methods (64KB-method-bytecode cap); gather names from all of them.
+    all_bodies = re.findall(
+        r"^def (?:getAllToolDefinitions|_getAllToolDefinitions_part\d+)\(\) \{(.*?)^}",
+        src, re.DOTALL | re.MULTILINE,
+    )
+    if not all_bodies:
         return _fail(
             "read-write-split-no-tool-definitions",
             "Could not locate getAllToolDefinitions() return literal -- has the function shape changed?",
         )
-    all_tool_names = set(re.findall(r"^\s*name:\s*['\"]([a-z_]+)['\"]", all_match.group(1), re.MULTILINE))
+    all_tool_names = set(re.findall(r"^\s*name:\s*['\"]([a-z_]+)['\"]", "\n".join(all_bodies), re.MULTILINE))
     proxied: set[str] = set()
     for tools in gateway_tools.values():
         proxied.update(tools)

@@ -95,6 +95,15 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'pauseRule' }
     }
 
+    def "result echoes the applied paused state (BUG-12: no paused-state in response)"() {
+        given:
+        settingsMap.enableBuiltinApp = true
+
+        expect: "the response confirms the applied state so callers don't need a follow-up read"
+        script.toolSetRulePaused([ruleId: 400, value: true]).paused == true
+        script.toolSetRulePaused([ruleId: 400, value: false]).paused == false
+    }
+
     @spock.lang.Unroll
     def "hub_set_rule_paused via dispatch dispatches pauseRule sendAction for the given ruleId (useGateways=#useGateways)"() {
         given:

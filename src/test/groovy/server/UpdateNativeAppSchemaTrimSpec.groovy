@@ -98,7 +98,13 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         !catalogJson.contains(CLOSE_MARKER)
     }
 
-    def "hub_update_native_app description is materially smaller in flat mode than in gateway-catalog mode"() {
+    def "hub_update_native_app gateway-catalog description is lean after the #181 / gateway trim"() {
+        // The per-capability reference moved OUT of the inline description into the
+        // update_native_app_reference guide (reachable inline via guide:true), so it is
+        // gone from BOTH modes -- not merely FLAT_TRIM'd. Consequence: the flat-vs-gateway
+        // delta is now small (most of what FLAT_TRIM used to drop no longer exists inline),
+        // and the gateway def itself, previously ~54 KB, is now well under 40 KB. This test
+        // guards that gateway-side leanness win rather than the old flat-vs-gateway delta.
         given: 'gateway-catalog mode is the disclosure surface for full per-tool schemas'
         enableEveryToggle()
 
@@ -107,15 +113,15 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def flatDef = script.getToolDefinitions().find { it.name == 'hub_update_native_app' }
         def flatBytes = JsonOutput.toJson(flatDef).getBytes('UTF-8').length
 
-        and: 'gateway-catalog response from handleGateway (no toolName) -- this is where gateway-mode callers see full descriptions'
+        and: 'gateway-catalog response from handleGateway (no toolName)'
         settingsMap.useGateways = true
         def gatewayResp = script.handleGateway('hub_manage_native_rules_and_apps', null, [:])
         def gwUpdateNative = gatewayResp.tools.find { it.name == 'hub_update_native_app' }
         def gwBytes = JsonOutput.toJson(gwUpdateNative).getBytes('UTF-8').length
 
-        then: 'flat trim recovers significant bytes -- target trim is ~10 KB+ for issue #181 headroom'
-        flatBytes < gwBytes
-        (gwBytes - flatBytes) >= 8_000  // conservative floor; actual savings are ~10-12 KB
+        then: 'flat is still <= gateway (some FLAT_TRIM remains), and the gateway def is now lean (was ~54 KB)'
+        flatBytes <= gwBytes
+        gwBytes < 40_000
     }
 
     def "hub_update_native_app flat-mode description keeps the discover/TOOL_GUIDE pointer for trimmed sections"() {
@@ -144,7 +150,11 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         addRequiredExpression.contains("hub_get_tool_guide(section='update_native_app_reference')")
     }
 
-    def "gateway-catalog mode preserves the full hub_update_native_app description (content survives, only tokens stripped)"() {
+    def "hub_update_native_app per-capability reference lives in the guide; inline keeps a name summary + pointer"() {
+        // Post-#181/gateway trim: the exhaustive per-capability families moved OUT of the
+        // inline description (both modes) into the update_native_app_reference guide. The
+        // inline description keeps a capability-NAME summary + a guide pointer so an agent is
+        // never blind, and can pull the full reference inline via guide:true / discover:true.
         given:
         settingsMap.useGateways = true
         enableEveryToggle()
@@ -155,13 +165,24 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def addTrigger = updateNative.inputSchema.properties.addTrigger.description
         def addAction = updateNative.inputSchema.properties.addAction.description
         def addRequiredExpression = updateNative.inputSchema.properties.addRequiredExpression.description
+        def guide = script.toolGetToolGuide('update_native_app_reference').content as String
 
-        then: 'capability enumerations are still present -- gateway mode is the full-disclosure surface'
-        addTrigger.contains('Capability families and the spec fields each accepts')
+        then: 'the inline descriptions no longer carry the exhaustive enumerations'
+        !addTrigger.contains('Capability families and the spec fields each accepts')
+        !addAction.contains('Capability families and the spec fields each accepts')
+        !addRequiredExpression.contains("RM's STPage capability list")
+
+        and: 'they keep a capability-name summary + a guide pointer (agent never blind)'
         addTrigger.contains('Periodic Schedule')
-        addAction.contains('Capability families and the spec fields each accepts')
-        addAction.contains('capability=\'ifThen\'')
-        addRequiredExpression.contains("RM's STPage capability list")
+        addTrigger.contains("hub_get_tool_guide(section='update_native_app_reference')")
+        addAction.contains('ifThen')
+        addRequiredExpression.contains("hub_get_tool_guide(section='update_native_app_reference')")
+
+        and: 'the full per-capability reference lives in the update_native_app_reference guide'
+        guide.contains('`addTrigger` capability families')
+        guide.contains('`addAction` capability families')
+        guide.contains('`addRequiredExpression` STPage capability list')
+        guide.contains('Periodic Schedule')
 
         and: 'no marker tokens leaked into the response'
         !addTrigger.contains(OPEN_MARKER) && !addTrigger.contains(CLOSE_MARKER)
@@ -425,17 +446,21 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def listDevicesGw = gwAll.find { it.name == 'hub_list_devices' }.description as String
         def createNativeGw = gwAll.find { it.name == 'hub_create_native_app' }.description as String
 
-        then: 'flat-mode strips the wrapped sentinel prose -- specific phrases from each wrapped block must be absent'
+        then: 'hub_list_devices flat-mode strips its wrapped sentinel prose; gateway keeps it'
         !listDevicesFlat.contains('Server-side filtering (all applied before pagination)')
-        !createNativeFlat.contains('PARTIAL-SUCCESS HANDLING')
-
-        and: 'flat-mode keeps a hub_get_tool_guide pointer for each -- callers must have a fallback'
-        listDevicesFlat.contains('hub_get_tool_guide(')
-        createNativeFlat.contains('hub_get_tool_guide(')
-
-        and: 'gateway-mode keeps the same sentinel phrases (token-only strip preserves content)'
         listDevicesGw.contains('Server-side filtering (all applied before pagination)')
-        createNativeGw.contains('PARTIAL-SUCCESS HANDLING')
+
+        and: 'hub_create_native_app no longer FLAT_TRIMs (deduped this PR): its condensed partial-success is inline in BOTH modes, with the full protocol in the guide'
+        // The old verbose [[FLAT_TRIM]] "PARTIAL-SUCCESS HANDLING" block was deduped down to a
+        // single inline "Partial-success:" sentence (present in both modes) that points to
+        // hub_get_tool_guide(section='create_native_app_reference') for the full protocol.
+        !createNativeFlat.contains('PARTIAL-SUCCESS HANDLING')
+        createNativeFlat.contains('Partial-success')
+        createNativeGw.contains('Partial-success')
+        createNativeFlat.contains("hub_get_tool_guide(section='create_native_app_reference')")
+
+        and: 'flat-mode keeps a hub_get_tool_guide pointer for hub_list_devices too -- callers must have a fallback'
+        listDevicesFlat.contains('hub_get_tool_guide(')
 
         and: 'no marker tokens leak in either mode for either tool'
         ![listDevicesFlat, createNativeFlat,
@@ -528,11 +553,38 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         !((String) result.parameters).contains(OPEN_MARKER)
         !((String) result.parameters).contains(CLOSE_MARKER)
 
-        and: 'wrapped capability prose from BOTH addTrigger and addRequiredExpression survives'
-        // The strip-tokens-only contract on this surface should keep both wrapped
-        // blocks intact -- an OR-based assertion would silently mask one description
-        // going stale while the other survives.
-        ((String) result.parameters).contains('Periodic Schedule')      // from addTrigger FLAT_TRIM block
-        ((String) result.parameters).contains("RM's STPage capability list")  // from addRequiredExpression inline FLAT_TRIM
+        and: 'the capability-name summary + guide pointers from BOTH addTrigger and addRequiredExpression survive'
+        // The exhaustive families moved to the update_native_app_reference guide; the param
+        // descriptions retain the capability-name summary + guide pointer, which is what the
+        // hint surfaces (token-only strip). An AND assertion catches one going stale.
+        ((String) result.parameters).contains('Periodic Schedule')      // addTrigger name summary
+        ((String) result.parameters).contains("hub_get_tool_guide(section='update_native_app_reference')")  // addRequiredExpression guide pointer
+    }
+
+    def "guide:true through the gateway bypasses the required-param pre-validation and returns the reference"() {
+        // Live-hub regression: guide:true short-circuits at the top of toolUpdateNativeApp
+        // (before the appId/confirm gates), but handleGateway's OWN required-param
+        // pre-validation runs first and would reject guide:true for missing appId/confirm
+        // unless it too exempts the gate-bypassing meta-call. The unit test (which calls
+        // toolUpdateNativeApp directly) does not exercise this gateway layer.
+        given:
+        settingsMap.useGateways = true
+        enableEveryToggle()
+
+        when: 'call hub_update_native_app via the gateway with ONLY guide:true (no appId/confirm)'
+        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_update_native_app', [guide: true])
+
+        then: 'the gateway does NOT reject for missing appId/confirm -- the guide short-circuit ran'
+        result instanceof Map
+        result.isError != true
+        result.success == true
+        result.section == 'update_native_app_reference'
+        (result.content as String).contains('addTrigger')
+        (result.content as String).contains('walkStep')
+
+        and: 'discover:true is exempted the same way (no appId/confirm needed via the gateway)'
+        def disc = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_update_native_app', [addAction: [discover: true]])
+        disc instanceof Map
+        disc.isError != true
     }
 }

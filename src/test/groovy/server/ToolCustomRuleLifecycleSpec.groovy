@@ -357,4 +357,28 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
         where:
         useGateways << [true, false]
     }
+
+    def "BUG-15: readonly mode does not block the hub_manage_custom_rules gateway (substring gate must not trip on the gateway name)"() {
+        given: "readonly mode (Custom Rule Engine OFF + Built-in App ON), gateway mode"
+        settingsMap.enableCustomRuleEngine = false
+        settingsMap.enableBuiltinApp = true
+        settingsMap.useGateways = true
+
+        when: "the GATEWAY is dispatched -- its name 'hub_manage_custom_rules' contains the substring '_custom_rule'"
+        def gatewayErr = null
+        try { script.executeTool('hub_manage_custom_rules', [tool: 'hub_get_custom_rule', args: [:]]) }
+        catch (Exception e) { gatewayErr = e }
+
+        then: "the gateway reaches handleGateway -- the _custom_rule gate must NOT fire on the gateway name (it ends with _custom_rules, plural)"
+        gatewayErr?.message?.contains('not available in read-only mode') != true
+
+        when: "a WRITE leaf is dispatched in the same readonly mode"
+        def leafErr = null
+        try { script.executeTool('hub_create_custom_rule', [name: 'x', triggers: [], actions: []]) }
+        catch (Exception e) { leafErr = e }
+
+        then: "the write leaf IS still gated (endsWith still matches the leaf tools)"
+        leafErr instanceof IllegalArgumentException
+        leafErr.message.contains('not available in read-only mode')
+    }
 }
