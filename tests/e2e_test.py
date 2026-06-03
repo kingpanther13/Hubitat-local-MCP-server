@@ -398,7 +398,7 @@ class TestRunner:
             self.created_variable_names.remove(name)
 
     # -----------------------------------------------------------------------
-    # GROUP 1: infrastructure (3 tests)
+    # GROUP 1: infrastructure (4 tests)
     # -----------------------------------------------------------------------
 
     @test("infrastructure")
@@ -418,6 +418,18 @@ class TestRunner:
         data = self.client.get_health()
         assert data.get("status") == "ok", f"Health status != ok: {data.get('status')}"
         assert "version" in data, "Health response missing version"
+
+    @test("infrastructure")
+    def test_update_native_app_guide_param(self) -> None:
+        # guide:true returns the hub_update_native_app capability reference inline (no
+        # separate hub_get_tool_guide call) and makes NO rule change -- a pure static
+        # early-return alongside the discover-mode short-circuit. Pins the new param.
+        result = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_update_native_app", "args": {"guide": True},
+        })
+        blob = str(result)
+        assert "addTrigger" in blob and "walkStep" in blob, \
+            f"guide:true response missing the capability reference content: {blob[:200]}"
 
     # -----------------------------------------------------------------------
     # GROUP 2: devices (4 tests)
