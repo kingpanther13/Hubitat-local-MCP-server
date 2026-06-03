@@ -1,0 +1,53 @@
+name: Groovy 2.5 Spock (additive)
+
+# Additive lane (issue #230). Hubitat's hub runtime is Groovy 2.4.x; the root Unit Tests lane runs
+# the same Spock corpus under Groovy 3.0 (eighty20results/hubitat_ci), so a 3.0-green can hide
+# 2.x-vs-3.0 RUNTIME-behaviour divergence. The sibling Groovy 2.4 Parse Check lane catches only
+# load-time/syntax failures; this lane runs the EXISTING src/test/groovy specs against a Groovy 2.5
+# runtime via joelwetzel/hubitat_ci (the biocomp-API fork, closest viable to the hub's 2.4).
+#
+# Fully standalone: a separate build under ci/groovy2x-spock/ that never touches the root
+# build.gradle or the existing 3.0 unit-test lane. The shared spec corpus is referenced read-only.
+#
+# ALLOW-FAILURE: continue-on-error keeps this lane informational until the 2.5 corpus is fully green.
+# It is NOT the repo ruleset's required `test` check, so it never blocks merge.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '*.groovy'
+      - 'src/test/groovy/**'
+      - 'src/main/groovy/**'
+      - 'ci/groovy2x-spock/**'
+      - '.github/workflows/groovy2x-spock.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  groovy2x-spock:
+    name: groovy2x-spock (allow-failure)
+    runs-on: ubuntu-latest
+    # Informational lane — a 2.5 spec failure must not fail the workflow or gate merge.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          # 17 for the Gradle 9 daemon; 11 for the test toolchain (Groovy 2.5.x is
+          # unhappy on JDK 17/21). Both are auto-detected by the toolchain resolver.
+          java-version: |
+            11
+            17
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Run the existing Spock specs under Groovy 2.5 (joelwetzel/hubitat_ci)
+        run: ./gradlew -p ci/groovy2x-spock test --console=plain
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: groovy2x-spock-report
+          path: |
+            ci/groovy2x-spock/build/reports/tests/test/
+            ci/groovy2x-spock/build/test-results/test/

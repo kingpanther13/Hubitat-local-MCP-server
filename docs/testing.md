@@ -7,6 +7,21 @@ Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `.
 - **JVM:** OpenJDK 17 in CI; locally, JDK 11+ via the Gradle toolchain
 - **Build:** Gradle 8.10 via wrapper (`./gradlew test`)
 
+### Additive hub-closer lanes
+
+Two standalone lanes complement the primary Groovy 3.0 lane without touching it — Hubitat's hub
+runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
+
+- **Groovy 2.4 Parse Check** (`ci/groovy24-parse/`) — parses the two production `.groovy` files under
+  stock Groovy 2.4.21 (antlr2), catching 3.0-only syntax that would fail to load on the hub (issue #227).
+- **Groovy 2.5 Spock** (`ci/groovy2x-spock/`) — runs this same spec corpus against a Groovy 2.5
+  runtime via [joelwetzel/hubitat_ci](https://github.com/joelwetzel/hubitat_ci) (the biocomp-API fork
+  the harness used before the eighty20results migration; Apache 2.0), catching 2.x-vs-3.0 **runtime**
+  divergence (issue #230). Allow-failure; references the specs read-only and carries its own
+  joelwetzel-shaped `HarnessSpec`/`RuleHarnessSpec` under `ci/groovy2x-spock/scaffold/`. See
+  [docs/groovy2x-spock-lane.md](groovy2x-spock-lane.md). Run locally with
+  `./gradlew -p ci/groovy2x-spock test`.
+
 ## Running locally
 
 ```bash
