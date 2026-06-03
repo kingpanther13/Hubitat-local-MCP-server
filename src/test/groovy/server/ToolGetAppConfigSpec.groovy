@@ -618,6 +618,27 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('hunter2-SECRET')
     }
 
+    @spock.lang.Unroll
+    def "hub_get_app_config via dispatch redacts password values on both paths (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableHubAdminRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeSettings: true])
+
+        then:
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.settings.apiKey == '***redacted (password)***'
+        inner.page.sections[0].inputs.find { it.name == 'apiKey' }.value == '***redacted (password)***'
+        !JsonOutput.toJson(inner).contains('hunter2-SECRET')
+
+        where:
+        useGateways << [true, false]
+    }
+
     // -------------------------------------------------------------------------
     // Error paths
     // -------------------------------------------------------------------------

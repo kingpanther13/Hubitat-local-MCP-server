@@ -745,6 +745,28 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("100")
     }
 
+    def "hub_update_native_app surfaces success:false when the hub rejects the settings write (issue #105 PR2a #4)"() {
+        given: 'a settings update the hub will reject with a 4xx'
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 409, location: null, data: 'stale version token']
+        }
+
+        when:
+        def result = script.toolUpdateNativeApp([appId: 100, settings: [origLabel: "x"], confirm: true])
+
+        then: 'the tool reports failure -- a hub-rejected write is never surfaced as success'
+        result.success == false
+
+        and: 'the error explains the rejection so the AI can recover'
+        result.error?.toString()?.contains("409") || result.note?.toString()?.contains("re-fetch")
+    }
+
     def "_rmClickAppButton emits bracket-form settings[btn]=clicked + form-context fields"() {
         given:
         enableHubAdminWrite()
