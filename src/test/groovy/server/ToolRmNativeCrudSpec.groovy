@@ -722,6 +722,29 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         updatePost.body["deviceList"] == "tDev0"
     }
 
+    def "_rmUpdateAppSettings throws when the hub rejects the settings write (status >= 400) rather than reporting success (issue #105 PR2a #4)"() {
+        given: 'a rule whose settings POST the hub will reject with a 4xx (e.g. a stale version token)'
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        // hubInternalPostForm returns a status Map and does NOT throw on 4xx (its real contract --
+        // siblings _rmClickAppButton/_rmSubmitFullPageForm already guard resp.status >= 400 and throw).
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 409, location: null, data: 'stale version token']
+        }
+
+        when: 'the central settings writer posts and the hub rejects it'
+        script._rmUpdateAppSettings(100, [origLabel: "newlabel"], null)
+
+        then: 'the rejection surfaces as a thrown error -- a rejected write must never be reported as success'
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("409")
+        ex.message.contains("100")
+    }
+
     def "_rmClickAppButton emits bracket-form settings[btn]=clicked + form-context fields"() {
         given:
         enableHubAdminWrite()
@@ -4767,7 +4790,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the importRule form refresh uses the ORIGINAL source id (42) as the newName field's <sourceId>, not parentHintAppId (100). With no newName argument the field is still emitted (matches UI behaviour) but its value is empty."
         def importRulePosts = posts.findAll { it.path == "/installedapp/update/json" && it.body?.currentPage == "importRule" }
         importRulePosts.any { it.body?.containsKey("settings[newName42]") }
-        importRulePosts.every { it.body?["settings[newName42]"] == "" }
+        importRulePosts.every { it.body?.getAt("settings[newName42]") == "" }
         !importRulePosts.any { it.body?.containsKey("settings[newName100]") }
     }
 

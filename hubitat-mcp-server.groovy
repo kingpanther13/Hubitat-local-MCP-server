@@ -20596,12 +20596,24 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
  * if still divergent after retry — the caller should surface this and
  * suggest restore_rm_rule_backup.
  */
+// Central settings-write POST + 4xx guard. hubInternalPostForm returns a status Map and does
+// NOT throw on 4xx, so a rejected write -- typically a stale version token -- must be detected
+// here or it silently reports success. Mirrors _rmClickAppButton / _rmSubmitFullPageForm.
+private Map _rmPostSettings(Integer appId, Map body) {
+    def resp = hubInternalPostForm("/installedapp/update/json", body)
+    if (resp?.status != null && resp.status >= 400) {
+        def bodyPreview = resp.data?.toString()?.take(200)
+        throw new IllegalStateException("Settings write for app ${appId} failed: status=${resp.status}${bodyPreview ? "; body=" + bodyPreview : ""}. The write was rejected so nothing was committed (a 4xx is usually a stale version token -- re-fetch via hub_get_app_config(appId=${appId}) and retry).")
+    }
+    return resp
+}
+
 private Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = null) {
     if (schema == null) {
         schema = _rmCollectInputSchema(_rmFetchConfigJson(appId)?.configPage)
     }
     def body = _rmBuildSettingsBody(appId, settingsMap, schema)
-    def resp = hubInternalPostForm("/installedapp/update/json", body)
+    def resp = _rmPostSettings(appId, body)
 
     def touched = settingsMap.keySet().collect { it.toString() }
     try {
@@ -20612,7 +20624,7 @@ private Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = nu
         // already carries the .multiple=true sidecar intent from the
         // initial build, so the same body is correct to resend.
         mcpLog("warn", "rm-native", "Marshal divergence on app ${appId} -- retrying: ${divergence.message}")
-        hubInternalPostForm("/installedapp/update/json", body)
+        _rmPostSettings(appId, body)
         _rmVerifyMultipleFlags(appId, schema, touched)
     }
     return resp
