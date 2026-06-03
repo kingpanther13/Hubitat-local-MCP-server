@@ -273,6 +273,29 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         inner.rooms == null
     }
 
+    def "JsonOutput escapes non-ASCII to ASCII, so the outer size guard's char-length sizing equals UTF-8 byte length (refutes the issue #105 multibyte-undercount finding)"() {
+        // The #105 backend audit flagged the outer guard at handleMcpRequest (which sizes by
+        // jsonResponse.length() for sub-threshold responses) as undercounting multibyte UTF-8.
+        // It does not: groovy.json.JsonOutput.toJson escapes every char > 126 to a \\uXXXX ASCII
+        // sequence on both Hubitat's Groovy 2.4 runtime and the Groovy 3.0 harness (the
+        // disableUnicodeEscaping opt-out only exists on Groovy 4.0.19+). So the wire payload is
+        // always pure ASCII and char length always equals UTF-8 byte length -- nothing multibyte
+        // can slip past the 124KB backstop. This test pins that invariant and will trip if a
+        // future Groovy upgrade ever stops escaping (which WOULD make the undercount real).
+        given: 'a response payload laden with multibyte content -- CJK, accented Latin, and an astral-plane emoji'
+        def payload = [jsonrpc: '2.0', id: 1, result: [tools: [[name: 'x', description: ('中é😀' * 2000)]]]]
+
+        when: 'serialized through the same JsonOutput.toJson the dispatch layer uses'
+        def json = groovy.json.JsonOutput.toJson(payload)
+
+        then: 'non-ASCII is escaped to ASCII \\uXXXX (no raw multibyte survives in the wire form)'
+        json.contains('\\u4e2d')   // 中
+        !json.contains('中')
+
+        and: 'therefore char length == UTF-8 byte length, so the outer guard cannot undercount'
+        json.length() == json.getBytes('UTF-8').length
+    }
+
     def "size-guard mcpLog entry carries the warn level + structured details map a debug-log consumer can read"() {
         given: 'oversize result so the guard fires + debug-log scaffolding wired (mcpLog otherwise no-ops at default log level)'
         stateMap.debugLogs = [
