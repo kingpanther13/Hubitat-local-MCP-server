@@ -146,6 +146,13 @@ abstract class HarnessSpec extends Specification {
             }
             cf.mockChildAppForCreate
         }
+        // deleteChildApp routes via @Delegate to AppExecutor too. Mirror the
+        // root harness's childAppAccessor 'delete' op: drop the matching child
+        // from the shared list so delete_rule specs see it removed.
+        mock.deleteChildApp(_) >> { args ->
+            SHARED_CHILD_APPS_LIST.removeAll { it.id?.toString() == args[0]?.toString() }
+            return null
+        }
         return mock
     }
 
