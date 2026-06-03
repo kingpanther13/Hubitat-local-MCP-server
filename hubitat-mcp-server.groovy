@@ -10582,7 +10582,8 @@ def toolGetAppConfig(args) {
     // tool must not de-mask the stored secret into the MCP response. Password input names
     // are collected here so the includeSettings settings map below can redact the same
     // keys. Per-page only: a password on a different page of a multi-page app is not
-    // visible in this configPage (broadening to a name heuristic is open decision Q1).
+    // visible in this configPage (broadening to a name-pattern heuristic is a deliberate
+    // future option, intentionally not done here -- see settingsRedactionNote below).
     def redactedPw = "***redacted (password)***"
     def passwordInputNames = [] as Set
     def sections = []
@@ -19519,7 +19520,7 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
         body.currentPage = pageName
         body.pageBreadcrumbs = '["mainPage"]'
         if (config?.app?.version != null) body.version = config.app.version.toString()
-        hubInternalPostForm("/installedapp/update/json", body)
+        _rmPostSettings(appId, body)
     } else {
         _rmUpdateAppSettings(appId, settingsMap, schemaForBuild)
     }
@@ -20188,7 +20189,7 @@ private Map _rmWalkStep(Integer appId, Map spec) {
             } catch (Exception verExc) {
                 mcpLog("warn", "rm-native", "walkStep: href-context version fetch for app ${appId} on page '${hrefContext.fromPage ?: page}' failed (${verExc.message}) -- POSTing write without version field; hub may reject on concurrent-edit conflict")
             }
-            hubInternalPostForm("/installedapp/update/json", body)
+            _rmPostSettings(appId, body)
         } else {
             _rmUpdateAppSettings(appId, [(writtenKey): writtenValue], fullSchemaMap)
         }

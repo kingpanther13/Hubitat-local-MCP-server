@@ -639,6 +639,33 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "redacts a password that appears only in the settings map when the input echoes no value (the common masked case)"() {
+        given:
+        settingsMap.enableHubAdminRead = true
+        // Hubitat masks type=password fields and often does NOT echo them into the config-page
+        // input, yet the secret IS present in the flat settings map. The redaction must still
+        // fire (password names are collected regardless of whether the input carries a value).
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([
+            configPage: [
+                name: 'mainPage', title: 'Credentials', install: true, refreshInterval: null,
+                sections: [[title: 'API', input: [[name: 'apiKey', type: 'password', title: 'API Key', required: true]], body: []]]
+            ],
+            settings: [apiKey: 'hunter2-SECRET']
+        ]) }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then: 'the settings map redacts the password key even though the input carried no value'
+        result.settings.apiKey == '***redacted (password)***'
+
+        and: 'the structured input leaks no value at all'
+        !result.page.sections[0].inputs.find { it.name == 'apiKey' }.containsKey('value')
+
+        and: 'no secret anywhere in the result'
+        !JsonOutput.toJson(result).contains('hunter2-SECRET')
+    }
+
     // -------------------------------------------------------------------------
     // Error paths
     // -------------------------------------------------------------------------
