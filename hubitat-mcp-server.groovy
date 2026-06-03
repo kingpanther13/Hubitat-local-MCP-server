@@ -11829,15 +11829,23 @@ def toolGetItemSource(String type, String idParam, args) {
 private String stripAppConfigHtml(value) {
     if (value == null) return null
     def s = value.toString()
-    if (!s.contains("<")) return s
     // Strip HTML tags, then any leftover CSS-rule / inline-script bodies that
     // Hubitat embeds via <style>/<script>: the tags strip above but the
     // "selector{...}" / "fn(){...}" bodies remain mashed into the text (e.g. the
     // Local Variables `lvTable` page). Only blocks containing ; or : inside the
     // braces are removed, so prose like "{x}" is preserved.
-    return s.replaceAll(/<[^>]+>/, "")
-            .replaceAll(/[^{}]*\{[^{}]*[;:][^{}]*\}/, "")
-            .trim()
+    if (s.contains("<")) {
+        s = s.replaceAll(/<[^>]+>/, "").replaceAll(/[^{}]*\{[^{}]*[;:][^{}]*\}/, "")
+    }
+    // Decode the common HTML entities Hubitat escapes user-typed names with: a
+    // rule the user named "Heat On <67" is stored (and listed) as "Heat On &lt;67".
+    // Decode &amp; LAST so a single-encoded "&lt;" resolves correctly.
+    if (s.contains("&")) {
+        s = s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+             .replace("&#39;", "'").replace("&apos;", "'").replace("&nbsp;", " ")
+             .replace("&amp;", "&")
+    }
+    return s.trim()
 }
 
 /**
@@ -21443,7 +21451,7 @@ private Map _rmCheckRuleHealth(Integer appId) {
         // post-response-commit race for non-structural deletes).
         structuralIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(settingsByName))
         if (structuralIssues) {
-            issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — likely caused by a raw settings write or a mutation that committed post-response. Use hub_restore_backup to roll back, or add the missing closer via addAction(capability='endIf'|'stopRepeat').".toString())
+            issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — if you are still building this rule (adding an IF/ELSE or Repeat block across separate calls), this is EXPECTED until you add the closer, and the fix is simply to add it via addAction(capability='endIf'|'stopRepeat') — do NOT restore. Only if the rule was already complete does this indicate damage (a raw settings write or a mutation that committed post-response), in which case use hub_restore_backup to roll back.".toString())
         }
     } catch (Exception e) {
         issues << "health check failed: ${e.message}".toString()
