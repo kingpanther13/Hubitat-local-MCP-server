@@ -9468,42 +9468,54 @@ def toolGetDeviceHistory(args) {
     def attributeFilter = args.attribute
     def sinceDate = new Date(now() - (hoursBack * 3600000L))
 
-    // Location-scope branch: when deviceId is omitted, fold in
-    // Hubitat's getLocationEventsSince(Date) so callers can pull
-    // mode/HSM/hub-variable/sendLocationEvent history alongside
-    // device history through one tool.
+    // Location-scope branch: when deviceId is omitted, return location history
+    // (mode / HSM / hub-variable / sunrise-sunset / system events). There is NO
+    // Groovy accessor for this -- neither location.eventsSince(Date, Map) nor
+    // getLocationEventsSince(Date) exist on the hub (both NoSuchMethod live). The
+    // hub's own Logs page reads it from /logs/eventsJson (per the hub2 frontend),
+    // so we hit the same endpoint and parse it. Each row is
+    // {name, value, unit, descriptionText, isStateChange, type, date(ISO+offset)}.
     if (!args.deviceId) {
-        def locEvents
+        def rawJson
         try {
-            // Location history comes from the app-context getLocationEventsSince(Date)
-            // helper. The Location object itself has NO eventsSince(Date, Map)
-            // overload, so the old location.eventsSince(...) call always
-            // NoSuchMethod'd and this whole branch returned an error.
-            locEvents = getLocationEventsSince(sinceDate)
-            if (locEvents != null && limit && locEvents.size() > limit) {
-                locEvents = locEvents.take(limit)
-            }
+            rawJson = hubInternalGet("/logs/eventsJson")
         } catch (Exception e) {
-            mcpLog("warn", "monitoring", "getLocationEventsSince failed: ${e.message}")
-            return [error: "Location event history unavailable: ${e.message}", source: "location"]
+            mcpLog("warn", "monitoring", "/logs/eventsJson fetch failed: ${e.message}")
+            return [error: "Location event history fetch failed: ${e.message}", source: "location"]
+        }
+        def rows
+        try {
+            def parsed = new groovy.json.JsonSlurper().parseText(rawJson?.toString() ?: "[]")
+            rows = (parsed instanceof List) ? parsed : []
+        } catch (Exception e) {
+            mcpLog("warn", "monitoring", "/logs/eventsJson parse failed: ${e.message}")
+            return [error: "Location event history parse failed: ${e.message}", source: "location"]
         }
 
-        def locResults = locEvents?.collect { evt ->
-            [
+        def locResults = []
+        for (evt in rows) {
+            if (!(evt instanceof Map)) continue
+            if (attributeFilter && evt.name != attributeFilter) continue
+            // Best-effort hoursBack window: drop events older than sinceDate when the
+            // ISO+offset date parses; keep them if it doesn't (don't silently lose
+            // history). The numeric offset (e.g. -0400) parses via the 'Z' pattern.
+            def evtDate = null
+            try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
+            catch (Exception ignored) { evtDate = null }
+            if (evtDate != null && evtDate.before(sinceDate)) continue
+            locResults << [
                 name: evt.name,
                 value: evt.value,
                 unit: evt.unit,
                 description: evt.descriptionText,
-                date: evt.date?.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
+                date: evt.date,
+                type: evt.type,
                 isStateChange: evt.isStateChange
             ]
-        } ?: []
-
-        if (attributeFilter) {
-            locResults = locResults.findAll { it.name == attributeFilter }
+            if (locResults.size() >= limit) break
         }
 
-        mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history events (${hoursBack}h back)")
+        mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history events (${hoursBack}h back) from /logs/eventsJson")
         return [
             source: "location",
             hoursBack: hoursBack,
@@ -9512,6 +9524,7 @@ def toolGetDeviceHistory(args) {
             count: locResults.size(),
             sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
         ]
+    }
     }
 
     def device = findDevice(args.deviceId)
