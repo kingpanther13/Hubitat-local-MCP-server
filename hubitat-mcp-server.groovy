@@ -1716,13 +1716,13 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
         ],
         [
             name: "hub_get_device",
-            description: """Get detailed information about a specific device.
+            description: """Get one device's full detail: capabilities, all attributes with current values, and supported commands (with argument types). Use when you need a single device's complete profile — e.g. to discover which commands/attributes it supports before calling hub_call_device_command or hub_get_device_attribute. For a multi-device listing use hub_list_devices instead.
 
 Only query devices the user has mentioned or that are relevant to their request. Do not probe random devices.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from hub_list_devices"]
+                    deviceId: [type: "string", description: "Device ID from hub_list_devices, e.g. \"42\""]
                 ],
                 required: ["deviceId"]
             ],
@@ -1784,15 +1784,15 @@ Only query devices the user has mentioned or that are relevant to their request.
         ],
         [
             name: "hub_call_device_command",
-            description: """Send a command to a device. Always verify state changed after.
+            description: """Send a command (e.g. on, off, setLevel) to a device. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead. Always verify the state changed after sending (commands are fire-and-forget — the hub returns acceptance, not effect).
 
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match"],
-                    command: [type: "string", description: "Command name"],
-                    parameters: [type: "array", description: "Command parameters", items: [type: "string"]]
+                    command: [type: "string", description: "Command name, e.g. \"setLevel\". Must be one of the device's supported commands (see hub_get_device)."],
+                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor. Omit for no-arg commands like on/off. Each element is a string; numbers and JSON-object values are passed as strings (e.g. [\"{\\\"hue\\\":0,\\\"saturation\\\":100,\\\"level\\\":50}\"]) and coerced hub-side.", items: [type: "string"]]
                 ],
                 required: ["deviceId", "command"]
             ],
@@ -1933,14 +1933,14 @@ Verify rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Rule name"],
-                    description: [type: "string", description: "Rule description"],
-                    enabled: [type: "boolean", description: "Enable rule immediately", default: true],
+                    name: [type: "string", description: "Rule name, e.g. \"Porch light at sunset\""],
+                    description: [type: "string", description: "Optional human-readable rule description"],
+                    enabled: [type: "boolean", description: "Enable rule immediately on creation", default: true],
                     testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion. Use for temporary/experimental rules.", default: false],
-                    triggers: [type: "array", description: "List of triggers"],
-                    conditions: [type: "array", description: "List of conditions"],
-                    conditionLogic: [type: "string", enum: ["all", "any"], default: "all"],
-                    actions: [type: "array", description: "List of actions"]
+                    triggers: [type: "array", description: "Trigger objects (at least one required), each a {type, ...} object. See the type list in the tool description and hub_get_tool_guide(section='rules') for per-type fields, e.g. {\"type\":\"time\",\"time\":\"sunset\"}."],
+                    conditions: [type: "array", description: "Optional condition objects gating the actions, each {type, ...}. See type list above and the rules guide, e.g. {\"type\":\"mode\",\"mode\":\"Night\"}."],
+                    conditionLogic: [type: "string", enum: ["all", "any"], description: "How to combine multiple conditions: 'all' = AND, 'any' = OR.", default: "all"],
+                    actions: [type: "array", description: "Action objects to run when triggered (at least one required), each {type, ...}. See type list above and the rules guide, e.g. {\"type\":\"device_command\",\"deviceId\":\"42\",\"command\":\"on\"}."]
                 ],
                 required: ["name", "triggers", "actions"]
             ],
@@ -1961,19 +1961,19 @@ Verify rule after creation.""",
         ],
         [
             name: "hub_update_custom_rule",
-            description: "Update an existing rule. Use enabled=true/false to enable/disable. Always verify changes after. NOTE: when the Custom Rule Engine toggle is OFF (read-only mode), only the 'enabled' field is accepted -- structural changes (triggers/conditions/actions/name) require the toggle to be ON.",
+            description: "Update an existing MCP custom-engine rule in place; only the fields you supply are changed. Use enabled=true/false to enable or disable. Replacing triggers/conditions/actions overwrites that whole array (it is not a merge) -- get the current rule via hub_get_custom_rule first if you only want to tweak part of it, and see hub_get_tool_guide(section='rules') for trigger/condition/action structure. Verify changes after. NOTE: when the Custom Rule Engine toggle is OFF (read-only mode), only the 'enabled' field is accepted -- structural changes (triggers/conditions/actions/name) require the toggle to be ON.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "string", description: "Rule ID"],
-                    name: [type: "string"],
-                    description: [type: "string"],
-                    enabled: [type: "boolean"],
+                    ruleId: [type: "string", description: "ID of the rule to update (from hub_get_custom_rule)"],
+                    name: [type: "string", description: "New rule name"],
+                    description: [type: "string", description: "New rule description"],
+                    enabled: [type: "boolean", description: "Enable (true) or disable (false) the rule"],
                     testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion"],
-                    triggers: [type: "array"],
-                    conditions: [type: "array"],
-                    conditionLogic: [type: "string", enum: ["all", "any"]],
-                    actions: [type: "array"]
+                    triggers: [type: "array", description: "Replacement trigger objects (overwrites all triggers); see the rules guide for structure"],
+                    conditions: [type: "array", description: "Replacement condition objects (overwrites all conditions); see the rules guide for structure"],
+                    conditionLogic: [type: "string", enum: ["all", "any"], description: "How to combine conditions: 'all' = AND, 'any' = OR"],
+                    actions: [type: "array", description: "Replacement action objects (overwrites all actions); see the rules guide for structure"]
                 ],
                 required: ["ruleId"]
             ],
@@ -2012,11 +2012,11 @@ Verify rule after creation.""",
         // enable_rule and disable_rule merged into hub_update_custom_rule (use enabled=true/false)
         [
             name: "hub_test_custom_rule",
-            description: "Test a rule without executing actions (dry run)",
+            description: "Dry-run an MCP custom-engine rule: evaluate its conditions against current device/hub state and report whether it would fire, WITHOUT executing any actions (no devices change, no side effects). Use this to validate a rule's logic after creating or updating it. Returns per-condition results, wouldEvaluate, and the list of actions that would have run. Applies only to MCP custom rules; for native Rule Machine use hub_manage_native_rules_and_apps.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "string", description: "Rule ID"]
+                    ruleId: [type: "string", description: "ID of the custom rule to dry-run (from hub_get_custom_rule)"]
                 ],
                 required: ["ruleId"]
             ],
@@ -2036,7 +2036,7 @@ Verify rule after creation.""",
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub info: model, firmware, uptime, memory, temperature, database size, MCP stats, and settings. Location/PII data (name, IP, timezone, coordinates, zip code) requires Hub Admin Read.",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, free memory, internal temperature, database size, MCP server stats, and current security/toggle settings. Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Hub Admin Read is enabled; otherwise they are omitted.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2094,7 +2094,7 @@ def _getAllToolDefinitions_part2() {
     return [
         [
             name: "hub_list_modes",
-            description: "Get available location modes and current mode",
+            description: "List the hub's available location modes and report the current one. Use this before hub_set_mode to discover valid mode names (they are hub-specific, e.g. Day/Night/Away).",
             inputSchema: [type: "object", properties: [:]],
             outputSchema: [
                 type: "object",
@@ -2164,11 +2164,11 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_get_variable",
-            description: "Get a variable's current value plus metadata (type, deviceId, attribute) if it's a hub variable.",
+            description: "Get one variable's current value by name. Searches the hub-variable namespace first, then falls back to rule-engine variables; the returned source field says which matched. For hub variables it also returns metadata (type, plus deviceId/attribute when a connector is linked). Use hub_list_variables to enumerate; use this when you already know the name.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Variable name"]
+                    name: [type: "string", description: "Exact variable name to look up, e.g. \"vacationMode\". Case-sensitive."]
                 ],
                 required: ["name"]
             ],
@@ -2209,14 +2209,14 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_create_variable",
-            description: "Create a new hub variable. Args: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm. Drives Settings → Hub Variables wizard (Hubitat does not expose creation via the public app API). Forbidden chars in name: ' \" \\ ~ [ : ] < >.",
+            description: "Create a new hub variable (global variable visible to apps and Rule Machine). Use this before hub_set_variable for a name that doesn't exist yet — Hubitat's setGlobalVar cannot create, only update. Drives the Settings → Hub Variables wizard, since creation isn't exposed via the public app API. Name must not contain any of these characters: ' \" \\ ~ [ : ] < >. To also expose the variable to device-only apps, follow up with hub_create_connector.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Variable name"],
-                    type: [type: "string", description: "One of: Number, Decimal, String, Boolean, DateTime"],
-                    value: [description: "Initial value (must match the chosen type)"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true"]
+                    name: [type: "string", description: "New variable name, e.g. \"vacationMode\". Must not contain: ' \" \\ ~ [ : ] < >"],
+                    type: [type: "string", description: "Variable type — one of: Number, Decimal, String, Boolean, DateTime"],
+                    value: [description: "Initial value, must match the chosen type (e.g. 72 for Number, true for Boolean, \"away\" for String, a DateTime string for DateTime)"],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true to perform the creation"]
                 ],
                 required: ["name", "type", "value", "confirm"]
             ],
@@ -2261,12 +2261,12 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_delete_connector",
-            description: "Delete the connector device backing a hub variable. The variable itself is unchanged. No-op if no connector exists.",
+            description: "Delete the connector device backing a hub variable. DESTRUCTIVE and not undoable — the connector device is removed (apps that read/write the variable through that device lose access), but the hub variable itself and its value are unchanged. Confirm with the caller before running, since confirm=true is required. No-op (returns alreadyRemoved) if the variable has no connector.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Hub-variable name whose connector to remove"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true"]
+                    name: [type: "string", description: "Hub-variable name whose connector device to remove, e.g. \"vacationMode\""],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true to perform the deletion"]
                 ],
                 required: ["name", "confirm"]
             ],
@@ -2286,13 +2286,13 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_list_variable_changes",
-            description: "Recent hub-variable changes captured by the MCP app's location-event subscription. Buffer caps at 200 most recent changes (oldest dropped). Cleared on app restart.",
+            description: "List recent hub-variable change events captured by the MCP app's location-event subscription, most-recent first. Use this to audit or debug what changed a variable and when, without polling hub_get_variable. The buffer holds at most the 200 most recent changes (oldest dropped) and is cleared on app restart, so it is not a complete history. Filter by variable name and/or timestamp.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Optional: filter to changes for this variable name only"],
-                    sinceMs: [type: "integer", description: "Optional: only return changes whose timestamp >= this epoch-millis"],
-                    limit: [type: "integer", description: "Optional: max entries to return (default: 50)"]
+                    name: [type: "string", description: "Optional: filter to changes for this variable name only, e.g. \"vacationMode\". Omit to include all variables."],
+                    sinceMs: [type: "integer", description: "Optional: only return changes whose timestamp >= this epoch-millis value, e.g. 1717459200000"],
+                    limit: [type: "integer", description: "Optional: max entries to return (default 50)"]
                 ]
             ],
             outputSchema: [
@@ -2343,7 +2343,7 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters). First tool under the Developer Mode self-administration surface — additional Developer Mode tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same `enableDeveloperMode` gate.\n\nGated on `enableDeveloperMode` + requireHubAdminWrite + recent backup. Every successful write is logged at WARN level for audit.\n\nAllowlisted settings (intentionally conservative for v1): mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableHubAdminRead, enableBuiltinApp, enableCustomRuleEngine, useGateways.\n\nExcluded from v1 allowlist (require future explicit security-model discussion): enableHubAdminWrite (footgun: would disable own write path mid-session), enableDeveloperMode (lockout protection — must remain UI-only to disable), selectedDevices (different wire format, will get its own tool).\n\nAfter changing any enable* toggle or useGateways, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema.",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters) in place. Use this to self-administer the MCP app without the Hubitat UI. Gated on enableDeveloperMode + requireHubAdminWrite + a recent backup; every successful write is logged at WARN for audit. Allowlisted keys only: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableHubAdminRead, enableBuiltinApp, enableCustomRuleEngine, useGateways — any other key is rejected. After changing any enable* toggle or useGateways, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema. Deliberately NOT allowlisted: enableHubAdminWrite (would disable the tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), and selectedDevices (different wire format, has its own tool).",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2369,7 +2369,7 @@ def _getAllToolDefinitions_part3() {
     return [
         [
             name: "hub_get_hsm_status",
-            description: "Get the current HSM (Hubitat Safety Monitor) status",
+            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the list of valid HSM modes. Use this to check the security-system state or to confirm a change made via hub_set_hsm.",
             inputSchema: [type: "object", properties: [:]],
             outputSchema: [
                 type: "object",
@@ -2404,7 +2404,7 @@ def _getAllToolDefinitions_part3() {
         // Captured State Management
         [
             name: "hub_list_captured_states",
-            description: "List captured device states. Storage limit configurable (default 20); oldest auto-deleted when full.",
+            description: "List saved device-state snapshots (point-in-time captures of device attributes used to restore or compare state later). Returns each entry's stateId for use with hub_delete_captured_state. Storage limit configurable (default 20); oldest auto-deleted when full.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2426,7 +2426,7 @@ def _getAllToolDefinitions_part3() {
         ],
         [
             name: "hub_delete_captured_state",
-            description: "Delete a captured device state by its stateId, OR delete ALL captured states when stateId is omitted (use the all-delete with caution).",
+            description: "Delete a saved device-state snapshot by its stateId, OR delete ALL captured states when stateId is omitted. Get stateIds from hub_list_captured_states. Cannot be undone; use the all-delete (omitted stateId) with caution.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2490,7 +2490,7 @@ def _getAllToolDefinitions_part3() {
         ],
         [
             name: "hub_delete_debug_logs",
-            description: "Clear all stored debug log entries. Cannot be undone.",
+            description: "Clear all entries from the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs). Use to reset that buffer before reproducing an issue or to free space. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state). Cannot be undone.",
             inputSchema: [type: "object", properties: [:]],
             outputSchema: [
                 type: "object",
@@ -2523,7 +2523,7 @@ def _getAllToolDefinitions_part3() {
         ],
         [
             name: "hub_report_issue",
-            description: "File a bug, report a bug, open an issue, open a github issue, request a feature/enhancement, or flag agent-behavior issues. Returns a prefilled GitHub issue link (template + title).",
+            description: "File a bug, report a bug, open an issue, open a github issue, request a feature/enhancement, or flag agent-behavior issues against this MCP server. Does NOT submit the issue itself: it gathers context (scoped recent logs, hub/version info) and returns a prefilled GitHub issue link (template + title) plus the report body for the user to open and post. Use privacyMode='public' to placeholder the hub name and suppress raw logs before sharing.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2605,7 +2605,7 @@ def _getAllToolDefinitions_part3() {
         ],
         [
             name: "hub_import_custom_rule",
-            description: """Import a rule from exported JSON (from hub_export_custom_rule). Optional deviceMapping remaps old device IDs to new: {"oldId": "newId"}.""",
+            description: """Import a custom rule from exported JSON (produced by hub_export_custom_rule), creating a NEW rule with a fresh ruleId (it does not overwrite an existing rule). Use this to restore a backup or copy a rule between hubs. Optional deviceMapping remaps the exported device IDs onto this hub's devices; unmapped IDs are kept as-is, so verify device references after import. Verify the rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2635,7 +2635,7 @@ def _getAllToolDefinitions_part3() {
         ],
         [
             name: "hub_clone_custom_rule",
-            description: "Clone an existing rule. The cloned rule starts disabled to allow review before activation.",
+            description: "Duplicate an existing MCP custom-engine rule into a new, independent rule with its own ruleId (same triggers/conditions/actions and device references as the source). The clone starts DISABLED so you can review and adjust it before activating via hub_update_custom_rule(enabled=true). Use this to base a new rule on an existing one.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2990,7 +2990,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
         ],
         [
             name: "hub_get_memory_history",
-            description: "Get free OS memory and CPU load history. Returns timestamped entries with freeMemoryKB and cpuLoad5min. Requires Hub Admin Read.",
+            description: "Get the hub's free-memory and CPU-load history (the platform's own timestamped ring buffer, each entry with freeMemoryKB and cpuLoad5min). Use to diagnose memory leaks or load trends over time. For a single current snapshot plus temp/DB-size, use hub_get_metrics instead. Requires Hub Admin Read.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3290,7 +3290,7 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
         // Room Management Tools
         [
             name: "hub_list_rooms",
-            description: "List all rooms with IDs, names, and device counts.",
+            description: "List all rooms on the hub, each with its ID, name, device count, and assigned device IDs. Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only — call hub_get_room for per-device states.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3316,11 +3316,11 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
         ],
         [
             name: "hub_get_room",
-            description: "Get room details with assigned devices and their states. Specify by name or ID.",
+            description: "Get one room's details: its ID, name, and the full list of assigned devices with each device's current attribute states. Use when you need device-level detail for a single room; for a name-and-count overview of all rooms use hub_list_rooms instead. Read-only and parallel-safe. Devices unreachable via MCP are returned with accessible=false and no states.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    room: [type: "string", description: "Room name (case-insensitive) or room ID"]
+                    room: [type: "string", description: "Room name (case-insensitive) or room ID, e.g. \"Living Room\" or \"5\""]
                 ],
                 required: ["room"]
             ],
@@ -3343,13 +3343,13 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
         ],
         [
             name: "hub_create_room",
-            description: "Create a new room. Optionally assign devices at creation. Requires Hub Admin Write + confirm + backup <24h.",
+            description: "Create a new room on the hub, optionally assigning devices to it at creation. Use when a needed room does not yet exist; to only move devices into an existing room, use hub_update_room/room-assignment flows instead. Write operation: requires Hub Admin Write, a backup taken within the last 24h, and confirm=true. Returns the new room's ID and assigned device count.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Name for the new room"],
-                    deviceIds: [type: "array", description: "Optional list of device IDs to assign to the room", items: [type: "string"]],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                    name: [type: "string", description: "Name for the new room, e.g. \"Garage\""],
+                    deviceIds: [type: "array", description: "Optional device IDs to assign to the room at creation, e.g. [\"12\",\"34\"]. Omit to create an empty room.", items: [type: "string"]],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved creating this room."]
                 ],
                 required: ["name", "confirm"]
             ],
@@ -3376,7 +3376,7 @@ Requires Hub Admin Write.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    room: [type: "string", description: "Room name (case-insensitive) or room ID"],
+                    room: [type: "string", description: "Room name (case-insensitive) or room ID to delete, e.g. \"Garage\" or \"5\""],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]
                 ],
                 required: ["room", "confirm"]
@@ -3406,8 +3406,8 @@ def _getAllToolDefinitions_part6() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    room: [type: "string", description: "Current room name (case-insensitive) or room ID"],
-                    newName: [type: "string", description: "New name for the room"],
+                    room: [type: "string", description: "Current room name (case-insensitive) or room ID, e.g. \"Garage\" or \"5\""],
+                    newName: [type: "string", description: "New name for the room, e.g. \"Workshop\""],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["room", "newName", "confirm"]
@@ -3803,7 +3803,7 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
         // ==================== Item Backup Tools ====================
         [
             name: "hub_list_backups",
-            description: "List auto-created source backups from app/driver modifications. Stored in File Manager, max 20 kept.",
+            description: "List auto-created source backups (apps, drivers, libraries, and RM rules) that the write tools snapshot before each modify/delete. Stored in the File Manager, newest first, max 20 retained. Use this to find a backupKey (e.g. 'app_123') to pass to hub_get_backup or hub_restore_backup. Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3843,7 +3843,7 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
         ],
         [
             name: "hub_get_backup",
-            description: "Get source code from a backup. Use hub_list_backups to find backup keys (e.g., 'app_123').",
+            description: "Read the saved source code from one backup. Call hub_list_backups first to find the backupKey (e.g. 'app_123', 'driver_456', 'library_42'). Use this to inspect or diff a prior version before restoring. Large sources are omitted from the response (sourceTooLargeForResponse=true) with a File Manager download link instead. To re-apply a backup, use hub_restore_backup, not this tool. Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3907,7 +3907,7 @@ def _getAllToolDefinitions_part7() {
         // File Manager Tools
         [
             name: "hub_list_files",
-            description: "List files in hub's File Manager. Returns names, sizes, download URLs.",
+            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only. For large stores, opt into pagination via the cursor parameter (page size 100).",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3933,7 +3933,7 @@ def _getAllToolDefinitions_part7() {
         ],
         [
             name: "hub_read_file",
-            description: "Read file from File Manager. Supports chunked reading (offset/length) for large files.",
+            description: "Read the text content of a single file from the hub's File Manager by exact file name. Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV). Read-only. Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default/max chunk 60000 chars).",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3963,7 +3963,7 @@ def _getAllToolDefinitions_part7() {
         ],
         [
             name: "hub_write_file",
-            description: "⚠️ Write file to File Manager. Auto-backs up existing files. Requires Hub Admin Write + confirm.",
+            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery). Requires Hub Admin Write and confirm=true — confirm the write with the user before calling. Returns the file name, chars written, and download URL.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3989,7 +3989,7 @@ def _getAllToolDefinitions_part7() {
         ],
         [
             name: "hub_delete_file",
-            description: "⚠️ Delete file from File Manager. Auto-backs up before deletion. Tell user first. Requires Hub Admin Write + confirm.",
+            description: "⚠️ Permanently delete a file from the hub's File Manager. The file is auto-backed up before deletion (see backupFile/undoHint in the result for recovery), but the original is removed. Tell the user and get approval first. Requires Hub Admin Write and confirm=true.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4166,13 +4166,11 @@ Requires Hub Admin Read.""",
             name: "hub_list_hpm_packages",
             description: """List all packages tracked by Hubitat Package Manager (HPM). Returns the installed name, version, beta flag, author, and the full component inventory (apps, drivers, files) as HPM last recorded at install or update time.
 
-App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). If a component's heID value is an empty/whitespace-only string, heID is cleared to null and a _warning field is added to that component entry (e.g. "empty heID string '' normalized to null" for an empty string, or "empty heID string '  ' normalized to null" for a whitespace-only string). If heID is a whitespace-padded string (e.g. ' 142 '), it is normalized to the trimmed value and _warning records the normalization (e.g. "whitespace-padded heID ' 142 ' normalized to '142'"); heID remains non-null. If heID is a non-scalar type (not Number or String), heID is cleared to null and a _warning field is added.
+App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). File components include only id and name (File Manager assets are tracked by name only). [[FLAT_TRIM]]If a component's heID is an empty/whitespace-only string, heID is cleared to null and a _warning field is added to that entry (e.g. "empty heID string '' normalized to null"). A whitespace-padded heID (e.g. ' 142 ') is trimmed, heID stays non-null, and _warning records the normalization. A non-scalar heID (not Number or String) is cleared to null with a _warning.[[/FLAT_TRIM]]
 
-File components include only: id and name. Files carry no heID, required flag, or version (File Manager assets are tracked by name only).
+Response also includes: count (packages returned); hpmAppId (HPM's installed-app ID, echoed so callers can cache it and skip discovery); skippedMalformed (manifest URLs whose top-level value was not a Map -- package skipped); per-package skippedAppCount/skippedDriverCount/skippedFileCount (non-Map entries skipped, each omitted when 0).
 
-Response also includes: count (number of packages returned); hpmAppId (HPM's installed-app ID, echoed so callers can cache it and skip discovery on subsequent calls); skippedMalformed (array of manifest URLs whose top-level value was not a Map -- package skipped entirely); per-package skippedAppCount, skippedDriverCount, skippedFileCount (each omitted when 0) -- count of app/driver/file entries that were not Maps and thus skipped.
-
-If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app instance tree for an entry whose type is 'Hubitat Package Manager'. Pass hpmAppId explicitly to skip the discovery call. When multiple HPM instances are found, throws IllegalArgumentException listing up to 10 instance IDs in bracket notation (e.g. [37, 99]) with a "and N more (total M)" suffix when more than 10 exist. When hpmAppId is supplied explicitly but points at an app that is not Hubitat Package Manager, the tool throws IllegalArgumentException with the actual type disclosed (e.g. "hpmAppId N is not Hubitat Package Manager (actual type: Simple Automation Rules) -- verify the ID or omit hpmAppId to use auto-discovery"). All IllegalArgumentExceptions surface to the wire as JSON-RPC error -32602, not a success=false map.
+If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app tree for type='Hubitat Package Manager'; pass hpmAppId explicitly to skip that call. Multiple HPM instances throw IllegalArgumentException listing up to 10 instance IDs with "and N more (total M)"; an hpmAppId pointing at a non-HPM app throws disclosing the actual type (all such IllegalArgumentExceptions surface as JSON-RPC error -32602).
 
 Set includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan-app / orphan-driver signals; optional packageFilter narrows which packages are analyzed). Off by default (adds 1-2 hub calls). Drift is heID-presence-only -- post-install source edits are NOT surfaced. Call `hub_get_tool_guide(section='builtin_app_tools')` for the full drift-signal taxonomy, response-field reference, and under-count caveats.
 
@@ -4346,13 +4344,7 @@ def _getAllToolDefinitions_part8() {
         // get added to _appTypeRegistry().
         [
             name: "hub_create_native_app",
-            description: """Create a NEW empty native automation app of the given appType. The shell is created via the hub's admin-layer createchild endpoint, which bypasses the SmartApp parent-type check that blocks third-party `addChildApp('hubitat', ...)` calls. The new app appears under Apps / Automations exactly as if created via the native UI.
-
-[[FLAT_TRIM]]
-appType (default: rule_machine): which class of native app to create.
-  - "rule_machine" — Rule Machine 5.1 (the only registered type today; verified live)
-  - Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in _appTypeRegistry to enable creation. Update and delete already work on them via hub_update_native_app / hub_delete_native_app with their appId.
-[[/FLAT_TRIM]]
+            description: """Create a NEW empty native automation app of the given appType. The shell is created via the hub's admin-layer createchild endpoint, which bypasses the SmartApp parent-type check that blocks third-party `addChildApp('hubitat', ...)` calls. The new app appears under Apps / Automations exactly as if created via the native UI. appType (enum below) defaults to rule_machine — the only fully-registered type today; the other classic SmartApp types share the same endpoint family (see hub_get_tool_guide(section='create_native_app_reference')).
 
 This is COMPLETELY SEPARATE from the MCP custom rule engine (hub_get_custom_rule / hub_create_custom_rule). Use hub_create_native_app for native automations that show up in the hub UI; use hub_create_custom_rule for MCP-managed rules.
 
@@ -4362,14 +4354,7 @@ Optional `triggers` array: pass a list of trigger specs and the tool creates the
 
 Optional `actions` array: same pattern but for actions (each item shaped like hub_update_native_app's `addAction` parameter).
 
-[[FLAT_TRIM]]
-PARTIAL-SUCCESS HANDLING (important for LLM drivers): the tool ALWAYS creates the rule shell (you get an `appId` back) even if some triggers/actions fail to fully bake. Inspect the result:
-  - `partial: true` + `partialTriggers: [N, ...]` / `partialActions: [N, ...]` → some pieces are incomplete (this includes any per-item result with `partial: true` OR `success: false`)
-  - `repairHints: [...]` → concrete next-step instructions
-  - Each per-trigger / per-action result has its own `success`, `partial`, `settingsSkipped`, `repairHints`, and `health` block. `success: true, partial: true` on an inner result means the row was written but needs repair.
-The right move when `partial: true` is to follow the repairHints, NOT to delete the rule and retry from scratch. Tool-only repair via hub_update_native_app(walkStep={...}) / replaceActions / removeAction can usually finish the job. Only declare failure after exhausting those repair attempts.
-[[/FLAT_TRIM]]
-Partial-success: triggers/actions can land with `partial: true` -- inspect `partialTriggers`/`partialActions`/`repairHints` in the result. Call `hub_get_tool_guide(section='create_native_app_reference')` for the full repair protocol.
+Partial-success: the tool ALWAYS creates the rule shell (you get an `appId` back) even if some triggers/actions fail to bake; inspect `partial` / `partialTriggers` / `partialActions` / `repairHints` and follow the repairHints (tool-only repair via hub_update_native_app walkStep/replaceActions/removeAction usually finishes the job — don't delete and retry). Full repair protocol: hub_get_tool_guide(section='create_native_app_reference').
 
 Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
             inputSchema: [
@@ -4416,101 +4401,41 @@ Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
         ],
         [
             name: "hub_update_native_app",
-            description: """Modify any classic native automation app on the hub (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them, so this one tool covers writes to any classic SmartApp instance addressed by appId. Two modes (provide settings, button, or both):
+            description: """Modify any classic native automation app on the hub (RM rule, Room Lighting, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.) — one tool for any classic SmartApp instance, addressed by appId.
 
-settings: Map of {inputName: value}. Values: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs. The multiple=true 3-field contract (settings[name]=csv + name.type=capability.X + name.multiple=true) is emitted automatically — you don't need to think about it. Post-write verification checks that the multiple flag survived; one automatic retry on divergence.
+Prefer the high-level structured shortcuts, each of which orchestrates the full RM 5.1 wizard in one call: addTrigger / addAction / addRequiredExpression; bulk addTriggers / addActions / replaceActions; and removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / addLocalVariable / patches. For a capability the shortcuts don't cover, walkStep drives one wizard page at a time, or write page inputs via settings and click page-transition buttons via button directly (raw mode).
 
-button: page-transition button name (e.g. \"editCond\", \"editAct\", \"pausRule\", \"updateRule\", \"refreshActions\" for RM; equivalent buttons exist for other app types — discover via hub_get_app_config).
+BEFORE EVERY WRITE a full snapshot (configure/json + statusJson) is saved to File Manager; the response carries backup.backupKey for hub_restore_backup (in hub_manage_code) if a write goes wrong.
 
-pageName: optional — target a specific sub-page whose schema drives the settings marshaling. Defaults to the app's main page.
-
-stateAttribute: optional string passed with the button click (e.g., RM uses this for editCond/editAct to identify which trigger/action).
-
-BEFORE EVERY WRITE: a full snapshot (configure/json + statusJson) is saved to File Manager. Response includes backup.backupKey for use with hub_restore_backup (in hub_manage_code) if the write goes wrong.
-
-Auto-updateRule: main-page settings writes are followed by an implicit updateRule button click so initialize() re-fires. Sub-page writes (pageName=selectTriggers, selectActions, etc.) skip the auto-click so the wizard's stateAttribute (moreCond, editCond, editAct, ...) survives — commit the wizard via its own Done button (RM triggers: hasAll; RM actions: actionDone) and issue a final hub_update_native_app(button='updateRule') to re-initialize.
-
-Wizard-Done auto-finalize: clicking hasAll on selectTriggers commits the trigger to the rule's summary row but RM 5.1 leaves a single residual `isCondTrig.<N>` ("Conditional Trigger?") prompt on the page. This tool auto-writes `isCondTrig.<N>=false` after the click to clear the prompt without consuming an extra trigger index. Reported in the response as wizardDoneAutoRetry: 'OK' / 'OK after finalize ...' / 'WARN: ...'. (Earlier versions clicked hasAll twice instead, which inadvertently allocated phantom "**Broken Trigger**" rows; the finalize-via-isCondTrig path keeps trigger indices contiguous: 1, 2, 3 instead of 1, 3, 5.)
-
-RM 5.1 trigger flow (example — adding a multi-device switch trigger via raw settings/button mode):
-  1. hub_update_native_app(appId, button='true', stateAttribute='moreCond', pageName='selectTriggers') — opens the trigger editor.
-  2. hub_update_native_app(appId, settings={tCapab1: 'Switch'}, pageName='selectTriggers') — picks the capability; page re-renders with the device picker.
-  3. hub_update_native_app(appId, settings={tDev1: [<deviceId>, ...]}, pageName='selectTriggers') — writes devices (multi-device 3-field contract is automatic).
-  4. hub_update_native_app(appId, settings={tstate1: 'on'}, pageName='selectTriggers') — sets the attribute/value.
-  5. hub_update_native_app(appId, button='hasAll', pageName='selectTriggers') — commits the trigger; the residual Conditional? prompt is auto-finalized.
-  6. hub_update_native_app(appId, button='updateRule') — re-initialize so subscriptions populate.
-
-NOTE: the addTrigger={...} shortcut handles steps 1-6 automatically (including the updateRule at the end). Only the raw settings/button flow above requires the explicit step 6 call.
-
-Adding a second trigger uses the SAME flow with index 2 (tCapab2, tDev2, tstate2), then a third uses index 3, etc. After the auto-finalize fix the indices are sequential.
+Full capability reference — trigger/action/expression families, extended condition shapes, the raw settings/button wizard flow, and walkStep — is one call away: pass guide:true to get it back inline (no separate tool call), or see hub_get_tool_guide(section='update_native_app_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
 
 Requires Hub Admin Write + confirm=true + recent hub backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "Installed-app ID (for RM rules, this is the rule ID; for any other classic app, it's the app's id from hub_list_apps with scope='instances')."],
-                    settings: [type: "object", description: "Map {inputName: value}. Use List for multi-device capability inputs — CSV marshaling is automatic."],
-                    button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule, refreshActions for RM; analogous buttons for other app types)."],
+                    settings: [type: "object", description: "Map {inputName: value}: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs. The multiple=true 3-field contract (settings[name]=csv + name.type=capability.X + name.multiple=true) is emitted automatically and post-write verified with one auto-retry — you don't manage it."],
+                    button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule, refreshActions for RM; analogous buttons for other app types — discover them via hub_get_app_config)."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
                         description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or call `hub_get_tool_guide(section='update_native_app_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed.[[FLAT_TRIM]] (Exception: if updateRule itself is rejected the response carries `subscriptionsNotLive: true` -- see PARTIAL-SUCCESS HANDLING for the recovery path.)[[/FLAT_TRIM]] (Bulk addTriggers[] fires updateRule once at the end of the batch.)
 
-[[FLAT_TRIM]]
-Capability families and the spec fields each accepts:
-  - Device-state (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source):
-    capability, deviceIds, state ('on', 'active', 'open', 'unlocked', etc.)
-  - Multi-device 'all of these': add allOfThese=true to the device-state spec
-  - Numeric (Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints):
-    capability, deviceIds, comparator ('=', '<', '>', '<=', '>=', '*changed*'), value
-  - Button (Button capability):
-    capability='Button', deviceIds, buttonNumber, state ('pushed' | 'held' | 'doubleTapped' | 'released')
-  - Custom Attribute (any device's non-built-in attribute):
-    capability='Custom Attribute', deviceIds, attribute (the attribute name), comparator, value
-  - And-stays sticky modifier (works on any device-state or numeric trigger):
-    add andStays={hours, minutes, seconds} to the spec
-  - Time / Sunrise / Sunset (Certain Time and optional date):
-    capability='Certain Time (and optional date)', time ('A specific time' | 'Sunrise' | 'Sunset'), atTime — see SEMANTIC choice below; offset (minutes for sunrise/sunset)
-       atTime SEMANTIC: 'HH:mm' form (e.g. '17:00') = DAILY-recurring trigger that fires every day at that wall-clock time; full ISO datetime (e.g. '2026-04-29T17:00:00' or '2026-04-29T17:00:00.000-0500') = ONE-SHOT dated trigger that fires once on that specific date. Forms without timezone are auto-normalized to hub local tz; explicit-offset and Zulu forms are normalized to UTC equivalent.
-  - Mode (hub mode change trigger):
-    capability='Mode', state='Night' OR state=['Away','Night'] (mode names, case-insensitive)
-    OR modeIds=['3'] OR modeIds=['3','5'] (IDs directly, from hub_list_modes).
-    IMPORTANT: writes modesX<N> internally -- do NOT pass tstate or rawSettings.tstate for Mode triggers (silently ignored; trigger renders as Broken Trigger). Use hub_list_modes to list valid mode names/IDs.
-  - Periodic Schedule (recurring schedule via the dedicated periodic sub-page):
-    capability='Periodic Schedule', periodic={frequency: 'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String',
-      everyN: <int>,           // "every N <unit>" mode (Seconds/Minutes/Hourly/Daily). REQUIRED even when =1 for Daily AND Hourly (omitting it renders null). Seconds/Minutes: whole number from restricted enum [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer). Fractional truncates (5.5->5).
-      startingTime: 'HH:mm',   // start-time (Hourly/Daily/Weekly/Monthly/Yearly). For Hourly-everyN, pass it: omitting renders a cosmetic trailing "starting at " blank. (Seconds exposes no startingTime.)
-      weekdaysOnly: <bool>,    // Daily-only
-      selectedHours: [9,12],   // Hourly-only, alternative to everyN
-      selectedMinutes: [0,30], // Minutes-only, "at specific minutes", alternative to everyN
-      selectedDaysOfMonth: [1,15], // Daily-only, alternative to everyN/weekdays
-      daysOfWeek: ['Monday','Friday'], // Weekly-only, MULTI day-of-week
-      dayOfWeek: 'Monday',     // Monthly/Yearly nth-weekday mode, SINGLE day-of-week (distinct from Weekly's daysOfWeek)
-      dayOfMonth: <int>,       // Monthly by-day "on day number" (pair with everyNMonths; exclusive with weekOfMonth)
-      everyNMonths: <int>,     // "of every N months" (Monthly, both modes; free integer)
-      months: 'December',      // Yearly only -- single month String (the nth-weekday month)
-      weekOfMonth: 'First',    // Monthly/Yearly nth-weekday: First|Second|Third|Fourth|Last (presence selects nth-weekday mode)
-      minutesOffset: <int>,    // Hourly-only, when not using everyN (startingHCX<n>)
-      cronString: '0 * * * *', // Cron String mode
-      rawSettings: {…}         // escape hatch for periodic-page fields not yet mapped
-    }
-    Monthly has TWO mutually-exclusive modes: by-day (dayOfMonth + everyNMonths -- BOTH required or it renders null) and nth-weekday (weekOfMonth + dayOfWeek + everyNMonths). Passing both dayOfMonth and weekOfMonth is rejected. Yearly is ALWAYS nth-weekday (weekOfMonth + dayOfWeek + months-single) because RM 5.1 exposes no by-day calendar-day field for Yearly -- only the nth-weekday picker. Monthly "specific months" ("on day N of selected months") is NOT yet supported (an order-sensitive third sub-mode) -- use rawSettings if needed.
-    Without `periodic`, RM commits a phantom row with description="?". The tool walks the periodic sub-page (whichPeriod<N> -> everyN/select -> time -> Done, where <N> is the per-trigger sub-page index) so the trigger description bakes correctly.
-[[/FLAT_TRIM]]
+Capability families (NAMES here; full per-field specs via addTrigger:{discover:true} or hub_get_tool_guide(section='update_native_app_reference')): Device-state (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source) = capability + deviceIds + state, optional allOfThese for "all of these"; Numeric (Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints) = capability + deviceIds + comparator + value; Button = capability='Button' + deviceIds + buttonNumber + state; Custom Attribute = capability='Custom Attribute' + deviceIds + attribute + comparator + value; Time / Sunrise / Sunset = capability='Certain Time (and optional date)' + time + atTime ('HH:mm' = daily-recurring, full ISO datetime = one-shot dated) + offset; Mode = capability='Mode' + state (name) or modeIds; Periodic Schedule = capability='Periodic Schedule' + periodic={frequency, everyN, ...}. Modifier: andStays={hours,minutes,seconds} on any device-state/numeric trigger.
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
-  - condition — Map driving the conditional-trigger sub-wizard inside selectTriggers: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?}. addTrigger walks rCapab_<N> / rDev_<N> / state_<N> / hasAll inline; you do NOT need separate hub_update_native_app calls. `conditional` is implied true when `condition` is set. Note: for capability='Custom Attribute', both `attribute` AND `comparator` are required together. For capability='Variable', `variable` is required; pass `compareToVariable` to compare against another hub variable (vs `value` for a numeric RHS). ASCII comparators `!=` / `<>` / `==` are auto-mapped to RM's Unicode glyphs (`≠`, `=`).[[FLAT_TRIM]] Narrower extended-shape support than addRequiredExpression/addAction: Mode-via-picker, Between two times, and compareToDevice are NOT supported on `trigger.condition` -- use those tools instead. Supported extended shapes on this row: Variable (incl. `compareToVariable`), Custom Attribute (`attribute`+`comparator`+`state`/`value`), enum/numeric device-state. `_rmBuildCondition` is a static direct-write helper, not the shared `_rmWalkConditionReveal` walker -- that is why Mode-via-picker (`modeIds`), Between two times (`start`/`end`), and `compareToDevice` Maps don't yet work here. `compareToVariable` (variable-vs-variable) works on `addTrigger.condition`, `addRequiredExpression`, AND `addAction` IF-expressions: on this row the `selectTriggers` sub-wizard writes the fixed `xVarR_<N>` field, while the walker pages (STPage/doActPage) toggle `isVar_<N>=true` and discover the firmware-assigned right-hand picker from the live schema. On Variable conditions, for value-comparison comparators supply exactly one of `value`/`compareToVariable` (they are mutually exclusive; passing both is rejected); omit the RHS entirely for state-change comparators (`*changed*`/`*became*`).[[/FLAT_TRIM]]
+  - condition — Map driving the conditional-trigger sub-wizard: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?} (handled inline; no separate call). `conditional` is implied true when set. Custom Attribute needs attribute+comparator; Variable needs variable (+ compareToVariable for a variable-vs-variable RHS, mutually exclusive with value). NOTE: trigger.condition supports a NARROWER set than addRequiredExpression/addAction — Variable, Custom Attribute, and enum/numeric device-state only; Mode-via-picker, Between two times, and compareToDevice are NOT supported here (use addRequiredExpression for those). Wire-format details: guide:true.
   - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.). Use `@N` token to substitute the auto-assigned trigger/condition index — e.g. {'xVar@N': 'myVar'} writes `xVar1` when the trigger lands at index 1.
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
 
-PARTIAL-SUCCESS HANDLING: `success: true` means the API call completed and at least one setting was written to the rule (the trigger skeleton exists). `success: false` means a hard failure -- API errored or nothing was written at all. `partial: true` is ORTHOGONAL to success and means some caller-requested fields didn't land OR the row carries a *BROKEN* marker. A `success: true, partial: true` result is the normal partial-success state -- the trigger row exists, but needs repair. The result includes `repairHints` with concrete next steps. Common repair: pass missing capability-specific fields via rawSettings={fieldName: value, ...} and re-add the trigger, OR use hub_update_native_app(walkStep={page:'selectTriggers', operation:'introspect'}) to see what fields are live and write them one at a time. Don't treat `partial: true` as failure -- exhaust tool-only repair before declaring failure.[[FLAT_TRIM]] Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The trigger row IS in the rule's appSettings but the running rule instance never subscribed to its device events -- retry via `hub_update_native_app(button='updateRule', confirm=true)`. (`subscriptionsNotLive` rather than `expressionNotLive` because the failure consequence is device-event subscription, not gate-evaluator re-pick-up -- see addAction PARTIAL-SUCCESS HANDLING for the full naming rationale.)[[/FLAT_TRIM]]"""
+PARTIAL-SUCCESS HANDLING: success:true = the call completed and the trigger skeleton was written; partial:true (orthogonal) = some fields didn't land or the row carries a *BROKEN* marker — the trigger exists but needs repair via repairHints. Common repair: pass missing fields via rawSettings and re-add, or walkStep introspect on selectTriggers to see the live fields. Don't treat partial as failure — exhaust tool-only repair first. On a rejected trailing updateRule the trigger is written but not subscribed (subscriptionsNotLive:true) — retry hub_update_native_app(button='updateRule', confirm=true). Full slot reference: guide:true."""
                     ],
                     addTriggers: [
                         type: "array",
-                        description: "Bulk-add multiple triggers in one tool call. Each item is the same shape as addTrigger. updateRule fires ONCE at the end (not after each trigger), so subscriptions populate from a fully-loaded rule. Pairs naturally with addActions for building a complete rule in a single call. Empty/omitted falls back to the single addTrigger path.[[FLAT_TRIM]] Trailing-updateRule failure: if the post-bulk `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed to its device events -- retry via `hub_update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]",
+                        description: "Bulk-add multiple triggers in one tool call. Each item is the same shape as addTrigger. updateRule fires ONCE at the end (not after each trigger), so subscriptions populate from a fully-loaded rule. Pairs naturally with addActions for building a complete rule in a single call. Empty/omitted falls back to the single addTrigger path. On a rejected post-bulk updateRule the adds are committed but not subscribed (subscriptionsNotLive:true) — retry hub_update_native_app(button='updateRule', confirm=true); full slot reference: guide:true.",
                         items: [type: "object"]
                     ],
                     addRequiredExpression: [
@@ -4531,69 +4456,25 @@ RM 5.1 spec: AND/OR/XOR have equal precedence, evaluated left-to-right.
 Use `operators` (list) for mixed-operator expressions like 'P1 AND P2 OR P3 XOR P4'.
 
 Per-condition spec fields:
-  - capability — required. Call `hub_get_tool_guide(section='update_native_app_reference')` for the full STPage capability list.[[FLAT_TRIM]] RM's STPage capability list: 'Switch', 'Motion', 'Contact', 'Lock', 'Presence', 'Smoke detector', 'Water sensor', 'Tamper alert', 'Acceleration', 'Carbon monoxide detector', 'Carbon dioxide sensor', 'Power source', 'Mode', 'Private Boolean', 'Custom Attribute', 'Battery', 'Dimmer', 'Energy meter', 'Fan Speed', 'Humidity', 'Illuminance', 'Power meter', 'Temperature', 'Thermostat cool setpoint', 'Thermostat fan mode', 'Thermostat heat setpoint', 'Thermostat mode', 'Thermostat state', 'Window Shade', 'Days of week', 'Between two dates', 'Between two times', 'On a Day', 'Last Event Device', 'Lock codes'.[[/FLAT_TRIM]]
-  - deviceIds — required for capability.* device types (Switch / Motion / Contact / Lock / Temperature / etc.). Omit for non-device capabilities (Mode, Private Boolean, Last Event Device, time-based).[[FLAT_TRIM]] Convenience: pass singular deviceId: N and the dispatcher normalizes to deviceIds: [N] because RM 5.1 expects the array form in rDev_<N> -- passing a bare integer bypasses the pre-validation device-exist check and silently stores {N: null} in the setting (rule renders but never fires). If both deviceId and deviceIds are provided, deviceIds (array form) takes precedence. This normalization also applies recursively inside nested subExpression.conditions[] of arbitrary depth.[[/FLAT_TRIM]]
-  - state — enum value matching the capability ('on'/'off' for Switch, 'active'/'inactive' for Motion, 'open'/'closed' for Contact, 'locked'/'unlocked' for Lock, 'present'/'not present' for Presence, 'true'/'false' for Private Boolean, etc.). Omit for numeric capabilities.
-  - comparator — for numeric capabilities ('=', '<', '>', '<=', '>=', '!='). REQUIRED when capability='Custom Attribute' and attribute is set (both must be provided together; omitting comparator causes the condition to render incomplete in RM 5.1 and will throw an error).[[FLAT_TRIM]] ASCII forms '!=' / '<>' / '==' are accepted and auto-mapped to RM's Unicode glyphs '≠' / '='. ALSO required together with `variable` and `value` when capability='Variable'; state-change comparators ('*changed*' / '*became*') are the only exemption from the RHS-value requirement on Variable conditions.[[/FLAT_TRIM]]
+  - capability — required (full STPage capability list: guide:true).
+  - deviceIds — required for device capabilities (Switch / Motion / Contact / Lock / Temperature / etc.); omit for non-device capabilities (Mode, Private Boolean, Last Event Device, time-based).
+  - state — enum value matching the capability ('on'/'off' Switch, 'active'/'inactive' Motion, 'open'/'closed' Contact, 'locked'/'unlocked' Lock, etc.); omit for numeric.
+  - comparator — numeric capabilities ('=', '<', '>', '<=', '>=', '!='); REQUIRED together with attribute for Custom Attribute, and with variable+value for Variable (ASCII !=/<>/== auto-map to RM glyphs).
   - value — numeric threshold paired with comparator.
-  - attribute — for capability='Custom Attribute', the attribute name (e.g., 'humidity', 'energy', any attribute exposed by the device). REQUIRED when using Custom Attribute; must be paired with comparator. Example: {capability:'Custom Attribute', deviceIds:[N], attribute:'water', comparator:'=', state:'empty'}.
-  - not — boolean (default false). Set true to invert this condition.
-  - rawSettings — escape hatch dict {fieldName: value} for fields not yet mapped above.
+  - attribute — Custom Attribute name (e.g. 'humidity'); REQUIRED and paired with comparator. Example: {capability:'Custom Attribute', deviceIds:[N], attribute:'water', comparator:'=', state:'empty'}.
+  - not — boolean (default false), inverts the condition.
+  - rawSettings — escape hatch {fieldName: value} for fields not yet mapped.
 
-Extended per-capability spec shapes:
-
-Mode: {capability:'Mode', state:'Night'} or {capability:'Mode', modeIds:['3']}
-  The walker resolves mode names to IDs via location.modes and writes the firmware-assigned
-  modes<N> picker (e.g. modes1) discovered from the live schema (not hardcoded).
-  Note: triggers use modesX<N>; STPage/doActPage conditions use modes<N> (no X prefix).
-
-Between two times: {capability:'Between two times',
-  start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>},
-  end:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}}
-  time is required when type='clock' (walker converts HH:mm to ISO datetime with hub-local TZ offset internally);
-  offset is required when type='sunrise' or 'sunset'.
-  User-supplied HH:mm is interpreted as hub-local wall-clock time; the walker constructs ISO datetime with the
-  anchor-date timezone offset internally so DST shifts between now and the January anchor do not affect rendering.
-  Firmware fields: starting<N> (type enum), startingA<N> (clock time), ending<N>, endingA<N>/endSunriseOffset<N>.[[FLAT_TRIM]]
-  Precondition: hub timezone must be configured (Settings > Location and Modes). If location.timeZone is null, the walker throws before touching the wizard -- set hub timezone first.[[/FLAT_TRIM]]
-
-Variable comparison: {capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}
-  (constant RHS), OR {capability:'Variable', variable:'<hubVarName>', comparator:'=',
-  compareToVariable:'<otherHubVarName>'} (variable-vs-variable RHS). For value-comparison
-  comparators supply exactly one of value/compareToVariable -- they are mutually exclusive
-  (passing both is rejected); omit the RHS entirely for state-change comparators
-  (*changed*/*became*).
-  Writes the firmware-assigned variable-name picker discovered from the live schema.
-  For the variable RHS the walker toggles isVar_<N>=true and discovers the right-hand
-  picker from the live schema (does NOT hardcode xVarR_<N> -- discovers whatever the page
-  reveals; the walker pages can use a differently-suffixed field than selectTriggers).
-  Fail-loud if the variable name is not in the revealed enum; an empty RHS option list
-  degrades with a compareToVariable-validation / api_unavailable sentinel (partial=true).
-
-Device-relative comparison: {capability:'Temperature', deviceIds:[N], comparator:'>',
-  compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}
-  Compares a device's attribute to another device's attribute (with optional numeric offset)
-  rather than a literal threshold. The RHS-type selector is discovered from the live schema.[[FLAT_TRIM]]
-  (Firmware-variant field names the walker discovers between: rDev2_<N>/refDev_<N>/compareDevId_<N> for reference-device, rCustomAttr2_<N>/refAttr_<N>/compareAttr_<N> for reference-attribute, offset_<N>/devOffset_<N> for optional offset; the walker fails loud if reference-device or reference-attribute is absent post-rhsType, and degrades with `offset_field_not_revealed` sentinel if offset is absent.)[[/FLAT_TRIM]]
-
-Sub-expressions (parens) -- for nested expressions like "P1 AND (P2 OR P3)", a condition entry can also be:
-  {subExpression: {conditions: [<inner conds>], operator?: 'AND'|'OR'|'XOR', operators?: [...]}}
-The walker recursively handles nested sub-expressions of arbitrary depth.
+Extended per-capability spec shapes — Mode, Between two times, Variable comparison (incl. compareToVariable for a variable-vs-variable RHS), device-relative compareToDevice, and nested subExpression (parens, arbitrary depth) — and the full STPage capability list: pass guide:true or hub_get_tool_guide(section='update_native_app_reference').
 
 The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately. The cond counter is shared at the Rule Machine parent app's atomicState level (the parent app's id varies per hub) — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
 
-PARTIAL-SUCCESS HANDLING: If `partial: true` in the result, some condition fields didn't land. settingsSkipped entries are plain field names or {key, reason, condIdx} Maps for degraded writes; repairHints names the next step. Common repair: pass missing fields via rawSettings on the affected condition.[[FLAT_TRIM]] Sentinel reasons callers may see in settingsSkipped: `rhs_type_not_revealed` (compareToDevice RHS-type toggle absent on firmware; entry also carries fallbackApplied: true if a literal state_<N> fallback was written, or false if neither state nor value was available and the condition will be incomplete), `offset_field_not_revealed` (compareToDevice optional offset field absent; degrades partial:true with the offset value preserved on the entry), `api_unavailable` paired with `key: "variable-validation"` (Variable picker returned an empty option list so the schema-side name validation was skipped; write still proceeds), `reveal_fallback_to_existing_field` (walker matched an already-visible field instead of a newly-revealed one -- INFORMATIONAL, does NOT flip partial by itself).[[/FLAT_TRIM]]
-
-On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call hub_update_native_app(button='cancelCapab', pageName='STPage', confirm=true) before retry; restoreHint has the exact command.[[FLAT_TRIM]]
-
-Trailing updateRule failure: if the post-commit `updateRule` click is rejected the response carries `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The condition slots are written (the rule's STPage state is committed) but the rule's evaluator will not re-pick-up the gate until updateRule fires. Retry via `hub_update_native_app(button='updateRule', confirm=true)`. (`expressionNotLive` rather than `subscriptionsNotLive` because the failure consequence is gate-evaluator re-pick-up, not device-event subscription -- see addAction PARTIAL-SUCCESS HANDLING for the full naming rationale.)[[/FLAT_TRIM]]
-
-Note: some sensor capabilities report discrete events -- use capability-specific state names ('wet'/'dry' for Water, 'detected'/'clear' for Smoke/CO, 'active'/'inactive' for Acceleration, 'detected'/'clear' for Tamper).[[FLAT_TRIM]] Carbon dioxide sensor is intentionally EXCLUDED: the `CarbonDioxideMeasurement` capability is numeric ppm (use comparator + value), not a discrete enum; CO2 looks superficially symmetric to CO but RM 5.1 rejects the state-based shape.[[/FLAT_TRIM]] Full table in TOOL_GUIDE.md."""
+PARTIAL-SUCCESS HANDLING: partial:true means some condition fields didn't land (settingsSkipped names them); repairHints names the next step — pass missing fields via rawSettings on the affected condition. On a rejected trailing updateRule the expression is committed but not live (expressionNotLive:true) — retry hub_update_native_app(button='updateRule', confirm=true). If wizardStuck:true the wizard couldn't auto-cancel — call hub_update_native_app(button='cancelCapab', pageName='STPage', confirm=true) first (restoreHint has the exact command). Discrete-event sensor state names (wet/dry, detected/clear, etc.) and the full settingsSkipped-sentinel reference: guide:true."""
                     ],
 
                     addActions: [
                         type: "array",
-                        description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so subscriptions populate from a fully-loaded rule (actions self-bake via doActPage->selectActions per-item). Pairs naturally with addTriggers -- pass both to add many triggers + many actions in a single tool call.[[FLAT_TRIM]] Trailing-updateRule failure: if the post-bulk `updateRule` click is rejected the response carries `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError`; `success` flips false and `partial` flips true; `repairHints` includes the retry path. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed to its device events -- retry via `hub_update_native_app(button='updateRule', confirm=true)`.[[/FLAT_TRIM]]",
+                        description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so subscriptions populate from a fully-loaded rule (actions self-bake via doActPage->selectActions per-item). Pairs naturally with addTriggers -- pass both to add many triggers + many actions in a single tool call. On a rejected post-bulk updateRule the adds are committed but not subscribed (subscriptionsNotLive:true) — retry hub_update_native_app(button='updateRule', confirm=true); full slot reference: guide:true.",
                         items: [type: "object"]
                     ],
                     addLocalVariable: [
@@ -4616,11 +4497,11 @@ Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/s
                     ],
                     clearActions: [
                         type: "boolean",
-                        description: "Pass true to delete every action on the rule (highest index first). Useful for the 'wipe and rebuild' pattern. The delete commits synchronously (a full selectActions page-form submit runs RM's trashActs handler in-band), so the actions are gone when the call returns. updateRule fires after the clear.[[FLAT_TRIM]] Defensive recovery (rare): a thin verify-retry follows the submit. If it still sees the actions present (stuck state.editAct, or an uncommon firmware commit lag) the response carries `asyncCommitLikely: true, partial: true, stage: 'clearActions.verify_absent', httpWriteStatus: 200, wizardStuck: false` plus `actionsRequestedForRemoval` / `actionsStillPresent` / `possibleStateEditAct` and a `safeRecovery` block `{recommended: 'verify-then-decide', verifyVia: 'hub_get_app_config(appId: <id>)', ifActionsAbsent, ifActionsPresent, avoid: ['cancelTrash']}`. Recovery: call `hub_get_app_config(appId)` to check whether the clear committed. Do NOT call `cancelTrash` -- in trash-confirmation mode it may commit pending deletes rather than abort.[[/FLAT_TRIM]]"
+                        description: "Pass true to delete every action on the rule (highest index first). Useful for the 'wipe and rebuild' pattern. The delete commits synchronously (a full selectActions page-form submit runs RM's trashActs handler in-band), so the actions are gone when the call returns. updateRule fires after the clear. Defensive recovery (rare): if the response carries asyncCommitLikely:true the clear may have committed late — verify via hub_get_app_config(appId) and do NOT call cancelTrash (it can commit pending deletes); full protocol: guide:true."
                     ],
                     replaceActions: [
                         type: "array",
-                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions (synchronous trashActs submit), then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Useful for updating existing actions or reordering by passing actions in the new order. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true).[[FLAT_TRIM]] Defensive recovery (rare): if the inner clearActions verify-retry still sees the actions present after its submit, the response carries `asyncCommitLikely: true, partial: true, stage: 'replaceActions.clear_committed_late_no_add'` and the add half is NOT attempted (prevents double-write if the clear did commit). Original specs are echoed as `pendingActionsToAdd`; the inner clearActions fingerprint is exposed via `clearActionsResult`, a subset `{stage, asyncCommitLikely, actionsRequestedForRemoval, actionsStillPresent, error}` (the outer envelope carries the `safeRecovery` / `backup` / `restoreHint` / `verifyHint` slots). `verifyHint` and `error` are overridden with copy that names the data-loss-protection rationale. Recovery: call `hub_get_app_config(appId)`; if actions are absent the clear committed, call `addAction` (or bulk `addActions`) with the echoed specs to finish the replace. Do NOT call `cancelTrash`.[[/FLAT_TRIM]]",
+                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions (synchronous trashActs submit), then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Useful for updating existing actions or reordering by passing actions in the new order. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true). Defensive recovery (rare): if the response carries asyncCommitLikely:true the inner clear may have committed late and the add half is skipped (original specs echoed as pendingActionsToAdd) — verify via hub_get_app_config(appId), re-add the echoed specs if the clear committed, and do NOT call cancelTrash; full protocol: guide:true.",
                         items: [type: "object"]
                     ],
                     moveAction: [
@@ -4657,13 +4538,7 @@ Operations:
   - navigate: forward into a sub-page via its href
   - done: BACK-NAVIGATE from a sub-page to its parent via _action_previous=Done. Carries ALL the sub-page's current settings in the form. REQUIRED for sub-pages (Periodic Schedule, etc.) whose parent's row description otherwise renders as "?". Pass hrefContext={fromPage: <parent>, hrefParams: {n: <idx>}} so RM routes correctly.
 
-Recommended driving loop for an LLM:
-  1. operation:"introspect" to see what fields the page exposes
-  2. operation:"navigate" to enter a sub-page if one is exposed
-  3. operation:"write" each required field (with hrefContext on sub-pages)
-  4. Inspect diff.appeared / valueEcho.match / silentRejection between writes
-  5. operation:"done" to back out of a sub-page (this is what bakes the trigger/action description)
-  6. operation:"click" hasAll/actionDone on the parent to finalize the row
+Recommended driving loop (introspect to see fields -> navigate into a sub-page if exposed -> write each required field -> inspect diff.appeared/valueEcho.match/silentRejection -> done to bake the row -> click hasAll/actionDone to finalize): full walkthrough via guide:true or hub_get_tool_guide(section='update_native_app_reference').
 
 Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the response — these are the fail-loud signals."""
                     ],
@@ -4671,160 +4546,21 @@ Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the respon
                         type: "object",
                         description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: docs/rm_action_subtype_schemas.md (or pass `addAction: {discover: true}` for the live structured schema -- returns immediately, no hub mutation). Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. No trailing updateRule call is needed from the caller: doActPage->selectActions navigation self-bakes the action into the rule's actions[] map.
 
-[[FLAT_TRIM]]
-Capability families and the spec fields each accepts:
-
-  - Switch (capability='switch'):
-      action='on'/'off'/'toggle'/'flash' + deviceIds
-      action='setPerMode' + deviceIds + perMode={modeIdOrName: 'on'|'off', ...}
-      action='choosePerMode' + perMode={modeIdOrName: {on: [devIds], off: [devIds]}, ...}
-      NOTE: action='flash' starts a flash schedule on devices that
-      support .flash() (Hue groups, many Z-Wave/Zigbee dimmer modules).
-      RM 5.1 has NO native "stop flash" action subtype — calling
-      switch.on/.off afterward does NOT cancel the flash schedule. To
-      stop a running flash from within a rule, use capability='runCommand'
-      (documented below) with command='flashOff' on the same device list.
-
-  - Dimmer (capability='dimmer'):
-      action='setLevel'   + deviceIds + level (0-100) [required] + optional fadeSeconds
-      action='toggle'     + deviceIds + level (0-100) [required — the level to set when toggling from off to on] + optional fadeSeconds
-      action='adjust'     + deviceIds + adjustBy (-100..100) [required] + optional fadeSeconds
-      action='fade'       + deviceIds + targetLevel [required] + minutes [required] + direction='raise'|'lower' + optional intervalSeconds
-      action='stopFade'   (no fields)
-      action='startRaiseLower' + deviceIds + direction='raise'|'lower'
-      action='stopChanging'    + deviceIds
-      action='setLevelPerMode' + deviceIds + perMode={modeIdOrName: level, ...} + optional fadeSeconds
-
-  - Color (capability='color', RGBW bulbs):
-      action='setColor'    + deviceIds + colorName + optional level
-      action='toggleColor' + deviceIds + colorName + optional level
-      action='setColorPerMode' + deviceIds + perMode={modeIdOrName: {color: 'Red', level: 70}, ...}
-
-  - Color Temperature (capability='colorTemp'):
-      action='setColorTemp'    + deviceIds + kelvin + optional level
-      action='toggleColorTemp' + deviceIds + kelvin + optional level
-      action='fadeColorTemp'   + deviceIds + targetKelvin + minutes + direction
-      action='stopColorTempFade'
-      action='setColorTempPerMode' + deviceIds + perMode={modeIdOrName: {kelvin: 2700, level: 70}, ...}
-
-  - Button (capability='button', capability.pushableButton devices):
-      action='push'           + deviceIds + buttonNumber
-      action='pushPerMode'    + deviceIds + perMode={modeIdOrName: buttonNumber, ...}
-      action='choosePerMode'  + buttonNumber + perMode={modeIdOrName: [deviceIds], ...}
-
-  - Run Custom Action (capability='runCommand'):
-      command + deviceIds + capabilityFilter (default 'Switch') + optional useLastEventDevice
-      parameters: literal value    -> [{type:'number', value:75}, ...]
-                  hub variable ref -> [{type:'number', variable:'myHubVar'}, ...]  (RM wire: uVar<P>.N=true, xVar<P>.N=varName; P is RM-assigned per moreParams click)
-      Calls any device-driver command (off/on/setLevel/flashOff/refresh/etc.) on the device list. Use this to call commands not exposed by the higher-level capability mappings (e.g. flashOff to stop a flash, custom-driver verbs).
-
-  - File IO (capability='fileWrite' / 'fileAppend' / 'fileDelete'):
-      fileWrite   + fileName + content (overwrites)
-      fileAppend  + fileName + content (file must already exist; localFile is an enum picker)
-      fileDelete  + fileName
-
-  - Z-Wave Polling (capability='zwavePoll'):
-      action='start'/'stop' + deviceIds (Z-Wave switches/dimmers only) + target='switches'|'dimmers'
-
-  - Lock (capability='lock'):
-      action='lock'/'unlock' + deviceIds
-
-  - Thermostat (capability='thermostat'):
-      action= (any) + deviceIds + optional mode/fanMode/heatingSetpoint/
-        coolingSetpoint/adjustHeating/adjustCooling
-
-  - Shade/blind (capability='shade'):
-      action='open'/'close'/'stop' + deviceIds
-      action='setPosition' + deviceIds + position (0-100)
-
-  - Fan (capability='fan'):
-      action='setSpeed' + deviceIds + speed (low/med/high/auto/etc.)
-      action='cycle'    + deviceIds
-
-  - Mode (capability='mode'):
-      action='setMode' + modeId (Integer) OR modeName (String, case-insensitive, resolved to ID)
-      Note: modeName is resolved to a numeric mode ID before submission -- unknown names fail fast with the valid mode list. Degenerate: if location.modes is empty, error reads "(none -- hub returned no modes; verify hub state via hub_list_modes)".
-      Note: addAction uses 'modeName' for name-based resolution; addTrigger uses a generic 'state' field for the mode name instead, because triggers represent a superset of device-state events where a single field covers mode, switch, presence, and similar state values.
-
-  - Hub Variable (capability='setVariable', also accepted as 'variable'):
-      variable=<hubVarName> + value=<numericConstant>  (Set variable to a numeric constant; string/boolean/datetime targets not supported via 'value' -- use sourceVariable or rawSettings)
-      variable=<hubVarName> + sourceVariable=<varName> (Copy from another variable)
-
-  - Logging / Messaging:
-      capability='log' + message
-      capability='notification' + deviceIds + message
-      capability='httpGet'  + url
-      capability='httpPost' + url + body + optional contentType
-      capability='ping'     + ip
-
-  - Music/Sound (capability='volume'/'mute'/'chime'/'siren'):
-      capability='volume' + deviceIds + level
-      capability='mute'   + action='mute'/'unmute' + deviceIds
-      capability='chime'  + deviceIds + optional playStop/soundNumber
-      capability='siren'  + deviceIds + optional sirenAction
-
-  - Rules (capability='privateBoolean'/'runRule'/'cancelTimers'/'pauseRule'):
-      capability='privateBoolean' + ruleIds + value (Boolean)
-      capability='runRule'        + ruleIds   (run actions of named rules)
-      capability='cancelTimers'   + ruleIds   (cancel timed actions)
-      capability='pauseRule' + action='pause'/'resume' + ruleIds
-
-  - Device control:
-      capability='capture'        + deviceIds (capture state)
-      capability='restore'                      (restore captured state)
-      capability='refresh'        + deviceIds
-      capability='poll'           + deviceIds
-      capability='disableDevice'  + action='disable'/'enable' + deviceIds
-
-  - Flow control (delay/wait/repeat/exit/comment/conditional):
-      capability='delay'         + hours/minutes/seconds + optional cancelable/random   OR  variable=<varName> (variable-sourced seconds)
-      capability='delayPerMode'  + perMode={modeIdOrName: {hours, minutes, seconds}, ...}
-      capability='cancelDelay'   (no fields)
-      capability='exitRule'      (no fields)
-      capability='comment'       + text
-      capability='repeat'        + hours/minutes/seconds + optional times + stoppable
-      capability='stopRepeat'    (no fields)
-      capability='repeatWhile'   + expression={conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]} + optional hours/minutes/seconds/times/stoppable
-      capability='waitExpression'+ expression={conditions:[...], operator?:..., operators?:[...]} + optional delay={hours,minutes,seconds} + useDuration=true|false
-      capability='waitEvents'    + events=[{capability, deviceIds, state, andStays?}, ...]   (LIMIT: only ONE waitEvents action per rule; RM 5.1 stores wait events in global per-rule settings, NOT per-action — adding a second waitEvents action would silently overwrite the first. Combine multiple waits into one action's events array, or split into chained sub-rules.)
-      capability='ifThen'        + expression={conditions:[...], operator?:..., operators?:[...]}    (opens IF block; close with 'endIf')
-      capability='elseIf'        + expression={...}                                                  (continues IF block; needs preceding 'ifThen')
-      capability='else'          (no fields; needs preceding 'ifThen' or 'elseIf')
-      capability='endIf'         (no fields; closes the IF block)
-[[/FLAT_TRIM]]
+Capability families (NAMES here; full per-field specs via addAction:{discover:true} or hub_get_tool_guide(section='update_native_app_reference')): switch (on/off/toggle/flash, setPerMode/choosePerMode); dimmer (setLevel/toggle/adjust/fade/stopFade/startRaiseLower/stopChanging/setLevelPerMode); color; colorTemp; button (push/pushPerMode/choosePerMode); runCommand (any driver command + deviceIds + parameters, literal or hub-variable-sourced); lock; thermostat; shade; fan; mode (setMode + modeName or modeId); setVariable (variable + value or sourceVariable); log / notification / httpGet / httpPost / ping; volume / mute / chime / siren; privateBoolean / runRule / cancelTimers / pauseRule (+ ruleIds); capture / restore / refresh / poll / disableDevice; fileWrite / fileAppend / fileDelete; zwavePoll; flow control (delay [hours/minutes/seconds or a variable-sourced seconds] / delayPerMode / cancelDelay / repeat / stopRepeat / repeatWhile / waitExpression / waitEvents / ifThen / elseIf / else / endIf / exitRule / comment). Most take deviceIds + action + fields; the expression-based ones (ifThen / elseIf / repeatWhile / waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents action per rule (RM stores wait events globally, not per-action).
 
   Per-condition shape inside any expression:
     {capability: <RM-condition-cap>, deviceIds?: [<id>], state?: <enum-value>, comparator?: <op>, value?: <num>, attribute?: <name>, not?: true, rawSettings?: {...}}[[FLAT_TRIM]]
     Convenience: pass singular deviceId: N instead of deviceIds: [N] -- the dispatcher normalizes because RM 5.1 expects the array form in rDev_<N> (bare integer bypasses pre-validation and silently stores {N: null}, rule renders but never fires). If both are provided, deviceIds wins.[[/FLAT_TRIM]]
     [[FLAT_TRIM]]Nested subExpression: NOT supported on addAction -- rejected with a targeted error. Use addRequiredExpression for nested expressions, or flatten. The doActPage walker rejects nested subExpression with the message "nested subExpression on this row is not yet supported"; the addAction pre-pass also rejects to surface a clear error before any wizard write. addRequiredExpression supports nesting of arbitrary depth today.[[/FLAT_TRIM]]
-    Extended per-capability shapes (Mode modeIds, Between two times, Variable, Custom Attribute, compareToDevice) and discrete-event sensor state names: see addRequiredExpression's "Extended per-capability spec shapes" above -- the shared walker _rmWalkConditionReveal handles all per-capability reveal sequences here; result envelopes differ (see PARTIAL-SUCCESS HANDLING for each tool's specific response shape). Full discrete-event state-value table in TOOL_GUIDE.md.
+    Extended per-capability shapes (Mode, Between two times, Variable, Custom Attribute, compareToDevice) and discrete-event sensor state names: pass guide:true or hub_get_tool_guide(section='update_native_app_reference') -- the shared walker _rmWalkConditionReveal handles all per-capability reveal sequences here; result envelopes differ per tool (see PARTIAL-SUCCESS HANDLING below).
 
-Variable-sourced values (works on dimmer.setLevel, delay):
-  - dimmer.setLevel: pass `levelVariable: '<hubVarName>'` instead of `level`
-  - delay:           pass `variable: '<hubVarName>'` instead of hours/minutes/seconds
-  Both write the wizard's uVar=true + xVar=<varName> pair so the value is
-  resolved at fire time from a hub variable.
+Optional on any spec: delay {hours, minutes, seconds, cancelable}; rawSettings {fieldName: value, ...} escape hatch — use the '@N' token for the auto-assigned action index (e.g. {'flashRate.@N': 750}). Action index is auto-assigned. Variable-sourced values (dimmer setLevel levelVariable, delay variable), the HSM/Garage/Valve "not yet mapped" rawSettings workarounds, and the doActPage wire-format quirks the helper handles are in the guide (guide:true).
 
-NOT yet mapped (use rawSettings escape hatch with @N placeholder):
-  - HSM Arm/Disarm/Cancel All Alerts (separate actSubType not in lockActs dropdown — only appears when HSM is installed and may need a different actType)
-  - Garage door open/close (different lockActs subtype, only visible with garage device)
-  - Valve open/close (similar)
-
-Optional fields on every spec:
-  - delay { hours, minutes, seconds, cancelable } — sets delayAct.<N>='hrs:min:sec' plus duration sub-fields
-  - rawSettings { fieldName: value, ... } — escape hatch for advanced fields not yet mapped. Use the literal token '@N' anywhere in a field name to substitute the auto-assigned action index (e.g. {'flashRate.@N': 750}).
-
-Action index is auto-assigned (next available). One addAction call replaces the 6-7 calls of the manual doActPage flow.
-
-Wire-format quirks the helper handles for you (so callers don't need to know):
-  1. The 'Create New Action' button (name=N) requires stateAttribute='doActN' (concatenated), not 'doAct'. The Hubitat UI's buttonClick() handler concatenates data-stateAttribute='doAct' + button name 'N' → doActN before POSTing; sending stateAttribute='doAct' alone leaves state.doActN null and doActPage NPEs.
-  2. doActPage's schema is incremental: actionDone only appears AFTER all required type-specific fields are set. The helper re-fetches the schema before each write.
-  3. selectActions' page hook initializes state.actNdx. On a freshly created rule with zero actions, state.actNdx is null and doActPage renders with actType.null (broken). The helper fires an idempotent empty POST to selectActions FIRST.
-
-PARTIAL-SUCCESS HANDLING: `partial: true` is ORTHOGONAL to success -- the action row exists but needs repair. repairHints names next steps. Common repair: walkStep introspect on doActPage to see the LIVE schema (settingsSkipped[].available shows present fields), then write missing fields via settings=... . For unrecoverable rows (hubRenderError=true), use removeAction(index:N) then retry.[[FLAT_TRIM]] When a compareToDevice RHS-type toggle is absent in an expression condition, settingsSkipped entries carry fallbackApplied: true/false (true = literal state_<N> was written as fallback; false = no fallback available, condition is incomplete). For expression-action conditions (ifThen/elseIf/repeatWhile/waitExpression), settingsSkipped sentinel reasons are the same set the shared `_rmWalkConditionReveal` walker emits on the addRequiredExpression side -- see addRequiredExpression PARTIAL-SUCCESS HANDLING above for the full enumeration (`rhs_type_not_revealed`, `offset_field_not_revealed`, `api_unavailable` paired with `variable-validation`, `reveal_fallback_to_existing_field`). Naming-divergence rationale (one slot per dispatcher, picked to name the caller-visible consequence): `expressionNotLive` (addRequiredExpression -- gate evaluator does not re-pick-up the new expression), `subscriptionsNotLive` (addTrigger / bulk addTriggers+addActions / action-mutation / trigger-mutation -- rule does not re-subscribe to device events), `variableNotLive` (addLocalVariable -- variable created but rule action map cannot read it), `patchesNotLive` (patches -- catch-all because patches can bundle any mix). All four share `updateRuleFailed` and `updateRuleError` for the common facts.[[/FLAT_TRIM]]
+PARTIAL-SUCCESS HANDLING: partial:true is orthogonal to success — the action row exists but needs repair; repairHints names next steps. Common repair: walkStep introspect on doActPage to see the live schema, then write the missing fields; for unrecoverable rows (hubRenderError=true) use removeAction(index:N) then retry. Full settingsSkipped-sentinel + not-live slot reference: guide:true.
 
 On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call hub_update_native_app(button='cancelCapab', pageName='doActPage', confirm=true) before retry; restoreHint has the exact command."""
                     ],
+                    guide: [type: "boolean", description: "Set true to return the full hub_update_native_app capability reference (trigger/action/expression families, extended condition shapes, the raw settings/button wizard flow, and walkStep) inline — same content as hub_get_tool_guide(section='update_native_app_reference'), without a separate tool call. Makes NO change to any rule."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["appId", "confirm"]
@@ -5056,7 +4792,7 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
         // Tool Guide
         [
             name: "hub_get_tool_guide",
-            description: "Get detailed reference for MCP tools. USE SPARINGLY - tool descriptions should suffice for most cases. When needed, ALWAYS specify a section to minimize token usage.",
+            description: "Get the deep-reference guide for an MCP tool topic (exhaustive capability tables, wire formats, worked examples) when a tool's own description and parameter descriptions are not enough. Supplement only - those descriptions are self-sufficient for normal use, so reach for this just for the named sections. Always pass a section to minimize tokens; omit it only to discover the available section keys.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -24160,6 +23896,12 @@ def toolUpdateNativeApp(args) {
     if (args?.addAction instanceof Map && args.addAction.discover == true) {
         return _rmAddAction(0, args.addAction as Map)
     }
+    // Guide short-circuit: {guide: true} returns the update_native_app capability
+    // reference inline (same content as hub_get_tool_guide), with no hub interaction
+    // and no rule change -- bypasses ALL gates exactly like discover mode above.
+    if (args?.guide == true) {
+        return toolGetToolGuide('update_native_app_reference')
+    }
     requireBuiltinApp()
     requireHubAdminWrite(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
@@ -26882,7 +26624,7 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
         update_native_app_reference: '''## `hub_update_native_app` capability reference
 
-Reference for the three `hub_update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`). The schema descriptions point here so flat-mode `tools/list` can stay under the 124 KB cap (issue #181); gateway-mode catalog responses still carry the full enumerations inline. For machine-readable schemas, pass `{discover: true}` on `addTrigger` or `addAction` — both return live structured Maps from the running code.
+Reference for the `hub_update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`), the lower-level `walkStep` walker, and the raw `settings`/`button` wizard flow. The tool's schema descriptions point here so BOTH the flat and gateway `tools/list` catalogs stay lean (issue #181) without losing this reference. Get this whole section back inline at call time with `hub_update_native_app(guide: true)` (no separate tool call), or pass `{discover: true}` on `addTrigger`/`addAction` for the live machine-readable schema.
 
 ### `addTrigger` capability families
 
@@ -27001,6 +26743,44 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 
 `addTrigger.condition` supports a narrower subset: Variable (incl. `compareToVariable`), Custom Attribute, and enum/numeric device-state. Mode-via-picker / Between two times / compareToDevice are NOT yet supported on `selectTriggers` -- the `_rmBuildCondition` helper is a static direct-write path, not the shared `_rmWalkConditionReveal` walker.
 
+### `addRequiredExpression` operator contract
+
+Combine multiple conditions with `operator: 'AND'|'OR'|'XOR'` (one operator applied to every gap) OR `operators: ['AND','OR', ...]` (one per gap; length = `conditions.size()-1`) for mixed expressions like `P1 AND P2 OR P3 XOR P4`. RM 5.1: AND/OR/XOR have equal precedence, evaluated left-to-right.
+
+### `addAction` variable-sourced values, not-yet-mapped capabilities, wire-format quirks
+
+- **Variable-sourced values**: `dimmer setLevel` accepts `levelVariable:'<hubVarName>'` instead of `level`; `delay` accepts `variable:'<hubVarName>'` instead of `hours`/`minutes`/`seconds`. Both write the wizard's `uVar=true` + `xVar=<varName>` pair so the value resolves at fire time from a hub variable.
+- **Not yet mapped -- use the `rawSettings` escape hatch with the `@N` index token**: HSM Arm/Disarm/Cancel-All-Alerts (separate actSubType, only present when HSM is installed and may need a different actType), Garage door open/close, Valve open/close (different lockActs subtypes, only visible with the corresponding device).
+- **Wire-format quirks the helper handles for you**: (1) the 'Create New Action' button (`name=N`) requires `stateAttribute='doActN'` concatenated, not `'doAct'` -- sending `'doAct'` alone leaves `state.doActN` null and `doActPage` NPEs. (2) `doActPage`'s schema is incremental -- `actionDone` only appears after all required type-specific fields are set; the helper re-fetches the schema before each write. (3) `selectActions` initializes `state.actNdx`; on a freshly created zero-action rule `state.actNdx` is null and `doActPage` renders `actType.null` (broken), so the helper fires an idempotent empty POST to `selectActions` first.
+
+### `walkStep` schema-aware wizard walker
+
+`walkStep` is the lowest-level escape hatch: drive one wizard page/operation at a time when the high-level `addTrigger`/`addAction` helpers don't cover the capability you need (Periodic Schedule sub-pages, conditional-trigger binding, IF/THEN/ELSE flow control, features added in a later firmware). Each call returns a structured snapshot -- schema before/after, schema diff (inputs appeared/disappeared), value-echo (catches silent enum case normalization), sub-page hrefs, action/trigger list-count change (disambiguates 'committed' from 'broke and lost the row'), and a health check.
+
+Spec: `{page, operation, write?:{<field>:<value>}, click?:{name,stateAttribute?}, navigate?:{targetPage}, validateEnum?:<bool>, hrefContext?:{fromPage,hrefName,hrefParams?,hrefIndex?}}` where `page` is e.g. `selectTriggers`/`selectActions`/`doActPage`/`mainPage`/`periodic` and `operation` is one of:
+- `introspect` -- fetch schema; no mutation.
+- `write` -- write one field's value (exactly one key per call; `hrefContext` for sub-pages).
+- `click` -- click a regular button (`cancelCapab`, `hasAll`, `moreCond`, ...).
+- `navigate` -- forward into a sub-page via its href.
+- `done` -- BACK-navigate from a sub-page to its parent (`_action_previous=Done`), carrying ALL the sub-page's current settings. REQUIRED for sub-pages (Periodic, etc.) whose parent row otherwise renders `?`. Pass `hrefContext={fromPage:<parent>, hrefParams:{n:<idx>}}`.
+
+Recommended driving loop: `introspect` to see the page's fields -> `navigate` into a sub-page if one is exposed -> `write` each required field (with `hrefContext` on sub-pages) -> inspect `diff.appeared`/`valueEcho.match`/`silentRejection` between writes -> `done` to back out of a sub-page (this bakes the trigger/action description) -> `click` `hasAll`/`actionDone` on the parent to finalize the row. Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the response -- they are the fail-loud signals.
+
+### Raw `settings`/`button` mode (manual wizard flow)
+
+Prefer the structured shortcuts above. Raw mode is the unstructured escape hatch: write page inputs via `settings` and click page-transition buttons via `button` directly.
+
+- **Auto-updateRule**: main-page `settings` writes are auto-followed by an implicit `updateRule` click so `initialize()` re-fires. Sub-page writes (`pageName=selectTriggers`/`selectActions`/...) SKIP the auto-click so the wizard's `stateAttribute` (`moreCond`, `editCond`, `editAct`, ...) survives -- commit the wizard via its own Done button (RM triggers: `hasAll`; RM actions: `actionDone`), then issue a final `hub_update_native_app(button='updateRule')` yourself to re-initialize.
+- **Wizard-Done auto-finalize**: clicking `hasAll` on `selectTriggers` commits the trigger but RM 5.1 leaves a residual `isCondTrig.<N>` ("Conditional Trigger?") prompt; the tool auto-writes `isCondTrig.<N>=false` to clear it without consuming a trigger index, reported as `wizardDoneAutoRetry: 'OK' | 'OK after finalize ...' | 'WARN: ...'`. (Earlier versions clicked `hasAll` twice, which allocated phantom **Broken Trigger** rows; the finalize-via-`isCondTrig` path keeps indices contiguous 1, 2, 3.)
+- **Worked example -- multi-device switch trigger via raw mode**:
+  1. `hub_update_native_app(appId, button='true', stateAttribute='moreCond', pageName='selectTriggers')` -- opens the trigger editor.
+  2. `hub_update_native_app(appId, settings={tCapab1:'Switch'}, pageName='selectTriggers')` -- picks the capability; page re-renders the device picker.
+  3. `hub_update_native_app(appId, settings={tDev1:[<deviceId>, ...]}, pageName='selectTriggers')` -- writes devices (multi-device 3-field contract automatic).
+  4. `hub_update_native_app(appId, settings={tstate1:'on'}, pageName='selectTriggers')` -- sets the attribute/value.
+  5. `hub_update_native_app(appId, button='hasAll', pageName='selectTriggers')` -- commits; residual Conditional? prompt auto-finalized.
+  6. `hub_update_native_app(appId, button='updateRule')` -- re-initialize so subscriptions populate.
+  The `addTrigger={...}` shortcut performs steps 1-6 automatically. A second trigger uses index 2 (`tCapab2`/`tDev2`/`tstate2`), a third index 3, etc.
+
 ### Partial-success and trailing-updateRule response slots
 
 `settingsSkipped[]` sentinel reasons callers may see:
@@ -27016,7 +26796,15 @@ Trailing-updateRule failure slots (`addRequiredExpression`, `addTrigger`, `addLo
 - `addLocalVariable`: `updateRuleFailed: true` + `variableNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The variable IS created on the hub but the rule's action map never re-evaluates against the new variable until updateRule fires -- retry as above.
 - `addTriggers` / `addActions` (bulk path): `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed -- retry as above.
 - `patches`: `updateRuleFailed: true` + `patchesNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The patch ops landed but the rule will not re-evaluate / re-subscribe until updateRule fires -- retry as above.
-- `removeTrigger` / `modifyTrigger` / `removeAction` / `clearActions` / `replaceActions` / `moveAction`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The mutation IS committed but the rule never re-subscribed -- retry as above.''',
+- `removeTrigger` / `modifyTrigger` / `removeAction` / `clearActions` / `replaceActions` / `moveAction`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The mutation IS committed but the rule never re-subscribed -- retry as above.
+
+### deviceId vs deviceIds normalization (all condition writes)
+
+Conditions accept either `deviceIds: [N]` (array) or singular `deviceId: N`; the dispatcher normalizes the singular form to the array RM 5.1 expects in `rDev_<N>`. A bare integer passed where the array is expected bypasses pre-validation and silently stores `{N: null}` (the rule renders but never fires), so prefer `deviceIds`. If both are supplied, `deviceIds` (array) wins. Applies recursively inside nested `subExpression.conditions[]`.
+
+### Action-mutation defensive recovery (clearActions / replaceActions)
+
+The action-clear path commits synchronously, but a thin verify-retry guards against a stuck `state.editAct` or a rare firmware commit lag. If the verify still sees the actions present, the response carries `asyncCommitLikely: true, partial: true` plus a `safeRecovery` block. clearActions adds `stage: 'clearActions.verify_absent', httpWriteStatus: 200, wizardStuck: false` and `actionsRequestedForRemoval` / `actionsStillPresent` / `possibleStateEditAct`. replaceActions, on a late inner-clear, sets `stage: 'replaceActions.clear_committed_late_no_add'`, does NOT attempt the add half (prevents a double-write if the clear did commit), echoes the original specs as `pendingActionsToAdd`, and exposes the inner clear fingerprint via `clearActionsResult`. Recovery for both: call `hub_get_app_config(appId)` to check whether the clear committed -- if the actions are absent it committed (for replaceActions, then call `addAction`/`addActions` with the echoed specs to finish). Do NOT call `cancelTrash`: in trash-confirmation mode it may commit pending deletes rather than abort.''',
 
         create_native_app_reference: '''## `hub_create_native_app` reference
 

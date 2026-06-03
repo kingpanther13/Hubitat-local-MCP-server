@@ -273,6 +273,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("SAFETY CHECK FAILED")
     }
 
+    def "guide:true returns the update_native_app capability reference inline and bypasses all gates"() {
+        when: "guide:true with NO confirm, NO appId, and Hub Admin Write NOT enabled"
+        def result = script.toolUpdateNativeApp([guide: true])
+
+        then: "returns the guide section content without throwing (early-return before any gate/mutation, like discover mode)"
+        result.success == true
+        result.section == "update_native_app_reference"
+        result.content instanceof String
+        // proves the real reference came back inline (these live only in the guide now)
+        result.content.contains("addTrigger")
+        result.content.contains("walkStep")
+        result.content.contains("Raw `settings`/`button` mode")
+        // no appId / confirm / backup snapshot was required -> no hub endpoints registered, no mutation occurred
+    }
+
     def "update_rm_rule requires settings, button, or addTrigger"() {
         given:
         enableHubAdminWrite()
@@ -21065,37 +21080,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         fallbackSentinel == null
     }
 
-    // ---------- tools/list inline schema description -- Tamper detected/clear vocabulary ----------
+    // ---------- discrete-event vocabulary -- Tamper detected/clear (now in the guide) ----------
 
-    def "tools/list hub_update_native_app description aligns Tamper with detected/clear vocabulary"() {
-        // The inline schema description served via tools/list pointed at 'tampered' for
-        // Tamper (the capability actually emits 'detected') and 'not detected' as a
-        // generic-wrong-form. Both shapes would have failed against the live walker's
-        // option validation; the description was misleading agents.
-        // CO2 vocabulary is intentionally NOT pinned here -- CarbonDioxideMeasurement
-        // is numeric ppm (comparator + value), not a discrete enum, and no state-string
-        // is correct for it. A separate positive spec exercises the numeric-comparator
-        // CO2 path.
+    def "hub_update_native_app reference aligns Tamper with detected/clear vocabulary (in the guide)"() {
+        // Tamper actually emits 'detected'/'clear'; the wrong forms 'tampered' / 'not detected'
+        // would fail the live walker's option validation and mislead agents. The exhaustive
+        // discrete-event vocabulary now lives in the update_native_app_reference guide (moved
+        // there to keep the inline description lean -- issue #181; reachable inline via guide:true).
+        // So: the inline description must never surface the WRONG forms, and the guide must carry
+        // the RIGHT ones. CO2 vocabulary is intentionally NOT pinned -- CarbonDioxideMeasurement
+        // is numeric ppm (comparator + value), not a discrete enum.
         when:
         def tools = script.getAllToolDefinitions()
         def updateNativeApp = tools.find { it.name == "hub_update_native_app" }
-        // The relevant text is inside the addRequiredExpression / addAction / addTrigger
-        // condition state-name note (rendered into the description). Concatenate all
-        // description-bearing fields so we catch the note wherever it lives.
         def schemaText = updateNativeApp?.inputSchema?.toString() ?: ""
         def fullText = (updateNativeApp?.description ?: "") + " " + schemaText
+        def guide = (script.toolGetToolGuide("update_native_app_reference")?.content ?: "").toString()
 
-        then: "tools/list no longer surfaces the wrong vocabulary"
-        // Load-bearing discriminators: must NOT contain 'tampered' (the wrong word for
-        // TamperAlert) and must NOT contain 'not detected' (a generic-wrong form).
-        // Production fix touched the inline description; without it agents copying the
-        // example would write a state never accepted by the walker.
+        then: "neither the inline description nor the guide surfaces the wrong vocabulary"
         !fullText.contains("'tampered'")
         !fullText.contains("'not detected'")
+        !guide.contains("'tampered'")
+        !guide.contains("'not detected'")
 
-        and: "the correct Tamper / Smoke / CO values appear in the relevant context"
-        fullText.contains("'detected'")
-        fullText.contains("'clear'")
+        and: "the correct Tamper / Smoke / CO discrete-event values are documented in the guide"
+        guide.contains("'detected'")
+        guide.contains("'clear'")
     }
 
     // ---------- Variable picker validation -- non-empty varOpts containing varName: no sentinel ----------
