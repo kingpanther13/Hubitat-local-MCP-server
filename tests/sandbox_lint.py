@@ -1928,23 +1928,32 @@ def _run_envelope_parity_self_test() -> int:
 
 
 def check_read_write_split(src_override: str | None = None) -> list[dict]:
-    """Enforce the gateway read/write-split invariant: a read-only tool MUST be
-    reachable from a hub_read_* gateway OR be a flat top-level tool. It may NEVER
-    be reachable ONLY through a hub_manage_* gateway.
+    """Enforce BOTH directions of the gateway read/write-split invariant
+    (AGENTS.md "Gateway read/write split" -- a hard CI failure):
 
-    AGENTS.md "Gateway read/write split" designates this a hard CI failure.
+      (A) No stranded read. Every tool in getReadOnlyToolNames() MUST be
+          reachable from a hub_read_* gateway OR be a flat top-level tool. It may
+          NEVER be reachable ONLY through a hub_manage_* gateway.
+          -> rule "read-write-split-stranded-read".
+      (B) No write in a read gateway. Every tool inside a hub_read_* gateway MUST
+          be in getReadOnlyToolNames() (read-only). A single write flips the
+          gateway's rolled-up readOnlyHint to write+destructive
+          (annotationsForGateway), mislabeling the whole read surface.
+          -> rule "read-write-split-write-in-read-gateway".
+
     Rationale: clients route read-only browsing through the hub_read_* gateways
-    and surface those tools under readOnlyHint=true. A read-only tool that lives
-    ONLY inside a hub_manage_* gateway is (a) invisible on the read-browse
-    surface and (b) inherits that write gateway's write+destructive annotation --
-    a read mislabeled as a write and hidden from the read path. Multi-gateway
-    membership is fine: a read MAY co-live in a hub_manage_* gateway as long as
-    it is ALSO in a hub_read_* gateway (or is flat).
+    and surface those tools under readOnlyHint=true. A read that lives ONLY inside
+    a hub_manage_* gateway is invisible on the read-browse surface AND inherits
+    the write annotation -- a read mislabeled as a write and hidden from the read
+    path. Multi-gateway membership is fine: a read MAY co-live in a hub_manage_*
+    gateway as long as it is ALSO in a hub_read_* gateway (or is flat).
 
-    The read gateways are derived by the `hub_read_` name prefix (NOT a hard-coded
-    list) so adding/removing a read gateway needs no lint edit. Ships with
-    must-catch + must-not-catch self-test fixtures (READ_WRITE_SPLIT_SELF_TEST_CASES)
-    so the guard provably fires and can never silently no-op.
+    Both directions derive the read gateways by the `hub_read_` name prefix (NOT a
+    hard-coded list), so an Nth read gateway is covered automatically -- unlike
+    McpToolAnnotationsSpec's gateway-rollup assertion, which hard-codes its read
+    gateway names. Ships with must-catch + must-not-catch self-test fixtures
+    (READ_WRITE_SPLIT_SELF_TEST_CASES) so the guard provably fires and can never
+    silently no-op.
 
     src_override lets the self-test drive this with synthetic corpora.
     """
@@ -1977,12 +1986,14 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
             "changed? The read/write-split guard cannot run until the parser is updated.",
         )
     gateway_tools: dict[str, list[str]] = {}
+    gateway_pos: dict[str, int] = {}  # absolute src offset of each gateway, for line numbers
     for m in re.finditer(
         r"^\s+([a-z_]+):\s*\[\s*description:\s*\".*?\".*?\btools:\s*\[([^\]]+)\]",
         gw_match.group(1), re.MULTILINE | re.DOTALL,
     ):
         no_comments = re.sub(r"//[^\n]*", "", m.group(2))
         gateway_tools[m.group(1)] = [t.strip().strip("\"'") for t in no_comments.split(",") if t.strip()]
+        gateway_pos[m.group(1)] = gw_match.start(1) + m.start()
     if not gateway_tools:
         return _fail(
             "read-write-split-no-gateway-config",
@@ -2050,6 +2061,34 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
             ),
             "source": "",
         })
+
+    # 6. Mirror invariant (B): a hub_read_* gateway must contain ONLY read-only
+    #    tools. Derived by prefix so an Nth read gateway is covered too (the Spock
+    #    rollup hard-codes its read-gateway names; this does not).
+    for name in sorted(gateway_tools):
+        if not name.startswith("hub_read_"):
+            continue
+        for tool in gateway_tools[name]:
+            if tool in read_only:
+                continue
+            g_abs = gateway_pos.get(name, ro_match.start())
+            idx = src.find(f'"{tool}"', g_abs)
+            line_no = (src[:idx].count("\n") + 1) if idx != -1 else (src[:g_abs].count("\n") + 1)
+            findings.append({
+                "file": rel,
+                "line": line_no,
+                "severity": "error",
+                "rule": "read-write-split-write-in-read-gateway",
+                "message": (
+                    f"Tool '{tool}' is in read gateway '{name}' but is NOT in getReadOnlyToolNames() "
+                    f"(i.e. it is treated as a write). A hub_read_* gateway must contain only "
+                    f"read-only tools -- a single write flips the gateway's rolled-up readOnlyHint to "
+                    f"write+destructive (annotationsForGateway), mislabeling the entire read surface. "
+                    f"Fix: move '{tool}' to the appropriate hub_manage_* gateway, or -- if it is "
+                    f"genuinely read-only -- add it to getReadOnlyToolNames()."
+                ),
+                "source": "",
+            })
     return findings
 
 
@@ -2132,6 +2171,25 @@ READ_WRITE_SPLIT_SELF_TEST_CASES = [
         "no getGatewayConfig() in source -- flags extractor guard (must-catch)",
         'def getReadOnlyToolNames() {\n    return [ "hub_get_device" ] as Set\n}\n',
         {"read-write-split-no-gateway-config"},
+    ),
+    # --- Mirror invariant (B): no write tool inside a hub_read_* gateway ---
+    (
+        "write tool inside a hub_read_* gateway -- flags write-in-read (must-catch)",
+        _build_read_write_split_corpus(
+            {"hub_read_devices": ["hub_get_device", "hub_update_device"]},
+            ["hub_get_device"],
+            ["hub_get_device", "hub_update_device"],
+        ),
+        {"read-write-split-write-in-read-gateway"},
+    ),
+    (
+        "only read-only tools inside a hub_read_* gateway -- no finding (must-not-catch)",
+        _build_read_write_split_corpus(
+            {"hub_read_files": ["hub_list_files", "hub_read_file"]},
+            ["hub_list_files", "hub_read_file"],
+            ["hub_list_files", "hub_read_file"],
+        ),
+        set(),
     ),
 ]
 
@@ -2605,7 +2663,11 @@ COUNT_SELF_TEST_CASES = [
     (
         "proxied in bare `N proxied` (not paren-prefix, named fixture)",
         "Summary: 23 core + 13 gateways, 80 proxied, 103 total tools.",
-        {"proxied": 79}, ["proxied"],
+        # Override the other counts the sentence mentions to their literal in-text
+        # values so ONLY `proxied` drifts (80 vs 79); otherwise the live core /
+        # gateways / total counts -- which changed after PR1B's gateway reshape --
+        # also fire and the fixture stops isolating the proxied pattern.
+        {"proxied": 79, "core": 23, "gateways": 13, "total": 103}, ["proxied"],
     ),
     (
         "total in `N total` punctuation-bounded (named fixture)",
@@ -2956,14 +3018,39 @@ def run_self_test() -> int:
             "Groovy source."
         )
     else:
-        derived = canonical["core"] + sum(canonical["per_gateway"].values())
-        if derived != canonical["total"]:
+        # Self-consistency of the count breakdown. NOTE: sum(per_gateway.values())
+        # is NOT used as `core + sum == total` anymore -- since PR1B introduced
+        # multi-gateway membership (a read listed in both its hub_read_* and a
+        # hub_manage_* gateway), the per-gateway sum DOUBLE-COUNTS those reads and
+        # exceeds the DISTINCT proxied count. The canonical relationship is on the
+        # distinct count: total == core + distinct_proxied (and core is derived as
+        # total - distinct_proxied, so this also guards a future core-formula change).
+        sum_with_dups = sum(canonical["per_gateway"].values())
+        if canonical["core"] < 0:
             failures += 1
             print(
                 f"SELF-TEST FAIL [tool-count extractor]\n"
-                f"  derived total {derived} != reported total "
-                f"{canonical['total']} — internal inconsistency in "
-                "_extract_canonical_counts()"
+                f"  core {canonical['core']} is negative — distinct proxied "
+                f"({canonical['proxied']}) exceeds total ({canonical['total']}); "
+                "_extract_canonical_counts() is inconsistent."
+            )
+        if canonical["core"] + canonical["proxied"] != canonical["total"]:
+            failures += 1
+            print(
+                f"SELF-TEST FAIL [tool-count extractor]\n"
+                f"  core ({canonical['core']}) + distinct proxied "
+                f"({canonical['proxied']}) != total ({canonical['total']}) — "
+                "internal inconsistency in _extract_canonical_counts()."
+            )
+        # Multi-membership means the per-gateway sum must be >= the distinct
+        # proxied count; sum < distinct would mean a gateway tool went uncounted.
+        if sum_with_dups < canonical["proxied"]:
+            failures += 1
+            print(
+                f"SELF-TEST FAIL [tool-count extractor]\n"
+                f"  per-gateway sum ({sum_with_dups}) < distinct proxied "
+                f"({canonical['proxied']}) — a gateway tool is uncounted; "
+                "_extract_canonical_counts() is inconsistent."
             )
         # Compare the raw list length against the de-duplicated set size.
         # `total` is intentionally len(list); `tool_names` is set(list).

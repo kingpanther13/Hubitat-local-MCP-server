@@ -74,15 +74,14 @@ def test_read_write_split_self_test_case(desc, src, expected_codes):
     )
 
 
-def test_read_write_split_real_source_has_no_stranded_reads():
-    """The real shipped source must satisfy the invariant: zero stranded reads.
-    Guards against a future edit that adds a read-only tool to a hub_manage_*
-    gateway without also surfacing it in a hub_read_* gateway (or flat)."""
+def test_read_write_split_real_source_clean():
+    """The real shipped source must satisfy BOTH directions of the invariant:
+    no read stranded behind only a hub_manage_* gateway, and no write tool inside
+    a hub_read_* gateway. Guards against a future edit that mis-gates a tool."""
     findings = sl.check_read_write_split()
-    stranded = [f for f in findings if f["rule"] == "read-write-split-stranded-read"]
-    assert stranded == [], (
-        "read-only tool(s) stranded behind only a hub_manage_* gateway:\n  "
-        + "\n  ".join(f["message"] for f in stranded)
+    assert findings == [], (
+        "read/write-split violation(s) in the shipped source:\n  "
+        + "\n  ".join(f"[{f['rule']}] {f['message']}" for f in findings)
     )
 
 
