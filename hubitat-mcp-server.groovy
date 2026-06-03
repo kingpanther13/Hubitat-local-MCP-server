@@ -1424,7 +1424,18 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
         .collectEntries { [(it.name): it] }
     def toolDef = defMap[toolName]
-    if (toolDef?.inputSchema?.required) {
+    // Gate-bypassing meta-calls return pure static content with NO hub mutation and
+    // short-circuit at the very top of their handler (before any gate / appId check),
+    // so they must also bypass this required-param pre-validation -- otherwise the
+    // gateway rejects them for missing appId/confirm before the handler ever runs.
+    // hub_update_native_app(guide:true) returns the capability reference inline;
+    // addTrigger/addAction {discover:true} return the live machine-readable schema.
+    def isGatedMetaCall = toolName == "hub_update_native_app" && (
+        safeArgs.guide == true ||
+        (safeArgs.addTrigger instanceof Map && safeArgs.addTrigger.discover == true) ||
+        (safeArgs.addAction instanceof Map && safeArgs.addAction.discover == true)
+    )
+    if (toolDef?.inputSchema?.required && !isGatedMetaCall) {
         def missing = toolDef.inputSchema.required.findAll { !safeArgs.containsKey(it) }
         if (missing) {
             def props = toolDef.inputSchema.properties ?: [:]

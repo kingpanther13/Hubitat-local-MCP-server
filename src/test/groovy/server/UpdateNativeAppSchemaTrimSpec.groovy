@@ -560,4 +560,31 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         ((String) result.parameters).contains('Periodic Schedule')      // addTrigger name summary
         ((String) result.parameters).contains("hub_get_tool_guide(section='update_native_app_reference')")  // addRequiredExpression guide pointer
     }
+
+    def "guide:true through the gateway bypasses the required-param pre-validation and returns the reference"() {
+        // Live-hub regression: guide:true short-circuits at the top of toolUpdateNativeApp
+        // (before the appId/confirm gates), but handleGateway's OWN required-param
+        // pre-validation runs first and would reject guide:true for missing appId/confirm
+        // unless it too exempts the gate-bypassing meta-call. The unit test (which calls
+        // toolUpdateNativeApp directly) does not exercise this gateway layer.
+        given:
+        settingsMap.useGateways = true
+        enableEveryToggle()
+
+        when: 'call hub_update_native_app via the gateway with ONLY guide:true (no appId/confirm)'
+        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_update_native_app', [guide: true])
+
+        then: 'the gateway does NOT reject for missing appId/confirm -- the guide short-circuit ran'
+        result instanceof Map
+        result.isError != true
+        result.success == true
+        result.section == 'update_native_app_reference'
+        (result.content as String).contains('addTrigger')
+        (result.content as String).contains('walkStep')
+
+        and: 'discover:true is exempted the same way (no appId/confirm needed via the gateway)'
+        def disc = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_update_native_app', [addAction: [discover: true]])
+        disc instanceof Map
+        disc.isError != true
+    }
 }
