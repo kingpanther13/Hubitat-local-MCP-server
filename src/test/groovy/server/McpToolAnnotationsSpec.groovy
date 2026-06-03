@@ -380,7 +380,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             it.outputSchema instanceof Map &&
             it.outputSchema.type == 'object' &&
             it.outputSchema.properties instanceof Map &&
-            !(it.outputSchema.properties as Map).isEmpty()
+            !it.outputSchema.properties.isEmpty()
         }
     }
 
