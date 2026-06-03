@@ -1761,8 +1761,8 @@ Only query devices the user has mentioned or that are relevant to their request.
                     attribute: [type: "string", description: "Attribute name"],
                     expectedValue: [type: "string", description: "If set, block-poll until currentValue equals this string. Enables poll mode. At least one of expectedValue/expectedValues enables polling."],
                     expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue is any of these strings (OR with expectedValue). Enables poll mode."],
-                    timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000],
-                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.", default: 200]
+                    timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
+                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.", default: 200, minimum: 50, maximum: 5000]
                 ],
                 required: ["deviceId", "attribute"]
             ],
@@ -2110,7 +2110,7 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_set_mode",
-            description: "Set the location mode. Always verify mode changed after.",
+            description: "Set the location mode. Valid mode names are hub-specific — get them from hub_list_modes first. Always verify the mode changed after.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2669,7 +2669,7 @@ def _getAllToolDefinitions_part4() {
     return [
         [
             name: "hub_get_update_status",
-            description: "Check if a newer version of MCP Rule Server is available on GitHub",
+            description: "Check if a newer version of MCP Rule Server is available on GitHub. The check is asynchronous: the first call usually returns latestVersion='unknown (check in progress)' — call again in a few seconds for the result.",
             inputSchema: [
                 type: "object",
                 properties: [:]
