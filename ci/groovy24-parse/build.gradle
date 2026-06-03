@@ -1,0 +1,36 @@
+// Isolated Groovy 2.4 parse smoke-check (issue #105 PR2a).
+//
+// Standalone build -- intentionally does NOT touch the root build.gradle or its Groovy 3.0
+// test lane. It resolves a stock Groovy 2.4.21 (the version Hubitat's hub runtime uses) from
+// Maven Central and parses the two production .groovy files under the 2.4 grammar, so a
+// 3.0-green can't ship a 2.4 hub-load failure.
+//
+// Run locally:  ./gradlew -p ci/groovy24-parse parse24
+plugins {
+    id 'java'   // for the Java toolchain + JavaExec
+}
+
+repositories { mavenCentral() }
+
+// Pin the runner to JDK 11 -- Groovy 2.4.x is unhappy on JDK 17/21 (sun.* encapsulation).
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(11) }
+}
+
+configurations { groovy24 }
+dependencies { groovy24 'org.codehaus.groovy:groovy-all:2.4.21' }
+
+def repoRoot = projectDir.parentFile.parentFile
+def productionFiles = [
+    new File(repoRoot, 'hubitat-mcp-server.groovy'),
+    new File(repoRoot, 'hubitat-mcp-rule.groovy'),
+]
+
+tasks.register('parse24', JavaExec) {
+    group = 'verification'
+    description = 'Parse the production Groovy files under Groovy 2.4.21 (catches 3.0-only syntax that would fail to load on the hub).'
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
+    classpath = configurations.groovy24
+    mainClass = 'groovy.ui.GroovyMain'
+    args = [new File(projectDir, 'parse_check.groovy').absolutePath] + productionFiles*.absolutePath
+}
