@@ -322,8 +322,11 @@ def initialize() {
 
     // Issue #92: subscribe to every hub variable's location event
     // ("variable:NAME") so the AI can see what changed and when via
-    // hub_list_variable_changes. Re-runs on every updated() because Hubitat
-    // calls unsubscribe() implicitly between updated() invocations.
+    // hub_list_variable_changes. Hubitat does NOT implicitly unsubscribe between
+    // updated() invocations, so unsubscribe first -- otherwise every settings save
+    // stacks another duplicate subscription per variable, firing
+    // handleHubVariableEvent N times per change and inflating variableHistory.
+    unsubscribe()
     _subscribeToAllHubVariables()
 
     // Issue #96 gap 1: register addInUseGlobalVar for every hub variable
@@ -5219,7 +5222,7 @@ def toolGetHubInfo(args = null) {
     info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
-    info.mcpCapturedStates = state.capturedDeviceStates?.size() ?: 0
+    info.mcpCapturedStates = atomicState.capturedDeviceStates?.size() ?: 0
 
     // Settings visibility (always available)
     info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -6095,7 +6098,11 @@ def getMaxCapturedStates() {
 // Helper method for child apps to save captured device states (for capture_state action)
 // Returns info about the save operation including any deleted states
 def saveCapturedState(stateId, capturedStates) {
-    if (!state.capturedDeviceStates) state.capturedDeviceStates = [:]
+    // atomicState (not state) for thread-safety: subscribed event handlers run concurrently, so
+    // a non-atomic read-modify-write loses captures and can blow past the size cap. Read into a
+    // local, mutate, then write the whole map back in one assignment -- in-place mutation of a
+    // nested atomicState map is not reliably persisted on the hub.
+    def stored = atomicState.capturedDeviceStates ?: [:]
 
     // Add timestamp to the captured state
     def stateEntry = [
@@ -6107,12 +6114,12 @@ def saveCapturedState(stateId, capturedStates) {
     def deletedStates = []
 
     // Check if we need to remove old entries (only if this is a new stateId)
-    if (!state.capturedDeviceStates.containsKey(stateId)) {
-        while (state.capturedDeviceStates.size() >= getMaxCapturedStates()) {
+    if (!stored.containsKey(stateId)) {
+        while (stored.size() >= getMaxCapturedStates()) {
             // Find and remove the oldest entry
             def oldestId = null
             def oldestTime = Long.MAX_VALUE
-            state.capturedDeviceStates.each { id, entry ->
+            stored.each { id, entry ->
                 def entryTime = entry.timestamp ?: 0
                 if (entryTime < oldestTime) {
                     oldestTime = entryTime
@@ -6122,15 +6129,16 @@ def saveCapturedState(stateId, capturedStates) {
             if (oldestId) {
                 log.warn "Captured states at limit (${getMaxCapturedStates()}): Removing oldest state '${oldestId}' to make room for '${stateId}'"
                 deletedStates << oldestId
-                state.capturedDeviceStates.remove(oldestId)
+                stored.remove(oldestId)
             } else {
                 break // Safety: avoid infinite loop
             }
         }
     }
 
-    state.capturedDeviceStates[stateId] = stateEntry
-    def totalStored = state.capturedDeviceStates.size()
+    stored[stateId] = stateEntry
+    atomicState.capturedDeviceStates = stored
+    def totalStored = stored.size()
     log.debug "Saved captured state '${stateId}' with ${capturedStates.size()} devices (total stored: ${totalStored}/${getMaxCapturedStates()})"
 
     return [
@@ -6145,16 +6153,17 @@ def saveCapturedState(stateId, capturedStates) {
 
 // Helper method for child apps to retrieve captured device states (for restore_state action)
 def getCapturedState(stateId) {
-    def entry = state.capturedDeviceStates?.get(stateId)
+    def entry = atomicState.capturedDeviceStates?.get(stateId)
     // Return the devices array for backward compatibility
     return entry?.devices ?: entry
 }
 
 // Helper method to list all captured states with metadata
 def listCapturedStates() {
-    if (!state.capturedDeviceStates) return []
+    def stored = atomicState.capturedDeviceStates
+    if (!stored) return []
 
-    return state.capturedDeviceStates.collect { stateId, entry ->
+    return stored.collect { stateId, entry ->
         [
             stateId: stateId,
             deviceCount: entry.deviceCount ?: entry.devices?.size() ?: (entry instanceof List ? entry.size() : 0),
@@ -6166,23 +6175,25 @@ def listCapturedStates() {
 
 // Helper method to delete a specific captured state
 def deleteCapturedState(stateId) {
-    if (!state.capturedDeviceStates) {
+    def stored = atomicState.capturedDeviceStates
+    if (!stored) {
         return [success: false, message: "No captured states exist"]
     }
 
-    if (!state.capturedDeviceStates.containsKey(stateId)) {
+    if (!stored.containsKey(stateId)) {
         return [success: false, message: "Captured state '${stateId}' not found"]
     }
 
-    state.capturedDeviceStates.remove(stateId)
-    log.debug "Deleted captured state '${stateId}' (remaining: ${state.capturedDeviceStates.size()})"
-    return [success: true, message: "Captured state '${stateId}' deleted", remaining: state.capturedDeviceStates.size()]
+    stored.remove(stateId)
+    atomicState.capturedDeviceStates = stored
+    log.debug "Deleted captured state '${stateId}' (remaining: ${stored.size()})"
+    return [success: true, message: "Captured state '${stateId}' deleted", remaining: stored.size()]
 }
 
 // Helper method to clear all captured states
 def clearAllCapturedStates() {
-    def count = state.capturedDeviceStates?.size() ?: 0
-    state.capturedDeviceStates = [:]
+    def count = atomicState.capturedDeviceStates?.size() ?: 0
+    atomicState.capturedDeviceStates = [:]
     log.debug "Cleared all ${count} captured states"
     return [success: true, message: "Cleared ${count} captured state(s)", cleared: count]
 }
@@ -9035,7 +9046,7 @@ def toolGetHubHealth(args) {
     health.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
     health.mcpRuleCount = getChildApps()?.size() ?: 0
     health.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
-    health.mcpCapturedStates = state.capturedDeviceStates?.size() ?: 0
+    health.mcpCapturedStates = atomicState.capturedDeviceStates?.size() ?: 0
 
     mcpLog("info", "hub-admin", "Hub health check completed")
     return health

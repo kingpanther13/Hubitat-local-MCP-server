@@ -119,6 +119,12 @@ abstract class HarnessSpec extends Specification {
     private static final HubInternalGetMock SHARED_HUB_GET = new HubInternalGetMock()
     private static final McpRequestDriver SHARED_MCP_DRIVER = new McpRequestDriver()
 
+    // Records parent-app unsubscribe() calls. A `1 * appExecutor.unsubscribe()`
+    // cardinality check from a then-block doesn't fire reliably on the @Shared
+    // AppExecutor mock (see RuleHarnessSpec's note), so route the call through this
+    // mutable holder and assert on it; lifecycle specs reset it in given:.
+    protected static final int[] UNSUBSCRIBE_CALL_COUNT = [0]
+
     @Shared protected AppExecutor appExecutor
     @Shared protected script
     @Shared protected final Map stateMap = SHARED_STATE_MAP
@@ -218,6 +224,8 @@ abstract class HarnessSpec extends Specification {
                 "handler path needs it, extend the driver to capture the no-arg " +
                 "call and relax this stub. See src/test/groovy/support/HarnessSpec.groovy.")
         }
+        // Record unsubscribe() so lifecycle specs (e.g. initialize) can assert it.
+        mock.unsubscribe() >> { UNSUBSCRIBE_CALL_COUNT[0]++ }
         return mock
     }
 
