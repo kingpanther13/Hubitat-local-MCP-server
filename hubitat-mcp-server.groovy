@@ -1369,7 +1369,12 @@ def handleGateway(gatewayName, toolName, toolArgs) {
             message: "Call again with tool='<name>' and args={...} to execute a tool.",
             tools: config.tools.collect { name ->
                 def d = defMap[name]
-                [name: name, description: d?.description, inputSchema: d?.inputSchema]
+                def entry = [name: name, description: d?.description, inputSchema: d?.inputSchema]
+                // Forward outputSchema when the tool declares one (PR1C). The flat
+                // tools/list path drops it for size; the gateway catalog is the
+                // disclosure surface where full schemas belong.
+                if (d?.outputSchema != null) entry.outputSchema = d.outputSchema
+                entry
             }
         ]
     }
@@ -1582,7 +1587,11 @@ def getToolDefinitions() {
         // [[FLAT_TRIM]] markers to recover headroom under the hub's 124,000-byte cap.
         def transformed = applyDescriptionTransform(filtered, true)
         return transformed.collect { tool ->
-            tool + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames)]
+            // Flat mode drops outputSchema to protect the 124,000-byte tools/list cap
+            // (this is the all-tools-individually surface). outputSchema is still
+            // published in gateway mode (base tools) and the gateway catalog disclosure,
+            // where the per-response budget has headroom.
+            tool.findAll { it.key != 'outputSchema' } + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames)]
         }
     }
 
@@ -1665,6 +1674,40 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object.[[FLAT_TRIM]] Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section='performance')` for valid field names and projection semantics."],
                     cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor returned alongside nextOffset."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    devices: [type: "array", description: "Device objects (summary/detailed modes). Per-field projection applies", items: [type: "object", properties: [
+                        id: [type: "string", description: "Device ID (always present)"],
+                        name: [type: "string", description: "Driver type / device name"],
+                        label: [type: "string", description: "User-assigned label"],
+                        room: [type: "string", description: "Assigned room name"],
+                        disabled: [type: "boolean", description: "Device disabled"],
+                        deviceNetworkId: [type: "string", description: "Device network ID"],
+                        lastActivity: [type: "string", description: "Last-activity ISO timestamp, or null"],
+                        parentDeviceId: [type: "string", description: "Parent device ID, or null"],
+                        mcpManaged: [type: "boolean", description: "Present and true for this app's virtual devices"],
+                        currentStates: [type: "object", description: "Summary mode: common attribute values"],
+                        capabilities: [type: "array", description: "Detailed mode: capability names", items: [type: "string"]],
+                        attributes: [type: "array", description: "Detailed mode: attribute name/value pairs", items: [type: "object"]],
+                        commands: [type: "array", description: "Detailed mode: command names", items: [type: "string"]]
+                    ]]],
+                    deviceIds: [type: "array", description: "format='ids' mode: flat array of integer device IDs", items: [type: "integer"]],
+                    count: [type: "integer", description: "Devices in this response"],
+                    total: [type: "integer", description: "Total devices after filtering"],
+                    unfilteredTotal: [type: "integer", description: "Total before filters; present when a filter is active"],
+                    filter: [type: "string", description: "Echoed filter; present when non-default"],
+                    labelFilter: [type: "string", description: "Echoed labelFilter; present when set"],
+                    capabilityFilter: [type: "string", description: "Echoed capabilityFilter; present when set"],
+                    capabilityFilterMatchedKnownCapability: [type: "boolean", description: "When capabilityFilter yields 0: whether the capability exists on any device"],
+                    offset: [type: "integer", description: "Page start index; present when paginated"],
+                    limit: [type: "integer", description: "Page size; present when paginated"],
+                    hasMore: [type: "boolean", description: "More pages remain; present when paginated"],
+                    nextOffset: [type: "integer", description: "Next page offset; present when more remain"],
+                    nextCursor: [type: "string", description: "Opaque cursor; present in cursor mode when more remain"],
+                    message: [type: "string", description: "Present when no devices or offset out of range"]
+                ]
             ]
         ],
         [
@@ -1678,6 +1721,26 @@ Only query devices the user has mentioned or that are relevant to their request.
                     deviceId: [type: "string", description: "Device ID from hub_list_devices"]
                 ],
                 required: ["deviceId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    id: [type: "string", description: "Device ID"],
+                    name: [type: "string", description: "Driver type / device name"],
+                    label: [type: "string", description: "User-assigned label"],
+                    room: [type: "string", description: "Assigned room name"],
+                    capabilities: [type: "array", description: "Capability names", items: [type: "string"]],
+                    attributes: [type: "array", description: "Attributes with current values", items: [type: "object", properties: [
+                        name: [type: "string", description: "Attribute name"],
+                        dataType: [type: "string", description: "Attribute data type"],
+                        value: [description: "Current value"]
+                    ]]],
+                    commands: [type: "array", description: "Supported commands", items: [type: "object", properties: [
+                        name: [type: "string", description: "Command name"],
+                        arguments: [type: "array", description: "Argument name/type pairs, or null", items: [type: "object"]]
+                    ]]]
+                ],
+                required: ["id", "name", "label", "capabilities", "attributes", "commands"]
             ]
         ],
         [
@@ -1698,6 +1761,21 @@ Only query devices the user has mentioned or that are relevant to their request.
                     pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.", default: 200]
                 ],
                 required: ["deviceId", "attribute"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    device: [type: "string", description: "One-shot mode: device label"],
+                    attribute: [type: "string", description: "One-shot mode: attribute name"],
+                    value: [description: "One-shot mode: current attribute value"],
+                    success: [type: "boolean", description: "Poll mode: true if a matching value was observed"],
+                    finalValue: [description: "Poll mode: last value read"],
+                    elapsedMs: [type: "integer", description: "Poll mode: elapsed time in milliseconds"],
+                    polledCount: [type: "integer", description: "Poll mode: number of reads performed"],
+                    timedOut: [type: "boolean", description: "Poll mode: true if the timeout elapsed without a match"],
+                    neverReported: [type: "boolean", description: "Poll mode: present and true if the attribute never reported a value in the window"],
+                    interrupted: [type: "boolean", description: "Poll mode: present and true if the poll was interrupted (hub reload)"]
+                ]
             ]
         ],
         [
@@ -1713,6 +1791,16 @@ If no exact device match: suggest similar devices and get user confirmation befo
                     parameters: [type: "array", description: "Command parameters", items: [type: "string"]]
                 ],
                 required: ["deviceId", "command"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the command was sent"],
+                    device: [type: "string", description: "Device label"],
+                    command: [type: "string", description: "Command sent"],
+                    parameters: [type: "array", description: "Normalized parameters passed to the command"]
+                ],
+                required: ["success", "device", "command"]
             ]
         ],
         [
@@ -1728,6 +1816,27 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch'). Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name."],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500). Higher values may slow hub.", default: 10]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    events: [type: "array", description: "Event rows (most recent first)", items: [type: "object", properties: [
+                        name: [type: "string", description: "Event/attribute name"],
+                        value: [description: "Event value"],
+                        unit: [type: "string", description: "Unit of measure, if any"],
+                        description: [type: "string", description: "Human-readable description text"],
+                        date: [type: "string", description: "Event timestamp (ISO)"],
+                        type: [type: "string", description: "Location mode only: event type"],
+                        isStateChange: [type: "boolean", description: "Whether this event was a state change"]
+                    ]]],
+                    count: [type: "integer", description: "Events returned"],
+                    device: [type: "string", description: "Device label; present in device modes"],
+                    deviceId: [type: "string", description: "Device ID; present in history mode"],
+                    source: [type: "string", description: "'device' or 'location'; present in history mode"],
+                    hoursBack: [type: "integer", description: "History window in hours; present in history mode"],
+                    attributeFilter: [type: "string", description: "Echoed attribute filter; present in history mode"],
+                    sinceTimestamp: [type: "string", description: "Window start (ISO); present in history mode"]
+                ]
             ]
         ],
         // Rule Management
@@ -1740,6 +1849,69 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
                     ruleId: [type: "string", description: "Rule ID. Omit to list all rules; provide for one rule's detail."],
                     detailed: [type: "boolean", description: "Requires ruleId. Returns comprehensive diagnostics (execution history, recent logs, errors) instead of plain rule data. Rejected if set without a ruleId.", default: false],
                     cursor: [type: "string", description: "List mode only (ruleId omitted): opt-in pagination cursor. Pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    rules: [type: "array", description: "List mode (ruleId omitted): rule summaries", items: [type: "object", properties: [
+                        id: [type: "string", description: "Rule ID"],
+                        name: [type: "string", description: "Rule name"],
+                        description: [type: "string", description: "Rule description"],
+                        enabled: [type: "boolean", description: "Whether the rule is enabled"],
+                        triggerCount: [type: "integer", description: "Number of triggers"],
+                        conditionCount: [type: "integer", description: "Number of conditions"],
+                        actionCount: [type: "integer", description: "Number of actions"],
+                        lastTriggered: [description: "Last trigger timestamp"],
+                        executionCount: [type: "integer", description: "Times executed"],
+                        source: [type: "string", description: "Always 'mcp_custom_engine'"]
+                    ]]],
+                    count: [type: "integer", description: "List mode: rules in this page"],
+                    total: [type: "integer", description: "List mode (paginated): total rule count"],
+                    nextCursor: [type: "string", description: "List mode: present when more results remain"],
+                    id: [type: "string", description: "Single-rule mode: rule ID"],
+                    name: [type: "string", description: "Single-rule mode: rule name"],
+                    description: [type: "string", description: "Single-rule mode: rule description"],
+                    enabled: [type: "boolean", description: "Single-rule mode: enabled state"],
+                    testRule: [type: "boolean", description: "Single-rule mode: skips backup on deletion"],
+                    triggers: [type: "array", description: "Single-rule mode: trigger definitions"],
+                    conditions: [type: "array", description: "Single-rule mode: condition definitions"],
+                    conditionLogic: [type: "string", description: "Single-rule mode: 'all' or 'any'"],
+                    actions: [type: "array", description: "Single-rule mode: action definitions"],
+                    localVariables: [type: "object", description: "Single-rule mode: local variables"],
+                    createdAt: [description: "Single-rule mode: creation timestamp"],
+                    updatedAt: [description: "Single-rule mode: last update timestamp"],
+                    lastTriggered: [description: "Single-rule mode: last trigger timestamp"],
+                    executionCount: [type: "integer", description: "Single-rule mode: times executed"],
+                    source: [type: "string", description: "Single/detailed mode: always 'mcp_custom_engine'"],
+                    rule: [type: "object", description: "Detailed mode (detailed=true): rule identity", properties: [
+                        id: [type: "string", description: "Rule ID"],
+                        name: [type: "string", description: "Rule name"],
+                        description: [type: "string", description: "Rule description"],
+                        enabled: [type: "boolean", description: "Enabled state"],
+                        createdAt: [type: "string", description: "Creation timestamp"],
+                        updatedAt: [type: "string", description: "Last update timestamp"]
+                    ]],
+                    execution: [type: "object", description: "Detailed mode: execution stats", properties: [
+                        count: [type: "integer", description: "Times executed"],
+                        lastTriggered: [type: "string", description: "Last trigger timestamp"]
+                    ]],
+                    structure: [type: "object", description: "Detailed mode: trigger/condition/action structure", properties: [
+                        triggerCount: [type: "integer", description: "Number of triggers"],
+                        conditionCount: [type: "integer", description: "Number of conditions"],
+                        actionCount: [type: "integer", description: "Number of actions"],
+                        triggers: [type: "array", description: "Trigger definitions"],
+                        conditions: [type: "array", description: "Condition definitions"],
+                        actions: [type: "array", description: "Action definitions"],
+                        conditionLogic: [type: "string", description: "'all' or 'any'"]
+                    ]],
+                    state: [type: "object", description: "Detailed mode: rule state (localVariables)"],
+                    logs: [type: "object", description: "Detailed mode: recent logs and errors", properties: [
+                        recentCount: [type: "integer", description: "Recent log entries returned"],
+                        errorCount: [type: "integer", description: "Total error log entries"],
+                        recent: [type: "array", description: "Recent log entries"],
+                        errors: [type: "array", description: "Recent error log entries"]
+                    ]]
                 ]
             ]
         ],
@@ -1767,6 +1939,20 @@ Verify rule after creation.""",
                     actions: [type: "array", description: "List of actions"]
                 ],
                 required: ["name", "triggers", "actions"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the rule was created"],
+                    ruleId: [type: "string", description: "ID of the new rule"],
+                    message: [type: "string", description: "Human-readable result"],
+                    diagnostics: [type: "object", description: "Persistence verification", properties: [
+                        storedTriggers: [type: "integer", description: "Triggers persisted"],
+                        storedActions: [type: "integer", description: "Actions persisted"],
+                        durationMs: [type: "integer", description: "Creation duration in ms"]
+                    ]]
+                ],
+                required: ["success", "ruleId"]
             ]
         ],
         [
@@ -1786,6 +1972,15 @@ Verify rule after creation.""",
                     actions: [type: "array"]
                 ],
                 required: ["ruleId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the update succeeded"],
+                    ruleId: [type: "string", description: "ID of the updated rule"],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success", "ruleId"]
             ]
         ],
         [
@@ -1799,6 +1994,15 @@ Verify rule after creation.""",
                     skipBackupCheck: [type: "boolean", description: "Force skip backup even for non-test rules. Rarely needed since testRule flag handles this. Default: false."]
                 ],
                 required: ["ruleId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the rule was deleted"],
+                    message: [type: "string", description: "Human-readable result"],
+                    backupFile: [type: "string", description: "File Manager backup filename (present when a backup was written)"]
+                ],
+                required: ["success"]
             ]
         ],
         // enable_rule and disable_rule merged into hub_update_custom_rule (use enabled=true/false)
@@ -1811,6 +2015,18 @@ Verify rule after creation.""",
                     ruleId: [type: "string", description: "Rule ID"]
                 ],
                 required: ["ruleId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    ruleId: [type: "string", description: "Rule ID tested"],
+                    ruleName: [type: "string", description: "Rule name"],
+                    conditionsMet: [type: "boolean", description: "Whether all conditions evaluated true"],
+                    wouldExecute: [type: "boolean", description: "Whether the rule would fire its actions"],
+                    conditionResults: [type: "array", description: "Per-condition evaluation results"],
+                    actions: [type: "array", description: "Actions that would run (none executed)"]
+                ],
+                required: ["ruleId", "wouldExecute"]
             ]
         ],
         // System Tools
@@ -1822,12 +2038,66 @@ Verify rule after creation.""",
                 properties: [
                     identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    temperatureScale: [type: "string", description: "Hub temperature scale (F/C)"],
+                    model: [type: "string", description: "Hardware ID/model"],
+                    firmwareVersion: [type: "string", description: "Firmware version string"],
+                    zigbeeChannel: [type: "string", description: "Zigbee radio channel"],
+                    zwaveVersion: [type: "string", description: "Z-Wave firmware version"],
+                    zigbeeId: [type: "string", description: "Zigbee ID"],
+                    type: [type: "string", description: "Hub type"],
+                    uptimeSeconds: [type: "integer", description: "Uptime in seconds"],
+                    uptimeFormatted: [type: "string", description: "Human-readable uptime"],
+                    freeMemoryKB: [type: "string", description: "Free OS memory in KB"],
+                    memoryWarning: [type: "string", description: "Present when memory is low"],
+                    memoryNote: [type: "string", description: "Present when memory is moderate"],
+                    internalTempCelsius: [type: "string", description: "Internal temperature in Celsius"],
+                    temperatureWarning: [type: "string", description: "Present when temperature is high"],
+                    temperatureNote: [type: "string", description: "Present when temperature is warm"],
+                    databaseSizeKB: [type: "string", description: "Database size in KB"],
+                    databaseWarning: [type: "string", description: "Present when database is large"],
+                    mcpServerVersion: [type: "string", description: "Installed MCP server version"],
+                    mcpDeviceCount: [type: "integer", description: "Selected device count"],
+                    mcpRuleCount: [type: "integer", description: "MCP rule child-app count"],
+                    mcpLogEntries: [type: "integer", description: "Buffered MCP log entry count"],
+                    mcpCapturedStates: [type: "integer", description: "Captured device state count"],
+                    hubSecurityConfigured: [type: "boolean", description: "Whether hub security is configured"],
+                    hubAdminReadEnabled: [type: "boolean", description: "Hub Admin Read toggle state"],
+                    hubAdminWriteEnabled: [type: "boolean", description: "Hub Admin Write toggle state"],
+                    builtinAppEnabled: [type: "boolean", description: "Built-in app toggle state"],
+                    customRuleEngineEnabled: [type: "boolean", description: "Custom rule engine toggle state"],
+                    developerModeEnabled: [type: "boolean", description: "Developer Mode toggle state"],
+                    name: [type: "string", description: "Hub name (Hub Admin Read only)"],
+                    localIP: [type: "string", description: "Hub local IP (Hub Admin Read only)"],
+                    timeZone: [type: "string", description: "Time zone ID (Hub Admin Read only)"],
+                    latitude: [type: "number", description: "Latitude (Hub Admin Read only)"],
+                    longitude: [type: "number", description: "Longitude (Hub Admin Read only)"],
+                    zipCode: [type: "string", description: "Zip code (Hub Admin Read only)"],
+                    hubData: [type: "object", description: "Hub data map (Hub Admin Read only)"],
+                    hubAdminReadRequired: [type: "string", description: "Present when Hub Admin Read is disabled; PII excluded"],
+                    identifyHubTriggered: [type: "boolean", description: "Present when identifyHub requested; LED blink result"],
+                    identifyHubError: [type: "string", description: "Present when identifyHub blink failed"]
+                ]
             ]
         ],
         [
             name: "hub_list_modes",
             description: "Get available location modes and current mode",
-            inputSchema: [type: "object", properties: [:]]
+            inputSchema: [type: "object", properties: [:]],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    currentMode: [type: "string", description: "Current location mode name"],
+                    modes: [type: "array", description: "Available modes", items: [type: "object", properties: [
+                        id: [type: "string", description: "Mode ID"],
+                        name: [type: "string", description: "Mode name"]
+                    ]]]
+                ],
+                required: ["currentMode", "modes"]
+            ]
         ],
         [
             name: "hub_set_mode",
@@ -1838,6 +2108,15 @@ Verify rule after creation.""",
                     mode: [type: "string", description: "Mode name"]
                 ],
                 required: ["mode"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the mode was set"],
+                    previousMode: [type: "string", description: "Mode before the change"],
+                    newMode: [type: "string", description: "Mode after the change"]
+                ],
+                required: ["success", "previousMode", "newMode"]
             ]
         ],
         [
@@ -1848,6 +2127,30 @@ Verify rule after creation.""",
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor for the hubVariables list (ruleVariables stays in full alongside the page). Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    hubVariables: [type: "array", description: "Hub variables (page when paginated)", items: [type: "object", properties: [
+                        name: [type: "string", description: "Variable name"],
+                        value: [description: "Current value"],
+                        type: [type: "string", description: "Number/Decimal/String/Boolean/DateTime"],
+                        deviceId: [type: "string", description: "Connector device id when present"],
+                        attribute: [type: "string", description: "Connector attribute when present"],
+                        source: [type: "string", description: "Always 'hub'"]
+                    ]]],
+                    ruleVariables: [type: "array", description: "Rule-engine variables", items: [type: "object", properties: [
+                        name: [type: "string", description: "Variable name"],
+                        value: [description: "Current value"],
+                        source: [type: "string", description: "Always 'rule_engine'"]
+                    ]]],
+                    totalHubVariables: [type: "integer", description: "Total hub variables"],
+                    totalRuleVariables: [type: "integer", description: "Total rule-engine variables"],
+                    total: [type: "integer", description: "Combined total"],
+                    hubVariablesError: [type: "string", description: "Present when the hub variable API failed"],
+                    nextCursor: [type: "string", description: "Present when more hub variables remain"]
+                ],
+                required: ["hubVariables", "ruleVariables", "total"]
             ]
         ],
         [
@@ -1859,6 +2162,18 @@ Verify rule after creation.""",
                     name: [type: "string", description: "Variable name"]
                 ],
                 required: ["name"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    name: [type: "string", description: "Variable name"],
+                    value: [description: "Current value"],
+                    type: [type: "string", description: "Type (hub variables only)"],
+                    deviceId: [type: "string", description: "Connector device id (hub variables with connector only)"],
+                    attribute: [type: "string", description: "Connector attribute (hub variables with connector only)"],
+                    source: [type: "string", description: "'hub' or 'rule_engine'"]
+                ],
+                required: ["name", "value", "source"]
             ]
         ],
         [
@@ -1871,6 +2186,16 @@ Verify rule after creation.""",
                     value: [type: "string", description: "Variable value (string, number, or boolean as string)"]
                 ],
                 required: ["name", "value"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the set succeeded"],
+                    name: [type: "string", description: "Variable name"],
+                    value: [description: "Value that was set"],
+                    source: [type: "string", description: "'hub' or 'rule_engine'"]
+                ],
+                required: ["success", "name", "value", "source"]
             ]
         ],
         [
@@ -1885,6 +2210,18 @@ Verify rule after creation.""",
                     confirm: [type: "boolean", description: "REQUIRED: must be true"]
                 ],
                 required: ["name", "type", "value", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether creation succeeded"],
+                    name: [type: "string", description: "Variable name"],
+                    type: [type: "string", description: "Variable type"],
+                    value: [description: "Initial value after creation"],
+                    source: [type: "string", description: "Always 'hub'"],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success", "name", "type", "source"]
             ]
         ],
         [
@@ -1898,6 +2235,19 @@ Verify rule after creation.""",
                     confirm: [type: "boolean", description: "REQUIRED: must be true"]
                 ],
                 required: ["name", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the connector exists/was created"],
+                    name: [type: "string", description: "Variable name"],
+                    deviceId: [type: "string", description: "Connector device id"],
+                    attribute: [type: "string", description: "Connector attribute"],
+                    connectorType: [type: "string", description: "Connector type chosen (newly created connectors)"],
+                    alreadyExists: [type: "boolean", description: "True when a connector already existed (no-op)"],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success", "name", "deviceId"]
             ]
         ],
         [
@@ -1910,6 +2260,19 @@ Verify rule after creation.""",
                     confirm: [type: "boolean", description: "REQUIRED: must be true"]
                 ],
                 required: ["name", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the removal succeeded"],
+                    name: [type: "string", description: "Variable name"],
+                    deviceId: [type: "string", description: "Removed connector device id (when one existed)"],
+                    deviceDeleted: [type: "boolean", description: "True when a connector device was deleted"],
+                    alreadyRemoved: [type: "boolean", description: "True when there was no connector to remove (no-op)"],
+                    message: [type: "string", description: "Human-readable result"],
+                    note: [type: "string", description: "Advisory about the known Hubitat StackOverflowError log noise"]
+                ],
+                required: ["success", "name"]
             ]
         ],
         [
@@ -1922,6 +2285,21 @@ Verify rule after creation.""",
                     sinceMs: [type: "integer", description: "Optional: only return changes whose timestamp >= this epoch-millis"],
                     limit: [type: "integer", description: "Optional: max entries to return (default: 50)"]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    entries: [type: "array", description: "Recent variable changes, most-recent first", items: [type: "object", properties: [
+                        name: [type: "string", description: "Variable name"],
+                        value: [description: "New value at change time"],
+                        timestamp: [type: "integer", description: "Change time (epoch millis)"],
+                        descriptionText: [type: "string", description: "Event description text"]
+                    ]]],
+                    total: [type: "integer", description: "Entries returned"],
+                    bufferSize: [type: "integer", description: "Total changes currently buffered"],
+                    bufferCap: [type: "integer", description: "Max buffer capacity (200)"]
+                ],
+                required: ["entries", "total", "bufferSize", "bufferCap"]
             ]
         ],
         [
@@ -1935,6 +2313,23 @@ Verify rule after creation.""",
                     force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable. Without force, the tool refuses and lists the consumers."]
                 ],
                 required: ["name", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether deletion succeeded"],
+                    name: [type: "string", description: "Variable name"],
+                    deleted: [type: "boolean", description: "True when the variable was removed"],
+                    source: [type: "string", description: "'hub' or 'rule_engine'"],
+                    type: [type: "string", description: "Variable type (hub variables only)"],
+                    previousValue: [description: "Value before deletion"],
+                    connectorDeleted: [type: "boolean", description: "True when a connector device was also deleted (hub only)"],
+                    brokenConsumers: [type: "array", description: "Rules referencing this variable (populated when force=true), else null", items: [type: "object", properties: [
+                        id: [type: "string", description: "Rule app id"],
+                        label: [type: "string", description: "Rule label"]
+                    ]]]
+                ],
+                required: ["success", "name", "deleted", "source"]
             ]
         ],
         [
@@ -1947,12 +2342,30 @@ Verify rule after creation.""",
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["settings", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the settings were updated"],
+                    updated: [type: "object", description: "Map of applied setting key → coerced new value"],
+                    message: [type: "string", description: "Human-readable result, including reconnect note"]
+                ],
+                required: ["success", "updated", "message"]
             ]
         ],
         [
             name: "hub_get_hsm_status",
             description: "Get the current HSM (Hubitat Safety Monitor) status",
-            inputSchema: [type: "object", properties: [:]]
+            inputSchema: [type: "object", properties: [:]],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    status: [type: "string", description: "Current HSM status"],
+                    alert: [type: "string", description: "Current HSM alert, if any"],
+                    modes: [type: "array", description: "Valid HSM modes", items: [type: "string"]]
+                ],
+                required: ["status", "modes"]
+            ]
         ],
         [
             name: "hub_set_hsm",
@@ -1963,6 +2376,15 @@ Verify rule after creation.""",
                     mode: [type: "string", description: "HSM mode: armAway, armHome, armNight, disarm"]
                 ],
                 required: ["mode"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the HSM arm event was sent"],
+                    previousStatus: [type: "string", description: "HSM status before the change"],
+                    newMode: [type: "string", description: "Requested HSM mode"]
+                ],
+                required: ["success", "previousStatus", "newMode"]
             ]
         ],
         // Captured State Management
@@ -1974,6 +2396,18 @@ Verify rule after creation.""",
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    capturedStates: [type: "array", description: "Captured state entries", items: [type: "object"]],
+                    count: [type: "integer", description: "Entries on this page"],
+                    maxLimit: [type: "integer", description: "Max captured states retained"],
+                    total: [type: "integer", description: "Total entries; present in cursor mode"],
+                    nextCursor: [type: "string", description: "Present when more results remain"],
+                    warning: [type: "string", description: "Present at/near capacity"]
+                ],
+                required: ["capturedStates", "count"]
             ]
         ],
         [
@@ -1984,6 +2418,16 @@ Verify rule after creation.""",
                 properties: [
                     stateId: [type: "string", description: "The ID of the captured state to delete. Omit to delete ALL captured states."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the delete succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    remaining: [type: "integer", description: "States remaining; present on single delete"],
+                    cleared: [type: "integer", description: "States cleared; present on delete-all"]
+                ],
+                required: ["success", "message"]
             ]
         ],
 
@@ -2001,12 +2445,47 @@ Verify rule after creation.""",
                     ruleId: [type: "string", description: "logs mode: filter by specific rule ID"],
                     cursor: [type: "string", description: "logs mode: opt-in pagination cursor. Filters and limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    entries: [type: "array", description: "logs mode: stored log entries", items: [type: "object", properties: [
+                        timestamp: [type: "integer", description: "Epoch millis"],
+                        time: [type: "string", description: "Formatted timestamp"],
+                        level: [type: "string", description: "Log level"],
+                        component: [type: "string", description: "Source component"],
+                        message: [type: "string", description: "Log message"],
+                        ruleId: [type: "string", description: "Associated rule ID, when present"],
+                        ruleName: [type: "string", description: "Associated rule name, when present"]
+                    ]]],
+                    count: [type: "integer", description: "logs mode: entries on this page"],
+                    totalStored: [type: "integer", description: "logs mode: total entries stored"],
+                    maxEntries: [type: "integer", description: "Buffer capacity"],
+                    currentLogLevel: [type: "string", description: "Current minimum log level"],
+                    total: [type: "integer", description: "logs mode: filtered total; present in cursor mode"],
+                    nextCursor: [type: "string", description: "logs mode: present when more results remain"],
+                    version: [type: "string", description: "status mode: app version"],
+                    availableLevels: [type: "array", description: "status mode: valid log levels", items: [type: "string"]],
+                    totalEntries: [type: "integer", description: "status mode: total entries stored"],
+                    entriesByLevel: [type: "object", description: "status mode: per-severity counts"],
+                    oldestEntry: [type: "string", description: "status mode: oldest entry timestamp"],
+                    newestEntry: [type: "string", description: "status mode: newest entry timestamp"],
+                    updateAvailable: [type: "string", description: "Newer version, when one exists"]
+                ]
             ]
         ],
         [
             name: "hub_delete_debug_logs",
             description: "Clear all stored debug log entries. Cannot be undone.",
-            inputSchema: [type: "object", properties: [:]]
+            inputSchema: [type: "object", properties: [:]],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the clear succeeded"],
+                    clearedCount: [type: "integer", description: "Number of entries removed"]
+                ],
+                required: ["success", "clearedCount"]
+            ]
         ],
         [
             name: "hub_set_log_level",
@@ -2017,6 +2496,15 @@ Verify rule after creation.""",
                     level: [type: "string", enum: ["debug", "info", "warn", "error"], description: "Minimum log level to store"]
                 ],
                 required: ["level"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the level was set"],
+                    previousLevel: [type: "string", description: "Log level before the change"],
+                    newLevel: [type: "string", description: "Log level after the change"]
+                ],
+                required: ["success", "previousLevel", "newLevel"]
             ]
         ],
         [
@@ -2040,6 +2528,26 @@ Verify rule after creation.""",
                     logWindowSeconds: [type: "integer", description: "Default 120."]
                 ],
                 required: ["title", "expected", "actual"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the report was generated"],
+                    issueType: [type: "string", description: "Normalized issue type (bug/enhancement/agent_behavior)"],
+                    privacyMode: [type: "string", description: "Resolved privacy mode (private/public)"],
+                    suggestedTitle: [type: "string", description: "Pre-filled GitHub issue title"],
+                    submitUrl: [type: "string", description: "Prefilled GitHub issue link to open"],
+                    report: [type: "string", description: "Markdown issue report body to paste into the form"],
+                    logs: [type: "object", description: "Scoped log summary", properties: [
+                        scoped: [type: "boolean", description: "Whether logs were narrowed to a context anchor"],
+                        relevantCount: [type: "integer", description: "Count of context-relevant log entries"],
+                        otherRecentLogCount: [type: "integer", description: "Count of omitted unrelated recent entries"],
+                        hint: [type: "string", description: "Guidance to include omitted entries, when applicable"]
+                    ]],
+                    instructions: [type: "string", description: "How to submit the report"],
+                    updateAvailable: [type: "string", description: "Latest available version, present when an update exists"]
+                ],
+                required: ["success", "submitUrl", "report"]
             ]
         ],
         // Rule Export/Import/Clone Tools
@@ -2053,6 +2561,32 @@ Verify rule after creation.""",
                     saveAs: [type: "string", description: "File Manager filename to write the export JSON to (\".json\" appended if missing). Omit to use a generated name based on the rule."]
                 ],
                 required: ["ruleId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    exportVersion: [type: "string", description: "Export format version"],
+                    exportedAt: [type: "string", description: "Export timestamp"],
+                    serverVersion: [type: "string", description: "MCP server version at export"],
+                    rule: [type: "object", description: "Exported rule definition", properties: [
+                        name: [type: "string", description: "Rule name"],
+                        description: [type: "string", description: "Rule description"],
+                        enabled: [type: "boolean", description: "Enabled state"],
+                        conditionLogic: [type: "string", description: "'all' or 'any'"],
+                        triggers: [type: "array", description: "Trigger definitions"],
+                        conditions: [type: "array", description: "Condition definitions"],
+                        actions: [type: "array", description: "Action definitions"],
+                        localVariables: [type: "object", description: "Local variables"]
+                    ]],
+                    deviceManifest: [type: "array", description: "Referenced devices", items: [type: "object", properties: [
+                        deviceId: [type: "string", description: "Device ID"],
+                        usedIn: [type: "array", description: "Sections referencing the device", items: [type: "string"]],
+                        label: [type: "string", description: "Device label or fallback"],
+                        capabilities: [type: "array", description: "Device capabilities", items: [type: "string"]]
+                    ]]],
+                    savedToFile: [type: "string", description: "File Manager filename the export was written to"]
+                ],
+                required: ["exportVersion", "rule", "deviceManifest", "savedToFile"]
             ]
         ],
         [
@@ -2066,6 +2600,23 @@ Verify rule after creation.""",
                     deviceMapping: [type: "object", description: "Map old device IDs to new ones: {\"old_id\": \"new_id\"} (optional)"]
                 ],
                 required: ["exportData"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the rule was imported"],
+                    ruleId: [type: "string", description: "ID of the newly created rule"],
+                    message: [type: "string", description: "Human-readable result"],
+                    diagnostics: [type: "object", description: "Persistence verification", properties: [
+                        storedTriggers: [type: "integer", description: "Triggers persisted"],
+                        storedActions: [type: "integer", description: "Actions persisted"],
+                        durationMs: [type: "integer", description: "Creation duration in ms"]
+                    ]],
+                    imported: [type: "boolean", description: "Always true on success"],
+                    sourceExportVersion: [type: "string", description: "Export format version of the source"],
+                    devicesMapped: [type: "integer", description: "Device IDs remapped (present when deviceMapping supplied)"]
+                ],
+                required: ["success", "ruleId"]
             ]
         ],
         [
@@ -2078,6 +2629,23 @@ Verify rule after creation.""",
                     name: [type: "string", description: "Name for the clone (defaults to 'Copy of <original>')"]
                 ],
                 required: ["ruleId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the clone was created"],
+                    ruleId: [type: "string", description: "ID of the new cloned rule"],
+                    message: [type: "string", description: "Human-readable result"],
+                    clonedFrom: [type: "string", description: "Source rule ID"],
+                    diagnostics: [type: "object", description: "Persistence verification", properties: [
+                        storedTriggers: [type: "integer", description: "Triggers persisted"],
+                        storedActions: [type: "integer", description: "Actions persisted"],
+                        durationMs: [type: "integer", description: "Creation duration in ms"]
+                    ]],
+                    imported: [type: "boolean", description: "Always true on success (clone routes through import)"],
+                    sourceExportVersion: [type: "string", description: "Export format version of the source"]
+                ],
+                required: ["success", "ruleId", "clonedFrom"]
             ]
         ],
         [
@@ -2086,6 +2654,18 @@ Verify rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [:]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the check ran"],
+                    installedVersion: [type: "string", description: "Currently installed version"],
+                    latestVersion: [type: "string", description: "Latest version on GitHub; 'unknown' while async check pending"],
+                    updateAvailable: [type: "boolean", description: "Whether a newer version is available"],
+                    lastChecked: [type: "string", description: "When the check last completed"],
+                    note: [type: "string", description: "Async-check guidance"]
+                ],
+                required: ["success", "installedVersion"]
             ]
         ],
 
@@ -2112,6 +2692,31 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit to get the full list in a single response (subject to the universal 120KB response-size guard -- oversized responses come back as a response_too_large envelope). Pass the nextCursor value from a prior call to fetch the next page (page size 50). Empty string starts at the first page."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    apps: [type: "array", description: "App entries (shape depends on scope)", items: [type: "object", properties: [
+                        id: [description: "App ID"],
+                        name: [type: "string", description: "App name"],
+                        type: [type: "string", description: "App type (scope='instances'); 'MCP Rule' on the fallback path"],
+                        disabled: [type: "boolean", description: "scope='instances': app is paused/disabled"],
+                        user: [type: "boolean", description: "scope='instances': true=user Groovy app, false=built-in"],
+                        hidden: [type: "boolean", description: "scope='instances': app is hidden"],
+                        parentId: [description: "scope='instances': parent app ID, null at top level"],
+                        hasChildren: [type: "boolean", description: "scope='instances': app has child apps"],
+                        childCount: [type: "integer", description: "scope='instances': number of child apps"]
+                    ]]],
+                    count: [type: "integer", description: "Apps returned"],
+                    filter: [type: "string", description: "scope='instances': filter applied"],
+                    totalOnHub: [type: "integer", description: "scope='instances': total apps before filtering"],
+                    source: [type: "string", description: "scope='types': hub_api / hub_api_raw / mcp_only"],
+                    note: [type: "string", description: "Status note when the hub API was unavailable or returned a non-JSON shape"],
+                    rawResponse: [type: "string", description: "scope='types': raw body when response was not JSON"],
+                    total: [type: "integer", description: "Total matched (present when paginating)"],
+                    nextCursor: [type: "string", description: "Present when more results remain"]
+                ],
+                required: ["apps"]
             ]
         ],
         [
@@ -2122,6 +2727,19 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    drivers: [type: "array", description: "Installed driver entries as returned by the hub", items: [type: "object"]],
+                    count: [type: "integer", description: "Drivers returned"],
+                    source: [type: "string", description: "hub_api / hub_api_raw / unavailable"],
+                    note: [type: "string", description: "Status note when the hub API was unavailable or returned a non-JSON shape"],
+                    rawResponse: [type: "string", description: "Raw body when response was not JSON"],
+                    total: [type: "integer", description: "Total matched (present when paginating)"],
+                    nextCursor: [type: "string", description: "Present when more results remain"]
+                ],
+                required: ["drivers"]
             ]
         ],
         [
@@ -2131,6 +2749,22 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                 type: "object",
                 properties: [
                     radio: [type: "string", enum: ["zwave", "zigbee"], description: "Which radio to query. Omit to return both."]
+                ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    zwave: [type: "object", description: "Z-Wave details; present when both radios requested"],
+                    zigbee: [type: "object", description: "Zigbee details; present when both radios requested"],
+                    zwaveVersion: [description: "Z-Wave SDK version; present for radio='zwave'"],
+                    zwaveData: [type: "object", description: "Parsed Z-Wave info; present for radio='zwave'"],
+                    zigbeeChannel: [description: "Zigbee channel; present for radio='zigbee'"],
+                    zigbeeId: [description: "Zigbee ID; present for radio='zigbee'"],
+                    zigbeeData: [type: "object", description: "Parsed Zigbee info; present for radio='zigbee'"],
+                    source: [type: "string", description: "Where data came from: hub_api, hub_api_raw, or sdk_only"],
+                    endpoint: [type: "string", description: "Internal API endpoint used"],
+                    rawResponse: [type: "string", description: "Raw body when response was not JSON"],
+                    note: [type: "string", description: "Status note when extended info unavailable"]
                 ]
             ]
         ],
@@ -2145,6 +2779,33 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                     sortBy: [type: "string", description: "Sort results by field. Default: pct (% busy).", enum: ["pct", "count", "stateSize", "totalMs", "name"], default: "pct"],
                     limit: [type: "integer", description: "Max entries to return. Default: 20, 0 for all.", default: 20]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    uptime: [description: "Hub uptime"],
+                    deviceSummary: [type: "object", description: "Device totals; present for type device/both", properties: [
+                        totalRuntime: [description: "Total device runtime"],
+                        pctOfUptime: [description: "Device % of uptime"],
+                        deviceCount: [type: "integer", description: "Devices reported"]
+                    ]],
+                    deviceStats: [type: "array", description: "Per-device stats; present for type device/both", items: [type: "object", properties: [
+                        id: [description: "Device ID"],
+                        name: [type: "string", description: "Device name"],
+                        count: [description: "Method call count"],
+                        pctBusy: [description: "% busy"],
+                        stateSize: [description: "State size"],
+                        totalMs: [description: "Total ms"]
+                    ]]],
+                    appSummary: [type: "object", description: "App totals; present for type app/both", properties: [
+                        totalRuntime: [description: "Total app runtime"],
+                        pctOfUptime: [description: "App % of uptime"],
+                        appCount: [type: "integer", description: "Apps reported"]
+                    ]],
+                    appStats: [type: "array", description: "Per-app stats; present for type app/both", items: [type: "object"]],
+                    note: [type: "string", description: "Present when limit=0"]
+                ],
+                required: ["uptime"]
             ]
         ],
         [
@@ -2153,6 +2814,31 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
             inputSchema: [
                 type: "object",
                 properties: [:]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    uptime: [description: "Hub uptime"],
+                    scheduledJobs: [type: "object", description: "Scheduled jobs", properties: [
+                        count: [type: "integer", description: "Number of scheduled jobs"],
+                        jobs: [type: "array", items: [type: "object", properties: [
+                            id: [description: "Job ID"],
+                            name: [type: "string", description: "Job name"],
+                            recurring: [description: "Whether the job recurs"],
+                            method: [type: "string", description: "Method invoked"],
+                            nextRun: [description: "Next scheduled run"]
+                        ]]]
+                    ]],
+                    runningJobs: [type: "object", description: "Currently running jobs", properties: [
+                        count: [type: "integer", description: "Number of running jobs"],
+                        jobs: [type: "array", items: [type: "object"]]
+                    ]],
+                    hubActions: [type: "object", description: "Pending hub actions", properties: [
+                        count: [type: "integer", description: "Number of hub actions"],
+                        actions: [type: "array", items: [type: "object"]]
+                    ]]
+                ],
+                required: ["scheduledJobs", "runningJobs", "hubActions"]
             ]
         ],
         [
@@ -2173,6 +2859,29 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                     until: [type: "string", description: "Return only entries at or before this time. Same format as since (relative offsets are subtracted from now, same as since; max 30d). Default: now (no upper bound). Use since='2h', until='1h' to mean '1 to 2 hours ago'."],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Filters + limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    logs: [type: "array", description: "Log entries, most recent first", items: [type: "object", properties: [
+                        name: [type: "string", description: "Source name"],
+                        level: [type: "string", description: "Log level"],
+                        message: [type: "string", description: "Log message"],
+                        time: [type: "string", description: "Entry timestamp"],
+                        type: [type: "string", description: "Entry type"]
+                    ]]],
+                    count: [type: "integer", description: "Entries on this page"],
+                    totalParsed: [type: "integer", description: "Total entries parsed from the hub"],
+                    appliedLimit: [type: "integer", description: "Limit applied before pagination"],
+                    total: [type: "integer", description: "Filtered total; present in cursor mode"],
+                    nextCursor: [type: "string", description: "Present when more results remain"],
+                    truncated: [type: "boolean", description: "Present when messages were trimmed for size"],
+                    note: [type: "string", description: "Present when truncated"],
+                    filteredOut: [type: "integer", description: "Entries excluded by active filters"],
+                    appliedFilters: [type: "object", description: "Echo of active filter args"],
+                    timeFilterUnparseable: [type: "integer", description: "Entries kept despite unparseable timestamps"]
+                ],
+                required: ["logs", "count"]
             ]
         ],
         [
@@ -2184,6 +2893,30 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                     recordSnapshot: [type: "boolean", description: "If true, also append this snapshot to the performance-history CSV in the hub File Manager (a write side-effect). Default: false (read-only).", default: false],
                     trendPoints: [type: "integer", description: "Number of recent historical data points to include. Default: 10, max: 50.", default: 10]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    current: [type: "object", description: "Current snapshot", properties: [
+                        timestamp: [type: "string", description: "Snapshot time"],
+                        timestampEpoch: [type: "integer", description: "Snapshot time in epoch millis"],
+                        freeMemoryKB: [description: "Free OS memory (KB)"],
+                        internalTempC: [description: "Internal temperature (C)"],
+                        databaseSizeKB: [description: "Database size (KB)"],
+                        uptimeSeconds: [description: "Hub uptime in seconds"],
+                        uptimeFormatted: [type: "string", description: "Human-readable uptime"]
+                    ]],
+                    trends: [type: "array", description: "Recent historical data points", items: [type: "object", properties: [
+                        timestamp: [type: "string", description: "Point time"],
+                        freeMemoryKB: [description: "Free OS memory (KB)"],
+                        internalTempC: [description: "Internal temperature (C)"],
+                        databaseSizeKB: [description: "Database size (KB)"],
+                        uptimeSeconds: [description: "Uptime in seconds"]
+                    ]]],
+                    trendPointsAvailable: [type: "integer", description: "Total history rows available"],
+                    historyFile: [type: "string", description: "CSV history filename in File Manager"]
+                ],
+                required: ["current", "trends"]
             ]
         ],
         [
@@ -2199,6 +2932,41 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                     identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the staleDevices array. Omit to get all stale devices in one response (subject to the universal response-size guard). Pass nextCursor from a prior call to fetch the next page (page size 100). unknownDevices and healthyDevices are always returned in full alongside the page."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    summary: [type: "object", description: "Health counts", properties: [
+                        totalDevices: [type: "integer", description: "Devices checked"],
+                        healthyCount: [type: "integer", description: "Healthy devices"],
+                        staleCount: [type: "integer", description: "Stale devices"],
+                        unknownCount: [type: "integer", description: "Devices with no/unreadable activity"],
+                        staleThresholdHours: [type: "integer", description: "Staleness threshold used"],
+                        checkedAt: [type: "string", description: "Check timestamp"],
+                        staleDevicesInPage: [type: "integer", description: "Stale devices on this page; present in cursor mode"]
+                    ]],
+                    staleDevices: [type: "array", description: "Stale device entries (paginated)", items: [type: "object", properties: [
+                        id: [type: "string", description: "Device ID"],
+                        name: [type: "string", description: "Device label"],
+                        lastActivity: [type: "string", description: "Last-activity ISO timestamp or 'never'"],
+                        hoursAgo: [type: "number", description: "Hours since last activity, or null"]
+                    ]]],
+                    unknownDevices: [type: "array", description: "Devices with no readable activity", items: [type: "object"]],
+                    healthyDevices: [type: "array", description: "Present when includeHealthy=true", items: [type: "object"]],
+                    pingResults: [type: "array", description: "Present when pingHosts supplied", items: [type: "object", properties: [
+                        ipAddress: [type: "string", description: "Target IP"],
+                        reachable: [type: "boolean", description: "Whether the host responded"],
+                        packetLoss: [description: "Packet-loss percentage"],
+                        rttAvg: [description: "Average round-trip time"]
+                    ]]],
+                    recommendation: [type: "string", description: "Present when stale/unknown devices exist"],
+                    total: [type: "integer", description: "Total stale devices; present in cursor mode"],
+                    nextCursor: [type: "string", description: "Pagination cursor; present when more stale devices remain"],
+                    identifyHubTriggered: [type: "boolean", description: "Present when identifyHub=true: LED blink result"],
+                    identifyHubError: [type: "string", description: "Present when the LED-blink request failed"],
+                    message: [type: "string", description: "Present when no devices are selected"]
+                ],
+                required: ["summary"]
             ]
         ],
         [
@@ -2210,6 +2978,32 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                     limit: [type: "integer", description: "Max entries to return (most recent). Default: 100, 0 for all. Hub may have thousands of entries.", default: 100],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Pages within the limit-filtered entries (limit=0 + cursor pages the full ring buffer). Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    entries: [type: "array", description: "Memory history entries", items: [type: "object", properties: [
+                        timestamp: [type: "string", description: "Entry timestamp"],
+                        freeMemoryKB: [type: "integer", description: "Free OS memory (KB)"],
+                        cpuLoad5min: [type: "string", description: "5-minute CPU load average"],
+                        totalJavaKB: [type: "integer", description: "Total Java heap (KB), when present"],
+                        freeJavaKB: [type: "integer", description: "Free Java heap (KB), when present"],
+                        directJavaKB: [type: "integer", description: "Direct Java memory (KB), when present"]
+                    ]]],
+                    summary: [type: "object", description: "Aggregate stats over all entries", properties: [
+                        totalEntries: [type: "integer", description: "Total entries available"],
+                        currentMemoryKB: [type: "integer", description: "Most recent free memory (KB)"],
+                        minMemoryKB: [type: "integer", description: "Minimum free memory (KB)"],
+                        maxMemoryKB: [type: "integer", description: "Maximum free memory (KB)"],
+                        avgMemoryKB: [type: "integer", description: "Average free memory (KB)"],
+                        memoryWarning: [type: "string", description: "Present when memory is low"],
+                        truncated: [type: "boolean", description: "Present when entries were limited"],
+                        message: [type: "string", description: "Present when no history available"]
+                    ]],
+                    total: [type: "integer", description: "Candidate entry count; present in cursor mode"],
+                    nextCursor: [type: "string", description: "Present when more results remain"]
+                ],
+                required: ["entries", "summary"]
             ]
         ],
         [
@@ -2218,6 +3012,18 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
             inputSchema: [
                 type: "object",
                 properties: [:]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    beforeFreeMemoryKB: [type: "integer", description: "Free memory before GC (KB), or null"],
+                    afterFreeMemoryKB: [type: "integer", description: "Free memory after GC (KB), or null"],
+                    timestamp: [type: "string", description: "When GC ran"],
+                    deltaKB: [type: "integer", description: "Memory delta (KB); present when both readings succeeded"],
+                    memoryReclaimed: [type: "boolean", description: "Whether free memory increased; present when both readings succeeded"],
+                    summary: [type: "string", description: "Human-readable GC result"]
+                ],
+                required: ["timestamp", "summary"]
             ]
         ],
 
@@ -2233,6 +3039,17 @@ Requires Hub Admin Write + confirm. This is the only write tool that doesn't req
                     confirm: [type: "boolean", description: "Must be true to confirm you want to create a backup"]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the backup was created"],
+                    message: [type: "string", description: "Human-readable result"],
+                    backupTimestamp: [type: "string", description: "Formatted backup time"],
+                    backupTimestampEpoch: [type: "integer", description: "Backup time in epoch millis"],
+                    note: [type: "string", description: "Where to download the backup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2247,6 +3064,17 @@ Requires Hub Admin Write.""",
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the reboot was initiated"],
+                    message: [type: "string", description: "Human-readable result"],
+                    lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
+                    warning: [type: "string", description: "Downtime warning"],
+                    response: [type: "string", description: "Truncated hub response body"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2261,6 +3089,17 @@ Requires Hub Admin Write.""",
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the shutdown."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the shutdown was initiated"],
+                    message: [type: "string", description: "Human-readable result"],
+                    lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
+                    warning: [type: "string", description: "Power-off warning; hub will not auto-restart"],
+                    response: [type: "string", description: "Truncated hub response body"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2277,6 +3116,19 @@ Requires Hub Admin Write.""",
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the Z-Wave repair."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the repair was started"],
+                    message: [type: "string", description: "Human-readable result"],
+                    duration: [type: "string", description: "Expected repair duration"],
+                    lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
+                    warning: [type: "string", description: "Disruption warning during repair"],
+                    note: [type: "string", description: "Where to check repair progress"],
+                    response: [type: "string", description: "Truncated hub response body"]
+                ],
+                required: ["success"]
             ]
         ],
         // Device Admin
@@ -2293,6 +3145,24 @@ Device + history lost, automations break. Requires Hub Admin Write.""",
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created, device was verified, and user explicitly approved the deletion."]
                 ],
                 required: ["deviceId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether deletion was verified"],
+                    deviceId: [type: "string", description: "Deleted device ID"],
+                    deviceName: [type: "string", description: "Device label/name"],
+                    message: [type: "string", description: "Human-readable result"],
+                    warnings: [type: "array", description: "Pre-delete warnings (active device, radio membership, rule references)", items: [type: "string"]],
+                    auditInfo: [type: "object", description: "Audit trail", properties: [
+                        deletedAt: [type: "string", description: "Deletion timestamp"],
+                        deviceType: [type: "string", description: "Driver/type name"],
+                        deviceNetworkId: [type: "string", description: "Deleted device's DNI"],
+                        driverName: [type: "string", description: "Driver name"],
+                        lastHubBackup: [type: "string", description: "Last hub backup timestamp"]
+                    ]]
+                ],
+                required: ["success", "deviceId", "deviceName", "message"]
             ]
         ],
 
@@ -2326,6 +3196,30 @@ action="delete": Provide deviceNetworkId of device to delete. Use hub_list_devic
                 // action-discriminated tool and a top-level oneOf would also reject valid delete
                 // calls (which carry neither field). Consistent with every other manage_* tool,
                 // which enforce action-conditional args at runtime.
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the operation succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    device: [type: "object", description: "create only: the new virtual device", properties: [
+                        id: [type: "string", description: "New device ID"],
+                        name: [type: "string", description: "Driver type / device name"],
+                        label: [type: "string", description: "Display label"],
+                        deviceNetworkId: [type: "string", description: "Device network ID"],
+                        driverNamespace: [type: "string", description: "Driver namespace"],
+                        driverType: [type: "string", description: "Driver type name"],
+                        typeName: [type: "string", description: "Deprecated alias for driverType"],
+                        capabilities: [type: "array", description: "Capability names", items: [type: "string"]],
+                        commands: [type: "array", description: "Command names", items: [type: "string"]],
+                        attributes: [type: "array", description: "Attribute name/value pairs", items: [type: "object"]]
+                    ]],
+                    tips: [type: "array", description: "create only: usage tips", items: [type: "string"]],
+                    deviceId: [type: "string", description: "delete only: deleted device ID"],
+                    deviceNetworkId: [type: "string", description: "delete only: deleted device DNI"],
+                    deviceLabel: [type: "string", description: "delete only: deleted device label"]
+                ],
+                required: ["success", "message"]
             ]
         ],
         [
@@ -2347,6 +3241,25 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
                     preferences: [type: "object", description: "Device preferences to update. Each value must be an object with 'type' and 'value'. Example: {\"pollInterval\": {\"type\": \"number\", \"value\": 30}}"]
                 ],
                 required: ["deviceId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "True when all requested changes applied without error"],
+                    device: [type: "string", description: "Device label"],
+                    deviceId: [type: "string", description: "Device ID"],
+                    changes: [type: "array", description: "Applied changes", items: [type: "object", properties: [
+                        property: [type: "string", description: "Property changed"],
+                        oldValue: [description: "Prior value, when known"],
+                        newValue: [description: "New value"]
+                    ]]],
+                    errors: [type: "array", description: "Per-property failures, or null when none", items: [type: "object", properties: [
+                        property: [type: "string", description: "Property that failed"],
+                        error: [type: "string", description: "Failure reason"]
+                    ]]],
+                    message: [type: "string", description: "Human-readable summary"]
+                ],
+                required: ["success", "device", "deviceId", "message"]
             ]
         ],
 
@@ -2359,6 +3272,22 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    rooms: [type: "array", description: "Rooms on the hub", items: [type: "object", properties: [
+                        id: [type: "string", description: "Room ID"],
+                        name: [type: "string", description: "Room name"],
+                        deviceCount: [type: "integer", description: "Devices assigned"],
+                        deviceIds: [type: "array", description: "Assigned device IDs", items: [type: "string"]]
+                    ]]],
+                    count: [type: "integer", description: "Rooms returned this page"],
+                    total: [type: "integer", description: "Total rooms; present only in paginated mode"],
+                    nextCursor: [type: "string", description: "Pagination cursor; present when more results remain"],
+                    message: [type: "string", description: "Present when no rooms configured"]
+                ],
+                required: ["rooms", "count"]
             ]
         ],
         [
@@ -2370,6 +3299,22 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
                     room: [type: "string", description: "Room name (case-insensitive) or room ID"]
                 ],
                 required: ["room"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    id: [type: "string", description: "Room ID"],
+                    name: [type: "string", description: "Room name"],
+                    deviceCount: [type: "integer", description: "Devices in room"],
+                    devices: [type: "array", description: "Assigned devices", items: [type: "object", properties: [
+                        id: [type: "string", description: "Device ID"],
+                        label: [type: "string", description: "Device label"],
+                        name: [type: "string", description: "Device name"],
+                        currentStates: [type: "object", description: "Current attribute values; present when accessible"],
+                        accessible: [type: "boolean", description: "False when device not reachable via MCP"]
+                    ]]]
+                ],
+                required: ["id", "name", "deviceCount", "devices"]
             ]
         ],
         [
@@ -2383,6 +3328,19 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["name", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether creation succeeded"],
+                    room: [type: "object", description: "Created room", properties: [
+                        id: [type: "string", description: "New room ID"],
+                        name: [type: "string", description: "Room name"],
+                        deviceCount: [type: "integer", description: "Devices assigned"]
+                    ]],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2398,6 +3356,19 @@ Requires Hub Admin Write.""",
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]
                 ],
                 required: ["room", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether deletion succeeded"],
+                    deletedRoom: [type: "object", description: "Deleted room", properties: [
+                        id: [type: "string", description: "Room ID"],
+                        name: [type: "string", description: "Room name"]
+                    ]],
+                    devicesUnassigned: [type: "integer", description: "Devices now unassigned"],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2411,6 +3382,19 @@ Requires Hub Admin Write.""",
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["room", "newName", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether rename succeeded"],
+                    room: [type: "object", description: "Renamed room", properties: [
+                        id: [type: "string", description: "Room ID"],
+                        name: [type: "string", description: "New room name"],
+                        previousName: [type: "string", description: "Prior room name"]
+                    ]],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
             ]
         ],
 
@@ -2427,6 +3411,31 @@ Requires Hub Admin Write.""",
                     length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
                 ],
                 required: ["type", "id"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the source was read"],
+                    appId: [description: "App ID (type='app')"],
+                    driverId: [description: "Driver ID (type='driver')"],
+                    libraryId: [description: "Library ID (type='library')"],
+                    source: [type: "string", description: "Source chunk for the requested offset/length"],
+                    version: [description: "Item version"],
+                    status: [type: "string", description: "Hub status field (app/driver)"],
+                    name: [type: "string", description: "Library name (type='library')"],
+                    namespace: [type: "string", description: "Library namespace (type='library')"],
+                    totalLength: [type: "integer", description: "Total source length in chars"],
+                    offset: [type: "integer", description: "Start offset of this chunk"],
+                    chunkLength: [type: "integer", description: "Chars returned in this chunk"],
+                    hasMore: [type: "boolean", description: "More chunks remain"],
+                    nextOffset: [type: "integer", description: "Offset for next chunk; present when hasMore"],
+                    remainingChars: [type: "integer", description: "Chars left; present when hasMore"],
+                    hint: [type: "string", description: "Next-chunk guidance; present when hasMore"],
+                    sourceFile: [type: "string", description: "File Manager filename full source was auto-saved to (large sources)"],
+                    sourceFileHint: [type: "string", description: "Guidance for using sourceFile mode; present with sourceFile"],
+                    sourceFileError: [type: "string", description: "Present (library) when auto-save to File Manager failed"]
+                ],
+                required: ["success"]
             ]
         ],
         // Hub Admin App/Driver Management Write Tools
@@ -2452,6 +3461,24 @@ Verifies install succeeded: if the hub accepted the request but the app failed t
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the install/instantiation succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    appId: [description: "New app code ID (code-install mode)"],
+                    sourceMode: [type: "string", description: "Source mode used: source / sourceFile / importUrl"],
+                    sourceLength: [type: "integer", description: "Chars of source installed"],
+                    verified: [type: "boolean", description: "Whether post-install compile verification passed"],
+                    verifyError: [type: "string", description: "Verification fetch error; present when verify could not run"],
+                    codeAppId: [description: "installAsUserApp mode: source code app ID"],
+                    instanceAppId: [description: "installAsUserApp mode: new running instance ID"],
+                    mode: [type: "string", description: "installAsUserApp mode marker"],
+                    note: [type: "string", description: "Recovery/source-mode guidance"],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2487,6 +3514,31 @@ Verifies install succeeded: if the hub accepted the request but the driver faile
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the install (or all bulk installs) succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    driverId: [description: "New driver code ID (single-driver mode)"],
+                    sourceMode: [type: "string", description: "Source mode used (single-driver mode)"],
+                    sourceLength: [type: "integer", description: "Chars installed (single-driver mode)"],
+                    verified: [type: "boolean", description: "Post-install verification passed (single-driver mode)"],
+                    verifyError: [type: "string", description: "Verification fetch error (single-driver mode)"],
+                    note: [type: "string", description: "Recovery/source-mode guidance"],
+                    installs: [type: "array", description: "Per-driver results (bulk mode)", items: [type: "object", properties: [
+                        driverId: [description: "Driver code ID, null if it failed"],
+                        success: [type: "boolean", description: "Whether this driver installed"],
+                        sourceMode: [type: "string", description: "Source mode used"],
+                        sourceLength: [type: "integer", description: "Chars installed"],
+                        verified: [type: "boolean", description: "Verification passed"],
+                        verifyError: [type: "string", description: "Verification fetch error"],
+                        error: [type: "string", description: "Failure reason; present when success=false"],
+                        note: [type: "string", description: "Per-item guidance"]
+                    ]]],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2515,6 +3567,27 @@ Self-update guard: refuses to overwrite the MCP server's own app source unless D
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["appId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the update succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    appId: [description: "App ID updated"],
+                    previousVersion: [description: "Version prior to the update"],
+                    sourceMode: [type: "string", description: "Source mode used: source / sourceFile / importUrl / resave"],
+                    sourceLength: [type: "integer", description: "Chars written"],
+                    note: [type: "string", description: "Source-mode / recovery guidance"],
+                    triggerUpdated: [description: "Instance appId updated() was fired on; present when requested"],
+                    updatedFired: [type: "boolean", description: "Whether updated() fired on the instance"],
+                    partial: [type: "boolean", description: "Code saved but the opt-in lifecycle refresh failed"],
+                    repairHints: [type: "array", description: "Recovery steps; present on partial/lifecycle failure", items: [type: "string"]],
+                    expectedVersion: [type: "integer", description: "Optimistic-lock expected version; present on conflict"],
+                    currentVersion: [type: "integer", description: "Hub's actual version; present on conflict"],
+                    conflict: [type: "boolean", description: "True when an optimistic-lock conflict aborted the update"],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2558,6 +3631,34 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the update (or all bulk updates) succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    driverId: [description: "Driver ID updated (single-driver mode)"],
+                    previousVersion: [description: "Version prior to the update (single-driver mode)"],
+                    sourceMode: [type: "string", description: "Source mode used (single-driver mode)"],
+                    sourceLength: [type: "integer", description: "Chars written (single-driver mode)"],
+                    note: [type: "string", description: "Source-mode / recovery guidance"],
+                    conflict: [type: "boolean", description: "Optimistic-lock conflict aborted the update (single-driver mode)"],
+                    expectedVersion: [type: "integer", description: "Expected version on conflict (single-driver mode)"],
+                    currentVersion: [type: "integer", description: "Hub's actual version on conflict (single-driver mode)"],
+                    updates: [type: "array", description: "Per-driver results (bulk mode)", items: [type: "object", properties: [
+                        driverId: [type: "string", description: "Driver ID"],
+                        success: [type: "boolean", description: "Whether this driver updated"],
+                        sourceMode: [type: "string", description: "Source mode used"],
+                        sourceLength: [type: "integer", description: "Chars written"],
+                        error: [type: "string", description: "Failure reason; present when success=false"],
+                        note: [type: "string", description: "Per-item guidance"],
+                        conflict: [type: "boolean", description: "Optimistic-lock conflict for this item"],
+                        expectedVersion: [type: "integer", description: "Expected version on conflict"],
+                        currentVersion: [type: "integer", description: "Hub's actual version on conflict"]
+                    ]]],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2575,6 +3676,21 @@ Tell the user the item name/ID, warn it's permanent, get confirmation. Requires 
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["type", "id", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the deletion succeeded"],
+                    message: [type: "string", description: "Human-readable result, including backup status"],
+                    appId: [description: "Deleted app ID (type='app')"],
+                    driverId: [description: "Deleted driver ID (type='driver')"],
+                    libraryId: [description: "Deleted library ID (type='library')"],
+                    backupFile: [type: "string", description: "Pre-delete backup filename"],
+                    restoreHint: [type: "string", description: "How to recover the deleted item"],
+                    backupWarning: [type: "string", description: "Present when the pre-delete backup could not be created"],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
 
@@ -2598,6 +3714,22 @@ Library source must include a library() definition block with 4 required fields:
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the library installed"],
+                    message: [type: "string", description: "Human-readable result"],
+                    libraryId: [description: "New library ID"],
+                    version: [description: "Library version"],
+                    sourceMode: [type: "string", description: "Source mode used: source / sourceFile / importUrl"],
+                    sourceLength: [type: "integer", description: "Chars installed"],
+                    verified: [type: "boolean", description: "Post-install verification passed"],
+                    verifyError: [type: "string", description: "Verification fetch error; present when verify could not run"],
+                    note: [type: "string", description: "Recovery guidance"],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2622,6 +3754,21 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["libraryId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the update succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    libraryId: [description: "Library ID updated"],
+                    previousVersion: [description: "Version prior to the update"],
+                    newVersion: [description: "Version after the update"],
+                    sourceMode: [type: "string", description: "Source mode used: source / sourceFile / importUrl / resave"],
+                    sourceLength: [type: "integer", description: "Chars written"],
+                    note: [type: "string", description: "Source-mode / recovery guidance"],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
             ]
         ],
         // ==================== Item Backup Tools ====================
@@ -2634,6 +3781,35 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ],
                 required: []
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    backups: [type: "array", description: "Backup entries, newest first", items: [type: "object", properties: [
+                        backupKey: [type: "string", description: "Restore key (e.g. app_123)"],
+                        type: [type: "string", description: "app / driver / library / rm-rule"],
+                        id: [type: "string", description: "Item ID"],
+                        fileName: [type: "string", description: "Backup file in File Manager"],
+                        timestampEpoch: [type: "integer", description: "Backup time (epoch ms)"],
+                        timestamp: [type: "string", description: "Formatted backup time"],
+                        age: [type: "string", description: "Human-readable age"],
+                        sourceLength: [type: "integer", description: "Backed-up source length in chars"],
+                        directDownload: [type: "string", description: "Local download URL"],
+                        version: [description: "Item version (app/driver/library entries)"],
+                        ruleId: [description: "Rule ID (rm-rule entries)"],
+                        appLabel: [type: "string", description: "Rule label (rm-rule entries)"],
+                        reason: [type: "string", description: "Snapshot reason (rm-rule entries)"]
+                    ]]],
+                    count: [type: "integer", description: "Backups returned"],
+                    total: [type: "integer", description: "Total backups tracked"],
+                    maxBackups: [type: "integer", description: "Max backups retained"],
+                    storage: [type: "string", description: "Where backups are stored"],
+                    howToRestore: [type: "string", description: "Restore guidance"],
+                    manualRestore: [type: "string", description: "Manual restore guidance"],
+                    message: [type: "string", description: "Present when no backups exist yet"],
+                    nextCursor: [type: "string", description: "Present when more results remain"]
+                ],
+                required: ["backups", "count"]
             ]
         ],
         [
@@ -2645,6 +3821,25 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     backupKey: [type: "string", description: "The backup key from hub_list_backups (e.g., 'app_123', 'driver_456', or 'library_42')"]
                 ],
                 required: ["backupKey"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    backupKey: [type: "string", description: "Backup key read"],
+                    type: [type: "string", description: "app / driver / library"],
+                    id: [type: "string", description: "Item ID"],
+                    fileName: [type: "string", description: "Backup file in File Manager"],
+                    version: [description: "Item version"],
+                    timestamp: [type: "string", description: "Formatted backup time"],
+                    age: [type: "string", description: "Human-readable age"],
+                    sourceLength: [type: "integer", description: "Source length in chars"],
+                    directDownload: [type: "string", description: "Local download URL"],
+                    source: [type: "string", description: "Backed-up source; present when small enough to inline"],
+                    sourceTooLargeForResponse: [type: "boolean", description: "True when source omitted for size"],
+                    manualDownload: [type: "string", description: "Download guidance; present when source omitted"],
+                    howToRestore: [type: "string", description: "Restore guidance for this item type"],
+                    message: [type: "string", description: "Note when source omitted for size"]
+                ]
             ]
         ],
         [
@@ -2657,6 +3852,22 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the restore."]
                 ],
                 required: ["backupKey", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the restore succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    type: [type: "string", description: "Item type restored"],
+                    id: [description: "Item ID restored"],
+                    restoredVersion: [description: "Version restored to"],
+                    preRestoreBackup: [type: "string", description: "Backup key of the pre-restore snapshot (undo path)"],
+                    preRestoreFile: [type: "string", description: "Pre-restore snapshot filename"],
+                    undoHint: [type: "string", description: "How to undo this restore"],
+                    backupKey: [type: "string", description: "Backup key (echoed on failure)"],
+                    directDownload: [type: "string", description: "Local download URL (present on failure paths)"]
+                ],
+                required: ["success"]
             ]
         ],
         // File Manager Tools
@@ -2668,6 +3879,22 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    files: [type: "array", description: "Files in File Manager", items: [type: "object", properties: [
+                        name: [type: "string", description: "File name"],
+                        directDownload: [type: "string", description: "Local download URL"],
+                        size: [type: "integer", description: "Size in bytes; present when known"],
+                        lastModified: [type: "string", description: "Last-modified date; present when known"]
+                    ]]],
+                    total: [type: "integer", description: "Total files matched"],
+                    storage: [type: "string", description: "Storage location note"],
+                    note: [type: "string", description: "Present on HTML-fallback parse"],
+                    nextCursor: [type: "string", description: "Pagination cursor; present when more results remain"]
+                ],
+                required: ["files", "total"]
             ]
         ],
         [
@@ -2681,6 +3908,23 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 60000"]
                 ],
                 required: ["fileName"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the read succeeded"],
+                    fileName: [type: "string", description: "File read"],
+                    totalLength: [type: "integer", description: "Total file length in chars"],
+                    offset: [type: "integer", description: "Start offset of this chunk"],
+                    chunkLength: [type: "integer", description: "Chars returned in this chunk"],
+                    hasMore: [type: "boolean", description: "More chunks remain"],
+                    content: [type: "string", description: "Chunk content"],
+                    directDownload: [type: "string", description: "Local download URL"],
+                    nextOffset: [type: "integer", description: "Offset for next chunk; present when hasMore"],
+                    remainingChars: [type: "integer", description: "Chars left; present when hasMore"],
+                    hint: [type: "string", description: "Next-call guidance; present when hasMore"]
+                ],
+                required: ["success", "fileName", "totalLength", "offset", "chunkLength", "hasMore", "content"]
             ]
         ],
         [
@@ -2694,6 +3938,19 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the write."]
                 ],
                 required: ["fileName", "content", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the write succeeded"],
+                    message: [type: "string", description: "Human-readable result"],
+                    fileName: [type: "string", description: "File written"],
+                    contentLength: [type: "integer", description: "Chars written"],
+                    directDownload: [type: "string", description: "Local download URL"],
+                    backupFile: [type: "string", description: "Backup name; present when an existing file was overwritten"],
+                    backupDownload: [type: "string", description: "Backup download URL; present with backupFile"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2706,6 +3963,19 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the deletion."]
                 ],
                 required: ["fileName", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the deletion succeeded"],
+                    message: [type: "string", description: "Human-readable result, including backup status"],
+                    fileName: [type: "string", description: "Name of the file that was deleted"],
+                    backupFile: [type: "string", description: "Name of the auto-created backup file (present when a backup was made)"],
+                    backupDownload: [type: "string", description: "URL to download the backup (present when a backup was made)"],
+                    undoHint: [type: "string", description: "Guidance for recovering the deleted file (present when a backup was made)"],
+                    warning: [type: "string", description: "Present when the file could not be backed up before deletion"]
+                ],
+                required: ["success", "message", "fileName"]
             ]
         ],
         // Installed Apps Integration (built-in + user app visibility)
@@ -2723,6 +3993,26 @@ Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, l
                     cursor: [type: "string", description: "Opt-in pagination cursor for the appsUsing list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ],
                 required: ["deviceId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    deviceId: [type: "string", description: "Device queried"],
+                    deviceName: [type: "string", description: "Device display name"],
+                    appsUsing: [type: "array", description: "Apps referencing this device", items: [type: "object", properties: [
+                        id: [description: "App ID"],
+                        name: [type: "string", description: "App type name (e.g. Room Lights, Rule-5.1)"],
+                        label: [type: "string", description: "User-visible label (may contain HTML)"],
+                        trueLabel: [type: "string", description: "Label stripped of HTML"],
+                        disabled: [type: "boolean", description: "App is disabled"]
+                    ]]],
+                    count: [type: "integer", description: "Number of apps using the device"],
+                    parentApp: [description: "Parent app reference, when present"],
+                    countMismatch: [type: "string", description: "Present when firmware count disagrees with the array length"],
+                    total: [type: "integer", description: "Total matched (present when paginating)"],
+                    nextCursor: [type: "string", description: "Present when more results remain"]
+                ],
+                required: ["deviceId", "appsUsing", "count"]
             ]
         ],
         // Hub Admin App Configuration Read (grouped with installed-apps peers)
@@ -2745,6 +4035,52 @@ Requires Hub Admin Read.""",
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map. Default false -- large apps can have 500-1000 keys with app-specific encoding (e.g. Room Lighting's dm~<deviceId>~<scene>). Set true only for power-user inspection.", default: false]
                 ],
                 required: ["appId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the config was read"],
+                    app: [type: "object", description: "App identity", properties: [
+                        id: [description: "App ID"],
+                        label: [type: "string", description: "User-visible label"],
+                        name: [type: "string", description: "App type name"],
+                        appType: [type: "object", description: "App-type metadata (name, namespace, author, etc.)"],
+                        disabled: [type: "boolean", description: "App is disabled"],
+                        parentAppId: [description: "Parent app ID, when a child"],
+                        installed: [type: "boolean", description: "App is installed"]
+                    ]],
+                    page: [type: "object", description: "The config page", properties: [
+                        name: [type: "string", description: "Page name"],
+                        title: [type: "string", description: "Page title"],
+                        install: [type: "boolean", description: "Page is the install page"],
+                        refreshInterval: [description: "Auto-refresh interval"],
+                        sections: [type: "array", description: "Page sections", items: [type: "object", properties: [
+                            title: [type: "string", description: "Section title"],
+                            inputs: [type: "array", description: "Input fields", items: [type: "object", properties: [
+                                name: [type: "string", description: "Setting name"],
+                                type: [type: "string", description: "Input type"],
+                                title: [type: "string", description: "Input title"],
+                                multiple: [type: "boolean", description: "Accepts multiple values"],
+                                required: [type: "boolean", description: "Input is required"],
+                                description: [type: "string", description: "Input description"],
+                                options: [description: "Allowed values, when an enum/capability picker"],
+                                value: [description: "Current configured value"]
+                            ]]],
+                            paragraphs: [type: "array", description: "Informational text blocks", items: [type: "string"]],
+                            embeddedActions: [type: "array", description: "Clickable wizard affordances embedded in HTML", items: [type: "object"]]
+                        ]]]
+                    ]],
+                    childApps: [type: "array", description: "Child apps", items: [type: "object", properties: [
+                        id: [description: "Child app ID"],
+                        label: [type: "string", description: "Child label"],
+                        name: [type: "string", description: "Child type name"]
+                    ]]],
+                    endpoint: [type: "string", description: "Internal API endpoint used"],
+                    settingsKeyCount: [type: "integer", description: "Number of raw settings keys"],
+                    settings: [type: "object", description: "Raw app-internal settings; present when includeSettings=true"],
+                    settingsNote: [type: "string", description: "Note when raw settings were omitted"]
+                ],
+                required: ["success", "app", "page"]
             ]
         ],
         // Hub Admin App Pages Directory
@@ -2765,6 +4101,30 @@ Requires Hub Admin Read.""",
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the Hubitat UI URL (/installedapp/configure/<id>)."]
                 ],
                 required: ["appId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the page list was built"],
+                    app: [type: "object", description: "App identity", properties: [
+                        id: [description: "App ID"],
+                        label: [type: "string", description: "User-visible label"],
+                        name: [type: "string", description: "App type name"],
+                        appTypeName: [type: "string", description: "App-type display name"]
+                    ]],
+                    primaryPage: [type: "object", description: "Live-introspected primary page", properties: [
+                        name: [type: "string", description: "Page name"],
+                        title: [type: "string", description: "Page title"],
+                        role: [type: "string", description: "Page role"]
+                    ]],
+                    pages: [type: "array", description: "Known page directory", items: [type: "object", properties: [
+                        name: [type: "string", description: "Page name"],
+                        title: [type: "string", description: "Page title"],
+                        role: [type: "string", description: "Page role"]
+                    ]]],
+                    note: [type: "string", description: "Guidance for uncurated or single-page app types"]
+                ],
+                required: ["success", "pages"]
             ]
         ],
         // HPM Package State Tools
@@ -2791,6 +4151,49 @@ Requires Hub Admin Read. HPM itself must be installed.""",
                     packageFilter: [type: "string", description: "Drift mode only (includeDrift=true): case-insensitive substring filter on packageName; only matching packages are analyzed for drift."],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the packages list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 25 -- HPM entries carry full app/driver/file inventories so each entry can be large)."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the package list was built"],
+                    hpmAppId: [description: "HPM installed-app ID (echo for caching)"],
+                    count: [type: "integer", description: "Packages returned"],
+                    packages: [type: "array", description: "Tracked HPM packages", items: [type: "object", properties: [
+                        manifestUrl: [type: "string", description: "Manifest URL"],
+                        packageName: [type: "string", description: "Package name"],
+                        version: [type: "string", description: "Package version"],
+                        beta: [type: "boolean", description: "Beta flag"],
+                        author: [type: "string", description: "Author"],
+                        apps: [type: "array", description: "App components", items: [type: "object", properties: [
+                            id: [type: "string", description: "Manifest-internal component ID"],
+                            name: [type: "string", description: "Component name"],
+                            required: [type: "boolean", description: "Component is required"],
+                            version: [type: "string", description: "Component version, when present"],
+                            heID: [type: "string", description: "Hubitat internal code ID; null if never installed"],
+                            _warning: [type: "string", description: "heID normalization note, when applied"]
+                        ]]],
+                        drivers: [type: "array", description: "Driver components", items: [type: "object", properties: [
+                            id: [type: "string", description: "Manifest-internal component ID"],
+                            name: [type: "string", description: "Component name"],
+                            required: [type: "boolean", description: "Component is required"],
+                            version: [type: "string", description: "Component version, when present"],
+                            heID: [type: "string", description: "Hubitat internal code ID; null if never installed"],
+                            _warning: [type: "string", description: "heID normalization note, when applied"]
+                        ]]],
+                        files: [type: "array", description: "File components", items: [type: "object", properties: [
+                            id: [type: "string", description: "Component ID"],
+                            name: [type: "string", description: "File name"]
+                        ]]],
+                        skippedAppCount: [type: "integer", description: "Non-Map app entries skipped (omitted when 0)"],
+                        skippedDriverCount: [type: "integer", description: "Non-Map driver entries skipped (omitted when 0)"],
+                        skippedFileCount: [type: "integer", description: "Non-Map file entries skipped (omitted when 0)"]
+                    ]]],
+                    skippedMalformed: [type: "array", description: "Manifest URLs skipped entirely (non-Map top level)", items: [type: "string"]],
+                    drift: [type: "object", description: "Drift cross-reference block; present when includeDrift=true"],
+                    total: [type: "integer", description: "Total matched (present when paginating)"],
+                    nextCursor: [type: "string", description: "Present when more results remain"]
+                ],
+                required: ["success", "packages", "count"]
             ]
         ],
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
@@ -2801,6 +4204,27 @@ Requires Hub Admin Read. HPM itself must be installed.""",
                 type: "object",
                 properties: [
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    rules: [type: "array", description: "Rule Machine rules", items: [type: "object", properties: [
+                        id: [type: "integer", description: "Rule app ID"],
+                        label: [type: "string", description: "Rule label"],
+                        name: [type: "string", description: "Rule name"],
+                        type: [type: "string", description: "Rule type, or null"],
+                        rmVersion: [type: "string", description: "RM version, 4.x or 5.x"]
+                    ]]],
+                    count: [type: "integer", description: "Rules returned"],
+                    total: [type: "integer", description: "Total rules; paginated mode only"],
+                    nextCursor: [type: "string", description: "Cursor; present when more remain"],
+                    ghostsFiltered: [type: "array", description: "RMUtils cache ghost IDs dropped", items: [type: "integer"]],
+                    ghostNote: [type: "string", description: "Present when ghosts were filtered"],
+                    note: [type: "string", description: "Present when RM not detected or informational"],
+                    warning: [type: "string", description: "Present on partial RMUtils failure"],
+                    success: [type: "boolean", description: "Present only on failure/partial paths"],
+                    error: [type: "string", description: "Present on hard failure"]
                 ]
             ]
         ],
@@ -2814,6 +4238,18 @@ Requires Hub Admin Read. HPM itself must be installed.""",
                     action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. 'rule'=runRule, 'actions'=runRuleAct, 'stop'/'start'=toggle stopRule button (routes through the RM UI button, not RMUtils, because RMUtils has no startRule verb; 'start' also resets the private boolean). Default: rule"]
                 ],
                 required: ["ruleId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the action succeeded"],
+                    ruleId: [type: "integer", description: "Rule app ID acted on"],
+                    rmAction: [type: "string", description: "RM action performed (runRule, runRuleAct, stopRule toggle, noop)"],
+                    fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
+                    note: [type: "string", description: "Present on no-op or informational"],
+                    error: [type: "string", description: "Present on failure"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2826,6 +4262,18 @@ Requires Hub Admin Read. HPM itself must be installed.""",
                     value: [type: "boolean", description: "true = pause the rule; false = resume it."]
                 ],
                 required: ["ruleId", "value"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the pause/resume succeeded"],
+                    ruleId: [type: "integer", description: "Rule app ID"],
+                    rmAction: [type: "string", description: "pauseRule or resumeRule"],
+                    fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
+                    error: [type: "string", description: "Present on failure"],
+                    note: [type: "string", description: "Present on failure"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -2838,6 +4286,18 @@ Requires Hub Admin Read. HPM itself must be installed.""",
                     value: [type: "boolean", description: "true sets the boolean to TRUE, false sets it to FALSE"]
                 ],
                 required: ["ruleId", "value"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the set succeeded"],
+                    ruleId: [type: "integer", description: "Rule app ID"],
+                    rmAction: [type: "string", description: "setRuleBooleanTrue or setRuleBooleanFalse"],
+                    fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
+                    error: [type: "string", description: "Present on failure"],
+                    note: [type: "string", description: "Present on failure"]
+                ],
+                required: ["success"]
             ]
         ],
         // Native classic-app CRUD (hub admin-layer, bypasses SmartApp parent-type check).
@@ -2891,6 +4351,28 @@ Requires Hub Admin Write + confirm=true + recent hub backup (within 24h).""",
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Hub Admin Write operations."]
                 ],
                 required: ["name", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "True when created and healthy with no partials"],
+                    partial: [type: "boolean", description: "True when some triggers/actions failed"],
+                    partialTriggers: [type: "array", description: "Indices of triggers that failed", items: [type: "integer"]],
+                    partialActions: [type: "array", description: "Indices of actions that failed", items: [type: "integer"]],
+                    repairHints: [type: "array", description: "Suggested fixes", items: [type: "string"]],
+                    appId: [type: "integer", description: "New app ID"],
+                    appType: [type: "string", description: "App type created"],
+                    name: [type: "string", description: "App label"],
+                    parentAppId: [type: "integer", description: "Parent app ID"],
+                    statusSummary: [type: "object", description: "eventSubscriptions and scheduledJobs counts"],
+                    health: [type: "object", description: "Rule health (ok, brokenMarkers, issues, ...)"],
+                    triggers: [type: "array", description: "Per-trigger results; present when triggers passed", items: [type: "object"]],
+                    actions: [type: "array", description: "Per-action results; present when actions passed", items: [type: "object"]],
+                    note: [type: "string", description: "Human-readable result"],
+                    error: [type: "string", description: "Present on setup failure"],
+                    orphanCleanup: [type: "string", description: "Present on setup-failure cleanup"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -3307,6 +4789,40 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["appId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the update succeeded (absent in discover mode)"],
+                    appId: [type: "integer", description: "App ID updated"],
+                    backup: [type: "object", description: "Pre-update backup metadata (backupKey, type, fileName, ...)"],
+                    settingsApplied: [type: "array", description: "Settings applied (settings mode)", items: [type: "string"]],
+                    settingsSkipped: [type: "array", description: "Settings skipped", items: [type: "string"]],
+                    unknownSettingsWarning: [type: "string", description: "Present when unknown settings supplied"],
+                    subPageNote: [type: "string", description: "Sub-page note"],
+                    buttonClicked: [type: "string", description: "Button clicked (button mode)"],
+                    health: [type: "object", description: "Rule health summary"],
+                    subscriptionSettle: [type: "string", description: "Subscription settle note"],
+                    removedIndex: [type: "integer", description: "removeAction/removeTrigger result index"],
+                    beforeIndices: [type: "array", description: "Indices before edit", items: [type: "integer"]],
+                    afterIndices: [type: "array", description: "Indices after edit", items: [type: "integer"]],
+                    index: [type: "integer", description: "moveAction index"],
+                    direction: [type: "string", description: "moveAction direction"],
+                    beforePosition: [type: "integer", description: "moveAction position before"],
+                    afterPosition: [type: "integer", description: "moveAction position after"],
+                    indicesAfter: [type: "array", description: "Indices after move", items: [type: "integer"]],
+                    partial: [type: "boolean", description: "Bulk add partial flag"],
+                    triggers: [type: "array", description: "Bulk addTriggers results", items: [type: "object"]],
+                    actions: [type: "array", description: "Bulk addActions results", items: [type: "object"]],
+                    updateRuleFailed: [type: "boolean", description: "Trailing updateRule click failed"],
+                    subscriptionsNotLive: [type: "boolean", description: "Subscriptions not live after update"],
+                    updateRuleError: [type: "string", description: "updateRule error detail"],
+                    repairHints: [type: "array", description: "Suggested fixes", items: [type: "string"]],
+                    note: [type: "string", description: "Human-readable result"],
+                    error: [type: "string", description: "Present on failure"],
+                    restoreHint: [type: "string", description: "Present on failure"],
+                    wizardStuck: [type: "boolean", description: "Present when wizard is stuck"]
+                ]
             ]
         ],
         [
@@ -3321,6 +4837,19 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "True when a new child app was created"],
+                    sourceAppId: [type: "integer", description: "Source app ID"],
+                    clonerAppId: [type: "integer", description: "Temporary cloner app ID"],
+                    newAppId: [type: "integer", description: "New cloned app ID, or null on soft failure"],
+                    isError: [type: "boolean", description: "Present (true) on soft failure"],
+                    error: [type: "string", description: "Present on soft failure"],
+                    note: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -3333,6 +4862,22 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
                     appId: [type: "integer", description: "Alias for sourceAppId."],
                     saveAs: [type: "string", description: "Optional File Manager filename (.json or .txt). When provided, the export is also written to /local/<saveAs>."]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether export succeeded"],
+                    sourceAppId: [type: "integer", description: "Source app ID"],
+                    sourceLabel: [type: "string", description: "Source app label"],
+                    clonerAppId: [type: "integer", description: "Temporary cloner app ID"],
+                    contentLength: [type: "integer", description: "Exported JSON length"],
+                    jsonContent: [type: "string", description: "Exported rule JSON"],
+                    savedAs: [type: "string", description: "File Manager filename; present with saveAs"],
+                    savedUrl: [type: "string", description: "File URL; present when hub IP known"],
+                    saveError: [type: "string", description: "Present if File Manager save failed"],
+                    note: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -3356,6 +4901,21 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
                 // forward). Tool + property descriptions document the OR for
                 // LLM tool-selection.
                 required: ["parentHintAppId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "True when a new child app was created"],
+                    clonerAppId: [type: "integer", description: "Temporary cloner app ID"],
+                    newAppId: [type: "integer", description: "New imported app ID, or null on soft failure"],
+                    originalSourceId: [type: "integer", description: "Original source app ID from the export"],
+                    originalLabel: [type: "string", description: "Original app label, or null"],
+                    contentLength: [type: "integer", description: "Imported JSON length"],
+                    isError: [type: "boolean", description: "Present (true) on soft failure"],
+                    error: [type: "string", description: "Present on soft failure"],
+                    note: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
             ]
         ],
         [
@@ -3377,6 +4937,19 @@ Returns {ok: bool, label, configPageError, brokenMarkers: [...], multipleFlagPoi
                     appId: [type: "integer", description: "Installed-app ID to check."]
                 ],
                 required: ["appId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    ok: [type: "boolean", description: "True when no issues found"],
+                    label: [type: "string", description: "Rule label, or null"],
+                    configPageError: [type: "string", description: "Config page error, or null"],
+                    brokenMarkers: [type: "array", description: "Broken Trigger/Action/Condition markers", items: [type: "string"]],
+                    multipleFlagPoison: [type: "array", description: "Poisoned setting names", items: [type: "string"]],
+                    structuralIssues: [type: "array", description: "Structural issues", items: [type: "string"]],
+                    issues: [type: "array", description: "All issues; ok is false iff non-empty", items: [type: "string"]]
+                ],
+                required: ["ok"]
             ]
         ],
         [
@@ -3398,6 +4971,19 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["appId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the delete succeeded"],
+                    appId: [type: "integer", description: "App ID"],
+                    mode: [type: "string", description: "delete or forcedelete"],
+                    backup: [type: "object", description: "Pre-delete backup metadata"],
+                    hubMessage: [type: "string", description: "Present when hub refused soft delete"],
+                    note: [type: "string", description: "Human-readable result"],
+                    error: [type: "string", description: "Present on exception"]
+                ],
+                required: ["success"]
             ]
         ],
         // Tool Guide
@@ -3409,6 +4995,16 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
                 properties: [
                     section: [type: "string", description: "REQUIRED for efficiency: device_authorization, hub_admin_write, virtual_devices, hub_update_device, rules, backup, file_manager, performance, builtin_app_tools, update_native_app_reference, create_native_app_reference. Full guide only if absolutely necessary.", enum: ["device_authorization", "hub_admin_write", "virtual_devices", "hub_update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "update_native_app_reference", "create_native_app_reference"]]
                 ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the guide was returned"],
+                    section: [type: "string", description: "Section key returned, or 'full' for the whole guide"],
+                    content: [type: "string", description: "Requested guide content (section or full)"],
+                    availableSections: [type: "array", description: "All section keys, present in full-guide mode", items: [type: "string"]]
+                ],
+                required: ["success"]
             ]
         ],
         // Tool Search (BM25)
@@ -3422,6 +5018,23 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
                     maxResults: [type: "integer", description: "Max results to return. Default: 5.", default: 5]
                 ],
                 required: ["query"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    query: [type: "string", description: "Echoed search query"],
+                    resultsCount: [type: "integer", description: "Number of ranked results returned"],
+                    totalToolsSearched: [type: "integer", description: "Size of the searched tool corpus"],
+                    results: [type: "array", description: "Ranked matching tools", items: [type: "object", properties: [
+                        tool: [type: "string", description: "Tool name"],
+                        description: [type: "string", description: "Tool description"],
+                        relevance: [type: "number", description: "BM25 relevance score"],
+                        gateway: [type: "string", description: "Owning gateway, present for proxied tools"],
+                        callAs: [type: "string", description: "How to invoke the tool"]
+                    ]]],
+                    message: [type: "string", description: "Note when the query yields no searchable terms"]
+                ],
+                required: ["results"]
             ]
         ]
     ]
