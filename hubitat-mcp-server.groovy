@@ -10551,6 +10551,13 @@ def toolGetAppConfig(args) {
         installed: parsed.app.installed == true
     ]
 
+    // Redact type="password" input values: the Hubitat UI masks these inputs, so this
+    // tool must not de-mask the stored secret into the MCP response. Password input names
+    // are collected here so the includeSettings settings map below can redact the same
+    // keys. Per-page only: a password on a different page of a multi-page app is not
+    // visible in this configPage (broadening to a name heuristic is open decision Q1).
+    def redactedPw = "***redacted (password)***"
+    def passwordInputNames = [] as Set
     def sections = []
     for (s in parsed.configPage.sections) {
         if (!(s instanceof Map)) continue
@@ -10591,6 +10598,10 @@ def toolGetAppConfig(args) {
             // (observed: firmware 2.3.x-2.4.x; sentinel confirmed on capability.* types)
             if (i.defaultValue != null && (i.defaultValue != true || i.type == "bool")) input.value = i.defaultValue
             else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
+            if (i.type == "password") {
+                if (i.name) passwordInputNames << i.name.toString()
+                if (input.containsKey("value")) input.value = redactedPw
+            }
             section.inputs << input
         }
         // Paragraph/body content (informational text in the config page). Keep any
@@ -10647,7 +10658,10 @@ def toolGetAppConfig(args) {
     int settingsCount = (parsed.settings instanceof Map) ? parsed.settings.size() : 0
     result.settingsKeyCount = settingsCount
     if (includeSettings) {
-        result.settings = parsed.settings ?: [:]
+        def rawSettings = (parsed.settings instanceof Map) ? parsed.settings : [:]
+        result.settings = passwordInputNames ? rawSettings.collectEntries { k, v ->
+            [(k): (passwordInputNames.contains(k?.toString()) ? redactedPw : v)]
+        } : rawSettings
     } else if (settingsCount > 0) {
         result.settingsNote = "Raw settings omitted -- pass includeSettings=true to include. Large apps (Room Lighting, RM 5.1) may have 500-1000 keys with app-specific encoding (e.g. \"dm~<deviceId>~<scene>\" for Room Lighting dim presets) that is non-trivial to decode without app-specific knowledge."
     }
