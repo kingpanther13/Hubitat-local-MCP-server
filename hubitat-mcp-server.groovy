@@ -9525,7 +9525,6 @@ def toolGetDeviceHistory(args) {
             sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
         ]
     }
-    }
 
     def device = findDevice(args.deviceId)
     if (!device) throw new IllegalArgumentException("Device not found: ${args.deviceId}. Device must be selected in MCP Rule Server app settings.")
