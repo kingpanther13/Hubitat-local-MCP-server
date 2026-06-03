@@ -359,6 +359,37 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         warn.details.gateway == 'hub_read_apps_code'
     }
 
+    def "guide:true through the full tools/call gateway dispatch returns the reference, not a missing-param error (live-path regression)"() {
+        // Regression for a bug found by exercising guide:true on the live hub: the gateway's
+        // required-param pre-validation rejected guide:true with "Missing required parameters:
+        // appId, confirm" BEFORE the handler's gate-bypassing short-circuit could run. The unit
+        // test (calling toolUpdateNativeApp directly) skipped this layer -- so guard the FULL
+        // tools/call -> handleMcpRequest -> handleToolsCall -> handleGateway path that real
+        // MCP clients take. addTrigger/addAction {discover:true} ride the same exemption.
+        given: 'gateway mode + builtin app on so the native gateway dispatches'
+        settingsMap.useGateways = true
+        settingsMap.enableBuiltinApp = true
+        mcpDriver.pushBody([
+            jsonrpc: '2.0', id: 210, method: 'tools/call',
+            params: [name: 'hub_manage_native_rules_and_apps', arguments: [tool: 'hub_update_native_app', args: [guide: true]]]
+        ])
+
+        when:
+        script.handleMcpRequest()
+        def response = mcpDriver.parseResponseJson()
+
+        then: 'success envelope (no JSON-RPC error) carrying the reference -- NOT the missing-param hint'
+        response.error == null
+        def text = response.result.content[0].text as String
+        !text.contains('Missing required parameter')
+        def inner = new groovy.json.JsonSlurper().parseText(text)
+        inner.isError != true
+        inner.success == true
+        inner.section == 'update_native_app_reference'
+        (inner.content as String).contains('addTrigger')
+        (inner.content as String).contains('walkStep')
+    }
+
     def "non-gateway caller passing a stray `tool` arg does NOT route the suggestion to the wrong tool"() {
         // Defends against the would-be bug where a direct (non-gateway) caller with a
         // stray args.tool='hub_export_native_app' on hub_list_devices would get an hub_export_native_app
@@ -687,5 +718,74 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // Pin the shape, not a specific version literal (avoids churn on
         // every release bump).
         body.version ==~ /\d+\.\d+\.\d+.*/
+    }
+
+    def "flat-mode tools/list catalog stays under the hub's 124,000-byte cap (outputSchema stripped)"() {
+        // PR1C strips outputSchema from the flat catalog precisely to keep this
+        // under the hub's 124,000-byte tools/list cap (over it, handleMcpRequest
+        // returns -32603 and useGateways=false clients see ZERO tools). Pin the
+        // budget so a future verbose description / un-stripped field fails loudly
+        // here instead of silently on a user's hub.
+        given:
+        settingsMap.useGateways = false
+        settingsMap.enableBuiltinApp = true
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def flat = script.getToolDefinitions()
+        int flatBytes = groovy.json.JsonOutput.toJson([tools: flat]).getBytes("UTF-8").length
+        int fullBytes = groovy.json.JsonOutput.toJson([tools: script.getAllToolDefinitions()]).getBytes("UTF-8").length
+
+        then: 'the flat catalog fits under the cap'
+        assert flatBytes < 124000 : "flat tools/list catalog is ${flatBytes} bytes, over the 124,000 cap"
+
+        and: 'the strip + [[FLAT_TRIM]] is load-bearing: the un-stripped defs are materially larger'
+        fullBytes > flatBytes
+    }
+
+    def "outputSchema survives JSON serialization in gateway mode; gateway entries carry none"() {
+        // Mirrors the annotations-survive-serialization guard above: outputSchema is
+        // a nested Map of Maps, the kind of payload a JsonOutput/transform regression
+        // would silently drop. Assert it lands on the wire for a base tool, and that
+        // gateway entries (which proxy many tools) carry no single outputSchema.
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableBuiltinApp = true
+        settingsMap.enableCustomRuleEngine = true
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 71, method: 'tools/list', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+        def response = mcpDriver.parseResponseJson()
+
+        then: 'a flat/base read tool carries its outputSchema through serialization'
+        def info = response.result.tools.find { it.name == 'hub_get_info' }
+        info.outputSchema instanceof Map
+        info.outputSchema.type == 'object'
+        info.outputSchema.properties instanceof Map
+
+        and: 'a gateway entry proxies multiple tools, so it has no single outputSchema'
+        def gw = response.result.tools.find { it.name == 'hub_manage_rooms' }
+        gw != null
+        gw.containsKey('outputSchema') == false
+    }
+
+    def "every gateway catalog disclosure stays under the 120,000-byte tools/call cap"() {
+        // The gateway catalog (handleGateway with no toolName) is now the canonical
+        // home for the heavy outputSchemas, and it is bounded by the 120,000-byte
+        // tools/call cap. Over it, the caller gets a response_too_large envelope
+        // instead of the catalog and can no longer discover any tool in that gateway.
+        // The largest today (hub_manage_native_rules_and_apps) is ~76KB; pin all 19.
+        given:
+        settingsMap.enableBuiltinApp = true
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def oversize = script.getGatewayConfig().keySet().findAll { gw ->
+            groovy.json.JsonOutput.toJson(script.handleGateway(gw, null, null)).getBytes("UTF-8").length >= 120000
+        }
+
+        then:
+        assert oversize.isEmpty() : "gateway catalog(s) over the 120,000-byte tools/call cap: ${oversize}"
     }
 }

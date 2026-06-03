@@ -364,4 +364,68 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         classifiedAsRead == expectedReadOnly
         classifiedAsWrite == expectedWrites
     }
+
+    def "every leaf tool in getAllToolDefinitions() declares a well-formed outputSchema"() {
+        // PR1C: every tool returns a structured map, so every leaf definition MUST
+        // publish an outputSchema describing it (MCP spec 2025-06-18 /server/tools;
+        // AGENTS.md Schema design -- "servers MUST conform to a published outputSchema;
+        // clients SHOULD validate"). Asserting the shape (object + non-empty properties
+        // map) catches a missing, stubbed, or malformed schema on a newly-added tool.
+        when:
+        def defs = script.getAllToolDefinitions()
+
+        then:
+        !defs.isEmpty()  // defend against a vacuous every {}
+        defs.every {
+            it.outputSchema instanceof Map &&
+            it.outputSchema.type == 'object' &&
+            it.outputSchema.properties instanceof Map &&
+            !it.outputSchema.properties.isEmpty()
+        }
+    }
+
+    def "getAllToolDefinitions() concatenates its chunk methods with no dropped or duplicated tools"() {
+        // PR1C split getAllToolDefinitions() into _getAllToolDefinitions_part1..8()
+        // that the public method concatenates (JVM 64KB method-bytecode cap). The
+        // sandbox_lint guard parses source TEXT; this pins the actual runtime
+        // concatenation — a dropped `+ _part5()`, a chunk returning [:], or a
+        // duplicated chunk would corrupt the list while the source still scans clean.
+        when:
+        def names = script.getAllToolDefinitions()*.name
+
+        then: 'no chunk duplicated and no name collision'
+        names.size() == (names as Set).size()
+
+        and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
+        names.size() == 88
+
+        and: 'sentinels from the first and last chunks survive the concatenation chain'
+        names.contains('hub_list_devices')   // first chunk
+        names.contains('hub_search_tools')   // last chunk
+    }
+
+    def "outputSchema is published in gateway mode (base tools) and stripped in flat mode (size)"() {
+        // PR1C size strategy: flat-mode tools/list is the all-tools surface bounded by
+        // the hub's 124,000-byte cap, so outputSchema is dropped there; gateway-mode
+        // base tools (and the gateway catalog disclosure) carry it, where the
+        // per-response budget has headroom. hub_get_info is a flat/base read tool in
+        // both modes, so it is the clean probe.
+        given:
+        settingsMap.enableBuiltinApp = true
+        settingsMap.enableCustomRuleEngine = true
+
+        when: 'gateway mode'
+        settingsMap.remove('useGateways')
+        def gwInfo = script.getToolDefinitions().find { it.name == 'hub_get_info' }
+
+        and: 'flat mode'
+        settingsMap.useGateways = false
+        def flatInfo = script.getToolDefinitions().find { it.name == 'hub_get_info' }
+
+        then:
+        gwInfo?.outputSchema instanceof Map
+        gwInfo.outputSchema.type == 'object'
+        flatInfo != null
+        flatInfo.containsKey('outputSchema') == false
+    }
 }
