@@ -1645,6 +1645,10 @@ def getToolDefinitions() {
 
 // Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)
 def getAllToolDefinitions() {
+    return _getAllToolDefinitions_part1() + _getAllToolDefinitions_part2() + _getAllToolDefinitions_part3() + _getAllToolDefinitions_part4() + _getAllToolDefinitions_part5() + _getAllToolDefinitions_part6() + _getAllToolDefinitions_part7() + _getAllToolDefinitions_part8()
+}
+
+def _getAllToolDefinitions_part1() {
     return [
         // Device Tools
         [
@@ -2083,6 +2087,11 @@ Verify rule after creation.""",
                 ]
             ]
         ],
+    ]
+}
+
+def _getAllToolDefinitions_part2() {
+    return [
         [
             name: "hub_list_modes",
             description: "Get available location modes and current mode",
@@ -2353,6 +2362,11 @@ Verify rule after creation.""",
                 required: ["success", "updated", "message"]
             ]
         ],
+    ]
+}
+
+def _getAllToolDefinitions_part3() {
+    return [
         [
             name: "hub_get_hsm_status",
             description: "Get the current HSM (Hubitat Safety Monitor) status",
@@ -2648,6 +2662,11 @@ Verify rule after creation.""",
                 required: ["success", "ruleId", "clonedFrom"]
             ]
         ],
+    ]
+}
+
+def _getAllToolDefinitions_part4() {
+    return [
         [
             name: "hub_get_update_status",
             description: "Check if a newer version of MCP Rule Server is available on GitHub",
@@ -3028,6 +3047,11 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
         ],
 
         // ==================== HUB ADMIN WRITE TOOLS ====================
+    ]
+}
+
+def _getAllToolDefinitions_part5() {
+    return [
         [
             name: "hub_create_backup",
             description: """Create a full hub backup. REQUIRED before any Hub Admin Write operation (24h validity).
@@ -3371,6 +3395,11 @@ Requires Hub Admin Write.""",
                 required: ["success"]
             ]
         ],
+    ]
+}
+
+def _getAllToolDefinitions_part6() {
+    return [
         [
             name: "hub_update_room",
             description: "Rename a room. Device assignments preserved. Automations/dashboards referencing room by name may need updating. Requires Hub Admin Write + confirm + backup <24h.",
@@ -3842,6 +3871,11 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
                 ]
             ]
         ],
+    ]
+}
+
+def _getAllToolDefinitions_part7() {
+    return [
         [
             name: "hub_restore_backup",
             description: "⚠️ Restore app/driver to backed-up version. Tell user first. If item was DELETED, use hub_create_app/hub_create_driver/hub_create_library instead. Library backups return a clear error directing you to hub_update_library. Requires Hub Admin Write + confirm.",
@@ -4252,6 +4286,11 @@ Requires Hub Admin Read. HPM itself must be installed.""",
                 required: ["success"]
             ]
         ],
+    ]
+}
+
+def _getAllToolDefinitions_part8() {
+    return [
         [
             name: "hub_set_rule_paused",
             description: "Pause or resume a Rule Machine rule (paused rules don't fire on triggers). value=true pauses, value=false resumes (idempotent on the hub). Requires Built-in App Tools enabled.",
@@ -5039,6 +5078,7 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
         ]
     ]
 }
+
 
 def executeTool(toolName, args) {
     // Custom Rule Engine gate. The tools also disappear from tools/list
