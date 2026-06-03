@@ -5738,6 +5738,13 @@ def toolRemoveConnector(args) {
     }
 
     def deviceId = existing.deviceId
+    // Known Hubitat platform bug (confirmed 2026-06-02, fw 2.5.0.143, via Hubitat's
+    // own UI "Remove Device"): removing a variable-connector child makes Hubitat's
+    // BUILT-IN "Variable Connectors" parent driver recurse in childRemoved() and log
+    // a java.lang.StackOverflowError (the child's uninstalled() fires ~10x first).
+    // NOT ours -- the official Remove Device button triggers the identical crash, and
+    // the device is removed either way. We surface it in the response `note` so the
+    // logged error isn't mistaken for a hub_delete_connector failure.
     def res = toolDeleteDevice([deviceId: deviceId.toString(), confirm: true])
     if (res?.success != true) {
         throw new IllegalStateException(
@@ -5764,7 +5771,8 @@ def toolRemoveConnector(args) {
         name: name,
         deviceId: deviceId,
         deviceDeleted: true,
-        message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged."
+        message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged.",
+        note: "A java.lang.StackOverflowError from Hubitat's built-in 'Variable Connectors' driver (childRemoved) may appear in the hub log during this removal. It is a known Hubitat platform bug -- the same crash occurs via the UI's Remove Device button -- and is harmless: the connector is removed regardless."
     ]
 }
 
