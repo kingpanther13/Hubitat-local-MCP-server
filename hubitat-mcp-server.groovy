@@ -22302,6 +22302,7 @@ def toolCreateNativeApp(args) {
         if (partialTriggers || partialActions) {
             repairHints << "Rule ${newId} was created BUT some pieces are incomplete — see partialTriggers / partialActions arrays for indices. Each partial result has its own repairHints list with concrete next steps."
             repairHints << "Repair pattern: 1) hub_get_app_config(${newId}, includeSettings=true) to inspect current state. 2) For each partial trigger/action, follow its repairHints. 3) hub_update_native_app(walkStep={...}) for incremental field writes; replaceActions(...) or removeAction(index) + addAction(...) for whole-action retries. 4) hub_update_native_app(button='updateRule') after fixes to commit. 5) Re-run hub_get_rule_health to verify. Don't conclude failure until tool-only repair attempts are exhausted."
+            repairHints << "Full trigger/action field reference: call hub_update_native_app(guide:true), or hub_get_tool_guide(section='create_native_app_reference')."
         }
         def result = [
             success: health.ok && !partialTriggers && !partialActions,
