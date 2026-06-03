@@ -74,6 +74,10 @@ scaffold, and all existing workflows stay **byte-untouched**.
   (RM tools silently see no rules) and `hubitat.helper.NetworkUtils` isn't visible at all (NCDFE in
   the diagnostics tools). All other support classes (`RMUtilsMock`, `McpRequestDriver`, `TestDevice`,
   the PassThrough pair, …) are shared read-only.
+- **Two lane self-tests** (`scaffold/support/LaneChildAppWiringSpec`, `scaffold/rules/RuleParentWiringSpec`)
+  assert the fork-specific wiring the lane depends on — that `getChildApps`/`addChildApp`/`deleteChildApp`
+  and `parent` actually route through the AppExecutor `@Delegate` under joelwetzel — so a future fork
+  bump that broke that routing fails loudly here instead of letting tool specs pass against a no-op stub.
 - **Two specs are excluded** as not fork-portable (each hardcodes eighty20results-only sandbox API;
   the Groovy 3.0 lane covers both): `server/ToolManageVirtualDeviceSpec.groovy` reflects the private
   `childDeviceFactory` field, and `support/RMUtilsSandboxInterceptionSpec.groovy` passes the
@@ -95,8 +99,13 @@ unhappy on JDK 17/21).
 
 ## Maintenance
 
-The joelwetzel pin is tracked alongside the root eighty20results pin by
-`.github/workflows/hubitat-ci-version-check.yml`. If a spec fails only on the 2.5 lane, it is a real
-2.x-vs-3.0 runtime divergence (or a hub-relevant fork-behaviour gap) — investigate before dismissing.
-If a future change makes the corpus fully green here, flip `continue-on-error` off to promote the
-lane to a gate.
+The joelwetzel SHA is a **manual pin**: the existing `.github/workflows/hubitat-ci-version-check.yml`
+only tracks the root build's eighty20results *tag* (joelwetzel cuts no tags), so bump
+`ci/groovy2x-spock/build.gradle` by hand when adopting fork fixes. If a spec fails only on the 2.5
+lane, it is a real 2.x-vs-3.0 runtime divergence (or a hub-relevant fork-behaviour gap) — investigate
+before dismissing.
+
+The corpus already passes fully under Groovy 2.5 (locally and in the lane's first CI run); the lane is
+kept on `continue-on-error` deliberately, since Actions runners differ from a dev box and the fork's
+stability there is young. Once it has a track record, flip `continue-on-error` off to promote it to a
+gate.

@@ -25,10 +25,10 @@ import spock.lang.Specification
  *    validator (its precedence trap), so {@code run()} with
  *    {@code DontRunScript} in the validator flags is required. No
  *    {@code childAppResolver} is passed — joelwetzel/biocomp doesn't need one.
- *  - {@code getChildApps()} / {@code addChildApp(...)} are stubbed on the
- *    AppExecutor mock. biocomp's HubitatAppScript routes both through its
- *    {@code @Delegate} to AppExecutor (no concrete-method/private-factory
- *    interception, so eighty20results' reflective childAppFactory /
+ *  - {@code getChildApps()} / {@code addChildApp(...)} / {@code deleteChildApp(...)}
+ *    are stubbed on the AppExecutor mock. biocomp's HubitatAppScript routes all
+ *    of them through its {@code @Delegate} to AppExecutor (no concrete-method/
+ *    private-factory interception, so eighty20results' reflective childAppFactory /
  *    childAppAccessor replacement does not apply and {@code childAppResolver}
  *    is not required).
  *
@@ -49,7 +49,7 @@ abstract class HarnessSpec extends Specification {
     private static final PermissiveLog SHARED_LOG = new PermissiveLog()
     private static final Map SHARED_STATE_MAP = [:]
     private static final Map SHARED_ATOMIC_STATE_MAP = [:]
-    // Must be non-empty at compile() time — HubitatCI's readUserSettingValues
+    // Must be non-empty at sandbox.run() time — HubitatCI's readUserSettingValues
     // does a Groovy truthy check on the passed map and silently swaps in a
     // fresh empty Map when it's empty, breaking the shared reference specs
     // rely on to mutate settings from given: blocks. setup() restores the
@@ -63,8 +63,10 @@ abstract class HarnessSpec extends Specification {
     // The currently-running feature instance. The @Shared AppExecutor mock's
     // addChildApp stub (built once in setupSpec) reads mockChildAppForCreate
     // off this so the per-feature value is visible without rebuilding the
-    // mock. Specs run sequentially (maxParallelForks=1), so this is always
-    // the active feature.
+    // mock. setup() points it at the active feature; cleanup() nulls it so it
+    // neither leaks the last instance for the JVM's lifetime nor lets a stale
+    // feature's fixture be read across the spec-class boundary. The static
+    // hand-off is only safe because specs run sequentially (maxParallelForks=1).
     private static HarnessSpec CURRENT_FEATURE
 
     // Records parent-app unsubscribe() calls. A `1 * appExecutor.unsubscribe()`
@@ -205,6 +207,13 @@ abstract class HarnessSpec extends Specification {
         script.setMetaClass(null)
         checkMetaClassClean(script, 'HarnessSpec')
         wireScriptOverrides()
+    }
+
+    def cleanup() {
+        // Release the per-feature instance: prevents the static from pinning the
+        // last spec for the JVM's lifetime and stops a stale feature's fixture
+        // from being read in the gap before the next spec class's setup() runs.
+        CURRENT_FEATURE = null
     }
 
     /**

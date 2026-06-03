@@ -42,7 +42,8 @@ jobs:
             17
       - uses: gradle/actions/setup-gradle@v6
       - name: Run the existing Spock specs under Groovy 2.5 (joelwetzel/hubitat_ci)
-        run: ./gradlew -p ci/groovy2x-spock test --console=plain
+        # -PharnessStrictMetaClass=true also exercises the harness metaClass dual-wipe under 2.5.
+        run: ./gradlew -p ci/groovy2x-spock test -PharnessStrictMetaClass=true --console=plain
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v7

@@ -49,8 +49,9 @@ dependencies {
     implementation 'org.codehaus.groovy:groovy-all:2.5.23'
     testImplementation 'org.codehaus.groovy:groovy-all:2.5.23'
     testImplementation 'org.spockframework:spock-core:2.3-groovy-2.5'
-    // joelwetzel/hubitat_ci pinned by commit SHA (no release tags). Tracked alongside the root
-    // lane's eighty20results pin by .github/workflows/hubitat-ci-version-check.yml.
+    // joelwetzel/hubitat_ci pinned by commit SHA (the fork cuts no release tags). This is a MANUAL
+    // pin: the existing .github/workflows/hubitat-ci-version-check.yml only tracks the root build's
+    // eighty20results tag, not this SHA, so bump it by hand when adopting fork fixes.
     testImplementation 'com.github.joelwetzel:hubitat_ci:a62a351eed'
     // Spock needs a class-gen backend (byte-buddy or cglib) to Mock/Spy non-interface types
     // (TestDevice, TestChildApp); neither is transitive on the groovy-2.5 variant.
@@ -108,7 +109,9 @@ def forkCoupledSpecs = [
 // Copy the LIVE spec corpus into the build dir, minus the files the lane overrides or drops, so the
 // originals stay byte-untouched ("referenced read-only, written once" — issue #230) and the lane
 // always runs the same evolving specs. Sync prunes deleted specs automatically.
-def importedSpecsDir = layout.buildDirectory.dir('imported-specs').get().asFile
+// Lazy Provider<Directory> — Sync.into and srcDirs both accept it, so we avoid eagerly resolving
+// the build dir at configuration time (keeps configuration-cache compatibility).
+def importedSpecsDir = layout.buildDirectory.dir('imported-specs')
 def importSpecs = tasks.register('importSpecs', Sync) {
     from("${repoRoot}/src/test/groovy") {
         (laneScaffoldOverrides + forkCoupledSpecs).each { exclude it }
@@ -136,8 +139,18 @@ test {
     // the forked test JVM must run from the repo root, not this isolated project dir.
     workingDir = repoRoot
     // Keep specs single-threaded. RMUtilsMock / NetworkUtilsMock inject static metaclass methods on
-    // hubitat.helper.RMUtils / .NetworkUtils — concurrent install/uninstall would race.
+    // hubitat.helper.RMUtils / .NetworkUtils — concurrent install/uninstall would race. (The
+    // CURRENT_FEATURE static hand-off in the lane HarnessSpec/RuleHarnessSpec also depends on this.)
     maxParallelForks = 1
+    // Forward the same harness-debug flags the root build does, so this lane can exercise the
+    // metaClass dual-wipe (HarnessSpec.checkMetaClassClean) and the gateway-toggle path under
+    // Groovy 2.5 too. The workflow runs this lane with -PharnessStrictMetaClass=true.
+    if (project.hasProperty('harnessStrictMetaClass')) {
+        systemProperty 'harnessStrictMetaClass', project.harnessStrictMetaClass
+    }
+    if (project.hasProperty('harness.useGateways')) {
+        systemProperty 'harness.useGateways', project.getProperty('harness.useGateways')
+    }
     // Silence Groovy 2.5.23's reflective access under JDK 11+. Groovy 2.5's CachedClass /
     // CachedConstructor reflects into these java.base packages on init; without the opens the run is
     // noisy (and some reach throws). Drop this block if the lane ever moves to Groovy 3+.

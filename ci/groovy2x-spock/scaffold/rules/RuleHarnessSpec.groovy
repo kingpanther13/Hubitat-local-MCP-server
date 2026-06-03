@@ -41,9 +41,13 @@ abstract class RuleHarnessSpec extends Specification {
         f
     }()
 
-    // The currently-running feature instance, so the @Shared AppExecutor
-    // mock's getParent() stub can read this feature's `parent` without
-    // rebuilding the mock. Specs run sequentially (maxParallelForks=1).
+    // The currently-running feature instance, so the @Shared AppExecutor mock's
+    // getParent() stub can read this feature's `parent` without rebuilding the
+    // mock. setup() points it at the active feature; cleanup() nulls it so a
+    // stale parent can't leak across the spec-class boundary (the gap before the
+    // next class's setup()) — this is what replaces the root harness's defensive
+    // setParent(null) in setupSpec. The static hand-off is only safe because
+    // specs run sequentially (maxParallelForks=1).
     private static RuleHarnessSpec CURRENT_FEATURE
 
     @Shared protected AppExecutor appExecutor
@@ -52,7 +56,7 @@ abstract class RuleHarnessSpec extends Specification {
 
     @Shared protected final Map stateMap = [:]
     @Shared protected final Map atomicStateMap = [:]
-    // Must be non-empty at compile() time — see HarnessSpec.
+    // Must be non-empty at sandbox.run() time — see HarnessSpec.
     @Shared protected final Map settingsMap = [_harness: true]
     @Shared protected final TestLocation testLocation = new TestLocation()
 
@@ -207,6 +211,13 @@ abstract class RuleHarnessSpec extends Specification {
         script.setMetaClass(null)
         support.HarnessSpec.checkMetaClassClean(script, 'RuleHarnessSpec')
         wireOverrides()
+    }
+
+    def cleanup() {
+        // Release the per-feature instance so the getParent() stub can't read a
+        // stale parent in the gap before the next spec class's setup(), and the
+        // static doesn't pin the last spec for the JVM's lifetime.
+        CURRENT_FEATURE = null
     }
 
     protected void wireOverrides() {
