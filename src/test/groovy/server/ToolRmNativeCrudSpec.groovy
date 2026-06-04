@@ -5590,6 +5590,33 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         dimmer.conditionalRequired.fade?.toString()?.contains("targetLevel")
         dimmer.conditionalRequired.startRaiseLower?.toString()?.contains("direction")
         dimmer.conditionalRequired.setLevelPerMode?.toString()?.contains("perMode")
+
+        and: "the other multi-variant device capabilities also declare their live-verified per-action required fields"
+        def switchCap = result.capabilities.find { it.name == "switch" }
+        switchCap.conditionalRequired?.setPerMode?.toString()?.contains("perMode")
+        switchCap.conditionalRequired?.choosePerMode?.toString()?.contains("perMode")
+
+        def colorCap = result.capabilities.find { it.name == "color" }
+        colorCap.conditionalRequired?.setColor?.toString()?.contains("colorName")
+        colorCap.conditionalRequired?.toggleColor?.toString()?.contains("colorName")
+        colorCap.conditionalRequired?.setColorPerMode?.toString()?.contains("perMode")
+
+        def colorTempCap = result.capabilities.find { it.name == "colorTemp" }
+        colorTempCap.conditionalRequired?.setColorTemp?.toString()?.contains("kelvin")
+        colorTempCap.conditionalRequired?.toggleColorTemp?.toString()?.contains("kelvin")
+        colorTempCap.conditionalRequired?.fadeColorTemp?.toString()?.contains("targetKelvin")
+        colorTempCap.conditionalRequired?.setColorTempPerMode?.toString()?.contains("perMode")
+
+        def shadeCap = result.capabilities.find { it.name == "shade" }
+        shadeCap.conditionalRequired?.setPosition?.toString()?.contains("position")
+
+        def fanCap = result.capabilities.find { it.name == "fan" }
+        fanCap.conditionalRequired?.setSpeed?.toString()?.contains("speed")
+
+        def buttonCap = result.capabilities.find { it.name == "button" }
+        buttonCap.conditionalRequired?.push?.toString()?.contains("buttonNumber")
+        buttonCap.conditionalRequired?.pushPerMode?.toString()?.contains("perMode")
+        buttonCap.conditionalRequired?.choosePerMode?.toString()?.contains("buttonNumber")
     }
 
     def "addTrigger discover=true does not require Hub Admin Write"() {
@@ -8248,6 +8275,45 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == true
         result.partial == true
         result.repairHints?.any { it?.toString()?.contains("Define Actions") || it?.toString()?.contains("action did not bake") || it?.toString()?.contains("mainPage still shows") }
+    }
+
+    def "addAction omitting a live-verified mandatory field fails fast (not a silent partial): #cap.#action -> error names #errFrag"() {
+        // These six (capability, action) pairs were verified LIVE on the hub to
+        // register the action row but NEVER bake when their key field is omitted
+        // (mainPage keeps the 'Define Actions' placeholder) -- the same
+        // silent-failure mode dimmer.setLevel guards against. Each now throws up
+        // front; the single-addAction edit path catches it and surfaces
+        // success:false + a field-naming error instead of a confusing partial.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs": "Switches"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> fetchSeq++; doActPageSchemaJson(100, fetchSeq) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addAction: spec, confirm: true])
+
+        then: "fail-fast: success=false and the error names the missing field (no silent partial)"
+        result.success == false
+        result.error?.toString()?.contains(errFrag)
+
+        where:
+        cap         | action            | spec                                                                 | errFrag
+        "colorTemp" | "setColorTemp"    | [capability: "colorTemp", action: "setColorTemp", deviceIds: [8]]    | "kelvin"
+        "colorTemp" | "toggleColorTemp" | [capability: "colorTemp", action: "toggleColorTemp", deviceIds: [8]] | "kelvin"
+        "colorTemp" | "fadeColorTemp"   | [capability: "colorTemp", action: "fadeColorTemp", deviceIds: [8]]   | "targetKelvin"
+        "color"     | "setColor"        | [capability: "color", action: "setColor", deviceIds: [8]]           | "colorName"
+        "shade"     | "setPosition"     | [capability: "shade", action: "setPosition", deviceIds: [8]]         | "position"
+        "fan"       | "setSpeed"        | [capability: "fan", action: "setSpeed", deviceIds: [8]]              | "speed"
     }
 
     def "addAction returns success=false when selectActions finalConfig has configPage error"() {

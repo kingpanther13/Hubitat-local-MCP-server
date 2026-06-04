@@ -776,6 +776,28 @@ class TestRunner:
         except (McpToolError, McpError) as exc:
             assert "hub_set_rule" in str(exc), f"rejection should point to hub_set_rule: {exc}"
 
+    @test("native_apps")
+    def test_set_rule_addaction_missing_required_field_fails_fast(self) -> None:
+        # Several (capability, action) pairs were verified on a live hub to
+        # register the action row but NEVER bake when their key field is omitted
+        # (mainPage keeps the 'Define Actions' placeholder) -- a latent silent
+        # failure. The build now throws up front; the single-addAction edit path
+        # surfaces it as success:false + a field-naming error instead of a
+        # confusing partial. Spot-check colorTemp.setColorTemp (needs 'kelvin').
+        # No device is needed -- the field throw fires before any device write.
+        app_id = self._create_native_rule("CondReq")
+        try:
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {"appId": app_id, "addAction": {"capability": "colorTemp", "action": "setColorTemp"}, "confirm": True},
+            })
+            assert result.get("success") is False, f"omitting kelvin should fail fast (not partial): {result}"
+            assert "kelvin" in str(result.get("error", "")), f"error should name 'kelvin': {result}"
+        except (McpToolError, McpError) as exc:
+            assert "kelvin" in str(exc), f"fail-fast error should name 'kelvin': {exc}"
+        finally:
+            self._delete_native(app_id)
+
     # ---- shared helpers for the native-authoring coverage below ----
 
     def _create_native_rule(self, suffix: str) -> Any:

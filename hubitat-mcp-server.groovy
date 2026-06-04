@@ -17593,7 +17593,11 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "delay", type: "Map", description: "{hours?, minutes?, seconds?, cancelable?}"],
                     [name: "rawSettings", type: "Map"]
                 ],
-                notes: "flash starts a flash schedule; use capability='runCommand' with command='flashOff' to stop it."
+                notes: "flash starts a flash schedule; use capability='runCommand' with command='flashOff' to stop it.",
+                conditionalRequired: [
+                    setPerMode: "perMode",
+                    choosePerMode: "perMode"
+                ]
             ],
             [
                 name: "dimmer",
@@ -17632,14 +17636,19 @@ private Map _rmActionSchemaForDiscover() {
                 actions: ["setColor", "toggleColor", "setColorPerMode"],
                 requiredFields: [
                     [name: "action", type: "enum", values: ["setColor", "toggleColor", "setColorPerMode"]],
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "colorName", type: "String", description: "Required for setColor/toggleColor"]
+                    [name: "deviceIds", type: "List<Integer>"]
                 ],
                 optionalFields: [
-                    [name: "level", type: "Integer", description: "0-100"],
+                    [name: "colorName", type: "String", description: "Color name (e.g. 'Red') -- required for setColor (or supply a custom HSV color via rawSettings) and for toggleColor"],
+                    [name: "level", type: "Integer", description: "0-100, required for toggleColor"],
                     [name: "perMode", type: "Map", description: "For setColorPerMode: {modeIdOrName: {color: 'Red', level: 70}, ...}"],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
+                ],
+                conditionalRequired: [
+                    setColor: "colorName (or a custom HSV color via rawSettings)",
+                    toggleColor: "colorName + level",
+                    setColorPerMode: "perMode"
                 ]
             ],
             [
@@ -17659,6 +17668,12 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "perMode", type: "Map", description: "For setColorTempPerMode: {modeIdOrName: {kelvin: 2700, level: 70}, ...}"],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
+                ],
+                conditionalRequired: [
+                    setColorTemp: "kelvin",
+                    toggleColorTemp: "kelvin",
+                    fadeColorTemp: "targetKelvin + minutes (+ direction)",
+                    setColorTempPerMode: "perMode"
                 ]
             ],
             [
@@ -17704,6 +17719,9 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "position", type: "Integer", description: "0-100, required for setPosition"],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
+                ],
+                conditionalRequired: [
+                    setPosition: "position"
                 ]
             ],
             [
@@ -17718,6 +17736,9 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "speed", type: "String", description: "low/med/high/auto/etc., required for setSpeed"],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
+                ],
+                conditionalRequired: [
+                    setSpeed: "speed"
                 ]
             ],
             [
@@ -17729,9 +17750,14 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "deviceIds", type: "List<Integer>"]
                 ],
                 optionalFields: [
-                    [name: "buttonNumber", type: "Integer", description: "Required for push/pushPerMode/choosePerMode"],
+                    [name: "buttonNumber", type: "Integer", description: "Required for push and choosePerMode (pushPerMode carries the per-mode button numbers inside perMode)"],
                     [name: "perMode", type: "Map"],
                     [name: "rawSettings", type: "Map"]
+                ],
+                conditionalRequired: [
+                    push: "buttonNumber",
+                    pushPerMode: "perMode",
+                    choosePerMode: "perMode + buttonNumber"
                 ]
             ],
             [
@@ -19459,6 +19485,9 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         actType = "dimmerActs"
         switch (action) {
             case "setColor":
+                // Verified live: with no color source the action registers (bulbs.<N>
+                // written) but never bakes. Require colorName OR a rawSettings color value.
+                if (actionSpec.colorName == null && !(actionSpec.rawSettings instanceof Map)) throw new IllegalArgumentException("color.setColor requires 'colorName' (e.g. 'Red'), OR a custom HSV color supplied via rawSettings (colorH.<N>). Without a color source the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
                 actSubType = "getSetColor"
                 fields = ["bulbs.@N": deviceIds]
                 if (actionSpec.colorName != null) fields["color.@N"] = actionSpec.colorName
@@ -19505,18 +19534,27 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         actType = "dimmerActs"
         switch (action) {
             case "setColorTemp":
+                // Verified live: without kelvin the action registers (ct.<N> written)
+                // but never bakes -- mainPage keeps the 'Define Actions' placeholder.
+                // Fail fast rather than returning a confusing silent partial.
+                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.setColorTemp requires 'kelvin' (color temperature in K, e.g. 2700). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
                 actSubType = "getSetColorTemp"
-                fields = ["ct.@N": deviceIds]
-                if (actionSpec.kelvin != null) fields["ctL.@N"] = actionSpec.kelvin
+                fields = ["ct.@N": deviceIds, "ctL.@N": actionSpec.kelvin]
                 if (actionSpec.level != null) fields["ctLevel.@N"] = actionSpec.level
                 break
             case "toggleColorTemp":
+                // Verified live: without kelvin the action never bakes (same silent
+                // partial as setColorTemp). Fail fast.
+                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.toggleColorTemp requires 'kelvin' (color temperature in K, e.g. 2700). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
                 actSubType = "getToggleColorTemp"
-                fields = ["ctTog.@N": deviceIds]
-                if (actionSpec.kelvin != null) fields["ctLTog.@N"] = actionSpec.kelvin
+                fields = ["ctTog.@N": deviceIds, "ctLTog.@N": actionSpec.kelvin]
                 if (actionSpec.level != null) fields["ctTogLevel.@N"] = actionSpec.level
                 break
             case "fadeColorTemp":
+                // Verified live: without targetKelvin + minutes the action never bakes
+                // (only ctFade/ctFadeUp get written). Fail fast. direction (raise/lower)
+                // defaults to lower when omitted, mirroring dimmer.fade.
+                if (actionSpec.targetKelvin == null || actionSpec.minutes == null) throw new IllegalArgumentException("colorTemp.fadeColorTemp requires 'targetKelvin' (target color temp in K) and 'minutes' (fade duration). Without them the action registers but never bakes. Optional 'direction' (raise/lower) defaults to lower. See hub_get_tool_guide(section='set_rule_create_reference').")
                 actSubType = "getFadeCT"
                 fields = ["ctFade.@N": deviceIds, "ctFadeUp.@N": (actionSpec.direction == "raise"), "ctFadeTarget.@N": actionSpec.targetKelvin, "ctFadeTime.@N": actionSpec.minutes]
                 if (actionSpec.intervalSeconds != null) fields["ctFadeInterval.@N"] = actionSpec.intervalSeconds
@@ -19582,9 +19620,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             case "open":  actSubType = "getRLShade"; fields = ["shadeRL.@N": false, "shadeOpenClose.@N": deviceIds]; break
             case "close": actSubType = "getRLShade"; fields = ["shadeRL.@N": true,  "shadeOpenClose.@N": deviceIds]; break
             case "setPosition":
+                // Verified live: without position the action registers (shadePosition.<N>
+                // written) but never bakes. Fail fast.
+                if (actionSpec.position == null) throw new IllegalArgumentException("shade.setPosition requires 'position' (0-100). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
                 actSubType = "getShadePosition"
-                fields = ["shadePosition.@N": deviceIds]
-                if (actionSpec.position != null) fields["shadeLevel.@N"] = actionSpec.position
+                fields = ["shadePosition.@N": deviceIds, "shadeLevel.@N": actionSpec.position]
                 break
             case "stop": actSubType = "getStopShade"; fields = ["shadeStop.@N": deviceIds]; break
             default: throw new IllegalArgumentException("Unknown shade action '${action}' -- supported: open, close, setPosition, stop")
@@ -19593,9 +19633,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         actType = "sceneActs"
         switch (action) {
             case "setSpeed":
+                // Verified live: without speed the action registers (fanDevice.<N>
+                // written) but never bakes. Fail fast.
+                if (actionSpec.speed == null) throw new IllegalArgumentException("fan.setSpeed requires 'speed' (e.g. low / medium-low / medium / medium-high / high / on / auto / off). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
                 actSubType = "getFanSpeed"
-                fields = ["fanDevice.@N": deviceIds]
-                if (actionSpec.speed != null) fields["fanSpeed.@N"] = actionSpec.speed
+                fields = ["fanDevice.@N": deviceIds, "fanSpeed.@N": actionSpec.speed]
                 break
             case "cycle":
                 actSubType = "getAdjustFan"
