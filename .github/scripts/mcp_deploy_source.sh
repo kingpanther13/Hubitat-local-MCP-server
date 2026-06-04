@@ -82,7 +82,10 @@ mcp_call "$BACKUP_RPC" >/dev/null || \
   echo "::warning::hub_create_backup call failed/timed out; relying on cached <24h backup timestamp"
 
 echo "Looking up Apps Code class ID for $APP_NAMESPACE:$APP_NAME via hub_list_apps..."
-LIST_RPC='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{}}}'
+# scope='types' returns the Apps Code CLASSES (/hub2/userAppTypes: {id, name, namespace}).
+# Without it, hub_list_apps defaults to scope='instances' (running app instances, which
+# carry no `namespace`), so the (namespace,name) match below never hits the code class.
+LIST_RPC='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}'
 LIST_RESP=$(mcp_call "$LIST_RPC")
 LIST_TEXT=$(echo "$LIST_RESP" | jq -r '.result.content[0].text // empty')
 if [ -z "$LIST_TEXT" ]; then
