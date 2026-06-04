@@ -14,21 +14,15 @@ import me.biocomp.hubitat_ci.api.common_api.Log
  * an exception object untestable.
  */
 class PermissiveLog implements Log {
-    // Records emitted lines as "level:message" so specs that need to assert on
-    // log content (e.g. URL-redaction on the success-path log.debug) can inspect
-    // them. Recording is additive — every method still accepts the call and never
-    // throws. RuleHarnessSpec clears this between feature methods.
-    final List<String> messages = []
+    @Override void error(String message) {}
+    @Override void warn(String message) {}
+    @Override void info(String message) {}
+    @Override void debug(String message) {}
+    @Override void trace(String message) {}
 
-    @Override void error(String message) { messages << "error:${message}" }
-    @Override void warn(String message) { messages << "warn:${message}" }
-    @Override void info(String message) { messages << "info:${message}" }
-    @Override void debug(String message) { messages << "debug:${message}" }
-    @Override void trace(String message) { messages << "trace:${message}" }
-
-    void error(String message, Throwable t) { messages << "error:${message}" }
-    void warn(String message, Throwable t) { messages << "warn:${message}" }
-    void info(String message, Throwable t) { messages << "info:${message}" }
-    void debug(String message, Throwable t) { messages << "debug:${message}" }
-    void trace(String message, Throwable t) { messages << "trace:${message}" }
+    void error(String message, Throwable t) {}
+    void warn(String message, Throwable t) {}
+    void info(String message, Throwable t) {}
+    void debug(String message, Throwable t) {}
+    void trace(String message, Throwable t) {}
 }
