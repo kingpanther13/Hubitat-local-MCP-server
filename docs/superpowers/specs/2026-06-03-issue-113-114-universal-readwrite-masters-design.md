@@ -89,13 +89,12 @@ Self-admin tools (e.g. `hub_update_mcp_settings`) are writes → already under t
 
 The effective disabled set = `disabled_tools ∪ (⋃ tools of disabled_gateways)`. This set is unioned into `hideByName` and consulted in `executeTool`.
 
-### 6.3 Layout — ONE open decision for spec review
-Both options deliver identical global deny semantics and feed the same effective-disabled set. The difference is UI grouping vs. storage simplicity.
+### 6.3 Layout — Flat (decided)
+Two multi-select inputs, matching issue #114's literal settings keys:
+- `input "disabled_tools", "enum", multiple: true, options: <all ~111 unique tool names>` — "Disable these tools".
+- `input "disabled_gateways", "enum", multiple: true, options: <all 19 gateways>` — "Disable these gateways".
 
-- **Option F — Flat (recommended).** Two inputs only: `input "disabled_tools", "enum", multiple: true, options: <all ~111 unique tool names>` and `input "disabled_gateways", "enum", multiple: true, options: <all 19 gateways>`. Matches issue #114's literal settings keys exactly; each tool appears once so "global" is intrinsic; runtime read is two `settings` lookups; Reset clears two settings. Downside: the tool dropdown is long and ungrouped.
-- **Option S — Sectioned.** Per-gateway collapsible `section(hideable: true, hidden: true)`, each with a `input "disable_in_<gateway>", "enum", multiple: true` + a `input "disable_gateway_<gateway>", "bool"`. Prettier/grouped, but effective `disabled_tools` becomes the **union of ~19 per-gateway inputs** (shared tool disabled in any section ⇒ global), the runtime read unions N settings, and Reset must clear N inputs. More moving parts, more test surface.
-
-Recommendation: **Option F** — it is simpler, less bug-prone, and is the literal `disabled_tools`/`disabled_gateways` model from the issue. (User leaned toward grouped/sectioned during design; calling this out explicitly to confirm at review.) A **Reset** `input "resetOverridesBtn", "button"` clears the override setting(s) via `appButtonHandler` (pattern at L253/L275) under either option.
+Each tool appears exactly once, so "disable globally" is intrinsic (no cross-section union). Runtime read is two `settings` lookups; Reset clears two settings. The page also shows brief help text and (for orientation) a read-only paragraph listing which gateway each tool belongs to. A **Reset** `input "resetOverridesBtn", "button"` clears both settings via `appButtonHandler` (pattern at L253/L275). The options lists are generated at render time from `getAllToolDefinitions()` / `getGatewayConfig()` so they never drift from the live tool surface.
 
 ### 6.4 Filter wiring + errors
 - `executeTool`: after the master gate, if `toolName` ∈ effective-disabled-set → throw a **distinct** error: "… is disabled in Advanced settings (Per-tool Overrides). Re-enable it there." (distinguishable from the master/coarse-toggle error).
