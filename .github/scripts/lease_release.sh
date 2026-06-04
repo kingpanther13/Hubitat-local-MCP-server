@@ -13,7 +13,7 @@ set -uo pipefail
 
 if curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
     -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"manage_hub_variables","arguments":{"tool":"set_variable","args":{"name":"_TEST_HUB_LEASED_BY","value":""}}}}' \
+    -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"tool":"hub_set_variable","args":{"name":"_TEST_HUB_LEASED_BY","value":""}}}}' \
     >/dev/null; then
   echo "Lease released."
 else

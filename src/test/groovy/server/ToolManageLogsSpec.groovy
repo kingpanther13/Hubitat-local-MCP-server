@@ -825,6 +825,36 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.totalStored == 10
     }
 
+    // -------- mcpLog per-entry payload cap (Q6-reserialize) --------
+
+    def "mcpLog caps stored message at 500 chars and stackTrace at 1000"() {
+        given: 'logLevel=debug so an error entry is retained, and an oversized payload'
+        settingsMap.mcpLogLevel = 'debug'
+        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
+
+        when:
+        script.mcpLog('error', 'server', 'x' * 2000, null, [stackTrace: 'z' * 5000])
+
+        then: 'the stored entry is bounded at store time'
+        def stored = stateMap.debugLogs.entries[-1]
+        stored.message.length() == 500
+        stored.stackTrace.length() == 1000
+    }
+
+    def "mcpLog leaves a short message and absent stackTrace untouched"() {
+        given:
+        settingsMap.mcpLogLevel = 'debug'
+        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
+
+        when:
+        script.mcpLog('error', 'server', 'short message')
+
+        then:
+        def stored = stateMap.debugLogs.entries[-1]
+        stored.message == 'short message'
+        !stored.containsKey('stackTrace')
+    }
+
     // -------- toolClearDebugLogs --------
 
     def "hub_delete_debug_logs empties state.debugLogs.entries and reports count"() {

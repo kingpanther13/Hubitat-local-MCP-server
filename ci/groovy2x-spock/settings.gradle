@@ -1,0 +1,4 @@
+// Standalone build, isolated from the root project on purpose (issue #230). Keeps the additive
+// Groovy 2.5 Spock runtime lane fully separate from the root build.gradle / Groovy 3.0 test lane,
+// exactly like the sibling ci/groovy24-parse parse lane.
+rootProject.name = 'groovy2x-spock'

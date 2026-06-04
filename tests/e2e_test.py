@@ -170,12 +170,41 @@ class HubitatMcpClient:
 
     # -- MCP protocol methods ------------------------------------------------
 
-    def initialize(self) -> dict:
+    def initialize(self, protocol_version: str = "2024-11-05") -> dict:
         return self._send("initialize", {
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": protocol_version,
             "capabilities": {},
             "clientInfo": {"name": "e2e-test", "version": "1.0.0"},
         })
+
+    def raw_request(self, payload: Any) -> "requests.Response":
+        """POST a raw JSON-RPC body (single object, batch array, or notification)
+        and return the raw requests.Response — no result-unwrapping, no
+        error-raising. Retries transient 5xx/network flake like _send. Used by
+        transport/protocol tests that must inspect the raw HTTP status and
+        envelope (batch caps, 202-for-notifications, JSON-RPC framing) — paths
+        the result-unwrapping call_tool/_send helpers deliberately hide.
+        """
+        time.sleep(0.2)
+        last_exc: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    self.endpoint,
+                    params={"access_token": self.access_token},
+                    json=payload,
+                    timeout=60,
+                )
+                if 500 <= resp.status_code < 600:
+                    last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on raw_request")
+                    time.sleep((2 ** attempt) + random.uniform(0, 1))
+                    continue
+                return resp
+            except (requests.ConnectionError, requests.Timeout,
+                    requests.exceptions.ChunkedEncodingError) as exc:
+                last_exc = exc
+                time.sleep((2 ** attempt) + random.uniform(0, 1))
+        raise last_exc if last_exc else McpError("transport failure on raw_request")
 
     def list_tools(self) -> dict:
         """Fetch the full tool catalog, iterating cursor-based pagination per MCP 2024-11-05.
@@ -283,7 +312,7 @@ class TestRunner:
 
         # Check if one already exists from a previous test group
         try:
-            vdevs = self.client.call_tool("list_virtual_devices")
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -308,7 +337,7 @@ class TestRunner:
         # Response may not include ID directly — look it up
         if not dev_id:
             time.sleep(0.3)
-            vdevs = self.client.call_tool("list_virtual_devices")
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -380,7 +409,7 @@ class TestRunner:
                          value: str = "test") -> None:
         """Create a hub variable via the gateway."""
         self.client.call_tool("hub_manage_variables", {
-            "tool": "set_variable", "args": {"name": name, "type": var_type, "value": value},
+            "tool": "hub_set_variable", "args": {"name": name, "type": var_type, "value": value},
         })
         self.created_variable_names.append(name)
 
@@ -498,13 +527,13 @@ class TestRunner:
             "confirm": True,
         })
         # Response may be {success: true, message: "..."} without device IDs at top level
-        # Track DNI if available, otherwise look it up from list_virtual_devices
+        # Track DNI if available, otherwise look it up via hub_list_devices (labelFilter)
         dni = result.get("deviceNetworkId", result.get("dni", ""))
         if dni:
             self.created_device_dnis.append(str(dni))
         elif result.get("success"):
             # Look up the created device to get its DNI for cleanup
-            vdevs = self.client.call_tool("list_virtual_devices")
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -518,8 +547,8 @@ class TestRunner:
 
     @test("virtual_device_lifecycle")
     def test_command_virtual_switch(self) -> None:
-        # Find the device we just created via list_virtual_devices (core tool)
-        vdevs = self.client.call_tool("list_virtual_devices")
+        # Find the device we just created via hub_list_devices (core tool)
+        vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
         dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
         target = None
         for d in dev_list:
@@ -550,7 +579,7 @@ class TestRunner:
 
     @test("virtual_device_lifecycle")
     def test_list_virtual_devices(self) -> None:
-        result = self.client.call_tool("list_virtual_devices")
+        result = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
         dev_list = result if isinstance(result, list) else result.get("devices", [])
         found = any(
             f"{PREFIX}Switch_Test" in (d.get("label") or d.get("name") or "")
@@ -561,7 +590,7 @@ class TestRunner:
     @test("virtual_device_lifecycle")
     def test_delete_virtual_switch(self) -> None:
         # Find DNI of our test device
-        vdevs = self.client.call_tool("list_virtual_devices")
+        vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
         dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
         target_dni = None
         for d in dev_list:
@@ -581,7 +610,7 @@ class TestRunner:
             self.created_device_dnis.remove(target_dni)
 
         # Verify it is gone
-        vdevs2 = self.client.call_tool("list_virtual_devices")
+        vdevs2 = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
         dev_list2 = vdevs2 if isinstance(vdevs2, list) else vdevs2.get("devices", [])
         still_there = any(
             f"{PREFIX}Switch_Test" in (d.get("label") or d.get("name") or "")
@@ -1173,7 +1202,7 @@ class TestRunner:
         var_name = f"{PREFIX}DELETE_T224"
         # Setup
         self.client.call_tool("hub_manage_variables", {
-            "tool": "set_variable",
+            "tool": "hub_set_variable",
             "args": {"name": var_name, "value": "scratch-t224"},
         })
         # Track for cleanup in case assertion fails partway
@@ -1226,7 +1255,7 @@ class TestRunner:
         """
         var_name = f"{PREFIX}NO_CONFIRM_T226"
         self.client.call_tool("hub_manage_variables", {
-            "tool": "set_variable",
+            "tool": "hub_set_variable",
             "args": {"name": var_name, "value": "safe"},
         })
         self.created_variable_names.append(var_name)
@@ -1299,7 +1328,7 @@ class TestRunner:
             assert "boolean" in msg.lower(), f"error didn't say boolean: {msg}"
 
     # -----------------------------------------------------------------------
-    # GROUP 11: poll_until_attribute (2 tests -- wall-clock coverage, I7)
+    # GROUP 11: hub_get_device_attribute poll mode (2 tests -- wall-clock coverage, I7)
     # These exercise the real pauseExecution + now() path that Spock unit tests
     # cannot reach because the test harness fixes now() to a constant.
     # -----------------------------------------------------------------------
@@ -1313,7 +1342,7 @@ class TestRunner:
         self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
         time.sleep(0.3)
 
-        result = self.client.call_tool("poll_until_attribute", {
+        result = self.client.call_tool("hub_get_device_attribute", {
             "deviceId": dev_id,
             "attribute": "switch",
             "expectedValue": "off",
@@ -1333,7 +1362,7 @@ class TestRunner:
 
         import time as _time
         t0 = _time.monotonic()
-        result = self.client.call_tool("poll_until_attribute", {
+        result = self.client.call_tool("hub_get_device_attribute", {
             "deviceId": dev_id,
             "attribute": "switch",
             "expectedValue": "on",
@@ -1378,6 +1407,69 @@ class TestRunner:
                     # Soft check: warn but don't fail
         except Exception as exc:
             print(f"    [WARN] Could not check hub logs: {exc}")
+
+    # -----------------------------------------------------------------------
+    # GROUP 13: protocol (6 tests — initialize echo-allowlist, instructions,
+    # inbound batch cap, and 202-for-notifications. These exercise the
+    # transport/protocol layer end-to-end through the cloud relay, which the
+    # Spock harness (in-process dispatch) cannot reach.)
+    # -----------------------------------------------------------------------
+
+    @test("protocol")
+    def test_initialize_echoes_supported_protocol(self) -> None:
+        """Echo-allowlist: a supported protocolVersion is echoed back verbatim."""
+        result = self.client.initialize("2025-06-18")
+        assert result.get("protocolVersion") == "2025-06-18", \
+            f"Expected echoed 2025-06-18, got: {result.get('protocolVersion')}"
+
+    @test("protocol")
+    def test_initialize_echoes_alt_supported_protocol(self) -> None:
+        """A second supported version (2025-03-26) is also echoed — proves the
+        allowlist isn't hardcoded to a single value."""
+        result = self.client.initialize("2025-03-26")
+        assert result.get("protocolVersion") == "2025-03-26", \
+            f"Expected echoed 2025-03-26, got: {result.get('protocolVersion')}"
+
+    @test("protocol")
+    def test_initialize_falls_back_on_unsupported_protocol(self) -> None:
+        """An unsupported protocolVersion falls back to the server default
+        (2024-11-05) rather than erroring."""
+        result = self.client.initialize("1999-01-01")
+        assert result.get("protocolVersion") == "2024-11-05", \
+            f"Expected fallback 2024-11-05, got: {result.get('protocolVersion')}"
+
+    @test("protocol")
+    def test_initialize_returns_instructions(self) -> None:
+        """initialize advertises a non-empty instructions string (gateway +
+        pagination usage hint) so MCP clients can surface server guidance."""
+        result = self.client.initialize()
+        instructions = result.get("instructions")
+        assert isinstance(instructions, str) and instructions.strip(), \
+            f"Expected non-empty instructions string, got: {instructions!r}"
+
+    @test("protocol")
+    def test_batch_too_large_rejected(self) -> None:
+        """A JSON-RPC batch over the 50-element cap is rejected wholesale with a
+        single -32600 error before any element runs (inbound batch cap)."""
+        batch = [{"jsonrpc": "2.0", "id": i, "method": "tools/list"} for i in range(51)]
+        resp = self.client.raw_request(batch)
+        data = resp.json()
+        # A single error object, NOT an array — the cap trips before per-element dispatch.
+        assert isinstance(data, dict), f"Expected one error object, got {type(data).__name__}: {data}"
+        err = data.get("error", {})
+        assert err.get("code") == -32600, f"Expected -32600, got: {data}"
+        assert "batch too large" in err.get("message", ""), \
+            f"Expected 'batch too large' message, got: {err.get('message')!r}"
+
+    @test("protocol")
+    def test_notification_returns_202(self) -> None:
+        """An all-notifications POST (no id) returns HTTP 202 Accepted with an
+        empty body per MCP Streamable HTTP — replaces the prior 204, which some
+        clients/relays mishandle."""
+        resp = self.client.raw_request({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        assert resp.status_code == 202, \
+            f"Expected HTTP 202 for a notification, got {resp.status_code}: {resp.text[:200]!r}"
+        assert resp.text.strip() == "", f"Expected empty body for 202, got: {resp.text[:200]!r}"
 
     # -----------------------------------------------------------------------
     # Cleanup
@@ -1425,7 +1517,7 @@ class TestRunner:
 
         # Layer 2: sweep virtual devices with BAT_E2E_ prefix
         try:
-            vdevs = self.client.call_tool("list_virtual_devices")
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
@@ -1446,7 +1538,7 @@ class TestRunner:
 
         # Layer 3: sweep rules with BAT_E2E_ prefix
         try:
-            rules_result = self.client.call_tool("custom_list_rules")
+            rules_result = self.client.call_tool("hub_get_custom_rule")
             rules = rules_result if isinstance(rules_result, list) else rules_result.get("rules", [])
             for r in rules:
                 rname = r.get("name", "")

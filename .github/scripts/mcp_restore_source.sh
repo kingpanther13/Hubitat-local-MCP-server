@@ -67,7 +67,7 @@ RESTORE_RPC_FILE="${RUNNER_TEMP:-/tmp}/mcp_restore_rpc.json"
 jq -nc \
   --arg id "$CLASS_ID" \
   --rawfile src "$PRE_SOURCE_FILE" \
-  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"update_app_code",arguments:{appId:$id,source:$src,confirm:true}}}' \
+  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_update_app",arguments:{appId:$id,source:$src,confirm:true}}}' \
   > "$RESTORE_RPC_FILE"
 
 RESTORE_RESP_FILE="${RUNNER_TEMP:-/tmp}/mcp_restore_resp.txt"
@@ -84,7 +84,7 @@ RESTORE_BODY=$(sed '$d' "$RESTORE_RESP_FILE")
 echo "Hub responded HTTP $HTTP_CODE; body length=$(printf '%s' "$RESTORE_BODY" | wc -c)"
 rm -f "$RESTORE_RESP_FILE"
 
-# Polls get_app_source until totalLength matches the pre-deploy charlen
+# Polls hub_get_source until totalLength matches the pre-deploy charlen
 # (meaning the restore landed).
 verify_restored_to_pre_len() {
   if [ -z "$PRE_LEN" ] || [ "$PRE_LEN" = "0" ]; then
@@ -95,7 +95,7 @@ verify_restored_to_pre_len() {
   local rpc resp text current_len ok
   while [ $elapsed -lt $POST_RESTORE_VERIFY_TIMEOUT ]; do
     rpc=$(jq -nc --arg id "$CLASS_ID" \
-      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"get_app_source",arguments:{appId:$id,offset:0,length:1}}}')
+      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{appId:$id,offset:0,length:1}}}')
     resp=$(curl -sS --max-time 30 -X POST "$MCP_URL" \
       -H "Content-Type: application/json" \
       --data-binary "$rpc" || true)

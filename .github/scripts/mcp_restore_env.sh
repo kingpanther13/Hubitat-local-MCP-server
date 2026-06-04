@@ -23,7 +23,7 @@ echo "Restoring pre-run state: $PRE_STATE"
 # update_mcp_settings expects a Map<key, value>. The pre-state file is
 # already in the right shape — wrap it in the tool's argument envelope.
 SETTINGS_PAYLOAD="$(jq -nc --argjson s "$PRE_STATE" '{settings: $s, confirm: true}')"
-RPC_BODY="$(jq -nc --argjson p "$SETTINGS_PAYLOAD" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"manage_mcp_self",arguments:{tool:"update_mcp_settings",args:$p}}}')"
+RPC_BODY="$(jq -nc --argjson p "$SETTINGS_PAYLOAD" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_manage_mcp",arguments:{tool:"hub_update_mcp_settings",args:$p}}}')"
 
 curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
   -H "Content-Type: application/json" \

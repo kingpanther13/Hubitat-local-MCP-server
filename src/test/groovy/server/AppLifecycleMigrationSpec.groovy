@@ -43,12 +43,26 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
 
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
 
+    // Ordered record of lifecycle wire-up calls. schedule()/unschedule() are
+    // class-2 (declared on the eighty20results delegate chain), so a per-instance
+    // metaClass stub on the script is bypassed -- they must be recorded via
+    // permanent >> dispatchers on the appExecutor mock installed in setupSpec.
+    // Tests reset this in given: with .clear().
+    @Shared protected final List<String> lifecycleCalls = []
+
     def setupSpec() {
         // Additive stub layered on top of HarnessSpec.setupSpec's appExecutor.
         // Gives app.updateSetting(...) a non-null target (same pattern as
         // ToolManageLogsSpec). Must be in setupSpec (not given:) because the
         // @Shared Mock's interaction set is read-only after setup() completes.
         appExecutor.getApp() >> sharedAppStub
+        // Record schedule/unschedule call order for the schedule-symmetry test.
+        appExecutor.schedule(*_) >> { args -> lifecycleCalls << 'schedule' }
+        appExecutor.unschedule() >> { lifecycleCalls << 'unschedule' }
+        // createAccessToken is class-2 (declared on AppExecutor) -- a per-instance
+        // script.metaClass stub would be bypassed -- so stub it here. Models the real
+        // OAuth API: it populates state.accessToken. Used by the token-regenerate test.
+        appExecutor.createAccessToken() >> { stateMap.accessToken = 'new'; 'new' }
     }
 
     def setup() {
@@ -213,5 +227,227 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
 
         and: 'migration marker stays true'
         stateMap.customEngineMigrated == true
+    }
+
+    // -----------------------------------------------------------------------
+    // uninstalled(): tears down in-use registrations + subscriptions + schedule
+    // (issue #105 PR2b lifecycle-uninstalled-teardown). Do NOT stubUpdatedDeps()
+    // -- that no-ops initialize, irrelevant here; we drive uninstalled() direct.
+    // -----------------------------------------------------------------------
+
+    def "uninstalled() removes each tracked in-use var, clears the set, and unsubscribes"() {
+        given: 'two tracked in-use registrations and a clean unsubscribe counter'
+        UNSUBSCRIBE_CALL_COUNT.set(0)
+        atomicStateMap.inUseHubVars = ['v1', 'v2']
+        def removed = []
+        // class-1 (absent from hubitat_ci jar -> purely dynamic): metaClass wins.
+        script.metaClass.removeInUseGlobalVar = { String n -> removed << n; true }
+
+        when:
+        script.uninstalled()
+
+        then: 'each tracked var was de-registered'
+        removed.toSet() == ['v1', 'v2'] as Set
+
+        and: 'the tracking set was cleared'
+        atomicStateMap.inUseHubVars == null
+
+        and: 'subscriptions were torn down'
+        UNSUBSCRIBE_CALL_COUNT.get() == 1
+    }
+
+    @spock.lang.Unroll
+    def "uninstalled() is a no-op for in-use vars when tracking is #desc, without NPE"() {
+        given: 'no tracked registrations (null key, or an explicit empty list)'
+        UNSUBSCRIBE_CALL_COUNT.set(0)
+        if (val == null) {
+            atomicStateMap.remove('inUseHubVars')
+        } else {
+            atomicStateMap.inUseHubVars = val
+        }
+        def removed = []
+        script.metaClass.removeInUseGlobalVar = { String n -> removed << n; true }
+
+        when:
+        script.uninstalled()
+
+        then: 'no de-registration calls and no exception'
+        removed == []
+        noExceptionThrown()
+
+        and: 'unsubscribe still fired (best-effort teardown)'
+        UNSUBSCRIBE_CALL_COUNT.get() == 1
+
+        where:
+        desc    | val
+        'null'  | null
+        'empty' | []
+    }
+
+    // -----------------------------------------------------------------------
+    // initialize(): unschedule() must precede schedule() so each lifecycle
+    // cycle rebuilds the cron set (lifecycle-schedule-symmetry). Direct call;
+    // checkForUpdate/_subscribe*/_refresh* are class-1 script methods.
+    // -----------------------------------------------------------------------
+
+    def "initialize() unschedules BEFORE scheduling the daily checkForUpdate"() {
+        given:
+        lifecycleCalls.clear()
+        stateMap.accessToken = 'tok'                  // skip createAccessToken
+        stateMap.updateCheck = [checkedAt: 1L]        // suppress the immediate check (gate)
+        script.metaClass.checkForUpdate = { -> }
+        script.metaClass._subscribeToAllHubVariables = { -> }
+        script.metaClass._refreshHubVarInUseRegistrations = { -> }
+
+        when:
+        script.initialize()
+
+        then: 'both wire-up calls fired, unschedule strictly before schedule'
+        lifecycleCalls.indexOf('unschedule') >= 0
+        lifecycleCalls.indexOf('schedule') >= 0
+        lifecycleCalls.indexOf('unschedule') < lifecycleCalls.indexOf('schedule')
+    }
+
+    // -----------------------------------------------------------------------
+    // initialize(): immediate checkForUpdate() only on first install
+    // (lifecycle-version-check-on-every-save). state.updateCheck is the key
+    // handleUpdateCheckResponse writes; null == never checked == first install.
+    // -----------------------------------------------------------------------
+
+    def "initialize() runs the immediate version check on first install (state.updateCheck null)"() {
+        given:
+        lifecycleCalls.clear()
+        stateMap.accessToken = 'tok'
+        stateMap.remove('updateCheck')                // first install: never checked
+        def checkCalls = 0
+        script.metaClass.checkForUpdate = { -> checkCalls++ }
+        script.metaClass._subscribeToAllHubVariables = { -> }
+        script.metaClass._refreshHubVarInUseRegistrations = { -> }
+
+        when:
+        script.initialize()
+
+        then: 'the immediate check fired for first-install freshness'
+        checkCalls == 1
+    }
+
+    def "initialize() skips the immediate version check on a routine save (state.updateCheck set)"() {
+        given:
+        lifecycleCalls.clear()
+        stateMap.accessToken = 'tok'
+        stateMap.updateCheck = [checkedAt: 1234567890000L]   // already checked before
+        def checkCalls = 0
+        script.metaClass.checkForUpdate = { -> checkCalls++ }
+        script.metaClass._subscribeToAllHubVariables = { -> }
+        script.metaClass._refreshHubVarInUseRegistrations = { -> }
+
+        when:
+        script.initialize()
+
+        then: 'no GitHub egress on a routine settings save'
+        checkCalls == 0
+    }
+
+    // -----------------------------------------------------------------------
+    // appButtonHandler(regenerateTokenBtn): user-initiated, on-demand token
+    // rotation (issue #105 PR2b lifecycle-token-rotation / Q9, UI-only). The
+    // token is otherwise stable -- only this button (and the first-install
+    // guard) ever calls createAccessToken (class-2, stubbed on appExecutor).
+    // -----------------------------------------------------------------------
+
+    def "appButtonHandler regenerates the access token when the regenerate button is pressed"() {
+        given: 'an existing token and a captured mcpLog'
+        stateMap.accessToken = 'old'
+        def logCalls = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            logCalls << [level: level, component: component, msg: msg]
+        }
+
+        when:
+        script.appButtonHandler('regenerateTokenBtn')
+
+        then: 'createAccessToken (appExecutor stub) re-issued a fresh token'
+        stateMap.accessToken == 'new'
+
+        and: 'a warn-level audit line was emitted for the rotation'
+        logCalls.any { it.level == 'warn' && it.component == 'server' && it.msg.toLowerCase().contains('token') }
+    }
+
+    def "appButtonHandler does nothing to the token for an unknown button name"() {
+        given:
+        stateMap.accessToken = 'old'
+        script.metaClass.mcpLog = { String level, String component, String msg -> }
+
+        when:
+        script.appButtonHandler('someUnknownBtn')
+
+        then: 'the token is untouched (no regenerate, no createAccessToken)'
+        stateMap.accessToken == 'old'
+        noExceptionThrown()
+    }
+    // (confirmRegenerateTokenPage is static UI: dynamicPage cannot be rendered outside a
+    // preferences() reader context in this harness, so its body is compile-validated by the
+    // sandbox load; the regenerate behaviour is covered by the appButtonHandler test above.)
+
+    // -----------------------------------------------------------------------
+    // handleUpdateCheckResponse failure paths stamp a checkedAt so the
+    // first-install gate flips + the 24h guard engages on offline hubs, but
+    // MUST NOT clobber a previously-known update result (lifecycle-version-
+    // check-on-every-save fix + its review follow-up).
+    // -----------------------------------------------------------------------
+
+    def "handleUpdateCheckResponse on a non-200 stamps checkedAt + lastError without flagging an update"() {
+        given:
+        stateMap.remove('updateCheck')
+
+        when:
+        script.handleUpdateCheckResponse([status: 500, data: ''], null)
+
+        then: 'the gate is flipped (record exists) and the 24h guard is armed, no banner'
+        stateMap.updateCheck != null
+        stateMap.updateCheck.checkedAt == 1234567890000L
+        stateMap.updateCheck.lastError == 'http 500'
+        !stateMap.updateCheck.updateAvailable
+    }
+
+    def "handleUpdateCheckResponse on a 200 with no version field stamps a failure record"() {
+        given:
+        stateMap.remove('updateCheck')
+
+        when:
+        script.handleUpdateCheckResponse([status: 200, data: '{}'], null)
+
+        then:
+        stateMap.updateCheck.checkedAt == 1234567890000L
+        stateMap.updateCheck.lastError == 'no version field'
+        !stateMap.updateCheck.updateAvailable
+    }
+
+    def "handleUpdateCheckResponse on unparseable body stamps a failure record (caught)"() {
+        given:
+        stateMap.remove('updateCheck')
+
+        when:
+        script.handleUpdateCheckResponse([status: 200, data: 'not json at all'], null)
+
+        then:
+        noExceptionThrown()
+        stateMap.updateCheck.checkedAt == 1234567890000L
+        stateMap.updateCheck.lastError != null
+        !stateMap.updateCheck.updateAvailable
+    }
+
+    def "a transient version-check failure does NOT clobber a previously-surfaced 'update available' result"() {
+        given: 'a prior successful check that found an update'
+        stateMap.updateCheck = [latestVersion: '9.9.9', updateAvailable: true, checkedAt: 1L]
+
+        when: 'a later check fails (GitHub briefly unreachable)'
+        script.handleUpdateCheckResponse([status: 503, data: ''], null)
+
+        then: 'the known update is preserved (banner stays); only checkedAt + lastError refresh'
+        stateMap.updateCheck.updateAvailable == true
+        stateMap.updateCheck.latestVersion == '9.9.9'
+        stateMap.updateCheck.checkedAt == 1234567890000L
+        stateMap.updateCheck.lastError == 'http 503'
     }
 }

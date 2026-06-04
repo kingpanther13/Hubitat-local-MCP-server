@@ -207,4 +207,64 @@ class HandleGatewaySpec extends ToolSpecBase {
         result.rooms instanceof List
         result.count == 1
     }
+
+    // ---- pr2c-cat-1: cached required-param memo on the gateway dispatch path ----
+    // handleGateway no longer rebuilds the full ~111-tool catalog for the required-param
+    // pre-check; it reads from the memoized requiredParamsByTool() map cached in atomicState.
+
+    def "memo is populated in atomicState after the first gateway call; a repeat call returns the identical missing-param error"() {
+        given: 'a clean atomicState so the memo builds fresh on the first call'
+        atomicStateMap.remove('requiredParamsByTool')
+
+        when: 'first call with a missing required param (hub_get_room requires room)'
+        def first = script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+
+        then: 'soft missing-param error AND the memo is now cached in atomicState'
+        first.isError == true
+        first.tool == 'hub_get_room'
+        first.error.contains('Missing required parameter:')
+        first.error.contains('room')
+        atomicStateMap.requiredParamsByTool instanceof Map
+        atomicStateMap.requiredParamsByTool['hub_get_room'] == ['room']
+        // omission contract: a no-required-param tool is absent from the map
+        !atomicStateMap.requiredParamsByTool.containsKey('hub_list_rooms')
+
+        when: 'a second identical call now served from the cached memo'
+        def second = script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+
+        then: 'byte-identical error response -- the memo read is behavior-preserving'
+        second == first
+    }
+
+    def "the missing-param hint stays intact (no FLAT_TRIM leak) even after a flat-mode tools/list strip"() {
+        given: 'flat mode drives the in-place [[FLAT_TRIM]] strip path; clean memo'
+        settingsMap.useGateways = false
+        atomicStateMap.remove('requiredParamsByTool')
+
+        when: 'run the flat strip path first (mutates fresh def copies in place), then a gateway missing-param call'
+        script.getToolDefinitions()
+        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+
+        then: 'the missing-param hint is fully intact -- no marker leakage'
+        result.isError == true
+        result.error.contains('room')
+        result.parameters.contains('room')
+        !result.parameters.contains('FLAT_TRIM')
+    }
+
+    def "two-missing-required path still rebuilds the full catalog for the hint and caches the two-element required list"() {
+        given:
+        atomicStateMap.remove('requiredParamsByTool')
+
+        when: 'hub_create_room requires both name and confirm; omit both'
+        def result = script.handleGateway('hub_manage_rooms', 'hub_create_room', [:])
+
+        then: 'plural form + both names; memo cached the two-element required list (order-independent)'
+        result.isError == true
+        result.tool == 'hub_create_room'
+        result.error.contains('Missing required parameters:')
+        result.error.contains('name')
+        result.error.contains('confirm')
+        (atomicStateMap.requiredParamsByTool['hub_create_room'] as Set) == (['name', 'confirm'] as Set)
+    }
 }

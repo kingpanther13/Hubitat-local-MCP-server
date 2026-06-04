@@ -1483,6 +1483,21 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.warning.contains('7/10')
     }
 
+    def "hub_list_captured_states formats a missing/zero timestamp as 'Never' via formatTimestamp"() {
+        given: 'one entry with no timestamp and one with a zero timestamp'
+        atomicStateMap.capturedDeviceStates = [
+            no_ts:   [devices: [], deviceCount: 0],
+            zero_ts: [devices: [], timestamp: 0L, deviceCount: 0]
+        ]
+
+        when:
+        def result = script.toolListCapturedStates()
+
+        then: 'both render capturedAt via the shared formatTimestamp null-label, not "unknown" and not a throw'
+        result.capturedStates.every { it.capturedAt == 'Never' }
+        noExceptionThrown()
+    }
+
     // -------- toolDeleteCapturedState --------
 
     def "hub_delete_captured_state with no stateId clears ALL captured states (no-ID = delete all)"() {
@@ -1606,5 +1621,58 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.cleared == 0
+    }
+
+    // -------- mcpLog unknown-level fail-open (log-unknown-level-silent-drop) --------
+
+    def "mcpLog fails open on an unknown level and retains the entry instead of silently dropping it"() {
+        given: 'threshold error (default) and an empty buffer'
+        settingsMap.mcpLogLevel = 'error'
+        stateMap.debugLogs = [entries: [], config: [logLevel: 'error', maxEntries: 100]]
+
+        when: 'a typo level is logged (would normally be below the error threshold)'
+        script.mcpLog('warning', 'server', 'typo')
+
+        then: 'unknown level is not silently dropped -- it fails open and is retained'
+        stateMap.debugLogs.entries.size() == 1
+        stateMap.debugLogs.entries[-1].level == 'warning'
+        stateMap.debugLogs.entries[-1].message == 'typo'
+    }
+
+    // -------- mcpLogError structured stackTrace capture (log-mcplogerror-low-adoption) --------
+
+    def "converted perf-stats error site captures a structured stackTrace via mcpLogError"() {
+        given: 'logLevel=debug so the error entry is retained, and the hub fetch throws'
+        settingsMap.mcpLogLevel = 'debug'
+        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
+        script.metaClass.fetchLogsJson = { -> throw new IllegalStateException('boom-perf') }
+
+        when:
+        def result = script.toolGetPerformanceStats([:])
+
+        then: 'the tool returns its structured error map'
+        result.error?.contains('boom-perf')
+
+        and: 'the newest debug-log entry carries a class-qualified stackTrace from mcpLogError'
+        def entry = stateMap.debugLogs.entries[-1]
+        entry.level == 'error'
+        entry.component == 'monitoring'
+        entry.stackTrace == 'java.lang.IllegalStateException: boom-perf'
+    }
+
+    def "converted hub-jobs error site captures a structured stackTrace via mcpLogError"() {
+        given:
+        settingsMap.mcpLogLevel = 'debug'
+        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
+        script.metaClass.fetchLogsJson = { -> throw new RuntimeException('boom-jobs') }
+
+        when:
+        def result = script.toolGetHubJobs([:])
+
+        then:
+        result.error?.contains('boom-jobs')
+        def entry = stateMap.debugLogs.entries[-1]
+        entry.component == 'monitoring'
+        entry.stackTrace == 'java.lang.RuntimeException: boom-jobs'
     }
 }
