@@ -748,10 +748,12 @@ class TestRunner:
         })
         assert edited.get("success") is not False, f"hub_set_native_app edit reported failure: {edited}"
 
-        # VERIFY via the read-only hub_get_app_config.
+        # VERIFY via the read-only hub_get_app_config. Identity (label/name) is
+        # nested under the `app` object in the response (toolGetAppConfig shape).
         cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
-        label = str(cfg.get("label") or cfg.get("name") or "")
-        assert PREFIX in label, f"created app label missing the {PREFIX} prefix: {label}"
+        app_obj = cfg.get("app") or {}
+        label = str(app_obj.get("label") or app_obj.get("name") or "")
+        assert PREFIX in label, f"created app label missing the {PREFIX} prefix: {label!r} (cfg keys: {list(cfg.keys())})"
 
         # DELETE.
         self.client.call_tool("hub_manage_native_rules_and_apps", {
