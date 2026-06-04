@@ -15,10 +15,11 @@ import support.ToolSpecBase
  * - toolDeleteItem (type=driver) -> hub_delete_item
  * - toolRestoreItemBackup   -> hub_restore_backup
  *
- * Every tool here runs through requireHubAdminWrite -- golden-path tests seed:
- *   settingsMap.enableHubAdminWrite = true
- *   stateMap.lastBackupTimestamp    = 1234567890000L   (matches fixed now())
- *   args.confirm                    = true
+ * Every tool here runs through requireDestructiveConfirm (confirm + 24h backup)
+ * and is gated centrally on the Write master in executeTool -- golden-path tests seed:
+ *   settingsMap.enableWrite      = true
+ *   stateMap.lastBackupTimestamp = 1234567890000L   (matches fixed now())
+ *   args.confirm                 = true
  *
  * Mocking strategy (see docs/testing.md):
  *   - hubInternalGet       -- routed by HarnessSpec via hubGet.register(path) closures.
@@ -42,8 +43,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         appExecutor.getApp() >> sharedAppStub
     }
 
-    private void enableHubAdminWrite() {
-        settingsMap.enableHubAdminWrite = true
+    private void enableWrite() {
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
     }
 
@@ -51,7 +52,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_app throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallApp([source: 'definition(name: "X")'])
@@ -65,7 +66,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app via dispatch returns -32602 envelope when confirm is not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "X")'])
@@ -78,26 +79,30 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_create_app throws when Hub Admin Write is disabled"() {
+    def "hub_create_app throws when Write tools are disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolInstallApp([source: 'definition(name: "X")', confirm: true])
+        script.executeTool('hub_create_app', [source: 'definition(name: "X")', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_create_app via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = false
 
         when:
         def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "X")', confirm: true])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Write')
+        response.error.message.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -105,7 +110,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_app throws when neither source nor sourceFile is provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallApp([confirm: true])
@@ -119,7 +124,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app via dispatch returns -32602 envelope when neither source nor sourceFile (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_app', [confirm: true])
@@ -134,7 +139,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_app throws when both source and sourceFile are provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallApp([source: 'code', sourceFile: 'app.groovy', confirm: true])
@@ -148,7 +153,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app via dispatch returns -32602 envelope when both source and sourceFile (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_app', [source: 'code', sourceFile: 'app.groovy', confirm: true])
@@ -163,7 +168,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_app (source mode) POSTs to /app/save, verifies via ajax/code, and extracts the new appId"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def captured = [:]
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             captured.path = path
@@ -192,7 +197,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app via dispatch (source mode) POSTs and extracts appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def captured = [:]
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             captured.path = path
@@ -225,7 +230,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_app (sourceFile mode) reads source from File Manager and installs it"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'my-app.groovy' ? 'definition(name: "FromFile")'.getBytes('UTF-8') : null
         }
@@ -250,7 +255,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app via dispatch (sourceFile mode) reads source and installs (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'my-app.groovy' ? 'definition(name: "FromFile")'.getBytes('UTF-8') : null
         }
@@ -279,7 +284,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_app (sourceFile mode) throws when the file is absent in File Manager"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
@@ -294,7 +299,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app via dispatch returns -32602 envelope when sourceFile is absent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
@@ -310,7 +315,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_app returns success=false when Location header is absent (hub did not persist item)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 200, location: null, data: 'ok']
         }
@@ -328,7 +333,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app via dispatch returns success=false envelope when Location header is absent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 200, location: null, data: 'ok']
         }
@@ -350,7 +355,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_app returns success=false when post-install verification shows an error state"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: 'http://127.0.0.1:8080/app/editor/9900', data: '']
         }
@@ -372,7 +377,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app via dispatch returns success=false envelope when post-install verification errors (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: 'http://127.0.0.1:8080/app/editor/9900', data: '']
         }
@@ -398,7 +403,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_app reports failure when the hub POST throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             throw new RuntimeException('compile error: bad syntax')
         }
@@ -417,7 +422,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app via dispatch reports failure envelope when hub POST throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             throw new RuntimeException('compile error: bad syntax')
         }
@@ -440,7 +445,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_app surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: 'http://127.0.0.1:8080/app/editor/7100', data: '']
         }
@@ -464,7 +469,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app via dispatch surfaces qualified success envelope when verify fetch throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: 'http://127.0.0.1:8080/app/editor/7100', data: '']
         }
@@ -492,7 +497,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_app returns success=false when verify endpoint returns an empty body"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: 'http://127.0.0.1:8080/app/editor/7200', data: '']
         }
@@ -513,7 +518,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app via dispatch returns success=false envelope when verify endpoint returns empty body (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: 'http://127.0.0.1:8080/app/editor/7200', data: '']
         }
@@ -538,7 +543,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_app returns success=false when verify endpoint returns unparseable HTML"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: 'http://127.0.0.1:8080/app/editor/7300', data: '']
         }
@@ -560,7 +565,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app via dispatch returns success=false envelope when verify returns unparseable HTML (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: 'http://127.0.0.1:8080/app/editor/7300', data: '']
         }
@@ -586,7 +591,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_app rejects bulk-mode args (installs[] not supported on apps)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallApp([installs: [[source: 'a'], [source: 'b']], confirm: true])
@@ -601,7 +606,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app via dispatch returns -32602 envelope when bulk-mode installs[] (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_app', [installs: [[source: 'a'], [source: 'b']], confirm: true])
@@ -617,7 +622,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver (source mode) POSTs to /driver/save and returns the new driverId"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def postedPath = null
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             postedPath = path
@@ -641,7 +646,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver via dispatch (source mode) POSTs to /driver/save and returns driverId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def postedPath = null
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             postedPath = path
@@ -669,7 +674,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver (sourceFile mode) reads source from File Manager and installs it"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'my-driver.groovy' ? 'metadata { }'.getBytes('UTF-8') : null
         }
@@ -694,7 +699,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver via dispatch (sourceFile mode) reads source and installs (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'my-driver.groovy' ? 'metadata { }'.getBytes('UTF-8') : null
         }
@@ -723,7 +728,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver returns success=false when post-install verification shows an error state"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/8800', data: '']
         }
@@ -744,7 +749,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver via dispatch returns success=false envelope when verify shows error state (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/8800', data: '']
         }
@@ -769,7 +774,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/6600', data: '']
         }
@@ -793,7 +798,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver via dispatch surfaces qualified success envelope when verify fetch throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/6600', data: '']
         }
@@ -821,7 +826,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver returns success=false when verify endpoint returns an empty body"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/6700', data: '']
         }
@@ -841,7 +846,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver via dispatch returns success=false envelope when verify returns empty body (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/6700', data: '']
         }
@@ -865,7 +870,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver returns success=false when verify endpoint returns unparseable HTML"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/6800', data: '']
         }
@@ -885,7 +890,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver via dispatch returns success=false envelope when verify returns unparseable HTML (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/6800', data: '']
         }
@@ -907,26 +912,30 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_create_driver throws when Hub Admin Write is disabled"() {
+    def "hub_create_driver throws when Write tools are disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolInstallDriver([source: 'metadata { }', confirm: true])
+        script.executeTool('hub_create_driver', [source: 'metadata { }', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_create_driver via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = false
 
         when:
         def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Write')
+        response.error.message.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -934,7 +943,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallDriver([source: 'metadata { }'])
@@ -948,7 +957,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }'])
@@ -963,7 +972,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver throws when neither source nor sourceFile is provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallDriver([confirm: true])
@@ -977,7 +986,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver via dispatch returns -32602 envelope when neither source nor sourceFile (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_driver', [confirm: true])
@@ -992,7 +1001,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver throws when both source and sourceFile are provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallDriver([source: 'metadata { }', sourceFile: 'driver.groovy', confirm: true])
@@ -1006,7 +1015,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver via dispatch returns -32602 envelope when both source and sourceFile (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', sourceFile: 'driver.groovy', confirm: true])
@@ -1021,7 +1030,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver throws when sourceFile is not found in File Manager"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
@@ -1036,7 +1045,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver via dispatch returns -32602 envelope when sourceFile not found in File Manager (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
@@ -1052,7 +1061,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver returns success=false when Location header is absent (hub did not persist item)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 200, location: null, data: 'ok']
         }
@@ -1070,7 +1079,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver via dispatch returns success=false envelope when Location header absent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 200, location: null, data: 'ok']
         }
@@ -1092,7 +1101,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver reports failure when the hub POST throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             throw new RuntimeException('compile error: syntax problem')
         }
@@ -1111,7 +1120,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver via dispatch reports failure envelope when hub POST throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             throw new RuntimeException('compile error: syntax problem')
         }
@@ -1134,26 +1143,30 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     // -------- hub_create_driver bulk mode --------
 
-    def "hub_create_driver bulk mode throws when Hub Admin Write is disabled"() {
+    def "hub_create_driver bulk mode throws when Write tools are disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolInstallDriver([installs: [[sourceFile: 'f.groovy']], confirm: true])
+        script.executeTool('hub_create_driver', [installs: [[sourceFile: 'f.groovy']], confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_create_driver bulk via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_create_driver bulk via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = false
 
         when:
         def response = mcpDriver.callTool('hub_create_driver', [installs: [[sourceFile: 'f.groovy']], confirm: true])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Write')
+        response.error.message.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -1161,7 +1174,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver bulk mode throws when both installs and sourceFile are supplied"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallDriver([sourceFile: 'x.groovy', installs: [[sourceFile: 'f.groovy']], confirm: true])
@@ -1176,7 +1189,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver bulk via dispatch returns -32602 envelope when both installs and sourceFile (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_driver', [sourceFile: 'x.groovy', installs: [[sourceFile: 'f.groovy']], confirm: true])
@@ -1192,7 +1205,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver bulk mode throws when installs is an empty array"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallDriver([installs: [], confirm: true])
@@ -1206,7 +1219,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver bulk via dispatch returns -32602 envelope when installs is empty array (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_driver', [installs: [], confirm: true])
@@ -1221,7 +1234,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver bulk mode happy path: 3 drivers all succeed, per-item driverIds returned"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def callNum = 0
         script.metaClass.downloadHubFile = { String fileName -> 'metadata { }'.getBytes('UTF-8') }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -1255,7 +1268,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver bulk via dispatch happy path 3 drivers all succeed (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def callNum = 0
         script.metaClass.downloadHubFile = { String fileName -> 'metadata { }'.getBytes('UTF-8') }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -1293,7 +1306,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver bulk mode partial failure: middle item missing file, outer two installed"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def callNum = 0
         script.metaClass.downloadHubFile = { String fileName ->
             // driver-b.groovy is missing -- simulate absent file
@@ -1335,7 +1348,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver bulk via dispatch partial failure middle item missing file (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def callNum = 0
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'driver-b.groovy' ? null : 'metadata { }'.getBytes('UTF-8')
@@ -1378,7 +1391,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver bulk mode: inline source items work alongside sourceFile items"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def callNum = 0
         script.metaClass.downloadHubFile = { String fileName ->
             'metadata { }'.getBytes('UTF-8')
@@ -1413,7 +1426,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver bulk via dispatch inline source items work alongside sourceFile items (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def callNum = 0
         script.metaClass.downloadHubFile = { String fileName -> 'metadata { }'.getBytes('UTF-8') }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -1450,7 +1463,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver bulk mode: single-element installs array works"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/8900', data: '']
         }
@@ -1474,7 +1487,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver bulk via dispatch single-element installs array works (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/8900', data: '']
         }
@@ -1502,7 +1515,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver bulk mode: malformed entry (non-Map) yields per-item failure with index hint"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/9100', data: '']
         }
@@ -1534,7 +1547,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver bulk via dispatch malformed entry yields per-item failure (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/9100', data: '']
         }
@@ -1570,7 +1583,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver bulk mode: per-item verify-throw surfaces verified=false and verifyError on the success entry"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def callNum = 0
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             callNum++
@@ -1613,7 +1626,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver bulk via dispatch per-item verify-throw surfaces verifyError on success entry (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def callNum = 0
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             callNum++
@@ -1657,7 +1670,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver bulk mode: per-item verify status=error propagates error, note, and lastBackup on the failed entry"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def callNum = 0
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             callNum++
@@ -1701,7 +1714,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver bulk via dispatch per-item verify status=error propagates note and lastBackup (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def callNum = 0
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             callNum++
@@ -1748,7 +1761,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateAppCode([appId: '1', source: 'x'])
@@ -1762,7 +1775,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_app via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_update_app', [appId: '1', source: 'x'])
@@ -1777,7 +1790,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app throws when appId is missing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateAppCode([source: 'x', confirm: true])
@@ -1791,7 +1804,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_app via dispatch returns -32602 envelope when appId missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_update_app', [source: 'x', confirm: true])
@@ -1806,7 +1819,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app throws when none of source, sourceFile, or resave are supplied"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateAppCode([appId: '1', confirm: true])
@@ -1822,7 +1835,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_app via dispatch returns -32602 envelope when none of source/sourceFile/resave supplied (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_update_app', [appId: '1', confirm: true])
@@ -1839,7 +1852,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app (source mode) backs up, fetches version, POSTs to /app/ajax/update"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         and: 'backupItemSource fetches source + uploads backup; update then fetches version again'
         hubGet.register('/app/ajax/code') { params ->
@@ -1886,7 +1899,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_app via dispatch (source mode) backs up and POSTs to /app/ajax/update (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 12, "source": "old source"}'
         }
@@ -1925,7 +1938,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app (sourceFile mode) reads source from File Manager"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 3, "source": "on-hub source"}'
         }
@@ -1953,7 +1966,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_app via dispatch (sourceFile mode) reads source from File Manager (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 3, "source": "on-hub source"}'
         }
@@ -1985,7 +1998,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app (sourceFile mode) throws when the file is absent"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
@@ -2000,7 +2013,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_app via dispatch returns -32602 envelope when sourceFile absent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
@@ -2016,7 +2029,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app (resave mode) fetches the current source and re-saves it"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 7, "source": "current source"}'
         }
@@ -2042,7 +2055,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_app via dispatch (resave mode) fetches current source and re-saves it (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 7, "source": "current source"}'
         }
@@ -2072,7 +2085,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app reports failure when the hub response parses to status=error"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "old"}'
         }
@@ -2094,7 +2107,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_app via dispatch reports failure envelope when hub response status=error (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "old"}'
         }
@@ -2120,7 +2133,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app rejects bulk-mode args (updates[] not supported on apps)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateAppCode([
@@ -2138,7 +2151,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_app via dispatch returns -32602 envelope when bulk-mode updates[] (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_update_app', [
@@ -2157,7 +2170,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver (single mode) delegates to toolUpdateItemCode with the driver paths"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 4, "source": "metadata { }"}'
         }
@@ -2182,7 +2195,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_driver via dispatch (single mode) delegates with driver paths (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 4, "source": "metadata { }"}'
         }
@@ -2211,26 +2224,30 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     // -------- hub_update_driver bulk mode --------
 
-    def "hub_update_driver bulk mode throws when Hub Admin Write is disabled"() {
+    def "hub_update_driver bulk mode throws when Write tools are disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolUpdateDriverCode([updates: [[driverId: '1', sourceFile: 'f.groovy']], confirm: true])
+        script.executeTool('hub_update_driver', [updates: [[driverId: '1', sourceFile: 'f.groovy']], confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_update_driver bulk via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_update_driver bulk via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = false
 
         when:
         def response = mcpDriver.callTool('hub_update_driver', [updates: [[driverId: '1', sourceFile: 'f.groovy']], confirm: true])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Write')
+        response.error.message.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -2238,7 +2255,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver bulk mode throws when both updates and driverId are supplied"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateDriverCode([driverId: '10', updates: [[driverId: '20', sourceFile: 'f.groovy']], confirm: true])
@@ -2253,7 +2270,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_driver bulk via dispatch returns -32602 envelope when both updates and driverId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_update_driver', [driverId: '10', updates: [[driverId: '20', sourceFile: 'f.groovy']], confirm: true])
@@ -2269,7 +2286,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver bulk mode throws when updates is an empty array"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateDriverCode([updates: [], confirm: true])
@@ -2283,7 +2300,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_driver bulk via dispatch returns -32602 envelope when updates is empty array (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_update_driver', [updates: [], confirm: true])
@@ -2298,7 +2315,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver bulk mode happy path: 3 drivers all succeed"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "metadata { }"}'
         }
@@ -2338,7 +2355,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_driver bulk via dispatch happy path 3 drivers all succeed (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "metadata { }"}'
         }
@@ -2380,7 +2397,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver bulk mode partial failure: middle driver fails, outer two still applied"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def callCount = 0
         hubGet.register('/driver/ajax/code') { params ->
             callCount++
@@ -2428,7 +2445,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_driver bulk via dispatch partial failure middle driver fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "metadata { }"}'
         }
@@ -2473,7 +2490,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver bulk mode: mixed resave and sourceFile entries dispatch correctly"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.downloadHubFile = { String fileName ->
             'metadata { name "from-file" }'.getBytes('UTF-8')
@@ -2515,7 +2532,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_driver bulk via dispatch mixed resave and sourceFile entries dispatch correctly (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.downloadHubFile = { String fileName ->
             'metadata { name "from-file" }'.getBytes('UTF-8')
@@ -2559,7 +2576,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver bulk mode: per-item update failure propagates note and lastBackup on the failed entry"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "metadata { }"}'
         }
@@ -2603,7 +2620,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_driver bulk via dispatch per-item failure propagates note and lastBackup (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "metadata { }"}'
         }
@@ -2647,7 +2664,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_create_driver returns success=false when verify endpoint returns clean JSON with empty source field"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/4444', data: '']
         }
@@ -2672,7 +2689,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver via dispatch returns success=false envelope when verify clean JSON has empty source (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 302, location: '/driver/editor/4444', data: '']
         }
@@ -2701,7 +2718,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_delete_item (app) throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolDeleteItem([type: 'app', id: '1'])
@@ -2715,7 +2732,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_delete_item (app) via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '1'])
@@ -2728,26 +2745,30 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_delete_item (app) throws when Hub Admin Write is disabled"() {
+    def "hub_delete_item (app) throws when Write tools are disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolDeleteItem([type: 'app', id: '1', confirm: true])
+        script.executeTool('hub_delete_item', [type: 'app', id: '1', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_delete_item (app) via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_delete_item (app) via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = false
 
         when:
         def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '1', confirm: true])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Write')
+        response.error.message.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -2755,7 +2776,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_delete_item (app) throws when appId is missing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolDeleteItem([type: 'app', confirm: true])
@@ -2769,7 +2790,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_delete_item (app) via dispatch returns -32602 envelope when appId missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_delete_item', [type: 'app', confirm: true])
@@ -2784,7 +2805,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_delete_item (app) backs up source, deletes via deleteJsonSafe, and reports the backup file"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content ->
             uploads << name
@@ -2813,7 +2834,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_delete_item (app) via dispatch backs up source and deletes via deleteJsonSafe (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         hubGet.register('/app/ajax/code') { params ->
@@ -2840,7 +2861,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_delete_item (app) proceeds with a warning when pre-delete backup fails"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             throw new RuntimeException('source fetch failed')
         }
@@ -2861,7 +2882,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_delete_item (app) via dispatch proceeds with backupWarning when pre-delete backup fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             throw new RuntimeException('source fetch failed')
         }
@@ -2884,7 +2905,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_delete_item (app) reports failure when the hub delete response signals error"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "x"}'
@@ -2906,7 +2927,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_delete_item (app) via dispatch reports failure envelope when hub delete signals error (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "x"}'
@@ -2932,7 +2953,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_delete_item (driver) hits /driver/editor/deleteJson/<id> and succeeds"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "driver src"}'
@@ -2957,7 +2978,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_delete_item (driver) via dispatch hits /driver/editor/deleteJson and succeeds (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "driver src"}'
@@ -2988,7 +3009,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_restore_backup throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolRestoreItemBackup([backupKey: 'app_1'])
@@ -3002,7 +3023,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_restore_backup', [backupKey: 'app_1'])
@@ -3017,7 +3038,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_restore_backup throws when backupKey is missing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolRestoreItemBackup([confirm: true])
@@ -3031,7 +3052,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup via dispatch returns -32602 envelope when backupKey missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_restore_backup', [confirm: true])
@@ -3046,7 +3067,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_restore_backup returns error response when the key is unknown"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         atomicStateMap.itemBackupManifest = [
             'app_existing': [type: 'app', id: '1', fileName: 'f.groovy',
                              version: 1, timestamp: 1L, sourceLength: 0]
@@ -3065,7 +3086,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup via dispatch returns success=false envelope when key unknown (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         atomicStateMap.itemBackupManifest = [
             'app_existing': [type: 'app', id: '1', fileName: 'f.groovy',
                              version: 1, timestamp: 1L, sourceLength: 0]
@@ -3088,7 +3109,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_restore_backup reads backup, creates a pre-restore copy, and pushes source to the hub"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         and: 'a manifest entry for an app backup'
         atomicStateMap.itemBackupManifest = [
@@ -3149,7 +3170,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup via dispatch reads backup creates pre-restore copy and pushes to hub (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         atomicStateMap.itemBackupManifest = [
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
@@ -3196,7 +3217,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_restore_backup reports failure and preserves the backup when the hub POST fails"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         atomicStateMap.itemBackupManifest = [
             'driver_88': [type: 'driver', id: '88', fileName: 'mcp-backup-driver-88.groovy',
                           version: 2, timestamp: 1_234_000_000_000L, sourceLength: 10]
@@ -3224,7 +3245,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup via dispatch reports failure envelope and preserves backup when hub POST fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         atomicStateMap.itemBackupManifest = [
             'driver_88': [type: 'driver', id: '88', fileName: 'mcp-backup-driver-88.groovy',
                           version: 2, timestamp: 1_234_000_000_000L, sourceLength: 10]
@@ -3256,7 +3277,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_restore_backup returns clear error for library type and directs user to hub_update_library"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         atomicStateMap.itemBackupManifest = [
             'library_42': [type: 'library', id: '42', fileName: 'mcp-backup-library-42.groovy',
                            version: 3, timestamp: 1L, sourceLength: 200]
@@ -3276,7 +3297,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app with matching expectedVersion proceeds and POSTs to /app/ajax/update"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 42, "source": "old source"}'
         }
@@ -3300,7 +3321,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app with mismatching expectedVersion aborts BEFORE POST and returns conflict"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 50, "source": "current source"}'
         }
@@ -3334,7 +3355,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_app via dispatch surfaces expectedVersion conflict inside result.content text (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 50, "source": "current source"}'
         }
@@ -3366,7 +3387,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app coerces a string expectedVersion to integer and detects mismatch (inequality-proves-coercion)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 7, "source": "current"}'
         }
@@ -3391,7 +3412,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app rejects unparseable expectedVersion with a clear message that preserves the original cause"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "src"}'
         }
@@ -3409,7 +3430,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app rejects explicit-null expectedVersion (silent-overwrite footgun)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateAppCode([appId: '50', source: 's', expectedVersion: null, confirm: true])
@@ -3421,7 +3442,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app with expectedVersion:0 against hub version 0 succeeds (no Groovy truthy short-circuit)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 0, "source": "v0 source"}'
         }
@@ -3442,7 +3463,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app with expectedVersion:0 against hub version 1 returns conflict (proves containsKey is checked, not truthiness)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "v1"}'
         }
@@ -3465,7 +3486,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app with expectedVersion + resave fetches version from the resave parse (no second GET) and detects match/mismatch"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def getCount = 0
         hubGet.register('/app/ajax/code') { params ->
             getCount++
@@ -3500,7 +3521,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app with hub returning non-integer version aborts with a clear error (no silent unguarded write)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": "v1.2.3", "source": "src"}'
         }
@@ -3522,7 +3543,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app propagates POST failure with a clean envelope -- no conflict:true leakage on non-conflict failures"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "old"}'
         }
@@ -3546,7 +3567,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver single-mode expectedVersion conflict carries driverId (not appId)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "drv"}'
         }
@@ -3569,7 +3590,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver bulk mode propagates per-item expectedVersion conflicts without aborting siblings"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
 
         and: 'three drivers: first at v10, second at v20 (conflict), third at v30'
@@ -3613,7 +3634,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver rejects bulk + top-level expectedVersion (schema-vs-mutex consistency)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateDriverCode([
@@ -3630,7 +3651,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver bulk per-item explicit-null expectedVersion is rejected (same footgun as single-mode)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/driver/ajax/code') { params ->
             def id = params.id?.toString()
@@ -3663,7 +3684,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver bulk mode mixes a per-item conflict with a per-item thrown error in the same batch"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/driver/ajax/code') { params ->
             def id = params.id?.toString()
@@ -3699,7 +3720,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app accepts Long expectedVersion (common JSON parser output)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 5, "source": "src"}'
         }
@@ -3720,7 +3741,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app rejects non-coercible Map expectedVersion (exercises ClassCastException leg of the union catch)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "src"}'
         }
@@ -3739,7 +3760,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app refuses self-update on the MCP server's own appId when Developer Mode is OFF"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         settingsMap.enableDeveloperMode = false
         def warnLogs = []
         script.metaClass.mcpLog = { String level, String component, String msg ->
@@ -3763,7 +3784,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_update_app via dispatch returns -32602 envelope on self-update with Developer Mode off (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         settingsMap.enableDeveloperMode = false
 
         when:
@@ -3780,7 +3801,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app allows self-update on the MCP server's own appId when Developer Mode is ON and audit-logs it"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         settingsMap.enableDeveloperMode = true
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 5, "source": "self source"}'
@@ -3809,7 +3830,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app self-update guard blocks resave mode (most-likely real-world brick scenario)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         settingsMap.enableDeveloperMode = false
         def getCount = 0
         hubGet.register('/app/ajax/code') { params ->
@@ -3830,7 +3851,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app self-update guard blocks sourceFile mode (no File Manager read happens)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         settingsMap.enableDeveloperMode = false
         def downloadCount = 0
         script.metaClass.downloadHubFile = { String fileName ->
@@ -3848,7 +3869,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app self-update guard allows resave mode when Developer Mode is ON"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         settingsMap.enableDeveloperMode = true
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 3, "source": "current self src"}'
@@ -3870,7 +3891,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app self-update guard does NOT fire on non-self appIds even when Developer Mode is OFF"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         settingsMap.enableDeveloperMode = false
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "other app"}'
@@ -3889,7 +3910,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver self-update guard does NOT fire (keyed on type=='app'; driverId 1 is unrelated)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         settingsMap.enableDeveloperMode = false
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "driver src"}'
@@ -3908,7 +3929,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_app self-update guard fails closed when app context is unavailable (refuses + ERROR-logs)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def originalId = sharedAppStub.id
         sharedAppStub.id = null   // simulate the rare lifecycle window where app.id is unbound
         def errorLogs = []
@@ -3931,7 +3952,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     def "hub_update_driver bulk mode: a per-item driverId equal to app.id still succeeds (type=='app' guard does not fire on driver bulk)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         settingsMap.enableDeveloperMode = false
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/driver/ajax/code') { params ->
@@ -3961,7 +3982,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup via dispatch returns success=false envelope for library type (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         atomicStateMap.itemBackupManifest = [
             'library_42': [type: 'library', id: '42', fileName: 'mcp-backup-library-42.groovy',
                            version: 3, timestamp: 1L, sourceLength: 200]

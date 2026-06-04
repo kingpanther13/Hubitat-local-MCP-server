@@ -52,7 +52,6 @@ class GatewayToggleSpec extends ToolSpecBase {
     def "useGateways=false: every tool advertised individually, gateway entries gone, hub_search_tools hidden"() {
         given: 'gateways off; the feature toggles whose tools we expect to see are on'
         settingsMap.useGateways = false
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
 
         when:
@@ -95,7 +94,6 @@ class GatewayToggleSpec extends ToolSpecBase {
     def "useGateways=false: catalog equals all tools minus hub_search_tools (no leaks, no drops)"() {
         given: 'all feature toggles on so the gateway-filter is the only narrowing'
         settingsMap.useGateways = false
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
 
         when:
@@ -113,7 +111,6 @@ class GatewayToggleSpec extends ToolSpecBase {
         // matching case here would silently break flat mode for that whole gateway.
         given:
         settingsMap.useGateways = false
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
 
         when:
@@ -200,36 +197,43 @@ class GatewayToggleSpec extends ToolSpecBase {
         result.rooms*.name == ['Living Room']
     }
 
-    def "useGateways=false + enableBuiltinApp=false: built-in-app tools still hidden in the flat catalog"() {
+    def "useGateways=false + enableWrite=false: write native tools hidden in the flat catalog while read native tools remain"() {
         // Pins that the flat-mode branch reuses hideByName — a refactor that splits
-        // hide-list construction out of the gateway-mode path would silently leak
-        // hub_list_rules / hub_create_native_app etc. into flat mode.
+        // hide-list construction out of the gateway-mode path would silently leak the
+        // write native tools (hub_create_native_app / hub_call_rule etc.) into flat mode.
+        // With the Built-in App toggle removed (#113), the native RM tools are governed
+        // by the universal masters: write natives by the Write master, read natives by Read.
         given:
         settingsMap.useGateways = false
-        settingsMap.enableBuiltinApp = false
+        settingsMap.enableWrite = false
         settingsMap.enableCustomRuleEngine = true
 
         when:
         def names = script.getToolDefinitions()*.name as Set
 
-        then: 'built-in-app tools are removed from the flat catalog, not just from gateway entries'
-        !names.contains('hub_list_rules')
+        then: 'write native tools are removed from the flat catalog, not just from gateway entries'
         !names.contains('hub_create_native_app')
-        !names.contains('hub_list_device_dependents')
-        !names.contains('hub_get_rule_health')
+        !names.contains('hub_update_native_app')
+        !names.contains('hub_delete_native_app')
+        !names.contains('hub_call_rule')
+        !names.contains('hub_set_rule_paused')
 
-        and: 'tools that do not depend on enableBuiltinApp are still present'
+        and: 'read native tools stay visible (Read master is still ON)'
+        names.contains('hub_list_rules')
+        names.contains('hub_list_device_dependents')
+        names.contains('hub_get_rule_health')
+
+        and: 'read tools outside the native group are still present'
         names.contains('hub_get_app_config')
         names.contains('hub_list_apps')
         names.contains('hub_list_devices')
     }
 
     def "useGateways=false + enableCustomRuleEngine=false (readonly): write-side custom_* tools hidden"() {
-        // Same shape as the enableBuiltinApp test, but for the readonly customEngineMode
+        // Same shape as the Write-master test above, but for the readonly customEngineMode
         // path: read tools stay visible, write/structural tools are removed.
         given:
         settingsMap.useGateways = false
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = false
 
         when:
@@ -256,7 +260,6 @@ class GatewayToggleSpec extends ToolSpecBase {
         // back apart and silently advertising sub-tools that fail at executeTool.
         given:
         settingsMap.useGateways = true
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = false  // customEngineMode = readonly
 
         when:
@@ -283,16 +286,18 @@ class GatewayToggleSpec extends ToolSpecBase {
         toolEnum.contains('hub_test_custom_rule')
     }
 
-    def "useGateways=false + builtin/custom both off: gateway-name hint omits hidden sub-tools"() {
-        // The flat-mode guard's hint must filter through hideByName — telling a stale
-        // client to call hub_list_rules when it's also disabled by enableBuiltinApp=false
-        // would just trade one error for another.
+    def "useGateways=false + both masters off: gateway-name hint omits hidden sub-tools"() {
+        // The flat-mode guard's hint must filter through getHiddenToolNames() — telling a
+        // stale client to call hub_list_rules when it's also disabled by the Read master
+        // would just trade one error for another. hub_manage_native_rules_and_apps mixes
+        // read sub-tools (hub_list_rules, hub_get_rule_health) and write sub-tools, so both
+        // masters must be OFF to hide the whole gateway.
         given:
         settingsMap.useGateways = false
-        settingsMap.enableBuiltinApp = false
-        settingsMap.enableCustomRuleEngine = false
+        settingsMap.enableRead = false
+        settingsMap.enableWrite = false
 
-        when: 'every sub-tool of hub_manage_native_rules_and_apps is hidden by enableBuiltinApp=false'
+        when: 'every sub-tool of hub_manage_native_rules_and_apps is hidden by the Read+Write masters'
         def result = script.executeTool('hub_manage_native_rules_and_apps', [tool: 'hub_list_rules', args: [:]])
 
         then: 'guard fires, hint does not name any of the hidden sub-tools'
@@ -300,7 +305,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         !result.hint.contains('hub_list_rules')
         !result.hint.contains('hub_create_native_app')
 
-        and: 'hint mentions the responsible toggles instead'
-        result.hint.contains('Built-in App Tools') || result.hint.contains('Custom Rule Engine')
+        and: 'hint mentions the responsible masters instead'
+        result.hint.contains('Read/Write masters') || result.hint.contains('Custom Rule Engine')
     }
 }

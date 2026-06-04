@@ -191,7 +191,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
     def "hub_get_logs source filter matches against message field, not timestamp"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/past/json') { params ->
             JsonOutput.toJson([
                 'sys\tinfo\tapp|42|Thermostat|turned on\t2026-04-19 10:00:00.000\ttype',
@@ -217,7 +217,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     def "hub_get_logs via dispatch filters against message field, not timestamp (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/past/json') { params ->
             JsonOutput.toJson([
                 'sys\tinfo\tapp|42|Thermostat|turned on\t2026-04-19 10:00:00.000\ttype',
@@ -258,7 +258,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
     def "hub_get_logs handles a non-JSON newline-delimited response (older-firmware fallback)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/past/json') { params ->
             // Unparseable-as-JSON — hits the line-split fallback
             "App 1\tinfo\tFirst\t2026-04-19 10:00:00.000\ttype\n" +
@@ -278,7 +278,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     def "hub_get_logs via dispatch handles non-JSON newline-delimited response (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/past/json') { params ->
             "App 1\tinfo\tFirst\t2026-04-19 10:00:00.000\ttype\n" +
             "App 1\tinfo\tSecond\t2026-04-19 10:00:01.000\ttype"
@@ -360,7 +360,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
     def "hub_update_app uses the fresh version from the hub, not the stale backup-manifest cache (v0.4.6)"() {
         given: 'a recent cached backup whose manifest carries a stale version=5'
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
         atomicStateMap.itemBackupManifest = [app_50: [
             type: 'app', id: '50',
@@ -398,7 +398,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     def "hub_update_app via dispatch uses fresh version from the hub, not stale cache (useGateways=#useGateways)"() {
         given: 'a recent cached backup whose manifest carries a stale version=5'
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
         atomicStateMap.itemBackupManifest = [app_50: [
             type: 'app', id: '50',
@@ -501,7 +501,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
     def "hub_update_app falls back to the cached backup version when the fresh-fetch fails (v0.4.6)"() {
         given: 'a recent cached backup with version=5 (stale, but the only thing we have)'
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
         atomicStateMap.itemBackupManifest = [app_50: [
             type: 'app', id: '50',
@@ -536,7 +536,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     def "hub_update_app via dispatch falls back to cached backup version when fresh-fetch fails (useGateways=#useGateways)"() {
         given: 'a recent cached backup with version=5 (stale, but the only thing we have)'
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
         atomicStateMap.itemBackupManifest = [app_50: [
             type: 'app', id: '50',
@@ -589,7 +589,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
     def "hub_update_library dedup path uses the fresh version from the hub, not the stale backup-manifest cache"() {
         given: 'a recent cached backup whose manifest carries a stale version=1'
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
         atomicStateMap.itemBackupManifest = [library_42: [
             type: 'library', id: '42',
@@ -626,7 +626,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     def "hub_update_library via dispatch uses fresh version from the hub, not stale cache (useGateways=#useGateways)"() {
         given: 'a recent cached backup whose manifest carries a stale version=1'
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
         atomicStateMap.itemBackupManifest = [library_42: [
             type: 'library', id: '42',
@@ -668,7 +668,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
     def "hub_update_library dedup path falls back to the cached backup version when the fresh-fetch fails"() {
         given: 'a recent cached backup with version=7 (stale, but the only value available)'
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
         atomicStateMap.itemBackupManifest = [library_42: [
             type: 'library', id: '42',
@@ -705,7 +705,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     def "hub_update_library via dispatch falls back to cached backup version when fresh-fetch fails (useGateways=#useGateways)"() {
         given: 'a recent cached backup with version=7 (stale, but the only value available)'
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
         atomicStateMap.itemBackupManifest = [library_42: [
             type: 'library', id: '42',

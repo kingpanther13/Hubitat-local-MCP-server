@@ -8,7 +8,7 @@ import support.ToolSpecBase
  * Gateway tool under hub_read_apps_code — executeTool() dispatches via case "hub_get_app_config".
  *
  * Covers:
- *  - Hub Admin Read gate (throws when disabled)
+ *  - Read master central gate (throws when disabled)
  *  - Missing appId validation (throws before HTTP)
  *  - Non-numeric appId validation (throws before HTTP)
  *  - pageName sanitization (throws on path-separator characters)
@@ -93,30 +93,30 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     // Gate enforcement
     // -------------------------------------------------------------------------
 
-    def "throws when Hub Admin Read is disabled"() {
+    def "throws when Read tools are disabled"() {
         given:
-        settingsMap.enableHubAdminRead = false
+        settingsMap.enableRead = false
 
         when:
-        script.toolGetAppConfig([appId: 35])
+        script.executeTool('hub_get_app_config', [appId: 35])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Read')
+        ex.message.contains('Read tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_get_app_config via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
+    def "hub_get_app_config via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = false
+        settingsMap.enableRead = false
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Read')
+        response.error.message.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -128,7 +128,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "throws when appId is missing from args"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Do NOT register the endpoint; if HTTP fires the HubInternalGetMock throws,
         // exposing a different failure mode than the expected validation exception.
 
@@ -144,7 +144,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch returns -32602 envelope when appId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [:])
@@ -159,7 +159,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "throws when appId is blank string"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetAppConfig([appId: '   '])
@@ -173,7 +173,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch returns -32602 envelope when appId is blank (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: '   '])
@@ -188,7 +188,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "throws when appId is non-numeric (no HTTP call made)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Do NOT register the hub endpoint — if the code reaches HTTP before
         // validation, HubInternalGetMock will throw an unregistered-path error,
         // which would surface as a different failure than the expected IAE.
@@ -205,7 +205,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch returns -32602 envelope when appId is non-numeric (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 'not-a-number'])
@@ -220,7 +220,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "throws when pageName contains a path separator"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetAppConfig([appId: 35, pageName: '../etc/passwd'])
@@ -234,7 +234,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch returns -32602 envelope when pageName contains a path separator (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, pageName: '../etc/passwd'])
@@ -249,7 +249,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "throws when pageName contains a space"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetAppConfig([appId: 35, pageName: 'page name'])
@@ -263,7 +263,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch returns -32602 envelope when pageName contains a space (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, pageName: 'page name'])
@@ -282,7 +282,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "golden path: returns app identity, sections, inputs, and child apps"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         and: 'hub returns a well-formed config page for app 35'
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -323,7 +323,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch returns app identity, sections, inputs, child apps (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
 
         when:
@@ -356,7 +356,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "golden path: hub endpoint includes pageName segment when supplied"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         and: 'hub endpoint must include the pageName path segment'
         boolean correctPathCalled = false
@@ -378,7 +378,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch includes pageName segment in endpoint (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         boolean correctPathCalled = false
         hubGet.register('/installedapp/configure/json/35/prefPkgModify') { params ->
             correctPathCalled = true
@@ -406,7 +406,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "HTML span tags in app label are stripped from the response"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         def jsonWithHtml = makeAppConfigJson([
             app: [
@@ -435,7 +435,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch strips HTML span tags from app label (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def jsonWithHtml = makeAppConfigJson([
             app: [
                 id       : 42,
@@ -471,7 +471,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "includeSettings=false (default): settings key absent, settingsNote present when count > 0"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppConfigJson()
         }
@@ -492,7 +492,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch with includeSettings=false omits settings key (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
 
         when:
@@ -515,7 +515,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "includeSettings=true: settings map present and populated"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppConfigJson()
         }
@@ -535,7 +535,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch with includeSettings=true exposes settings (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
 
         when:
@@ -581,7 +581,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "redacts password-type input values on the structured inputs path even without includeSettings"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
 
         when: 'includeSettings is NOT set (default false) -- the structured inputs path still runs'
@@ -601,7 +601,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "redacts password-type keys in the raw settings map when includeSettings=true"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
 
         when:
@@ -622,7 +622,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch redacts password values on both paths (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
 
         when:
@@ -641,7 +641,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "redacts a password that appears only in the settings map when the input echoes no value (the common masked case)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Hubitat masks type=password fields and often does NOT echo them into the config-page
         // input, yet the secret IS present in the flat settings map. The redaction must still
         // fire (password names are collected regardless of whether the input carries a value).
@@ -672,7 +672,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "returns success=false when hub returns empty body"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/99') { params -> '' }
 
         when:
@@ -688,7 +688,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch returns success=false envelope when hub returns empty body (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/99') { params -> '' }
 
         when:
@@ -708,7 +708,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "returns success=false with fingerprint when app.app is null (unknown appId)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Hub returns top-level object but with app=null — matches what Hubitat
         // returns for an unknown/deleted appId.
         hubGet.register('/installedapp/configure/json/9999') { params ->
@@ -735,7 +735,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch returns success=false envelope for unknown appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/9999') { params ->
             JsonOutput.toJson([
                 app       : null,
@@ -763,7 +763,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "returns success=false with fingerprint when response is not a JSON object"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> '"just a string"' }
 
         when:
@@ -780,7 +780,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch returns success=false envelope when response is not a JSON object (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> '"just a string"' }
 
         when:
@@ -800,7 +800,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "returns success=false when hub response is unparseable JSON"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> '{not valid json' }
 
         when:
@@ -815,7 +815,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch returns success=false envelope when hub response is unparseable JSON (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> '{not valid json' }
 
         when:
@@ -834,7 +834,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "returns success=false with fingerprint when configPage is missing (app exists but no configPage)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Hub returns a well-formed app object but no configPage key -- can happen
         // for apps that have been partially uninstalled or on edge-case firmware builds.
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -858,7 +858,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch returns success=false envelope when configPage is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             JsonOutput.toJson([
                 app      : [id: 35, label: 'My Rule', name: 'Rule-5.1', disabled: false],
@@ -883,7 +883,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "returns success=false with fingerprint and hub_list_app_pages hint when configPage.sections is not a list"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             JsonOutput.toJson([
                 app       : [id: 35, label: 'X', name: 'X', disabled: false],
@@ -907,7 +907,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch returns success=false envelope when configPage.sections is not a list (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             JsonOutput.toJson([
                 app       : [id: 35, label: 'X', name: 'X', disabled: false],
@@ -938,7 +938,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "enum input with List-shape options has HTML stripped from option labels"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Room Lighting scenes and RM rule references use List<Map> options --
         // each entry is a single-key map {value: label} where label may have HTML badges.
         def json = JsonOutput.toJson([
@@ -989,7 +989,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch strips HTML from List-shape enum option labels (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def json = JsonOutput.toJson([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
@@ -1041,7 +1041,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "enum input with Map-shape options has HTML stripped from option values"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Some capability inputs encode options as a plain Map {value: label}.
         def json = JsonOutput.toJson([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
@@ -1090,7 +1090,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch strips HTML from Map-shape enum option values (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def json = JsonOutput.toJson([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
@@ -1145,7 +1145,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "integer appId arg is accepted (passes isInteger after toString)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppConfigJson()
         }
@@ -1163,7 +1163,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch accepts integer appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
 
         when:
@@ -1182,7 +1182,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "string numeric appId arg '35' is accepted"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppConfigJson()
         }
@@ -1198,7 +1198,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch accepts string numeric appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
 
         when:
@@ -1220,7 +1220,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "bool input with value=true is preserved (not filtered by sentinel)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // i.value==true is the legitimate "checkbox enabled" state for type="bool".
         // Before the fix, this would be filtered out (sentinel path), making the
         // AI believe the setting was unconfigured.
@@ -1265,7 +1265,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch preserves bool input with value=true (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def json = JsonOutput.toJson([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
@@ -1311,7 +1311,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "bool input with value=false is preserved"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def json = JsonOutput.toJson([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
@@ -1353,7 +1353,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch preserves bool input with value=false (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def json = JsonOutput.toJson([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,
@@ -1399,7 +1399,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
     def "non-bool input with defaultValue=true is still filtered (sentinel preserved)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // capability.* inputs use defaultValue=true as a "has configured value" sentinel --
         // NOT as the actual selection. The output's value field should be absent for these.
         def json = JsonOutput.toJson([
@@ -1444,7 +1444,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
     def "hub_get_app_config via dispatch filters non-bool input with defaultValue=true sentinel (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def json = JsonOutput.toJson([
             app       : [id: 35, trueLabel: 'My Rule', label: 'My Rule',
                          name: 'Rule-5.1', disabled: false, installed: true,

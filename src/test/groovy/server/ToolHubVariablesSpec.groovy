@@ -22,13 +22,14 @@ import support.ToolSpecBase
  * per-test via script.metaClass in given: blocks. See docs/testing.md
  * "Which interception point to use" for the general pattern.
  *
- * hub_delete_variable is gated by requireHubAdminWrite (3-layer: setting flag,
- * args.confirm, 24h backup window). Helper enableHubAdminWrite() seeds those.
+ * hub_delete_variable is gated centrally on the Write master (executeTool) and by
+ * requireDestructiveConfirm (args.confirm + 24h backup window). Helper
+ * enableWrite() seeds the Write master + a recent backup.
  */
 class ToolHubVariablesSpec extends ToolSpecBase {
 
-    private void enableHubAdminWrite() {
-        settingsMap.enableHubAdminWrite = true
+    private void enableWrite() {
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches HarnessSpec's fixed now()
     }
 
@@ -313,7 +314,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_delete_variable removes an existing rule_engine variable and reports the previous value"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stateMap.ruleVariables = [scratch_var: 'to-be-removed', keep_me: 42]
 
         when:
@@ -332,7 +333,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_delete_variable throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stateMap.ruleVariables = [scratch_var: 'value']
 
         when:
@@ -344,35 +345,37 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         stateMap.ruleVariables == [scratch_var: 'value']
     }
 
-    def "hub_delete_variable throws when no recent backup exists (Hub Admin Write 24h gate)"() {
-        given: 'enableHubAdminWrite is true but no lastBackupTimestamp seeded'
-        settingsMap.enableHubAdminWrite = true
+    def "hub_delete_variable throws when no recent backup exists (requireDestructiveConfirm 24h gate)"() {
+        given: 'the Write master is on but no lastBackupTimestamp seeded'
+        settingsMap.enableWrite = true
         stateMap.ruleVariables = [scratch_var: 'value']
 
         when:
         script.toolDeleteHubVariable([name: 'scratch_var', confirm: true])
 
         then:
-        thrown(IllegalArgumentException)
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('BACKUP REQUIRED')
         stateMap.ruleVariables == [scratch_var: 'value']
     }
 
-    def "hub_delete_variable throws when enableHubAdminWrite setting is off"() {
+    def "hub_delete_variable throws when Write tools are disabled"() {
         given:
-        // No settingsMap.enableHubAdminWrite seed — gate refuses on the first layer
+        settingsMap.enableWrite = false  // central Write master gate refuses on dispatch
         stateMap.ruleVariables = [scratch_var: 'value']
 
         when:
-        script.toolDeleteHubVariable([name: 'scratch_var', confirm: true])
+        script.executeTool('hub_delete_variable', [name: 'scratch_var', confirm: true])
 
         then:
-        thrown(IllegalArgumentException)
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Write tools are disabled')
         stateMap.ruleVariables == [scratch_var: 'value']
     }
 
     def "hub_delete_variable throws when name is missing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolDeleteHubVariable([confirm: true])
@@ -384,7 +387,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_delete_variable throws when variable exists in neither hub nor rule_engine namespace"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.getGlobalVar = { String n -> null }
         stateMap.ruleVariables = [:]
 
@@ -400,7 +403,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_delete_variable throws when ruleVariables map is null and var is not a hub var"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.getGlobalVar = { String n -> null }
         // stateMap.ruleVariables not seeded at all — null check path
 
@@ -418,7 +421,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         // persist across hub reboot / app restart. Asserts that toolDeleteHubVariable
         // emits a NEW Map object on stateMap.ruleVariables (not just mutates in place).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stateMap.ruleVariables = [target_var: 'will-go', sibling: 'stays']
         def originalMapRef = stateMap.ruleVariables
 
@@ -439,7 +442,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         // name. Without force=true, deletion would null-out the consumer's lookup and
         // silently break the rule. The tool must surface the breakage and require opt-in.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stateMap.ruleVariables = [shared_var: 'in-use']
 
         and: 'a child rule that references shared_var in a condition'
@@ -474,7 +477,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     // Both-ways pending (orchestrator).
     def "hub_delete_variable refuses when 2 child rule apps reference the variable (plural)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stateMap.ruleVariables = [shared_var: 'in-use']
 
         and: 'two child rules each referencing shared_var'
@@ -509,7 +512,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_delete_variable proceeds with force=true and reports brokenConsumers"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stateMap.ruleVariables = [shared_var: 'in-use']
         def consumer = new support.TestChildApp(id: 42L, label: 'Acknowledged Breakage')
         consumer.ruleData = [
@@ -535,7 +538,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_delete_variable proceeds normally when no child rules reference the variable"() {
         given: 'a child rule that does NOT mention the variable being deleted'
-        enableHubAdminWrite()
+        enableWrite()
         stateMap.ruleVariables = [orphan_var: 'safe-to-delete']
         def unrelated = new support.TestChildApp(id: 7L, label: 'Unrelated Rule')
         unrelated.ruleData = [
@@ -558,7 +561,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_create_variable rejects forbidden characters in name"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolCreateVariable([name: 'has[brackets]', type: 'String', value: 'x', confirm: true])
@@ -570,7 +573,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_create_variable rejects unknown type"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolCreateVariable([name: 'goodName', type: 'NotAType', value: 'x', confirm: true])
@@ -583,7 +586,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_create_variable rejects null/missing initial value"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolCreateVariable([name: 'goodName', type: 'String', confirm: true])
@@ -595,7 +598,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_create_variable refuses to overwrite an existing hub variable"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.getGlobalVar = { String n ->
             n == 'taken' ? [name: 'taken', type: 'String', value: 'already here', deviceId: null, attribute: null] : null
         }
@@ -621,7 +624,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_create_connector throws when the variable does not exist"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.getGlobalVar = { String n -> null }
 
         when:
@@ -634,7 +637,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_create_connector is a no-op when a connector already exists"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.getGlobalVar = { String n ->
             [name: 'has_conn', type: 'Boolean', value: true, deviceId: 305, attribute: 'switch']
         }
@@ -650,7 +653,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_delete_connector throws when the variable does not exist"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.getGlobalVar = { String n -> null }
 
         when:
@@ -663,7 +666,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_delete_connector is a no-op when no connector exists"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.getGlobalVar = { String n ->
             [name: 'no_conn', type: 'String', value: 'x', deviceId: null, attribute: null]
         }
@@ -694,7 +697,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_create_variable wizard sequence: one button click then three settings in order"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         and: 'getGlobalVar: null pre-flight, populated after wizard commits'
         def callCount = 0
@@ -743,7 +746,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_create_variable post-wizard verification fails when getGlobalVar still returns null"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         and: 'getGlobalVar returns null both pre-flight AND after the wizard supposedly committed'
         script.metaClass.getGlobalVar = { String n -> null }
@@ -767,7 +770,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_delete_variable hub-namespace wizard sequence: deleteGV then delConfirm"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         and: 'getGlobalVar: returns hub var pre-flight, null after delete commits'
         def callCount = 0
@@ -803,7 +806,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_delete_variable hub-namespace post-wizard verification fails when var still exists"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         and: 'getGlobalVar always returns the var — delete wizard ran but did not commit'
         script.metaClass.getGlobalVar = { String n ->
@@ -826,7 +829,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
     def "hub_create_connector wizard sequence: createCon click + capab commit via _rmWriteSettingOnPage"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         and: 'getGlobalVar: deviceId=null pre-flight, deviceId=305 after wizard commits'
         def callCount = 0
@@ -1247,7 +1250,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     def "hub_delete_variable via dispatch removes rule var (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         stateMap.ruleVariables = [scratch_var: 'to-be-removed', keep_me: 42]
 
         when:
@@ -1271,7 +1274,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     def "hub_delete_variable via dispatch maps missing-confirm to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         stateMap.ruleVariables = [scratch_var: 'value']
 
         when:
@@ -1289,7 +1292,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     def "hub_delete_variable via dispatch maps missing-name to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_delete_variable', [confirm: true])
@@ -1306,7 +1309,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     def "hub_delete_variable via dispatch maps unknown var to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.getGlobalVar = { String n -> null }
         stateMap.ruleVariables = [:]
 
@@ -1325,7 +1328,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     def "hub_delete_variable via dispatch refuses on consumer ref without force (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         stateMap.ruleVariables = [shared_var: 'in-use']
         def consumer = new support.TestChildApp(id: 99L, label: 'Rule Using Shared Var')
         consumer.ruleData = [
@@ -1352,7 +1355,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     def "hub_create_variable via dispatch maps forbidden-character to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_variable', [name: 'has[brackets]', type: 'String', value: 'x', confirm: true])
@@ -1369,7 +1372,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     def "hub_create_variable via dispatch maps unknown-type to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_variable', [name: 'goodName', type: 'NotAType', value: 'x', confirm: true])
@@ -1401,7 +1404,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     def "hub_create_variable via dispatch maps existing hub var to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.getGlobalVar = { String n ->
             n == 'taken' ? [name: 'taken', type: 'String', value: 'already here', deviceId: null, attribute: null] : null
         }

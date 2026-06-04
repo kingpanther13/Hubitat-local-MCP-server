@@ -11,7 +11,7 @@
 #
 # Preconditions (enforced hub-side by hub_update_app):
 #   - Developer Mode ON (self-update guard)
-#   - enableHubAdminWrite ON
+#   - enableWrite ON (default)
 #   - Hub backup <24h (best-effort hub_create_backup attempted here;
 #     gateway timeouts tolerated -- the gate is timestamp-cached and
 #     CI runs keep the window populated)

@@ -2717,6 +2717,79 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 ---
 
+## Section 12b: Permission Masters & Per-tool Overrides (#113 / #114)
+
+These tests exercise the universal **Read** and **Write** master toggles and the **Advanced: Per-tool Overrides** deny-only sub-page. Both masters default ON; only an explicit OFF removes that whole tool class from the MCP client and rejects any cached call. The Advanced overrides apply *below* the masters — they can only turn things OFF, never re-enable something a master already hid. A disabled tool/gateway disappears from `tools/list` and `hub_search_tools` but stays documented in `hub_get_tool_guide`.
+
+**Run constraints (read before running this section):**
+- **Gateway mode only** (`useGateways=true`). The visibility assertions below describe the gateway catalog shape.
+- **Serialize all RM writes** — never run rule mutations in parallel (shared `atomicState`).
+- **No Z-Wave / Zigbee operations** — these scenarios only read tool catalogs, control BAT-created virtual devices, and toggle app settings. They never touch a radio.
+- Each master toggle is **UI-only to flip** (`enableRead` is allowlisted via `hub_update_mcp_settings` for self-toggle, but for a clean BAT use the app settings UI and reconnect the client so `tools/list` refreshes). After any master/override change, **reconnect the MCP client** (`/mcp refresh`) before the test_prompt so the cached tool list reflects the new surface.
+- **Restore preconditions in teardown**: Read master ON, Write master ON, Advanced overrides cleared (use the **Reset all overrides** button on the Advanced page).
+
+### T230 — Read master OFF hides every read tool from the client
+
+```json
+{
+  "setup_prompt": "In the MCP rule app settings UI, turn the **Read** master toggle OFF (leave **Write** ON), click Done, then reconnect the MCP client so tools/list refreshes.",
+  "test_prompt": "List my hub's location modes, then list my rooms. If you can't find a tool to do that, say so and explain why.",
+  "teardown_prompt": "In the app settings UI, turn the **Read** master back ON, click Done, and reconnect the MCP client."
+}
+```
+
+**Expected**: With Read OFF, pure-read gateways (`hub_read_devices`, `hub_read_rooms`, `hub_read_diagnostics`, etc.) and read core tools (`hub_list_modes`) are absent from `tools/list`; the read tools inside mixed `hub_manage_*` gateways are gone too. The AI reports it has no available tool to list modes/rooms and points the user at the Read master. If it does reach a cached read tool, the call is rejected with `"Read tools are disabled..."`. AI does NOT fabricate the data.
+
+### T231 — Write master OFF rejects device control (reads still work)
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT Master Write Switch' (Write master is ON for setup). Then, in the app settings UI, turn the **Write** master toggle OFF (leave **Read** ON), click Done, and reconnect the MCP client.",
+  "test_prompt": "Turn ON the virtual switch 'BAT Master Write Switch'. Then read back its switch state and report it.",
+  "teardown_prompt": "In the app settings UI, turn the **Write** master back ON, click Done, reconnect the MCP client, turn OFF 'BAT Master Write Switch', then delete the virtual device."
+}
+```
+
+**Expected**: With Write OFF, `hub_call_device_command` and every other state-changing tool are hidden from `tools/list`; write-only gateways (e.g. `hub_manage_destructive_ops`) drop entirely, and mixed gateways like `hub_manage_rooms` remain but are annotated `readOnlyHint: true` with their write sub-tools gone. The AI cannot turn the switch on and reports the Write master requirement. The read-back (`hub_get_device_attribute`) still succeeds — reads are unaffected. A cached write call is rejected with `"Write tools are disabled..."`.
+
+### T232 — Disable a single tool via Advanced ⇒ it vanishes + distinct error on cached call
+
+```json
+{
+  "setup_prompt": "Confirm a cached MCP session can currently call hub_set_mode (note the current mode first — do NOT change it). Then, in the app settings UI, open **Advanced: Per-tool Overrides**, add `hub_set_mode` to the disabled tools list, click Done. Do NOT reconnect the client yet (we want a stale cache for the test_prompt).",
+  "test_prompt": "Set my hub mode to its current mode (a no-op that still exercises the tool). Report exactly what error or response you get.",
+  "teardown_prompt": "In the app settings UI, open **Advanced: Per-tool Overrides** and click **Reset all overrides** (or remove hub_set_mode from the list), click Done, and reconnect the MCP client."
+}
+```
+
+**Expected**: After a client reconnect, `hub_set_mode` is absent from `tools/list` and from `hub_search_tools` results, but still present in `hub_get_tool_guide`. On the stale-cache call (no reconnect), the tool is rejected with a **distinct** Advanced-settings error containing `"is disabled in Advanced settings (Per-tool Overrides)"` — NOT the generic `"Write tools are disabled"` master message. AI surfaces the specific error and points the user at the Advanced overrides page.
+
+### T233 — Disable a gateway ⇒ all its tools (including shared) vanish
+
+```json
+{
+  "setup_prompt": "In the app settings UI, open **Advanced: Per-tool Overrides**, add the gateway `hub_manage_rooms` to the disabled gateways list, click Done, and reconnect the MCP client.",
+  "test_prompt": "List my rooms, and then also try to create a room called 'BAT Should Not Exist'. Report which tools are available and what happens.",
+  "teardown_prompt": "In the app settings UI, open **Advanced: Per-tool Overrides**, click **Reset all overrides**, click Done, reconnect the MCP client, and delete the room 'BAT Should Not Exist' if it was somehow created."
+}
+```
+
+**Expected**: Disabling `hub_manage_rooms` expands to every tool it contains. `hub_manage_rooms` is absent from `tools/list`. `hub_list_rooms` — a **shared** read tool also exposed via `hub_read_rooms` — disappears from `hub_read_rooms` too (gateway disable is global per tool name), so the AI cannot list rooms from either gateway. `hub_create_room` is likewise gone. A cached call to any of them returns the `"is disabled in Advanced settings (Per-tool Overrides)"` error. AI reports the gateway override and does NOT create the room.
+
+### T234 — Destructive tool still demands confirm + backup with Write ON
+
+```json
+{
+  "setup_prompt": "Ensure the **Write** master is ON and no Advanced overrides are active (Reset all overrides). Do NOT create a fresh backup for this test — we want to exercise the backup gate.",
+  "test_prompt": "Delete the hub variable 'BAT_DESTRUCTIVE_GATE' (it doesn't need to exist) — but call the delete WITHOUT a confirm flag first, then describe the safety checks that block you.",
+  "teardown_prompt": "No artifacts created; nothing to clean up."
+}
+```
+
+**Expected**: Even with the Write master ON, the destructive path is unchanged — `requireDestructiveConfirm` still demands `confirm=true` and a hub backup within 24h. The no-confirm call is rejected with the `"SAFETY CHECK FAILED: You must set confirm=true"` message (or, if confirm is supplied but no recent backup exists, the `"BACKUP REQUIRED"` message). AI explains the master gate and the destructive confirm+backup gate are orthogonal layers and offers to create a backup and retry with `confirm=true`.
+
+---
+
 ## Section 13: Driver Code Lifecycle Tests (hub_manage_code)
 
 All tests below require Hub Admin Write enabled and a recent backup. Tests are excluded from the auto-exercise sweep (destructive to hub code). Test artifacts use the `BAT_` name prefix per BAT convention so they can be identified and cleaned up independently.

@@ -26473,7 +26473,7 @@ def getToolGuideSections() {
 - Wrong device could control critical systems (HVAC, locks, security)
 - User trust depends on AI only controlling what they explicitly authorized''',
 
-        hub_admin_write: '''## Write master Tools - Pre-Flight Checklist
+        hub_admin_write: '''## Destructive Write Tools - Pre-Flight Checklist
 
 All Write master tools require these steps:
 1. Backup check: Ensure hub_create_backup was called within the last 24 hours
@@ -26654,7 +26654,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 - Add hoursBack for up to 7 days of history; omit deviceId for location-level events (mode/HSM/hub variable)
 - Use the attribute filter to reduce data volume''',
 
-        builtin_app_tools: '''## Apps & Native Rules Tools
+        builtin_app_tools: '''## Installed-App & Native-Rule Tools
 
 Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways are gated by the two universal masters. The read tools (hub_list_apps any scope, hub_list_device_dependents, hub_get_app_config, hub_list_app_pages, hub_list_hpm_packages with optional includeDrift) require the Read master (ON by default). The hub_manage_native_rules_and_apps write tools require the Write master; the destructive CRUD tools (hub_create_native_app / hub_update_native_app / hub_delete_native_app) ALSO require confirm=true + a recent backup (requireDestructiveConfirm). If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the Read/Write toggles on the MCP Rule Server app settings page.
 

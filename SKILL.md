@@ -136,11 +136,11 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 
 `hub_update_native_app` `clearActions` / `replaceActions` shortcuts: the trashActs delete commits synchronously via a full selectActions page-form submit (the complete form-action envelope plus serialized page state, mirroring the native UI), which runs RM's `trashActs` submitOnChange handler in-band -- the actions are gone by the time the call returns. A thin defensive verify-retry remains: on the rare residual where verification still sees the actions (stuck `state.editAct`, or an uncommon firmware commit lag) the tool returns `partial:true, asyncCommitLikely:true` with a `stage` discriminator and a `safeRecovery` block. Verify via `hub_get_app_config` rather than rolling back if that fires. See TOOL_GUIDE.md for the full response shape.
 
-**Flat (top-level) tools (11):** `hub_manage_virtual_device` (action enum: "create", "delete"), `hub_get_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — gated behind Hub Admin Read), `hub_list_modes`, `hub_set_mode`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`, `hub_get_tool_guide`, `hub_search_tools` (BM25 natural language search across all tools).
+**Flat (top-level) tools (11):** `hub_manage_virtual_device` (action enum: "create", "delete"), `hub_get_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — included whenever the Read master is ON, which is the default, and excluded only when Read is explicitly OFF), `hub_list_modes`, `hub_set_mode`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`, `hub_get_tool_guide`, `hub_search_tools` (BM25 natural language search across all tools).
 
 Device tools (`hub_list_devices` with `filter='virtual'` to list only MCP-managed virtual devices, `hub_get_device`, `hub_get_device_attribute` — pass `expectedValue`/`expectedValues` to block-poll the attribute until it matches or times out; `timeoutMs` in MILLISECONDS, default 5000ms = 5 seconds, max 60000ms; polling BLOCKS the MCP request, use sparingly, prefer event-driven flows — `hub_call_device_command`, `hub_update_device`, and `hub_list_device_events` with `hoursBack` for a window up to 7 days of device or location event history; omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events) live in the `hub_read_devices` / `hub_manage_devices` gateways. The MCP custom rule engine tools (`hub_get_custom_rule` — omit `ruleId` to list all custom-engine rules, `detailed=true` for comprehensive diagnostics on one rule — `hub_create_custom_rule`, `hub_update_custom_rule`) live in the `hub_read_rules` / `hub_manage_custom_rules` gateways; this engine is distinct from native Rule Machine, whose CRUD (and Room Lighting, Button Controllers, Basic Rules, etc.) is in the `hub_manage_native_rules_and_apps` gateway via `hub_create_native_app` / `hub_update_native_app` / `hub_delete_native_app` / `hub_get_rule_health`.
 
-**Safety gates are preserved:** All Hub Admin Read/Write checks live in the handler functions (e.g., `requireHubAdminRead()`, `requireHubAdminWrite(args.confirm)`), not in the dispatch layer. The gateway simply calls `executeTool()`, which calls the handler, which enforces the gate. No safety check is bypassed.
+**Safety gates are preserved:** The Read/Write master gate runs centrally at the top of `executeTool()` (the dispatch chokepoint), and the destructive-tier `confirm`+backup check (`requireDestructiveConfirm(args.confirm)`) runs in the handlers of the destructive write tools. A gateway name routes back through `executeTool()`, which re-applies the master gate per sub-tool before the handler runs. No safety check is bypassed.
 
 ### Adding a New Tool (Checklist)
 
@@ -250,8 +250,10 @@ case "tool_name": return toolMyNewTool(args)
 
 ```groovy
 def toolMyNewTool(args) {
-    // 1. Safety gate (if hub admin tool)
-    requireHubAdminRead()        // or requireHubAdminWrite(args.confirm)
+    // 1. Read/Write masters are enforced centrally in executeTool() by tool
+    //    classification (getReadOnlyToolNames) -- no per-handler master gate needed.
+    //    Destructive write tools additionally call:
+    requireDestructiveConfirm(args.confirm)   // confirm=true + backup <24h (destructive tools only)
 
     // 2. Input validation
     if (!args.requiredParam) throw new IllegalArgumentException("requiredParam is required")
@@ -284,18 +286,17 @@ Conventions:
 
 ### Safety Gate Pattern
 
-Three tiers of access control:
+Access control has a central master gate plus a destructive confirmation tier, with deny-only advanced overrides on top.
 
-**No gate** — Device tools, rule tools, system tools, `hub_list_devices` (filter='virtual'), `hub_get_tool_guide`. These operate only on user-selected devices, MCP-managed child devices (virtual devices), MCP-managed rules, or return static reference content.
+**Two universal masters — Read and Write (both default ON).** A single classification-driven gate at the top of `executeTool()` (the dispatch chokepoint) enforces them: a tool in `getReadOnlyToolNames()` is blocked when `settings.enableRead == false` ("Read tools are disabled…"); every other (write) tool is blocked when `settings.enableWrite == false` ("Write tools are disabled…"). Only an explicit `== false` blocks — null/unset is ON. Gateway *names* are skipped here (they re-enter `executeTool()` per sub-tool, which is gated on re-entry). Reads include device/hub/variable/diagnostics reads, `hub_get_tool_guide`, `hub_search_tools`, etc.; everything else is a write.
 
-**`requireHubAdminRead()`** — Checks `settings.enableHubAdminRead` is true. Used for tools that read hub system info (hub details, health, app/driver lists, source code).
+**`requireDestructiveConfirm(args.confirm)`** — runs in the handlers of the destructive/sensitive write tools, orthogonal to the masters (the Write master already gated them centrally). Two-layer check:
+1. `args.confirm` must be `true` (explicit confirmation parameter)
+2. `state.lastBackupTimestamp` must be within the last 24 hours
 
-**`requireHubAdminWrite(args.confirm)`** — Three-layer check:
-1. `settings.enableHubAdminWrite` must be true
-2. `args.confirm` must be `true` (explicit confirmation parameter)
-3. `state.lastBackupTimestamp` must be within the last 24 hours
+Exception: `toolCreateHubBackup` checks `confirm` directly without requiring a prior backup (it IS the backup operation).
 
-Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup operation, so it can't require a prior backup).
+**Advanced per-tool / per-gateway overrides (deny-only).** `settings.disabled_tools` / `settings.disabled_gateways` (set under *Advanced: Per-tool Overrides*) feed `getEffectiveDisabledTools()` → `getHiddenToolNames()`, hiding tools from `tools/list` and `hub_search_tools`, and an `executeTool()` guard rejects a cached call with a distinct error ("…is disabled in Advanced settings (Per-tool Overrides)…"). They apply below the masters (can only turn things OFF) and a disabled tool remains documented in `hub_get_tool_guide`.
 
 **`backupItemSource(type, id)`** — Automatic item-level backup for modify/delete operations:
 - Called by `hub_update_app`, `hub_update_driver`, `hub_delete_item` (type=app|driver) before making changes
@@ -308,18 +309,18 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - Files persist even if MCP app is uninstalled; accessible at `http://<HUB_IP>/local/<filename>`
 - Requires firmware ≥2.3.4.132 for `uploadHubFile()` support
 
-**Item Backup Tools** (3 tools, always available without Hub Admin Read/Write):
+**Item Backup Tools** (3 tools — reads available under the Read master, restore under the Write master):
 - `hub_list_backups` — lists all backups with metadata (type, id, version, age, size) and direct download URLs
 - `hub_get_backup` — retrieves full source code from a backup via `downloadHubFile()` by key (e.g., `app_123`); returns source inline for files ≤60KB, otherwise provides download URL
-- `hub_restore_backup` — reads backup via `downloadHubFile()` and pushes source back to the hub via `hub_update_app`/`hub_update_driver` (requires Hub Admin Write); removes manifest entry first so the current code gets backed up during restore; on failure, puts the manifest entry back
+- `hub_restore_backup` — reads backup via `downloadHubFile()` and pushes source back to the hub via `hub_update_app`/`hub_update_driver` (requires the Write master); removes manifest entry first so the current code gets backed up during restore; on failure, puts the manifest entry back
 - Every tool response includes `howToRestore` and `manualRestore` instructions for user recovery without MCP
 - All operations are fully local — no cloud involvement
 
 **File Manager Tools** (4 tools):
 - `hub_list_files` — lists all files via `/hub/fileManager/json` internal API endpoint; always available, no access gate
 - `hub_read_file` — reads file via `downloadHubFile()`; returns content inline for files ≤60KB, otherwise provides download URL; always available
-- `hub_write_file` — writes via `uploadHubFile()`; requires Hub Admin Write + confirm; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`)
-- `hub_delete_file` — deletes via `deleteHubFile()`; requires Hub Admin Write + confirm; automatically backs up file before deletion
+- `hub_write_file` — writes via `uploadHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`)
+- `hub_delete_file` — deletes via `deleteHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up file before deletion
 - File name validation: must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
 
 **Device Authorization Safety** (v0.7.2+):
@@ -345,7 +346,7 @@ Exception: `toolCreateHubBackup` checks the first two directly (it IS the backup
 - **Test rules**: Set `testRule: true` in `hub_create_custom_rule` or `hub_update_custom_rule` to skip backup on deletion
 - `skipBackupCheck: true` parameter forces skip regardless of testRule flag (rarely needed)
 - Test rule flag visible in `hub_get_custom_rule` (both single-rule and list mode, i.e. with `ruleId` omitted) responses
-- No Hub Admin Write required (rules are MCP-managed, not hub-level resources)
+- Gated by the Write master only — no destructive `confirm`+backup tier (rules are MCP-managed, not hub-level resources)
 
 ### Hub Internal API Helpers
 
@@ -468,7 +469,7 @@ Virtual devices are managed via the unified `hub_manage_virtual_device` tool (ac
 - **Response shape** (`hub_manage_virtual_device delete`): `{success, deviceId, deviceNetworkId, deviceLabel, message}`.
 - **Response shape** (`hub_list_devices` with `filter='virtual'`): `{devices: [...], count, message}`. Per-device: `{id, name, label, deviceNetworkId, driverNamespace, driverType, typeName, capabilities, commands, currentStates}`. `currentStates` is a map of attribute-name to current-value (not a list -- create returns `attributes` as a list while list returns `currentStates` as a map; both expose device state but under different shapes because create returns the freshly-read attribute list and list returns a compact state map). `typeName` is a deprecated alias for `driverType` -- prefer `driverType` in new code. `driverNamespace` is authoritative for devices created by this tool (the namespace is persisted as a device data value at create time); for devices created before this version or by other means it falls back to a best-effort derivation that may report `"hubitat"`.
 - **Error contract (N.36)**: `customDriver` not-found throws `IllegalArgumentException` (JSON-RPC -32602) because the bad driver spec is caller-supplied and recoverable by fixing args. Built-in not-found throws `RuntimeException` (isError:true) because hub firmware not including a built-in driver is a platform condition, not a caller error. This is a deliberate exception to the general `return [success:false]` convention -- the two-class split reflects the distinction between caller-fixable vs platform-gap failures.
-- Requires Hub Admin Write access (with backup verification) for create/delete operations
+- Requires the Write master (with confirm + backup verification) for create/delete operations
 
 #### hub_update_device Tool
 
@@ -479,10 +480,10 @@ The `hub_update_device` tool modifies properties on any accessible device (selec
 - **deviceNetworkId** — `device.setDeviceNetworkId(value)` (official API)
 - **dataValues** — `device.updateDataValue(key, value)` for each entry (official API)
 - **preferences** — `device.updateSetting(key, [type: type, value: value])` for each entry (official API, requires `type` field: `bool`, `number`, `decimal`, `text`, `enum`, `time`, `hub`)
-- **room** — resolves room name → ID via `getRooms()` (case-insensitive), then POSTs JSON to `/room/save` with `roomId`, `name`, and `deviceIds` fields. Uses **safe move pattern**: adds device to new room first, then removes from old room. This prevents "device limbo" (device in no room) if the second API call fails — worst case, device appears in both rooms temporarily, which is recoverable. Uses `Content-Type: application/json` (NOT form-encoded — the endpoint returns 500 with form data). The API field is `roomId` (not `id` — using `id` returns `{"roomId":null,"error":"Invalid room id"}`). Post-save verification via `getRooms()`. Requires Hub Admin Write.
-- **enabled** — POSTs to `/device/disable` with `id` and `disable` as body params (undocumented API, must be POST not GET; requires Hub Admin Write)
+- **room** — resolves room name → ID via `getRooms()` (case-insensitive), then POSTs JSON to `/room/save` with `roomId`, `name`, and `deviceIds` fields. Uses **safe move pattern**: adds device to new room first, then removes from old room. This prevents "device limbo" (device in no room) if the second API call fails — worst case, device appears in both rooms temporarily, which is recoverable. Uses `Content-Type: application/json` (NOT form-encoded — the endpoint returns 500 with form data). The API field is `roomId` (not `id` — using `id` returns `{"roomId":null,"error":"Invalid room id"}`). Post-save verification via `getRooms()`. Requires the Write master.
+- **enabled** — POSTs to `/device/disable` with `id` and `disable` as body params (undocumented API, must be POST not GET; requires the Write master)
 
-Room assignment and enable/disable use the hub's internal API at `http://127.0.0.1:8080` and require Hub Admin Write safety gate confirmation. All other properties use the official Hubitat Groovy API and work on any accessible device. Driver type cannot be changed — must delete and recreate the device.
+Room assignment and enable/disable use the hub's internal API at `http://127.0.0.1:8080` and are gated by the Write master. All other properties use the official Hubitat Groovy API and work on any accessible device. Driver type cannot be changed — must delete and recreate the device.
 
 ### Room Management
 
@@ -492,9 +493,9 @@ Room assignment and enable/disable use the hub's internal API at `http://127.0.0
 |------|------------|-------------|
 | `hub_list_rooms` | None | Lists all rooms with IDs, names, device counts via `getRooms()` |
 | `hub_get_room` | None | Room details with full device info/states. Accepts name (case-insensitive) or ID |
-| `hub_create_room` | Hub Admin Write | Creates room via `POST /room/save` with `roomId: 0` (Grails create convention) |
-| `hub_delete_room` | Hub Admin Write | Deletes room via `POST /room/delete/<id>` or `GET /room/delete/<id>`. Devices become unassigned |
-| `hub_update_room` | Hub Admin Write | Renames room via `POST /room/save` with existing `roomId` and new `name`. Preserves device assignments |
+| `hub_create_room` | Write master + confirm | Creates room via `POST /room/save` with `roomId: 0` (Grails create convention) |
+| `hub_delete_room` | Write master + confirm | Deletes room via `POST /room/delete/<id>` or `GET /room/delete/<id>`. Devices become unassigned |
+| `hub_update_room` | Write master + confirm | Renames room via `POST /room/save` with existing `roomId` and new `name`. Preserves device assignments |
 
 **Key API details:**
 - All room mutations use `POST /room/save` at `http://127.0.0.1:8080` with `Content-Type: application/json`
@@ -570,7 +571,7 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub2/appsList` | All installed apps (built-in + user) as JSON. Keys: `systemAppTypes[]`, `userAppTypes[]`, `apps[]` (instance tree). Each `apps[]` entry has `{key, id, data: {id, name, type, disabled, user, hidden, appTypeId}, parent: bool, child: bool, children: [...]}`. Used by `hub_list_apps` (`scope=instances`). |
 | `/device/fullJson/<id>` | Comprehensive device JSON — includes `appsUsing` array (apps referencing this device: `{id, name, label, trueLabel, disabled}`), `appsUsingCount`, `parentApp`, plus device commands/attributes/settings/dashboards. Used by `hub_list_device_dependents`. |
 | `/installedapp/configure/json/<id>[/<pageName>]` | SDK-level config-page serialization for any installed app using `dynamicPage()`. Returns `{app, configPage: {name, title, sections: [{title, input: [...], body: [...]}]}, settings, childApps}`. `app` carries identity (label, name, appType, disabled, parentAppId). Sections hold typed inputs with current values. The Web UI itself consumes this endpoint. Used by `hub_get_app_config`. |
-| `/installedapp/statusJson/<id>` | Raw Groovy `state` map for any installed app. Returns `{id, appState: [{name, value}, ...], appSettings: [...]}`. `appState[].value` shape varies: live hubs typically return the value already parsed as a Map (JsonSlurper recursively decoded the inner JSON); older firmwares or large payloads may leave it as a JSON-encoded String requiring a second parse. The implementation handles both: if value is already a Map, use it directly; if String, parse again. Used by `hub_list_hpm_packages` (including its `includeDrift=true` mode) to read HPM's `state.manifests` package registry. Requires Hub Admin Read. |
+| `/installedapp/statusJson/<id>` | Raw Groovy `state` map for any installed app. Returns `{id, appState: [{name, value}, ...], appSettings: [...]}`. `appState[].value` shape varies: live hubs typically return the value already parsed as a Map (JsonSlurper recursively decoded the inner JSON); older firmwares or large payloads may leave it as a JSON-encoded String requiring a second parse. The implementation handles both: if value is already a Map, use it directly; if String, parse again. Used by `hub_list_hpm_packages` (including its `includeDrift=true` mode) to read HPM's `state.manifests` package registry. Gated by the Read master. |
 
 **Write endpoints (POST):**
 | Path | Body | Purpose |

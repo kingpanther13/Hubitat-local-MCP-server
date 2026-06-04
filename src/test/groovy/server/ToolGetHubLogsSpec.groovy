@@ -6,7 +6,7 @@ import support.ToolSpecBase
 /**
  * Spec for toolGetHubLogs.
  *
- * Covers: most-recent-first ordering (golden), Hub Admin Read gate,
+ * Covers: most-recent-first ordering (golden), Read master central gate,
  * appId numeric validation, deviceId/appId mutual exclusion, the
  * pattern/patterns/patternMode/since/until/limit filter pipeline, type-shape
  * validation for all new args, case-insensitivity in both directions,
@@ -35,8 +35,8 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     }
 
     def "returns most-recent-first log entries (ordering regression)"() {
-        given: 'Hub Admin Read is enabled'
-        settingsMap.enableHubAdminRead = true
+        given: 'Read tools are enabled'
+        settingsMap.enableRead = true
 
         and: 'hub returns 3 log lines in chronological order (oldest first)'
         registerLogs([
@@ -58,7 +58,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "BUG-9: known-benign RM periodic-render NPE entries are flagged so they aren't read as real errors"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         and: "the hub log contains RM's own benign periodic-render NPE (logged against the rule app) plus an ordinary line"
         registerLogs([
@@ -78,7 +78,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "BUG-9: no benign annotation when there is no RM periodic noise"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs(['App 1\tinfo\tordinary message\t2026-04-19 10:00:00.000\ttype'])
 
         when:
@@ -93,7 +93,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     def "hub_get_logs via dispatch returns most-recent-first log entries (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tOldest message\t2026-04-19 10:00:00.000\ttype',
             'App 1\tinfo\tMiddle message\t2026-04-19 10:00:01.000\ttype',
@@ -117,23 +117,23 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "throws when Hub Admin Read is disabled"() {
+    def "throws when Read tools are disabled"() {
         given:
-        settingsMap.enableHubAdminRead = false
+        settingsMap.enableRead = false
 
         when:
-        script.toolGetHubLogs([:])
+        script.executeTool('hub_get_logs', [:])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Read')
+        ex.message.contains('Read tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_get_logs via dispatch maps Hub-Admin-Read-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_logs via dispatch maps Read-disabled IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = false
+        settingsMap.enableRead = false
 
         when:
         def response = mcpDriver.callTool('hub_get_logs', [:])
@@ -141,7 +141,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         then:
         response.error != null
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Read')
+        response.error.message.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -149,7 +149,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "rejects non-integer appId (numeric-validation regression)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetHubLogs([appId: 'not-a-number'])
@@ -161,7 +161,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "rejects deviceId and appId together (mutual-exclusion regression)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetHubLogs([deviceId: '1', appId: '2'])
@@ -175,7 +175,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "pattern keeps only entries whose message matches the regex"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tSomething normal\t2026-04-19 10:00:00.000\ttype',
             'App 1\terror\tERROR: disk full\t2026-04-19 10:00:01.000\ttype',
@@ -194,7 +194,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     def "hub_get_logs via dispatch applies pattern filter (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tSomething normal\t2026-04-19 10:00:00.000\ttype',
             'App 1\terror\tERROR: disk full\t2026-04-19 10:00:01.000\ttype',
@@ -217,7 +217,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "pattern match is case-insensitive"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\terror in device\t2026-04-19 10:00:00.000\ttype',
             'App 1\tinfo\tall good\t2026-04-19 10:00:01.000\ttype'
@@ -233,7 +233,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "invalid pattern throws IllegalArgumentException with helpful message"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetHubLogs([pattern: '[unclosed'])
@@ -248,7 +248,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     def "hub_get_logs via dispatch maps invalid-regex IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         def response = mcpDriver.callTool('hub_get_logs', [pattern: '[unclosed'])
@@ -267,7 +267,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "patterns with default patternMode any keeps entries matching either pattern"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tfoo happened\t2026-04-19 10:00:00.000\ttype',
             'App 1\tinfo\tbar happened\t2026-04-19 10:00:01.000\ttype',
@@ -284,7 +284,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "patterns with patternMode all keeps only entries matching every pattern"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tfoo only\t2026-04-19 10:00:00.000\ttype',
             'App 1\tinfo\tfoo and bar both\t2026-04-19 10:00:01.000\ttype',
@@ -301,7 +301,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "pattern and patterns both apply when both are set"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // pattern requires 'ERROR', patterns[any] requires 'foo' or 'bar'
         // Only 'ERROR: foo' satisfies both
         registerLogs([
@@ -322,7 +322,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "since relative offset 30m excludes entries older than 30 minutes ago"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // now() in harness returns 1234567890000L (millisecond epoch)
         // 30 minutes ago = 1234567890000 - 1800000 = 1234566090000
         // Hub log timestamps are UTC; format fixture strings as UTC so the
@@ -350,7 +350,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "since ISO-8601 timestamp filters correctly"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tBefore cutoff\t2024-01-14 23:59:59.000\ttype',
             'App 1\tinfo\tAfter cutoff\t2024-01-15 00:00:01.000\ttype'
@@ -366,7 +366,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "since ISO-8601 with milliseconds filters correctly"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tBefore cutoff\t2024-01-14 23:59:59.000\ttype',
             'App 1\tinfo\tAfter cutoff\t2024-01-15 00:00:01.000\ttype'
@@ -382,7 +382,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "since and until define a closed time window"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // now() = 1234567890000L
         // Hub log timestamps are UTC; format fixture strings as UTC.
         long nowMs = 1234567890000L
@@ -410,7 +410,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "bad since value throws IllegalArgumentException with format example"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetHubLogs([since: 'yesterday'])
@@ -425,7 +425,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "relative offset beyond 30d throws IllegalArgumentException with ISO-8601 hint"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetHubLogs([since: '31d'])
@@ -439,7 +439,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "relative offset of exactly 400d also throws (cap is strict, not a clamp)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetHubLogs([since: '400d'])
@@ -450,7 +450,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "entries with no parseable time field are passed through (not excluded) when time-window active"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // name field contains non-timestamp text so the name-fallback also fails to parse
         registerLogs([
             'App 1\tinfo\tNo time\t\ttype',              // empty time field, name is 'App 1' -- not a timestamp
@@ -467,7 +467,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "time-window filter uses entry.name as timestamp when entry.time is empty (firmware 2.5.0.126+ shape)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Firmware 2.5.0.126+ puts the timestamp in parts[0] (entry.name) and leaves parts[3] (entry.time) empty.
         // Two log lines in that firmware shape: one within the window, one before it.
         registerLogs([
@@ -485,7 +485,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "time-window filter handles mixed firmware log shapes in the same response"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Mix of documented format (time in parts[3]) and firmware 2.5.0.126+ format (time in parts[0]).
         // Both should be filtered correctly against the same window.
         registerLogs([
@@ -508,7 +508,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "hub log entry timestamps (no TZ marker) are parsed as UTC regardless of JVM default timezone"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Harness now() = 1234567890000L (epoch ms).
         // since='5m' -> sinceDate = new Date(1234567890000 - 300000) = 1234567590000L (UTC epoch).
         //
@@ -547,7 +547,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "invalid patternMode throws IllegalArgumentException"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetHubLogs([patternMode: 'neither'])
@@ -562,7 +562,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "since resolving later than until throws IllegalArgumentException with helpful message"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // since='1h' -> 1 hour ago, until='2h' -> 2 hours ago: since > until (inverted window)
 
         when:
@@ -577,7 +577,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "pattern as list throws IllegalArgumentException naming the expected type"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetHubLogs([pattern: ['foo']])
@@ -590,7 +590,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "patterns as string throws IllegalArgumentException naming the expected type"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetHubLogs([patterns: 'foo'])
@@ -603,7 +603,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "since as number throws IllegalArgumentException with format hint"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetHubLogs([since: 30])
@@ -616,7 +616,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "patterns list containing a non-string element throws IllegalArgumentException naming the index"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         // index 1 (the integer 42) is the bad element
@@ -632,7 +632,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "pattern in lowercase matches log entries with uppercase message text"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tERROR in device\t2026-04-19 10:00:00.000\ttype',
             'App 1\tinfo\tall good\t2026-04-19 10:00:01.000\ttype'
@@ -648,7 +648,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "patterns list entries are case-insensitive: mixed-case patterns match opposite-case messages"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tFOO happened\t2026-04-19 10:00:00.000\ttype',   // matches 'foo' pattern
             'App 1\tinfo\tbar happened\t2026-04-19 10:00:01.000\ttype',    // matches 'BAR' pattern
@@ -667,7 +667,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "kitchen-sink: level + source + pattern + patterns + since applied in pipeline order"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // now() in harness = 1234567890000L; "2h" window = entries from 1234560090000L onward
         long nowMs = 1234567890000L
         def utcSdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS")
@@ -718,7 +718,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     def "hub_get_logs via dispatch applies kitchen-sink filter pipeline (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         long nowMs = 1234567890000L
         def utcSdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS")
         utcSdf.setTimeZone(TimeZone.getTimeZone("UTC"))
@@ -762,7 +762,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "level plus pattern plus since all apply as intersection"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Hub log timestamps are UTC; format fixture strings as UTC.
         long nowMs = 1234567890000L
         def utcSdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS")
@@ -790,7 +790,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "limit truncates result when survivors exceed limit"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // 5 WARN entries all pass the level filter; limit=2 should truncate to 2.
         registerLogs([
             'App 1\twarn\tmessage 1\t2026-04-19 10:00:01.000\ttype',
@@ -813,7 +813,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "since as naked-T ISO timestamp (no Z) is parsed as UTC not JVM default TZ"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // since='2024-01-15T10:30:00' (no Z) should be treated as UTC midnight+10:30.
         // UTC epoch for 2024-01-15T10:30:00Z = 1705311000000L.
         // An entry at 2024-01-15 10:30:01 UTC is 1 second inside the window (included).
@@ -833,7 +833,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "since as space-separated timestamp (hub log copy-paste shape, no TZ marker) is parsed as UTC -- JVM TZ swap"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // This scenario deliberately swaps the JVM default TZ to America/Denver (UTC-6 or -7
         // depending on DST) before making the call. If production code regresses to Date.parse()
         // for the space-separated format, the epoch shifts by 6-7 hours, causing the inside-window
@@ -864,7 +864,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "TZ-swap asymmetric regression: space-separated UTC entry and explicit-Z entry both resolve to same epoch ms"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Two entries that represent identical points in time, expressed two ways:
         //   (a) space-separated hub-native: '2024-01-15 12:30:44.000' (no TZ marker; production
         //       must parse as UTC via hubLogSdfs)
@@ -899,7 +899,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "unparseable timestamps are passed through and counted in timeFilterUnparseable"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // 5 valid entries after the cutoff + 2 entries with unparseable timestamps.
         // The 2 unparseable entries should be kept (not excluded) and counted separately.
         registerLogs([
@@ -922,7 +922,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "timeFilterUnparseable is absent from response when no time filter is active"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tNo timestamp\t\ttype',
             'App 1\tinfo\tBad timestamp\tNOT_A_DATE\ttype'
@@ -939,7 +939,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "zero-match result includes filteredOut count and appliedFilters echo"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tSomething normal\t2026-04-19 10:00:00.000\ttype',
             'App 1\tinfo\tAnother normal\t2026-04-19 10:00:01.000\ttype',
@@ -958,7 +958,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "partial-match result includes filteredOut count reflecting excluded entries"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tfound: match this\t2026-04-19 10:00:00.000\ttype',
             'App 1\tinfo\tunrelated entry here\t2026-04-19 10:00:01.000\ttype',
@@ -976,7 +976,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "filteredOut counts only filter-excluded entries not limit-truncated ones"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // 100 entries: 50 contain 'ALPHA' (match), 50 contain 'BETA' (no match). limit=10.
         // filteredOut must be 50 (the BETA entries excluded by filter), NOT 90 (totalParsed - count).
         // The 40 ALPHA entries beyond the limit are limit-truncated, not filter-excluded.
@@ -996,7 +996,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "no filters active means filteredOut and appliedFilters are absent"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tSomething\t2026-04-19 10:00:00.000\ttype'
         ])
@@ -1013,7 +1013,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "empty pattern string throws IllegalArgumentException with hint to omit"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetHubLogs([pattern: ''])
@@ -1026,7 +1026,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "empty string inside patterns list throws IllegalArgumentException naming the index"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetHubLogs([patterns: ['valid', '']])
@@ -1041,7 +1041,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "pattern longer than 100 chars throws before compile with length in message"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def longPat = 'a' * 101   // 101 chars -- exceeds 100-char limit
 
         when:
@@ -1055,7 +1055,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "pattern element in patterns list longer than 100 chars throws naming the index"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def longPat = 'b' * 101   // 101 chars
 
         when:
@@ -1071,7 +1071,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "hubInternalGet failure throws IllegalStateException surfaceable as JSON-RPC error"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Intentionally no hubGet.register() -- harness throws IllegalStateException("Unstubbed
         // hubInternalGet: ...") when the path is not registered, which production code then
         // wraps and rethrows as IllegalStateException("Failed to fetch hub logs: ...").
@@ -1089,7 +1089,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     def "hub_get_logs via dispatch wraps IllegalStateException as isError=true envelope (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // No hubGet.register() -- the unstubbed path throws and production rethrows as
         // IllegalStateException. handleToolsCall maps non-IAE exceptions to isError=true.
 
@@ -1109,7 +1109,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "multi-pattern compile failure throws on the bad element and names its index"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when: "patterns list contains one valid and one invalid regex"
         script.toolGetHubLogs([patterns: ['valid', '[unclosed']])
@@ -1122,7 +1122,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "inverted ISO-8601 window since after until throws IllegalArgumentException"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when: 'since is after until -- window contains no entries'
         script.toolGetHubLogs([since: '2024-01-15T12:00:00Z', until: '2024-01-15T08:00:00Z'])
@@ -1134,7 +1134,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "until as Number throws IllegalArgumentException with format hint"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolGetHubLogs([until: 1234567890000])
@@ -1147,7 +1147,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "patternMode as List throws IllegalArgumentException naming the expected type"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when: 'patternMode given as a list instead of a string'
         script.toolGetHubLogs([patternMode: ['any']])
@@ -1163,7 +1163,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
         // pins the limit-trims-first-then-cursor-pages ordering so a regression
         // that flipped the order surfaces.
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs((0..<300).collect { i -> "App ${i}\tinfo\tmsg ${i}\t2026-04-21 10:00:${String.format('%02d', i % 60)}.000\ttype" })
 
         when: 'limit=150 + cursor="" -- candidates are first 150 entries, page size 100'
@@ -1186,7 +1186,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
     def "no-cursor call still emits appliedLimit but no nextCursor/total leakage"() {
         // Backward-compat shape guard for callers who don't paginate.
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App\tinfo\tmsg\t2026-04-21 10:00:00.000\ttype'
         ])
@@ -1203,7 +1203,7 @@ class ToolGetHubLogsSpec extends ToolSpecBase {
 
     def "empty patterns list is accepted and applies no pattern filter"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         registerLogs([
             'App 1\tinfo\tfoo\t2026-04-19 10:00:00.000\ttype',
             'App 1\tinfo\tbar\t2026-04-19 10:00:01.000\ttype'

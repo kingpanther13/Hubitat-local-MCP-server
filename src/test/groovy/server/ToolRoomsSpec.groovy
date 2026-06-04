@@ -11,9 +11,9 @@ import support.ToolSpecBase
  *
  * - toolListRooms   -> hub_list_rooms
  * - toolGetRoom     -> hub_get_room
- * - toolCreateRoom  -> hub_create_room   (destructive — Hub Admin Write + confirm)
- * - toolDeleteRoom  -> hub_delete_room   (destructive — Hub Admin Write + confirm)
- * - toolRenameRoom  -> hub_update_room   (destructive — Hub Admin Write + confirm)
+ * - toolCreateRoom  -> hub_create_room   (destructive — Write master + confirm + 24h backup)
+ * - toolDeleteRoom  -> hub_delete_room   (destructive — Write master + confirm + 24h backup)
+ * - toolRenameRoom  -> hub_update_room   (destructive — Write master + confirm + 24h backup)
  *
  * Mocking strategy: see docs/testing.md "Which interception point to use".
  * This spec is the canonical example of the setupSpec-dispatcher pattern
@@ -22,8 +22,8 @@ import support.ToolSpecBase
  * @Shared Closure handler (httpPostHandler). getRooms / getHubSecurityCookie
  * are purely dynamic, stubbed per-test on script.metaClass.
  *
- * Destructive tools require:
- *   settingsMap.enableHubAdminWrite = true
+ * Destructive tools require (the Write master gates centrally at executeTool and
+ * defaults ON, so it needs no seed; requireDestructiveConfirm needs confirm + 24h backup):
  *   stateMap.lastBackupTimestamp    = current 'now' (1234567890000L)
  *   args.confirm                    = true
  *
@@ -47,8 +47,8 @@ class ToolRoomsSpec extends ToolSpecBase {
         script.metaClass.getHubSecurityCookie = { -> null }
     }
 
-    private void enableHubAdminWrite() {
-        settingsMap.enableHubAdminWrite = true
+    private void enableWrite() {
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
     }
 
@@ -459,7 +459,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     def "hub_create_room throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolCreateRoom([name: 'Garage'])
@@ -474,7 +474,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     def "hub_create_room via dispatch returns -32602 envelope when confirm missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_room', [name: 'Garage'])
@@ -488,26 +488,30 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_create_room throws when Hub Admin Write is disabled"() {
+    def "hub_create_room throws when the Write master is disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolCreateRoom([name: 'Garage', confirm: true])
+        script.executeTool('hub_create_room', [name: 'Garage', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_create_room via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_create_room via dispatch returns -32602 envelope when the Write master is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = false
 
         when:
         def response = mcpDriver.callTool('hub_create_room', [name: 'Garage', confirm: true])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Write')
+        response.error.message.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -515,7 +519,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     def "hub_create_room throws when required name is blank"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         installGetRoomsStub([])
 
         when:
@@ -530,7 +534,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     def "hub_create_room via dispatch returns -32602 envelope when name is blank (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         installGetRoomsStub([])
 
         when:
@@ -546,7 +550,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     def "hub_create_room posts to /room/save and reports success"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rooms = []
         installGetRoomsStub(rooms)
         installCookieStub()
@@ -578,7 +582,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     def "hub_create_room via dispatch posts to /room/save and reports success (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def rooms = []
         installGetRoomsStub(rooms)
         installCookieStub()
@@ -614,7 +618,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     def "hub_create_room rejects duplicate room names (case-insensitive)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         installGetRoomsStub([
             [id: 1, name: 'Garage', deviceIds: []]
         ])
@@ -631,7 +635,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     def "hub_create_room via dispatch returns -32602 envelope on duplicate name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         installGetRoomsStub([
             [id: 1, name: 'Garage', deviceIds: []]
         ])
@@ -651,7 +655,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     def "hub_delete_room throws when room identifier is missing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolDeleteRoom([confirm: true])
@@ -665,7 +669,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     def "hub_delete_room via dispatch returns -32602 envelope when identifier missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_delete_room', [confirm: true])
@@ -680,7 +684,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     def "hub_delete_room posts to /room/delete/<id> and reports devices unassigned"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rooms = [
             [id: 5, name: 'Old Room', deviceIds: [300, 301]]
         ]
@@ -716,7 +720,7 @@ class ToolRoomsSpec extends ToolSpecBase {
         // at L12702-12703 for the deviceCount==1 branch.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rooms = [
             [id: 5, name: 'Solo Room', deviceIds: [400]]
         ]
@@ -745,7 +749,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     def "hub_delete_room via dispatch posts to /room/delete and reports devices unassigned (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def rooms = [
             [id: 5, name: 'Old Room', deviceIds: [300, 301]]
         ]
@@ -779,7 +783,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     def "hub_delete_room falls back to GET /room/delete/<id> when POST fails"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rooms = [
             [id: 12, name: 'Sunroom', deviceIds: [400]]
         ]
@@ -810,7 +814,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     def "hub_delete_room via dispatch falls back to GET when POST fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def rooms = [
             [id: 12, name: 'Sunroom', deviceIds: [400]]
         ]
@@ -845,7 +849,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     def "hub_delete_room throws when the target room does not exist"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         installGetRoomsStub([
             [id: 1, name: 'Kitchen', deviceIds: []]
         ])
@@ -863,7 +867,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     def "hub_delete_room via dispatch returns -32602 envelope when target room does not exist (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         installGetRoomsStub([
             [id: 1, name: 'Kitchen', deviceIds: []]
         ])
@@ -884,7 +888,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     def "hub_update_room posts to /room/save with the existing id and reports success"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rooms = [
             [id: 8, name: 'Office', deviceIds: [600]]
         ]
@@ -916,7 +920,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     def "hub_update_room via dispatch posts to /room/save with existing id and reports success (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def rooms = [
             [id: 8, name: 'Office', deviceIds: [600]]
         ]
@@ -952,7 +956,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     def "hub_update_room locates the target room by case-insensitive name"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rooms = [
             [id: 15, name: 'Playroom', deviceIds: [700]]
         ]
@@ -982,7 +986,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     def "hub_update_room via dispatch locates the target room by case-insensitive name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def rooms = [
             [id: 15, name: 'Playroom', deviceIds: [700]]
         ]
@@ -1016,7 +1020,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     def "hub_update_room throws when newName is missing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         installGetRoomsStub([
             [id: 8, name: 'Office', deviceIds: []]
         ])
@@ -1033,7 +1037,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     def "hub_update_room via dispatch returns -32602 envelope when newName is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         installGetRoomsStub([
             [id: 8, name: 'Office', deviceIds: []]
         ])
@@ -1051,7 +1055,7 @@ class ToolRoomsSpec extends ToolSpecBase {
 
     def "hub_update_room rejects a name that would collide with a different room"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         installGetRoomsStub([
             [id: 1, name: 'Kitchen', deviceIds: []],
             [id: 2, name: 'Bedroom', deviceIds: []]
@@ -1069,7 +1073,7 @@ class ToolRoomsSpec extends ToolSpecBase {
     def "hub_update_room via dispatch returns -32602 envelope on colliding name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         installGetRoomsStub([
             [id: 1, name: 'Kitchen', deviceIds: []],
             [id: 2, name: 'Bedroom', deviceIds: []]

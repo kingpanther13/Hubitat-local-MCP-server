@@ -137,7 +137,7 @@ class McpRequestDriverSpec extends ToolSpecBase {
 
     def "callTool builds a JSON-RPC tools/call envelope and returns the parsed response"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/hub/advanced/freeOSMemory') { params -> 'TestHub-987654' }
 
         when:
