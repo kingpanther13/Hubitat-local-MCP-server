@@ -88,6 +88,14 @@ abstract class RuleHarnessSpec extends Specification {
 
     Object getParent() { _parent }
 
+    /**
+     * Lines recorded by the shared PermissiveLog during the current feature
+     * method, each as "level:message" (e.g. "debug:HTTP GET ..."). Cleared in
+     * setup(). Mirrors the root RuleHarnessSpec accessor so the success-path
+     * redaction specs run on this lane too.
+     */
+    protected List<String> capturedLogs() { sharedLog.messages }
+
     def setupSpec() {
         appExecutor = buildAppExecutorMock()
         synchronized (COMPILE_LOCK) {
@@ -132,11 +140,18 @@ abstract class RuleHarnessSpec extends Specification {
         mock.unschedule() >> { unscheduleAllCount++ }
         mock.unschedule(_ as String) >> { args -> unscheduleCalls << (args[0] as String) }
         mock.sendLocationEvent(_) >> { args -> sendLocationEventCalls << (args[0] as Map) }
+        // Invoke the response closure with a fake 200 so success-path response handlers
+        // run (e.g. the redacted log.debug inside http_request). Benign for specs that
+        // only assert on the recorded request args.
         mock.httpGet(_, _) >> { args ->
             httpGetCalls << (args as List)
             if (stubHttpGetException) throw stubHttpGetException
+            if (args[1] instanceof Closure) args[1].call([status: 200])
         }
-        mock.httpPost(_, _) >> { args -> httpPostCalls << (args as List) }
+        mock.httpPost(_, _) >> { args ->
+            httpPostCalls << (args as List)
+            if (args[1] instanceof Closure) args[1].call([status: 200])
+        }
         mock.subscribe(_, _ as String, _ as String) >> { args ->
             subscriptions.record(args[0], args[1] as String, args[2] as String)
         }
@@ -203,6 +218,7 @@ abstract class RuleHarnessSpec extends Specification {
         stubTimeOfDayResult = false
         stubSunriseSunset = null
         stubHttpGetException = null
+        sharedLog.messages.clear()
         _parent = null
         // Drop per-test metaClass writes from the previous feature before
         // re-installing hooks. Both wipes matter when SHARED_SCRIPT is reused
