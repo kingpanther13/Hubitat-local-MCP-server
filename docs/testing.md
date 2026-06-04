@@ -5,7 +5,22 @@ Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `.
 - **Test framework:** Spock 2.3 on Groovy 3.0 (Hubitat's hub runtime is Groovy 2.4, and `eighty20results/hubitat_ci` actively tests its behaviour against that runtime — case-insensitive enum matching, locale-safe `toLowerCase`, etc. — so Groovy 3.0 stays the closest practical match).
 - **Hubitat sandbox:** [eighty20results/hubitat_ci](https://github.com/eighty20results/hubitat_ci) — an actively-maintained Groovy 3.0 fork of the original [biocomp/hubitat_ci](https://github.com/biocomp/hubitat_ci) (Apache 2.0). Consumed as `com.github.eighty20results:hubitat_ci:<tag>` via JitPack; the pinned release tag in `build.gradle` is bumped by tracking issues from `.github/workflows/hubitat-ci-version-check.yml`. Sandbox-loaded production code that references `hubitat.helper.{RMUtils, NetworkUtils}` is routed through `support.PassThroughSandboxClassLoader` (installed via `support.PassThroughAppValidator`) so our literal-named stubs at `src/main/groovy/hubitat/helper/` resolve without hitting the JVM's §5.3.5 name-equality check — the raw-vs-remapped class mismatch that would otherwise NCDFE at runtime. Groovy 3 is module-aware, so the JDK 11+ `--add-opens` workaround from the Groovy-2.5 era is no longer needed.
 - **JVM:** OpenJDK 17 in CI; locally, JDK 11+ via the Gradle toolchain
-- **Build:** Gradle 8.10 via wrapper (`./gradlew test`)
+- **Build:** Gradle 9.5.1 via wrapper (`./gradlew test`)
+
+### Additive hub-closer lanes
+
+Two standalone lanes complement the primary Groovy 3.0 lane without touching it — Hubitat's hub
+runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
+
+- **Groovy 2.4 Parse Check** (`ci/groovy24-parse/`) — parses the two production `.groovy` files under
+  stock Groovy 2.4.21 (antlr2), catching 3.0-only syntax that would fail to load on the hub (issue #227).
+- **Groovy 2.5 Spock** (`ci/groovy2x-spock/`) — runs this same spec corpus against a Groovy 2.5
+  runtime via [joelwetzel/hubitat_ci](https://github.com/joelwetzel/hubitat_ci) (the biocomp-API fork
+  the harness used before the eighty20results migration; Apache 2.0), catching 2.x-vs-3.0 **runtime**
+  divergence (issue #230). Allow-failure; references the specs read-only and carries its own
+  joelwetzel-shaped `HarnessSpec`/`RuleHarnessSpec` under `ci/groovy2x-spock/scaffold/`. See
+  [docs/groovy2x-spock-lane.md](groovy2x-spock-lane.md). Run locally with
+  `./gradlew -p ci/groovy2x-spock test`.
 
 ## Running locally
 
