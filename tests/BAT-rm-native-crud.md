@@ -1766,7 +1766,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule(appId=99999999, settings={comments:'x'})` returns `{success:false, error:<not-found message>}` OR throws `IllegalArgumentException` with a clear not-found message. AI does NOT fabricate a rule. Companion to T385 (which covers `hub_get_app_config` negative path); closes the silent-failure gap in the update path surfaced by the PR #133 review.
+**Expected**: `hub_set_rule(appId=99999999, settings={comments:'x'})` returns `{success:false, error:<not-found message>}` OR throws `IllegalArgumentException` with a clear not-found message. AI does NOT fabricate a rule. Companion to T385 (which covers `hub_get_app_config` negative path); closes the silent-failure gap in the update path.
 
 ### T451 — hub_delete_native_app on non-existent ruleId (negative path)
 

@@ -18651,9 +18651,17 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
         // double-shifts the action.
         if (actualShift != expectedShift) {
             pauseExecution(1500)
-            afterOrderRaw = _rmCollectActionIndices(appId)
-            afterPosition = afterOrderRaw.indexOf(actionIdx)
-            actualShift = afterPosition - beforePosition
+            // The re-check read is the one fetch in this otherwise verify-tolerant
+            // path; if it throws (transient relay flake), treat the move as
+            // unconfirmed -- fall through to the soft asyncCommitLikely return
+            // rather than hard-throwing out of the function.
+            try {
+                afterOrderRaw = _rmCollectActionIndices(appId)
+                afterPosition = afterOrderRaw.indexOf(actionIdx)
+                actualShift = afterPosition - beforePosition
+            } catch (Exception recheckExc) {
+                mcpLog("warn", "rm-native", "moveAction: post-pause re-check fetch failed for app ${appId} (${recheckExc.message}) -- treating as unconfirmed (soft asyncCommitLikely return)")
+            }
         }
         if (actualShift != expectedShift) {
             return [
@@ -22396,8 +22404,9 @@ def _createNativeAppShell(args) {
         // NOTE: the origLabel write above becomes the installed-app label only
         // for RM-family apps (RM copies origLabel -> label on updateRule). Other
         // classic types (Button Controller, etc.) have no origLabel input and
-        // are NOT fully supported here (rule_machine is the only fully-registered
-        // appType), so they keep the default type-name label -- a known
+        // are only partial-support here (rule_machine is the only FULLY-supported
+        // appType; the others are registered but their label/config handling is
+        // incomplete), so they keep the default type-name label -- a known
         // limitation of the non-rule_machine appTypes. A prior attempt to set
         // the label generically via /installedapp/update did not take effect on
         // a live Button Controller, so it was removed rather than shipped dead.
@@ -24489,7 +24498,7 @@ def _applyNativeAppEdit(args) {
             note: replaceActionsList != null
                 ? "Replaced actions: removed ${removed?.size() ?: 0}, added ${addedOk}/${addedTotal}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."
                 : (clearActionsFlag ? "Cleared ${removed?.size() ?: 0} ${(removed?.size() ?: 0) == 1 ? 'action' : 'actions'}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."
-                : (moveActionSpec ? "Moved action ${moveActionSpec.index} ${moveActionSpec.direction}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."
+                : (moveActionSpec ? (moveSoftFail ? "Move of action ${moveActionSpec.index} ${moveActionSpec.direction} could NOT be confirmed within the verify window -- see verifyHint before retrying." : "Moved action ${moveActionSpec.index} ${moveActionSpec.direction}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}.")
                 : "Removed action ${removeActionSpec?.index}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."))
         ]
     }
@@ -24898,7 +24907,8 @@ def _applyNativeAppEdit(args) {
                             afterPosition: mvRes?.afterPosition,
                             indicesAfter: mvRes?.indicesAfter,
                             asyncCommitLikely: mvRes?.asyncCommitLikely,
-                            verifyHint: mvRes?.verifyHint
+                            verifyHint: mvRes?.verifyHint,
+                            partial: mvRes?.partial == true
                         ]
                     } else {
                         patchResults << [success: false, error: "patches[${pi}] has no recognized operation key. Supported: settings, button, addTrigger(s), addAction(s), addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction.", spec: p]

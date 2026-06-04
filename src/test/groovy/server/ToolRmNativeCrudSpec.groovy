@@ -3116,6 +3116,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         clickFired == true
         result.success == true
 
+        and: "the success envelope carries NO soft-fail fields (negative pin for the soft-return fold-in)"
+        result.asyncCommitLikely != true
+        result.verifyHint == null
+
         and: "note confirms the move direction"
         result.note?.contains("down")
 
@@ -3180,6 +3184,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "arrowUp click fires and result reports success"
         clickFired == true
         result.success == true
+
+        and: "the success envelope carries NO soft-fail fields (negative pin for the soft-return fold-in)"
+        result.asyncCommitLikely != true
+        result.verifyHint == null
 
         and: "note confirms the move direction"
         result.note?.contains("up")
@@ -3247,6 +3255,54 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "position fields still surface for the caller"
         result.beforePosition != null
         result.afterPosition != null
+    }
+
+    def "patches[moveAction]: persistent no-shift surfaces success:false + asyncCommitLikely on the patch entry (not hardcoded success:true)"() {
+        // The patches moveAction row reflects _rmMoveAction's soft-return
+        // (success: mvRes?.success != false + asyncCommitLikely/verifyHint/partial)
+        // rather than a hardcoded success:true. Pin the soft-fail propagation
+        // through the patches path (a separate branch from the action-mutation
+        // dispatcher, with the same failure mode the fix targets).
+        given:
+        enableWrite()
+        def actionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
+        def makeStatus = {
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [
+                    [name: "actType.1", value: "switchActs"],
+                    [name: "actType.2", value: "delayActs"],
+                    [name: "actType.3", value: "switchActs"]
+                ],
+                eventSubscriptions: [[name: "evt1"]],
+                scheduledJobs: [],
+                appState: [:],
+                actions: actionsMap,
+                childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> makeStatus() }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, patches: [[moveAction: [index: 1, direction: "down"]]], confirm: true])
+
+        then: "the moveAction patch entry reflects the soft-fail (not hardcoded success:true)"
+        def mv = (result.patches as List).find { it.op == "moveAction" }
+        mv != null
+        mv.success == false
+        mv.asyncCommitLikely == true
+        mv.verifyHint?.toString()?.contains("VERIFY")
+        mv.partial == true
+
+        and: "the outer patches envelope reflects the failed op"
+        result.success == false
+        result.partial == true
     }
 
     // ---------- state.editAct pre-flight guard (applies to removeAction AND moveAction) ----------
@@ -5416,6 +5472,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         dimmer.conditionalRequired.toggle?.toString()?.contains("level")
         dimmer.conditionalRequired.setLevel?.toString()?.contains("level")
         dimmer.conditionalRequired.adjust?.toString()?.contains("adjustBy")
+        dimmer.conditionalRequired.fade?.toString()?.contains("targetLevel")
+        dimmer.conditionalRequired.startRaiseLower?.toString()?.contains("direction")
+        dimmer.conditionalRequired.setLevelPerMode?.toString()?.contains("perMode")
     }
 
     def "addTrigger discover=true does not require Hub Admin Write"() {
@@ -11534,6 +11593,63 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // A regression that unconditionally appends the inner-only hint on
         // every modifyTrigger call would lint-green without this assertion.
         !((result.repairHints as List) ?: []).any { it?.toString()?.contains("modifyTrigger reported inner partial") }
+    }
+
+    def "modifyTrigger verifiedState echoes the persisted tstate on success (F1 non-null readback branch)"() {
+        // F1: the post-commit verifiedState reads the PERSISTED no-page
+        // configure/json settings, so a successful modify echoes the new state
+        // instead of always-null. The happy-path test above rides the
+        // !applied.isEmpty() fallback (its no-page settings are empty ->
+        // verifiedState null); this pins the verifiedState == mods.state success
+        // branch the F1 fix exists to produce. A regression that broke the
+        // readback (e.g. reverting to reading the closed wizard page) would still
+        // pass the happy-path test but fail here.
+        given:
+        enableWrite()
+        def selectTriggersSchema = [
+            [name: "tstate1", type: "enum", options: ["on", "off"]]
+        ]
+        // The no-page configure/json IS the F1 verification readback -- return the
+        // PERSISTED new state so verifiedState echoes it (and a healthy config so
+        // the dispatcher health gate stays green).
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            groovy.json.JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "r", install: true, error: null, sections: []],
+                settings: [tCapab1: "Switch", tstate1: "off"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            groovy.json.JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "Triggers", install: true, error: null,
+                             sections: [[title: "", input: selectTriggersSchema]]],
+                settings: [tstate1: "off"],  // settingsLanded fires -> applied non-empty
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", value: "Switch"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            modifyTrigger: [index: 1, mods: [state: "off"]],
+            confirm: true
+        ])
+
+        then: "verifiedState echoes the persisted new state (non-null branch), not the always-null fallback"
+        result.verifiedState == "off"
+        result.verificationFetchFailed == false
+        result.success == true
     }
 
     def "modifyTrigger returns success: false when triggerIdx not present"() {
