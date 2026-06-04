@@ -441,7 +441,7 @@ def getToolGuideSections() {
     return [
         device_authorization: '''## Device Authorization (CRITICAL)
 Body here.''',
-        builtin_app_tools: '''## Built-in App Tools
+        builtin_app_tools: '''## Installed-App & Native-Rule Tools
 Body.'''
     ]
 }
@@ -456,7 +456,7 @@ def someTool() {
 ## Device Authorization (CRITICAL)
 Stuff.
 
-## Built-in App Tools
+## Installed-App & Native-Rule Tools
 Stuff.
 """
     _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy, tool_guide_md)
