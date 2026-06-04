@@ -19,7 +19,6 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     def "every gateway-mode entry carries an MCP annotations.readOnlyHint boolean"() {
         given:
         settingsMap.remove('useGateways')
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
 
         when:
@@ -37,7 +36,6 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     def "every flat-mode entry carries an MCP annotations.readOnlyHint boolean"() {
         given:
         settingsMap.useGateways = false
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
 
         when:
@@ -55,7 +53,6 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     def "flat mode: read-only tool '#name' has readOnlyHint=true and omits destructiveHint"() {
         given:
         settingsMap.useGateways = false
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
 
         when:
@@ -98,7 +95,6 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         // spec default.
         given:
         settingsMap.useGateways = false
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
 
         when:
@@ -140,7 +136,6 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     def "gateway entries: all-read-only sub-tools roll up to readOnlyHint=true and omit destructiveHint"() {
         given:
         settingsMap.remove('useGateways')
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
 
         when:
@@ -159,7 +154,6 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     def "gateway entries: any write sub-tool flips the whole gateway to write+destructive"() {
         given:
         settingsMap.remove('useGateways')
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
 
         when:
@@ -258,15 +252,15 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     }
 
     def "gateway aggregation survives toggle-driven sub-tool hiding"() {
-        // Smoke-tests the end-to-end path: both toggles off (customEngineMode=off,
-        // Built-in App Tools off) feed hideByName, which also filters gateway
-        // sub-tools. hub_manage_diagnostics carries no toggle-hidden sub-tools, but
-        // it keeps writes (hub_call_zwave_repair, hub_delete_captured_state) that are
-        // always visible, so the gateway label stays write+destructive regardless.
+        // Smoke-tests the end-to-end path: the Write master OFF feeds getHiddenToolNames(),
+        // which also filters gateway sub-tools. hub_manage_diagnostics is a mixed gateway --
+        // with every write sub-tool (hub_call_gc, hub_call_zwave_repair, hub_delete_captured_state)
+        // hidden, its surviving read sub-tools relabel the gateway to read-only. The gateway
+        // still appears (it keeps reads), proving the aggregation re-derives the label from the
+        // visible sub-tools rather than the static config.
         given:
         settingsMap.remove('useGateways')
-        settingsMap.enableBuiltinApp = false
-        settingsMap.enableCustomRuleEngine = false  // customEngineMode = off
+        settingsMap.enableWrite = false  // Write master OFF -> all write sub-tools hidden
 
         when:
         def tools = script.getToolDefinitions()
@@ -274,8 +268,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         then:
         diag != null
-        diag.annotations.readOnlyHint == false
-        diag.annotations.destructiveHint == true
+        diag.annotations.readOnlyHint == true
+        diag.annotations.containsKey('destructiveHint') == false
     }
 
     def "every name in getReadOnlyToolNames() resolves to a real tool in getAllToolDefinitions()"() {
@@ -298,7 +292,6 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         // surface visible in code review.
         given:
         settingsMap.useGateways = false
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
 
         when:
@@ -411,7 +404,6 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         // per-response budget has headroom. hub_get_info is a flat/base read tool in
         // both modes, so it is the clean probe.
         given:
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
 
         when: 'gateway mode'

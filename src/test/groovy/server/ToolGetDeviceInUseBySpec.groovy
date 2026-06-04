@@ -17,22 +17,19 @@ import support.ToolSpecBase
  */
 class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
-    def "throws when Built-in App Read is disabled"() {
+    def "throws when Read master is disabled"() {
         given:
-        settingsMap.enableBuiltinApp = false
+        settingsMap.enableRead = false
 
-        when:
-        script.toolGetDeviceInUseBy([:])
+        when: 'the central executeTool gate blocks the read tool (tool body no longer self-gates)'
+        script.executeTool('hub_list_device_dependents', [:])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Built-in App')
+        ex.message.contains('Read tools are disabled')
     }
 
     def "throws when deviceId is missing from args"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
         when:
         script.toolGetDeviceInUseBy([:])
 
@@ -42,10 +39,7 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
     }
 
     def "throws Device-not-found before any HTTP call for an unknown deviceId"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
-        and: 'no device registered -- childDevicesList is empty and selectedDevices is empty'
+        given: 'no device registered -- childDevicesList is empty and selectedDevices is empty'
         // Do NOT register the /device/fullJson/ endpoint; if the tool calls HTTP
         // before validation, the HubInternalGetMock will throw loudly and we will
         // see a different failure mode than the expected IllegalArgumentException.
@@ -63,7 +57,6 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
     def "hub_list_device_dependents via dispatch maps device-not-found IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
 
         when:
         def response = mcpDriver.callTool('hub_list_device_dependents', [deviceId: '999'])
@@ -79,10 +72,10 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_device_dependents via dispatch maps Built-in-App-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_list_device_dependents via dispatch maps Read-master-disabled IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = false
+        settingsMap.enableRead = false
 
         when:
         def response = mcpDriver.callTool('hub_list_device_dependents', [:])
@@ -90,17 +83,14 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
         then:
         response.error != null
         response.error.code == -32602
-        response.error.message.contains('Built-in App')
+        response.error.message.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
     }
 
     def "golden path: returns appsUsing list with extraBreadcrumb as deviceName"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
-        and: 'device is in childDevicesList so findDevice succeeds'
+        given: 'device is in childDevicesList so findDevice succeeds'
         def mockDevice = [id: '42', label: 'Kitchen Switch', name: 'Generic Switch']
         childDevicesList << mockDevice
 
@@ -138,7 +128,6 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
     def "hub_list_device_dependents via dispatch returns appsUsing list (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '42', label: 'Kitchen Switch', name: 'Generic Switch']
         childDevicesList << mockDevice
         def responseJson = JsonOutput.toJson([
@@ -173,7 +162,6 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "deviceName falls back to .name when extraBreadcrumb is absent"() {
         given:
-        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '55', label: 'My Device', name: 'Generic Device']
         childDevicesList << mockDevice
 
@@ -195,7 +183,6 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "deviceName falls back to .label when both extraBreadcrumb and name are absent"() {
         given:
-        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '66', label: 'Label Only', name: null]
         childDevicesList << mockDevice
 
@@ -217,7 +204,6 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "non-numeric appsUsingCount falls back to appsUsing.size() and warn log fires"() {
         given:
-        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '77', label: 'My Dev', name: 'Dev']
         childDevicesList << mockDevice
 
@@ -250,7 +236,6 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "returns success=false with empty-response error when hub body is empty"() {
         given:
-        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '88', label: 'Dev', name: 'Dev']
         childDevicesList << mockDevice
         hubGet.register('/device/fullJson/88') { params -> '' }
@@ -267,7 +252,6 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
     def "hub_list_device_dependents via dispatch returns success=false envelope on empty hub body (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '88', label: 'Dev', name: 'Dev']
         childDevicesList << mockDevice
         hubGet.register('/device/fullJson/88') { params -> '' }
@@ -288,7 +272,6 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "cursor pagination over appsUsing returns bounded page + total (#174)"() {
         given: 'a heavily-shared device with 150 apps referencing it'
-        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '10', label: 'Switch', name: 'Switch']
         childDevicesList << mockDevice
         def apps = (0..<150).collect { i -> [id: i + 100, name: 'Rule Machine', label: "Rule ${i}", trueLabel: "Rule ${i}", disabled: false] }
@@ -316,7 +299,6 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "count vs appsUsing.size() mismatch surfaces countMismatch field (firmware truncation signal)"() {
         given:
-        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '11', label: 'Switch', name: 'Switch']
         childDevicesList << mockDevice
         // firmware reports 42 but only 3 entries in the array (truncation case)
@@ -336,7 +318,6 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "appsUsing arriving as a Map is rejected with a clear error instead of producing all-null entries"() {
         given:
-        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '12', label: 'Switch', name: 'Switch']
         childDevicesList << mockDevice
         // firmware shape drift -- appsUsing as a Map would silently produce all-null entries
@@ -353,7 +334,6 @@ class ToolGetDeviceInUseBySpec extends ToolSpecBase {
 
     def "gateway dispatch via handleGateway routes correctly"() {
         given:
-        settingsMap.enableBuiltinApp = true
         def mockDevice = [id: '10', label: 'Switch', name: 'Switch']
         childDevicesList << mockDevice
 

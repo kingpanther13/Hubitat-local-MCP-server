@@ -27,39 +27,36 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         rmUtils?.uninstall()
     }
 
-    def "throws when Built-in App Read is disabled"() {
+    def "throws when Write master is disabled"() {
         given:
-        settingsMap.enableBuiltinApp = false
+        settingsMap.enableWrite = false
 
-        when:
-        script.toolSetRmRuleBoolean([ruleId: 1, value: true])
+        when: 'the central executeTool gate blocks the write tool (tool body no longer self-gates)'
+        script.executeTool('hub_set_rule_private_boolean', [ruleId: 1, value: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Built-in App')
+        ex.message.contains('Write tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_set_rule_private_boolean via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
+    def "hub_set_rule_private_boolean via dispatch returns -32602 envelope when Write master is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = false
+        settingsMap.enableWrite = false
 
         when:
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 1, value: true])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Built-in App')
+        response.error.message.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
     }
 
     def "throws when ruleId is missing"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
         when:
         script.toolSetRmRuleBoolean([value: true])
 
@@ -72,7 +69,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     def "hub_set_rule_private_boolean via dispatch returns -32602 envelope when ruleId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
 
         when:
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [value: true])
@@ -86,9 +82,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     def "throws when value is missing"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
         when:
         script.toolSetRmRuleBoolean([ruleId: 1])
 
@@ -101,7 +94,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     def "hub_set_rule_private_boolean via dispatch returns -32602 envelope when value is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
 
         when:
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 1])
@@ -115,9 +107,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     def "Boolean true dispatches setRuleBooleanTrue"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
         when:
         def result = script.toolSetRmRuleBoolean([ruleId: 800, value: true])
 
@@ -130,7 +119,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     def "hub_set_rule_private_boolean via dispatch Boolean true dispatches setRuleBooleanTrue (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
 
         when:
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 800, value: true])
@@ -147,9 +135,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     def "Boolean false dispatches setRuleBooleanFalse"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
         when:
         def result = script.toolSetRmRuleBoolean([ruleId: 801, value: false])
 
@@ -162,7 +147,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     def "hub_set_rule_private_boolean via dispatch Boolean false dispatches setRuleBooleanFalse (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
 
         when:
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 801, value: false])
@@ -179,9 +163,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     def "String 'true' is accepted and dispatches setRuleBooleanTrue"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
         when:
         def result = script.toolSetRmRuleBoolean([ruleId: 802, value: 'true'])
 
@@ -194,7 +175,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     def "hub_set_rule_private_boolean via dispatch String 'true' is accepted and dispatches setRuleBooleanTrue (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
 
         when:
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 802, value: 'true'])
@@ -211,9 +191,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     def "String 'false' is accepted and dispatches setRuleBooleanFalse"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
         when:
         def result = script.toolSetRmRuleBoolean([ruleId: 803, value: 'false'])
 
@@ -226,7 +203,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     def "hub_set_rule_private_boolean via dispatch String 'false' is accepted and dispatches setRuleBooleanFalse (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
 
         when:
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 803, value: 'false'])
@@ -243,9 +219,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     def "reject matrix: capitalized and uppercase boolean strings are rejected"(Object value) {
-        given:
-        settingsMap.enableBuiltinApp = true
-
         when:
         script.toolSetRmRuleBoolean([ruleId: 999, value: value])
 
@@ -261,7 +234,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     def "hub_set_rule_private_boolean via dispatch rejects capitalized boolean string '#value' with -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
 
         when:
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 999, value: value])
@@ -283,9 +255,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     def "reject matrix: truthy-looking non-boolean strings are rejected"(Object value) {
-        given:
-        settingsMap.enableBuiltinApp = true
-
         when:
         script.toolSetRmRuleBoolean([ruleId: 999, value: value])
 
@@ -301,7 +270,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     def "hub_set_rule_private_boolean via dispatch rejects truthy-looking string '#value' with -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
 
         when:
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 999, value: value])
@@ -323,9 +291,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     def "reject matrix: integer values are rejected"(Object value) {
-        given:
-        settingsMap.enableBuiltinApp = true
-
         when:
         script.toolSetRmRuleBoolean([ruleId: 999, value: value])
 
@@ -341,7 +306,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     def "hub_set_rule_private_boolean via dispatch rejects integer value #value with -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
 
         when:
         def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: 999, value: value])
@@ -359,9 +323,6 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
     }
 
     def "gateway dispatch via handleGateway routes to hub_set_rule_private_boolean"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
         when:
         def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_rule_private_boolean', [ruleId: 900, value: true])
 

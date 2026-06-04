@@ -11,7 +11,7 @@
 #
 # Preconditions (enforced hub-side by hub_update_app):
 #   - Developer Mode ON (self-update guard)
-#   - enableHubAdminWrite ON
+#   - enableWrite ON (default)
 #   - Hub backup <24h (best-effort hub_create_backup attempted here;
 #     gateway timeouts tolerated -- the gate is timestamp-cached and
 #     CI runs keep the window populated)
@@ -82,7 +82,10 @@ mcp_call "$BACKUP_RPC" >/dev/null || \
   echo "::warning::hub_create_backup call failed/timed out; relying on cached <24h backup timestamp"
 
 echo "Looking up Apps Code class ID for $APP_NAMESPACE:$APP_NAME via hub_list_apps..."
-LIST_RPC='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{}}}'
+# scope='types' returns the Apps Code CLASSES (/hub2/userAppTypes: {id, name, namespace}).
+# Without it, hub_list_apps defaults to scope='instances' (running app instances, which
+# carry no `namespace`), so the (namespace,name) match below never hits the code class.
+LIST_RPC='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}'
 LIST_RESP=$(mcp_call "$LIST_RPC")
 LIST_TEXT=$(echo "$LIST_RESP" | jq -r '.result.content[0].text // empty')
 if [ -z "$LIST_TEXT" ]; then
@@ -118,7 +121,7 @@ while :; do
     --arg id "$CLASS_ID" \
     --argjson off "$OFFSET" \
     --argjson len "$CHUNK_LEN" \
-    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{appId:$id,offset:$off,length:$len}}}')
+    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:$off,length:$len}}}')
   RESP=$(mcp_call "$RPC")
   TEXT=$(echo "$RESP" | jq -r '.result.content[0].text // empty')
   if [ -z "$TEXT" ]; then
@@ -192,7 +195,7 @@ verify_deploy_landed() {
   local rpc resp text current_len ok
   while [ $elapsed -lt $POST_DEPLOY_VERIFY_TIMEOUT ]; do
     rpc=$(jq -nc --arg id "$CLASS_ID" \
-      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{appId:$id,offset:0,length:1}}}')
+      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:1}}}')
     resp=$(mcp_call "$rpc")
     text=$(echo "$resp" | jq -r '.result.content[0].text // empty')
     ok=$(echo "$text" | jq -r '.success // false')

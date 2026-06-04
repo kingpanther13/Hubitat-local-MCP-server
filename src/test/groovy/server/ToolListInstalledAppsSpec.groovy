@@ -22,16 +22,16 @@ import support.ToolSpecBase
  */
 class ToolListInstalledAppsSpec extends ToolSpecBase {
 
-    def "throws when Built-in App Read is disabled"() {
+    def "throws when Read master is disabled"() {
         given:
-        settingsMap.enableBuiltinApp = false
+        settingsMap.enableRead = false
 
-        when:
-        script.toolListInstalledApps([:])
+        when: 'the central executeTool gate blocks the read tool (tool body no longer self-gates)'
+        script.executeTool('hub_list_apps', [scope: 'instances'])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Built-in App')
+        ex.message.contains('Read tools are disabled')
     }
 
     def "list_apps name cleaning strips HTML tags AND decodes entities (BUG-12 re-test gap)"() {
@@ -43,27 +43,24 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_apps scope=instances via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
+    def "hub_list_apps scope=instances via dispatch returns -32602 envelope when Read master is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = false
+        settingsMap.enableRead = false
 
         when:
         def response = mcpDriver.callTool('hub_list_apps', [scope: 'instances'])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Built-in App')
+        response.error.message.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
     }
 
     def "golden path: 2-level tree flattens with parentId wiring"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
-        and: 'hub returns a parent with 2 children'
+        given: 'hub returns a parent with 2 children'
         def treeJson = JsonOutput.toJson([
             apps: [
                 [
@@ -104,7 +101,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     def "hub_list_apps scope=instances via dispatch flattens 2-level tree with parentId wiring (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         def treeJson = JsonOutput.toJson([
             apps: [
                 [
@@ -141,8 +137,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "filter=builtin returns only non-user apps"() {
         given:
-        settingsMap.enableBuiltinApp = true
-
         def treeJson = JsonOutput.toJson([
             apps: [
                 [data: [id: 1, name: 'Builtin App', type: 'Builtin', user: false, disabled: false, hidden: false], children: []],
@@ -163,7 +157,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     def "hub_list_apps scope=instances via dispatch filter=builtin returns only non-user apps (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         def treeJson = JsonOutput.toJson([
             apps: [
                 [data: [id: 1, name: 'Builtin App', type: 'Builtin', user: false, disabled: false, hidden: false], children: []],
@@ -188,8 +181,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "filter=user returns only user apps"() {
         given:
-        settingsMap.enableBuiltinApp = true
-
         def treeJson = JsonOutput.toJson([
             apps: [
                 [data: [id: 1, name: 'Builtin App', type: 'Builtin', user: false, disabled: false, hidden: false], children: []],
@@ -210,7 +201,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     def "hub_list_apps scope=instances via dispatch filter=user returns only user apps (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         def treeJson = JsonOutput.toJson([
             apps: [
                 [data: [id: 1, name: 'Builtin App', type: 'Builtin', user: false, disabled: false, hidden: false], children: []],
@@ -235,8 +225,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "filter=disabled returns only disabled apps"() {
         given:
-        settingsMap.enableBuiltinApp = true
-
         def treeJson = JsonOutput.toJson([
             apps: [
                 [data: [id: 1, name: 'Active App', type: 'X', user: false, disabled: false, hidden: false], children: []],
@@ -257,7 +245,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     def "hub_list_apps scope=instances via dispatch filter=disabled returns only disabled apps (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         def treeJson = JsonOutput.toJson([
             apps: [
                 [data: [id: 1, name: 'Active App', type: 'X', user: false, disabled: false, hidden: false], children: []],
@@ -282,8 +269,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "filter=parents returns only apps with children"() {
         given:
-        settingsMap.enableBuiltinApp = true
-
         def treeJson = JsonOutput.toJson([
             apps: [
                 [
@@ -308,7 +293,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     def "hub_list_apps scope=instances via dispatch filter=parents returns only apps with children (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         def treeJson = JsonOutput.toJson([
             apps: [
                 [
@@ -337,8 +321,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "filter=children returns only apps with a non-null parentId"() {
         given:
-        settingsMap.enableBuiltinApp = true
-
         def treeJson = JsonOutput.toJson([
             apps: [
                 [
@@ -363,7 +345,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     def "hub_list_apps scope=instances via dispatch filter=children returns only apps with parentId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         def treeJson = JsonOutput.toJson([
             apps: [
                 [
@@ -391,10 +372,7 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     }
 
     def "hidden parent excluded by default and child is promoted to root (parentId=null)"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
-        and: 'hidden parent with one visible child'
+        given: 'hidden parent with one visible child'
         def treeJson = JsonOutput.toJson([
             apps: [
                 [
@@ -423,7 +401,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     def "hub_list_apps scope=instances via dispatch excludes hidden parent and promotes child to root (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         def treeJson = JsonOutput.toJson([
             apps: [
                 [
@@ -454,7 +431,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "hidden parent in the middle of a three-level tree: grandchildren promote to nearest visible ancestor"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             // grandparent (visible, id=1)
             //   -> parent (hidden, id=2)
@@ -484,7 +460,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     def "hub_list_apps scope=instances via dispatch promotes grandchildren past hidden middle ancestor (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             JsonOutput.toJson([apps: [[
                 data: [id: 1, name: 'GrandParent', type: 'Group', disabled: false, user: false, hidden: false],
@@ -515,8 +490,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "includeHidden=true includes hidden parent and wires child parentId to it"() {
         given:
-        settingsMap.enableBuiltinApp = true
-
         def treeJson = JsonOutput.toJson([
             apps: [
                 [
@@ -544,7 +517,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     def "hub_list_apps scope=instances via dispatch includeHidden=true includes hidden parent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         def treeJson = JsonOutput.toJson([
             apps: [
                 [
@@ -573,7 +545,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "throws IllegalArgumentException for an invalid filter value"() {
         given:
-        settingsMap.enableBuiltinApp = true
         // Hub endpoint must be registered even though it won't be reached;
         // the validation throws before the HTTP call.
 
@@ -589,7 +560,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     def "hub_list_apps scope=instances via dispatch returns -32602 envelope for invalid filter (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
 
         when:
         def response = mcpDriver.callTool('hub_list_apps', [scope: 'instances', filter: 'bogus'])
@@ -604,7 +574,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "returns success=false with empty-response error when hub body is empty"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params -> '' }
 
         when:
@@ -619,7 +588,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     def "hub_list_apps scope=instances via dispatch returns success=false envelope when hub body is empty (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params -> '' }
 
         when:
@@ -638,7 +606,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "returns success=false with parse error when hub body is non-JSON"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params -> 'not json at all' }
 
         when:
@@ -653,7 +620,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
     def "hub_list_apps scope=instances via dispatch returns success=false envelope when hub body is non-JSON (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params -> 'not json at all' }
 
         when:
@@ -675,7 +641,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         // pre-#174 callers see no change. The universal size guard is the only
         // safety net active in this mode.
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params ->
             JsonOutput.toJson([apps: (0..<10).collect {
                 [data: [id: it, name: "App-${it}", type: 'X', user: false, disabled: false, hidden: false], children: []]
@@ -694,7 +659,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "cursor='' starts at page 1 of 50 and emits nextCursor when more pages remain (#174)"() {
         given:
-        settingsMap.enableBuiltinApp = true
         // 120 apps -> 3 pages of 50 (50 + 50 + 20)
         hubGet.register('/hub2/appsList') { params ->
             JsonOutput.toJson([apps: (0..<120).collect {
@@ -716,7 +680,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "iterating cursor across pages returns each app exactly once and the last page omits nextCursor"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params ->
             JsonOutput.toJson([apps: (0..<120).collect {
                 [data: [id: it, name: "App-${it}", type: 'X', user: false, disabled: false, hidden: false], children: []]
@@ -749,7 +712,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "cursor='not-a-number' throws IllegalArgumentException so dispatch surfaces -32602"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params ->
             JsonOutput.toJson([apps: [[data: [id: 1, name: 'App', type: 'X', user: false, disabled: false, hidden: false], children: []]]])
         }
@@ -765,7 +727,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "negative cursor is rejected as out of range (matches PR #180 contract)"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params ->
             JsonOutput.toJson([apps: [[data: [id: 1, name: 'App', type: 'X', user: false, disabled: false, hidden: false], children: []]]])
         }
@@ -780,7 +741,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "cursor past the end of a non-empty list is rejected as out of range"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params ->
             JsonOutput.toJson([apps: (0..<5).collect {
                 [data: [id: it, name: "App-${it}", type: 'X', user: false, disabled: false, hidden: false], children: []]
@@ -799,7 +759,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         // Regression guard: a too-loose empty-list check would let cursor>0 through, then
         // subList(N, 0) would throw IndexOutOfBoundsException with a gibberish message.
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: []]) }
 
         when:
@@ -817,7 +776,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         // "fromIndex(1) > toIndex(0)" -- which surfaces to the LLM as "Invalid params:
         // fromIndex(1) > toIndex(0)" with no clue the real cause was a stale cursor.
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: []]) }
 
         when:
@@ -833,7 +791,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "cursor pagination respects filter (paginates the filtered set, not the raw catalog)"() {
         given:
-        settingsMap.enableBuiltinApp = true
         // 60 builtin + 60 user apps -> filter=user should paginate 60 apps (not 120)
         hubGet.register('/hub2/appsList') { params ->
             JsonOutput.toJson([apps:
@@ -865,7 +822,6 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
     def "gateway dispatch via handleGateway also returns apps list"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { params ->
             JsonOutput.toJson([apps: []])
         }

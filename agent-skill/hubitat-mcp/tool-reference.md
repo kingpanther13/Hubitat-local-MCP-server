@@ -298,4 +298,4 @@ Developer Mode self-administration: tools that let an LLM agent or CI/CD pipelin
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `hub_update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Allowlisted: `mcpLogLevel`, `debugLogging`, `maxCapturedStates`, `loopGuardMax`, `loopGuardWindowSec`, `enableHubAdminRead`, `enableBuiltinApp`, `enableCustomRuleEngine`, `useGateways`. After flipping any `enable*` toggle or `useGateways`, MCP clients may need to reconnect to refresh their cached tool schema. | Developer Mode + Hub Admin Write + recent backup |
+| `hub_update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Allowlisted: `mcpLogLevel`, `debugLogging`, `maxCapturedStates`, `loopGuardMax`, `loopGuardWindowSec`, `enableRead`, `enableCustomRuleEngine`, `useGateways`. After flipping any `enable*` toggle or `useGateways`, MCP clients may need to reconnect to refresh their cached tool schema. | Developer Mode + Write master + confirm + recent backup |

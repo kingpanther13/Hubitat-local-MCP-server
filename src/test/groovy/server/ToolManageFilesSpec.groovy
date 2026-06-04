@@ -8,25 +8,26 @@ import support.ToolSpecBase
  *
  * - toolListFiles  -> hub_list_files
  * - toolReadFile   -> hub_read_file
- * - toolWriteFile  -> hub_write_file   (Hub Admin Write + confirm)
- * - toolDeleteFile -> hub_delete_file  (Hub Admin Write + confirm)
+ * - toolWriteFile  -> hub_write_file   (Write master + confirm + 24h backup)
+ * - toolDeleteFile -> hub_delete_file  (Write master + confirm + 24h backup)
  *
  * Mocking strategy (see docs/testing.md):
  *   - hubInternalGet                        -> HarnessSpec's hubGet.register(path)
  *   - downloadHubFile / uploadHubFile /
  *     deleteHubFile                         -> stubbed per-test on script.metaClass
  *
- * hub_write_file + hub_delete_file are gated by requireHubAdminWrite(args.confirm), which
- * requires enableHubAdminWrite=true, confirm=true, AND a lastBackupTimestamp
- * within 24h — see ToolDestructiveHubOpsSpec for the same gate's dedicated tests
- * on hub_reboot / hub_shutdown / hub_delete_device. The Hub-Admin-Write safety gate
- * tests here are explicit rather than shared so each tool's gate regression is
- * discoverable from its own spec.
+ * hub_write_file + hub_delete_file are gated centrally by the Write master at the
+ * executeTool chokepoint (enableWrite, default ON; only an explicit ==false blocks),
+ * then call requireDestructiveConfirm(args.confirm) which requires confirm=true AND a
+ * lastBackupTimestamp within 24h — see ToolDestructiveHubOpsSpec for the same
+ * confirm+backup gate's dedicated tests on hub_reboot / hub_shutdown / hub_delete_device.
+ * The Write-master gate tests here are explicit rather than shared so each tool's gate
+ * regression is discoverable from its own spec.
  */
 class ToolManageFilesSpec extends ToolSpecBase {
 
-    private void enableHubAdminWrite() {
-        settingsMap.enableHubAdminWrite = true
+    private void enableWrite() {
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches HarnessSpec's fixed now()
     }
 
@@ -261,11 +262,11 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.suggestion.contains('File Manager')
     }
 
-    // -------- toolWriteFile (DESTRUCTIVE: confirm + Hub Admin Write gate) --------
+    // -------- toolWriteFile (DESTRUCTIVE: Write master + confirm + 24h backup) --------
 
     def "hub_write_file throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolWriteFile([fileName: 'x.txt', content: 'hi'])
@@ -276,18 +277,21 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('confirm=true')
     }
 
-    def "hub_write_file throws when Hub Admin Write is disabled"() {
+    def "hub_write_file throws when the Write master is disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolWriteFile([fileName: 'x.txt', content: 'hi', confirm: true])
+        script.executeTool('hub_write_file', [fileName: 'x.txt', content: 'hi', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     def "hub_write_file throws when no recent backup exists"() {
         given:
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         // stateMap.lastBackupTimestamp is unset
 
         when:
@@ -300,7 +304,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     def "hub_write_file throws when fileName is missing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolWriteFile([content: 'hi', confirm: true])
@@ -312,7 +316,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     def "hub_write_file throws when content is missing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolWriteFile([fileName: 'x.txt', confirm: true])
@@ -324,7 +328,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     def "hub_write_file rejects invalid file names"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolWriteFile([fileName: badName, content: 'ok', confirm: true])
@@ -346,7 +350,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     def "hub_write_file creates a new file when none exists"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def uploads = []
         script.metaClass.downloadHubFile = { String name -> null }  // no existing file
         script.metaClass.uploadHubFile = { String name, byte[] content ->
@@ -371,7 +375,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     def "hub_write_file via dispatch creates a new file (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def uploads = []
         script.metaClass.downloadHubFile = { String name -> null }
         script.metaClass.uploadHubFile = { String name, byte[] content ->
@@ -402,7 +406,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     def "hub_write_file via dispatch maps confirm-missing IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_write_file', [fileName: 'x.txt', content: 'hi'])
@@ -419,7 +423,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     def "hub_write_file backs up an existing file before overwriting"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def uploads = []
         script.metaClass.downloadHubFile = { String name ->
             name == 'notes.txt' ? 'old content'.getBytes('UTF-8') : null
@@ -454,7 +458,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         // DOES exist would cause the overwrite to silently skip the backup —
         // worth future design review, but pinning current behaviour here.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def uploads = []
         script.metaClass.downloadHubFile = { String name ->
             throw new RuntimeException('File Manager API transient error')
@@ -475,7 +479,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     def "hub_write_file reports failure without throwing when uploadHubFile errors"() {
         given: 'no existing file — so the only upload attempt is the new-file write itself'
-        enableHubAdminWrite()
+        enableWrite()
         def uploadCalls = []
         script.metaClass.downloadHubFile = { String name -> null }
         script.metaClass.uploadHubFile = { String name, byte[] content ->
@@ -492,11 +496,11 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.error.contains('hub storage full')
     }
 
-    // -------- toolDeleteFile (DESTRUCTIVE: confirm + Hub Admin Write gate) --------
+    // -------- toolDeleteFile (DESTRUCTIVE: Write master + confirm + 24h backup) --------
 
     def "hub_delete_file throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolDeleteFile([fileName: 'x.txt'])
@@ -507,18 +511,21 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('confirm=true')
     }
 
-    def "hub_delete_file throws when Hub Admin Write is disabled"() {
+    def "hub_delete_file throws when the Write master is disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolDeleteFile([fileName: 'x.txt', confirm: true])
+        script.executeTool('hub_delete_file', [fileName: 'x.txt', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     def "hub_delete_file throws when fileName is missing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolDeleteFile([confirm: true])
@@ -530,7 +537,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     def "hub_delete_file backs up then deletes a normal file"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def uploads = []
         def deleted = []
         script.metaClass.downloadHubFile = { String name ->
@@ -564,7 +571,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     def "hub_delete_file via dispatch backs up then deletes (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def uploads = []
         def deleted = []
         script.metaClass.downloadHubFile = { String name ->
@@ -592,9 +599,10 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_delete_file via dispatch maps Hub-Admin-Write-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_delete_file via dispatch maps Write-master-disabled IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = false
 
         when:
         def response = mcpDriver.callTool('hub_delete_file', [fileName: 'x.txt', confirm: true])
@@ -602,7 +610,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         then:
         response.error != null
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Write')
+        response.error.message.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -610,7 +618,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     def "hub_delete_file skips auto-backup on files that are already backups (#fileName)"() {
         given: 'isBackupFile trips on any of three markers (source ~line 4555): _backup_ substring, mcp-backup- prefix, mcp-prerestore- prefix'
-        enableHubAdminWrite()
+        enableWrite()
         def uploads = []
         def deleted = []
         script.metaClass.downloadHubFile = { String name -> 'ignored'.getBytes('UTF-8') }
@@ -636,7 +644,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
     def "hub_delete_file reports failure without throwing when deleteHubFile errors"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String name -> 'bytes'.getBytes('UTF-8') }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.deleteHubFile = { String name ->

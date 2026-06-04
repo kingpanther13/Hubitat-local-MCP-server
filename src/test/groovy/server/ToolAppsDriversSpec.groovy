@@ -11,9 +11,10 @@ import support.ToolSpecBase
  * - toolListItemBackups   -> hub_list_backups  (reads state only — no gating)
  * - toolGetItemBackup     -> hub_get_backup    (reads state + downloadHubFile)
  *
- * All source/listing tools go through requireHubAdminRead — tests that exercise
- * the happy path seed settingsMap.enableHubAdminRead = true. Backup tools are
- * not gated.
+ * All source/listing tools are gated centrally on the Read master in executeTool —
+ * tests that exercise the happy path seed settingsMap.enableRead = true. The
+ * OFF-state tests drive the central gate via script.executeTool(...). Backup tools
+ * are not gated.
  *
  * Mocking strategy (see docs/testing.md):
  *   - hubInternalGet   — routed by HarnessSpec via hubGet.register(path) closures.
@@ -29,32 +30,36 @@ import support.ToolSpecBase
  */
 class ToolAppsDriversSpec extends ToolSpecBase {
 
-    private void enableHubAdminRead() {
-        settingsMap.enableHubAdminRead = true
+    private void enableRead() {
+        settingsMap.enableRead = true
     }
 
     // -------- toolListHubApps --------
 
-    def "hub_list_apps throws when Hub Admin Read is disabled"() {
+    def "hub_list_apps throws when Read tools are disabled"() {
+        given:
+        settingsMap.enableRead = false
+
         when:
-        script.toolListHubApps([:])
+        script.executeTool('hub_list_apps', [scope: 'types'])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Read')
+        ex.message.contains('Read tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_list_apps via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
+    def "hub_list_apps via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableRead = false
 
         when:
         def response = mcpDriver.callTool('hub_list_apps', [scope: 'types'])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Read')
+        response.error.message.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -62,7 +67,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_list_apps returns parsed apps from the hub API"() {
         given:
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/hub2/userAppTypes') { params ->
             '[{"id": 1, "name": "App One"}, {"id": 2, "name": "App Two"}]'
         }
@@ -80,7 +85,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_list_apps via dispatch returns parsed apps from the hub API (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/hub2/userAppTypes') { params ->
             '[{"id": 1, "name": "App One"}, {"id": 2, "name": "App Two"}]'
         }
@@ -102,7 +107,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_list_apps returns raw response when hub returns non-JSON"() {
         given:
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/hub2/userAppTypes') { params -> '<html>not json</html>' }
 
         when:
@@ -118,7 +123,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_list_apps via dispatch returns raw response envelope when hub returns non-JSON (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/hub2/userAppTypes') { params -> '<html>not json</html>' }
 
         when:
@@ -138,7 +143,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_list_apps falls back to MCP child apps when hub API throws"() {
         given: 'hub API unavailable'
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/hub2/userAppTypes') { params ->
             throw new RuntimeException('endpoint not available')
         }
@@ -156,7 +161,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_list_apps via dispatch falls back to MCP child apps envelope when hub API throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/hub2/userAppTypes') { params ->
             throw new RuntimeException('endpoint not available')
         }
@@ -178,26 +183,30 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     // -------- toolListHubDrivers --------
 
-    def "hub_list_drivers throws when Hub Admin Read is disabled"() {
+    def "hub_list_drivers throws when Read tools are disabled"() {
+        given:
+        settingsMap.enableRead = false
+
         when:
-        script.toolListHubDrivers([:])
+        script.executeTool('hub_list_drivers', [:])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Read')
+        ex.message.contains('Read tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_list_drivers via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
+    def "hub_list_drivers via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableRead = false
 
         when:
         def response = mcpDriver.callTool('hub_list_drivers', [:])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Read')
+        response.error.message.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -205,7 +214,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_list_drivers returns parsed drivers from the hub API"() {
         given:
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/hub2/userDeviceTypes') { params ->
             '[{"id": 10, "name": "Generic Z-Wave Switch"}]'
         }
@@ -223,7 +232,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_list_drivers via dispatch returns parsed drivers from the hub API (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/hub2/userDeviceTypes') { params ->
             '[{"id": 10, "name": "Generic Z-Wave Switch"}]'
         }
@@ -245,7 +254,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_list_drivers reports unavailable when the hub API throws"() {
         given:
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/hub2/userDeviceTypes') { params ->
             throw new RuntimeException('Connection refused')
         }
@@ -264,7 +273,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_list_drivers via dispatch reports unavailable envelope when hub API throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/hub2/userDeviceTypes') { params ->
             throw new RuntimeException('Connection refused')
         }
@@ -287,26 +296,30 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     // -------- toolGetSource (app / driver) --------
 
-    def "hub_get_source app throws when Hub Admin Read is disabled"() {
+    def "hub_get_source app throws when Read tools are disabled"() {
+        given:
+        settingsMap.enableRead = false
+
         when:
-        script.toolGetSource([type: 'app', id: '1'])
+        script.executeTool('hub_get_source', [type: 'app', id: '1'])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Read')
+        ex.message.contains('Read tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_get_source app via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
+    def "hub_get_source app via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableRead = false
 
         when:
         def response = mcpDriver.callTool('hub_get_source', [type: 'app', id: '1'])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Read')
+        response.error.message.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -314,7 +327,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_get_source app throws when id is missing"() {
         given:
-        enableHubAdminRead()
+        enableRead()
 
         when:
         script.toolGetSource([type: 'app'])
@@ -328,7 +341,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_get_source app via dispatch rejects missing id (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
 
         when:
         // type present, id omitted: toolGetSource resolves id from args.appId (null) and
@@ -346,7 +359,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_get_source app returns the full source for a small app in a single chunk"() {
         given:
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/app/ajax/code') { params ->
             params.id == '123'
                 ? '{"status": "ok", "version": 7, "source": "definition(name: \\"Hello\\")"}'
@@ -370,7 +383,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_get_source app via dispatch returns full source for a small app in a single chunk (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/app/ajax/code') { params ->
             params.id == '123'
                 ? '{"status": "ok", "version": 7, "source": "definition(name: \\"Hello\\")"}'
@@ -398,7 +411,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_get_source app reports hub-side error when the ajax endpoint returns status=error"() {
         given:
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "error", "errorMessage": "No such app"}'
         }
@@ -415,7 +428,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_get_source app via dispatch reports hub-side error envelope when ajax endpoint returns status=error (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "error", "errorMessage": "No such app"}'
         }
@@ -436,7 +449,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_get_source app chunks large sources and saves a File Manager copy"() {
         given:
-        enableHubAdminRead()
+        enableRead()
         def bigSource = 'x' * 70000  // exceeds the 64000-byte chunk threshold
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 3, "source": "' + bigSource + '"}'
@@ -470,7 +483,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_get_source app via dispatch chunks large sources and saves File Manager copy (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         def bigSource = 'x' * 70000
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 3, "source": "' + bigSource + '"}'
@@ -505,7 +518,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_get_source driver delegates to the same implementation with id"() {
         given:
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/driver/ajax/code') { params ->
             params.id == '88'
                 ? '{"status": "ok", "version": 1, "source": "metadata { }"}'
@@ -525,7 +538,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_get_source driver via dispatch delegates with id (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/driver/ajax/code') { params ->
             params.id == '88'
                 ? '{"status": "ok", "version": 1, "source": "metadata { }"}'
@@ -549,7 +562,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
 
     def "hub_get_source driver throws when id is missing"() {
         given:
-        enableHubAdminRead()
+        enableRead()
 
         when:
         script.toolGetSource([type: 'driver'])
@@ -563,7 +576,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
     def "hub_get_source driver via dispatch rejects missing id (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
 
         when:
         // type present, id omitted: toolGetSource resolves id from args.driverId (null) and

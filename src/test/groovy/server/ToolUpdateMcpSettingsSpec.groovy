@@ -9,10 +9,11 @@ import support.ToolSpecBase
  *
  * - toolUpdateMcpSettings -> hub_update_mcp_settings
  *
- * Four validation gates fire before any app.updateSetting() call (all-or-nothing):
+ * Validation gates fire before any app.updateSetting() call (all-or-nothing):
  *   1. settings.enableDeveloperMode must be true                  -> IllegalArgumentException
- *   2. requireHubAdminWrite(args.confirm) — 3 sub-checks          -> IllegalArgumentException
- *      (settings.enableHubAdminWrite, args.confirm, 24h backup)
+ *   2. requireDestructiveConfirm(args.confirm) — 2 sub-checks     -> IllegalArgumentException
+ *      (args.confirm, 24h backup). The universal Write master is enforced
+ *      centrally in executeTool, not inside this tool.
  *   3. settings map must be a non-empty Map                       -> IllegalArgumentException
  *   4. each setting key must be in the v1 allowlist               -> IllegalArgumentException
  *   5. per-key sub-validation (e.g. mcpLogLevel ∈ getLogLevels()) -> IllegalArgumentException
@@ -46,7 +47,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
     private void enableDeveloperModeAndAdminWrite() {
         settingsMap.enableDeveloperMode = true
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches HarnessSpec's fixed now()
     }
 
@@ -54,7 +55,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
     def "throws IllegalArgumentException when enableDeveloperMode is off (routes through -32602, not generic ERROR catch)"() {
         given: 'Hub Admin Write is enabled but Developer Mode is not'
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
 
         when:
@@ -69,7 +70,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         sharedAppStub.settingsStore.isEmpty()
     }
 
-    // -------- Gate: requireHubAdminWrite --------
+    // -------- Gate: requireDestructiveConfirm (confirm + 24h backup) --------
 
     def "throws when confirm is not provided"() {
         given:
@@ -86,7 +87,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     def "throws when no recent backup exists (24h gate)"() {
         given:
         settingsMap.enableDeveloperMode = true
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         // No stateMap.lastBackupTimestamp seeded
 
         when:
@@ -97,10 +98,12 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         sharedAppStub.settingsStore.isEmpty()
     }
 
-    def "throws when enableHubAdminWrite setting is off"() {
+    def "throws when no recent backup exists (requireDestructiveConfirm)"() {
         given:
         settingsMap.enableDeveloperMode = true
-        // No enableHubAdminWrite seed
+        // confirm=true passes, but no state.lastBackupTimestamp -> the 24h-backup
+        // sub-check of requireDestructiveConfirm refuses (the toggle check is gone --
+        // the universal Write master is enforced centrally in executeTool).
 
         when:
         script.toolUpdateMcpSettings([settings: [debugLogging: true], confirm: true])
@@ -155,11 +158,11 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         enableDeveloperModeAndAdminWrite()
 
         when:
-        script.toolUpdateMcpSettings([settings: [enableHubAdminWrite: false], confirm: true])
+        script.toolUpdateMcpSettings([settings: [enableWrite: false], confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("'enableHubAdminWrite'")
+        ex.message.contains("'enableWrite'")
         ex.message.contains('not allowed')
 
         and: 'error lists allowed keys to help the caller correct'
@@ -200,7 +203,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
         when: 'first key is allowed, second is not'
         script.toolUpdateMcpSettings([
-            settings: [debugLogging: true, enableHubAdminWrite: false],
+            settings: [debugLogging: true, enableWrite: false],
             confirm: true
         ])
 
@@ -242,8 +245,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         when:
         def result = script.toolUpdateMcpSettings([
             settings: [
-                enableHubAdminRead: true,
-                enableBuiltinApp: true,
+                enableRead: true,
                 debugLogging: false
             ],
             confirm: true
@@ -251,14 +253,30 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
         then:
         result.success == true
-        result.updated.size() == 3
-        sharedAppStub.settingsStore['enableHubAdminRead'] == [type: 'bool', value: true]
-        sharedAppStub.settingsStore['enableBuiltinApp'] == [type: 'bool', value: true]
+        result.updated.size() == 2
+        sharedAppStub.settingsStore['enableRead'] == [type: 'bool', value: true]
         sharedAppStub.settingsStore['debugLogging'] == [type: 'bool', value: false]
         // Pin the plural form with sentence-period to make singular vs plural
         // discrimination explicit (W-spec-updateMcpSettings).
-        result.message.contains('Updated 3 settings.')
-        !result.message.contains('Updated 3 setting.')
+        result.message.contains('Updated 2 settings.')
+        !result.message.contains('Updated 2 setting.')
+    }
+
+    def "enableWrite is rejected (not allowlisted -- footgun)"() {
+        // enableWrite is deliberately excluded from the self-admin allowlist: a write tool
+        // disabling its own write path mid-session would lock the client out (#113).
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        script.toolUpdateMcpSettings([settings: [enableWrite: false], confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('enableWrite')
+
+        and: 'nothing was written'
+        sharedAppStub.settingsStore.isEmpty()
     }
 
     def "writes a number setting with the correct type hint"() {
@@ -558,7 +576,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     def "hub_update_mcp_settings via dispatch maps developer-mode-off to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
 
         when:
@@ -621,12 +639,12 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
         when:
         def response = mcpDriver.callTool('hub_update_mcp_settings', [
-            settings: [enableHubAdminWrite: false], confirm: true
+            settings: [enableWrite: false], confirm: true
         ])
 
         then:
         response.error?.code == -32602
-        response.error.message.contains("'enableHubAdminWrite'")
+        response.error.message.contains("'enableWrite'")
         response.error.message.contains('not allowed')
         sharedAppStub.settingsStore.isEmpty()
 
@@ -752,7 +770,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         // sandbox lint + the source-line itself.
         given: 'Hub Admin Write enabled but Developer Mode toggle is off'
         settingsMap.useGateways = true  // calling hub_manage_mcp requires gateway mode on
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
 
         def msg = [

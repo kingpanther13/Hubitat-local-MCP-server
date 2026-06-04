@@ -41,7 +41,6 @@ class SendRmActionFallbackSpec extends ToolSpecBase {
         rmUtils.install()
         // toolRunRmRule is the simplest gateway tool that funnels through sendRmAction.
         // All these tests use ruleId=1 with action='rule' (-> rmAction='runRule').
-        settingsMap.enableBuiltinApp = true
     }
 
     def cleanup() {

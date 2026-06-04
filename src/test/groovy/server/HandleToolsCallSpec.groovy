@@ -33,8 +33,8 @@ class HandleToolsCallSpec extends ToolSpecBase {
     }
 
     def "IllegalArgumentException from a tool is mapped to -32602 with wrapping"() {
-        given: 'Hub Admin Read is disabled — requireHubAdminRead() will throw IAE'
-        settingsMap.enableHubAdminRead = false
+        given: 'Read tools are disabled — the central Read master gate will throw IAE'
+        settingsMap.enableRead = false
 
         when:
         def response = mcpDriver.callTool('hub_get_logs', [:])
@@ -44,7 +44,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
         response.id == mcpDriver.lastSentId
         response.error.code == -32602
         response.error.message.startsWith('Invalid params:')
-        response.error.message.contains('Hub Admin Read')
+        response.error.message.contains('Read tools are disabled')
     }
 
     def "generic Exception from a tool returns isError success envelope (MCP spec)"() {
@@ -66,8 +66,8 @@ class HandleToolsCallSpec extends ToolSpecBase {
     }
 
     def "successful tool call returns wrapped content as JSON text"() {
-        given: 'Hub Admin Read enabled + a stubbed /logs/past/json returning empty logs'
-        settingsMap.enableHubAdminRead = true
+        given: 'Read tools enabled + a stubbed /logs/past/json returning empty logs'
+        settingsMap.enableRead = true
         hubGet.register('/logs/past/json') { params ->
             JsonOutput.toJson([])
         }
