@@ -5588,7 +5588,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         dimmer.conditionalRequired.setLevel?.toString()?.contains("level")
         dimmer.conditionalRequired.adjust?.toString()?.contains("adjustBy")
         dimmer.conditionalRequired.fade?.toString()?.contains("targetLevel")
-        dimmer.conditionalRequired.startRaiseLower?.toString()?.contains("direction")
+        // direction is intentionally NOT in conditionalRequired for fade/startRaiseLower:
+        // verified live it defaults to lower and the action bakes without it.
+        dimmer.conditionalRequired.startRaiseLower == null
         dimmer.conditionalRequired.setLevelPerMode?.toString()?.contains("perMode")
 
         and: "the other multi-variant device capabilities also declare their live-verified per-action required fields"
@@ -8314,6 +8316,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "color"     | "setColor"        | [capability: "color", action: "setColor", deviceIds: [8]]           | "colorName"
         "shade"     | "setPosition"     | [capability: "shade", action: "setPosition", deviceIds: [8]]         | "position"
         "fan"       | "setSpeed"        | [capability: "fan", action: "setSpeed", deviceIds: [8]]              | "speed"
+        "thermostat"| "noSetting"       | [capability: "thermostat", deviceIds: [8]]                          | "at least one setting"
+        "delay"     | "noDuration"      | [capability: "delay"]                                               | "requires a duration"
+        "repeat"    | "noInterval"      | [capability: "repeat"]                                              | "requires an interval"
     }
 
     def "addAction returns success=false when selectActions finalConfig has configPage error"() {

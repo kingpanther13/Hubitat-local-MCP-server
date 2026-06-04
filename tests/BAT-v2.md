@@ -528,7 +528,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Calls `hub_get_info` directly (core tool — includes hardware, health, MCP stats; PII gated behind Hub Admin Read).
+**Expected v0.8.0**: Calls `hub_get_info` directly (core tool — includes hardware, health, MCP stats; PII gated behind the Read master).
 
 ### T36 — Discover hub_get_radio_details for Z-Wave (hub_read_diagnostics)
 
@@ -2275,9 +2275,9 @@ These operations are too destructive for automated testing. Test manually with e
 - [ ] Hubitat hub accessible on local network
 - [ ] MCP server installed and configured
 - [ ] OAuth endpoint URL and token available
-- [ ] Hub Admin Read **enabled** (for T35-T55, T83, T116)
-- [ ] Hub Admin Write **enabled** (for virtual device/room create/delete tests)
-- [ ] A recent hub backup exists (for Hub Admin Write operations)
+- [ ] the Read master **enabled** (for T35-T55, T83, T116)
+- [ ] the Write master **enabled** (for virtual device/room create/delete tests)
+- [ ] A recent hub backup exists (for the Write master operations)
 - [ ] AI client connected (Claude Code, Claude Desktop, claude.ai, or other)
 
 ### Running Tests
@@ -2342,13 +2342,13 @@ Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests 
 
 ## Section 11: Built-in App Integration Tests
 
-Tools in this section have mixed gate requirements. `hub_list_apps` (scope=instances) and `hub_list_device_dependents` require the `Enable Built-in App Tools` toggle (`requireBuiltinApp`). `hub_get_app_config` and `hub_list_app_pages` require Hub Admin Read (`requireHubAdminRead`). `hub_manage_native_rules_and_apps` tools require `Enable Built-in App Tools`; CRUD tools additionally require Hub Admin Write. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
+Tools in this section have mixed gate requirements. `hub_list_apps` (scope=instances) and `hub_list_device_dependents` require the Read master. `hub_get_app_config` and `hub_list_app_pages` require the Read master. `hub_manage_native_rules_and_apps` tools require the Read master; CRUD tools additionally require the Write master. Tests assume at least one Rule Machine rule and at least one Room Lighting or other multi-app configuration exists on the hub.
 
 ### Safety Rules for Section 11
 
 - Tests are **read-only or reversibly-trigger** — no create/modify/delete of RM rules or RL instances (platform blocks that anyway)
 - `hub_call_rule`, `hub_set_rule_paused`, `hub_set_rule_private_boolean` tests must target a BAT-created or explicitly user-identified rule, NEVER a random production rule
-- Tests skip entirely if Built-in App Tools is disabled — that's the expected behavior of `requireBuiltinApp()`
+- Tests skip entirely if the Read master is disabled — that's the expected behavior of `the Read master gate()`
 
 ### T200 — List installed apps (default)
 
@@ -2491,22 +2491,22 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 
 **Expected**: Calls `hub_list_apps` with `scope='instances', filter='disabled'`. AI reports the count and names.
 
-### T211 — Built-in App Tools feature flag disabled
+### T211 — Read master disabled (built-in rule reads blocked)
 
 ```json
 {
-  "setup_prompt": "For this test, assume Built-in App Tools is disabled in MCP settings.",
+  "setup_prompt": "For this test, assume the Read master is disabled in MCP settings.",
   "test_prompt": "List my Rule Machine rules."
 }
 ```
 
-**Expected**: `hub_list_rules` returns `IllegalArgumentException: Built-in App Tools are disabled...`. AI reports the feature flag requirement and points user to the MCP app settings page.
+**Expected**: `hub_list_rules` returns `IllegalArgumentException: Read tools are disabled...`. AI reports the Read master requirement and points user to the MCP app settings page.
 
 ### T212 — Read an installed app's config page (hub_get_app_config — hub_read_apps_code gateway)
 
 ```json
 {
-  "setup_prompt": "Hub Admin Read is enabled. Use hub_list_apps (scope=instances) to find any Rule Machine rule and note its app ID.",
+  "setup_prompt": "the Read master is enabled. Use hub_list_apps (scope=instances) to find any Rule Machine rule and note its app ID.",
   "test_prompt": "Show me the configuration of that Rule Machine rule — what conditions and actions does it have?",
   "teardown_prompt": "No teardown needed — hub_get_app_config is read-only."
 }
@@ -2546,22 +2546,22 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 
 **Expected**: `hub_get_app_config` throws `IllegalArgumentException` with a message about numeric appId. AI reports the validation error and asks for a valid numeric ID.
 
-### T216 — hub_get_app_config Hub Admin Read disabled
+### T216 — hub_get_app_config the Read master disabled
 
 ```json
 {
-  "setup_prompt": "For this test, assume Hub Admin Read is disabled in MCP settings.",
+  "setup_prompt": "For this test, assume the Read master is disabled in MCP settings.",
   "test_prompt": "Get the configuration for any Rule Machine rule (any app ID will do)."
 }
 ```
 
-**Expected**: `hub_get_app_config` throws `IllegalArgumentException: Hub Admin Read access is disabled...`. AI reports the gate requirement and directs user to enable it in MCP app settings.
+**Expected**: `hub_get_app_config` throws `IllegalArgumentException: the Read master access is disabled...`. AI reports the gate requirement and directs user to enable it in MCP app settings.
 
 ### T217 — hub_list_app_pages for HPM (discover sub-page names)
 
 ```json
 {
-  "setup_prompt": "Hub Admin Read is enabled. Use hub_list_apps (scope=instances) to find the Hubitat Package Manager app and note its app ID.",
+  "setup_prompt": "the Read master is enabled. Use hub_list_apps (scope=instances) to find the Hubitat Package Manager app and note its app ID.",
   "test_prompt": "I want to inspect HPM's configuration but I don't know the page names. Use hub_list_app_pages to discover what pages are available for the HPM app you just found."
 }
 ```
@@ -2572,7 +2572,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 
 ```json
 {
-  "setup_prompt": "Hub Admin Read is enabled. Use hub_list_rules to find an existing Rule Machine rule and note its app ID.",
+  "setup_prompt": "the Read master is enabled. Use hub_list_rules to find an existing Rule Machine rule and note its app ID.",
   "test_prompt": "What pages are available for the Rule Machine rule you just found?"
 }
 ```
@@ -2583,7 +2583,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 
 ```json
 {
-  "setup_prompt": "Built-in App Tools is enabled. Use hub_list_rules or hub_list_apps (scope=instances) to find an existing Rule Machine rule and note its app ID (not an MCP rule ID).",
+  "setup_prompt": "the Read master is enabled. Use hub_list_rules or hub_list_apps (scope=instances) to find an existing Rule Machine rule and note its app ID (not an MCP rule ID).",
   "test_prompt": "Call hub_get_custom_rule with the Rule Machine app ID you just found and tell me what error message you receive.",
   "teardown_prompt": "No teardown needed."
 }
@@ -2611,7 +2611,7 @@ This scenario validates that an agent landing on the wrong tool is efficiently r
 These tests exercise the Developer Mode self-administration surface — the `hub_manage_mcp` gateway and the `hub_delete_variable` op on `hub_manage_variables`. Both require opt-in toggles in the MCP rule app settings page (`enableDeveloperMode` for `hub_update_mcp_settings`, `enableHubAdminWrite` for both). Each successful Developer Mode write is logged at WARN level for audit.
 
 **Pre-flight (manual one-time):**
-1. In the MCP rule app settings, enable **Enable Hub Admin Write Tools** (with confirmation), and create a hub backup.
+1. In the MCP rule app settings, enable **the Write master** (with confirmation), and create a hub backup.
 2. In the same settings page, enable **Enable Developer Mode Tools** (you'll see a warning banner).
 3. Click Done.
 
@@ -2619,7 +2619,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 ```json
 {
-  "setup_prompt": "First, manually disable 'Enable Developer Mode Tools' in the MCP rule app settings (UI). Confirm Hub Admin Write is still enabled and a recent backup exists.",
+  "setup_prompt": "First, manually disable 'Enable Developer Mode Tools' in the MCP rule app settings (UI). Confirm the Write master is still enabled and a recent backup exists.",
   "test_prompt": "Use hub_update_mcp_settings to change mcpLogLevel to warn."
 }
 ```
@@ -2630,7 +2630,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 ```json
 {
-  "setup_prompt": "Developer Mode is enabled, Hub Admin Write is enabled, recent backup exists. Note the current value of debugLogging via hub_get_info or by reading state.",
+  "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists. Note the current value of debugLogging via hub_get_info or by reading state.",
   "test_prompt": "Use hub_update_mcp_settings to set debugLogging to true. Then verify the change took effect."
 }
 ```
@@ -2641,7 +2641,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 ```json
 {
-  "setup_prompt": "Developer Mode is enabled and Hub Admin Write is enabled.",
+  "setup_prompt": "Developer Mode is enabled and the Write master is enabled.",
   "test_prompt": "Use hub_update_mcp_settings to set enableHubAdminWrite to false."
 }
 ```
@@ -2652,7 +2652,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 ```json
 {
-  "setup_prompt": "Developer Mode is enabled and Hub Admin Write is enabled.",
+  "setup_prompt": "Developer Mode is enabled and the Write master is enabled.",
   "test_prompt": "Use hub_update_mcp_settings to set both enableHubAdminRead=true and enableBuiltinApp=true in a single call."
 }
 ```
@@ -2674,7 +2674,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 ```json
 {
-  "setup_prompt": "Developer Mode is enabled, Hub Admin Write is enabled, recent backup exists. Note whether the server is currently in gateway mode or flat mode (useGateways).",
+  "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists. Note whether the server is currently in gateway mode or flat mode (useGateways).",
   "test_prompt": "Use hub_update_mcp_settings to flip useGateways to the OPPOSITE of its current value. Report the response message, then explain what the user must do for the new tool surface to take effect.",
   "teardown_prompt": "Use hub_update_mcp_settings to set useGateways back to its original value, then reconnect (/mcp refresh) so the tool list matches the server again."
 }
@@ -2686,7 +2686,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write is enabled, recent backup exists. Use hub_set_variable to create a temporary variable named BAT_E2E_DELETE_TEST with value 'scratch'.",
+  "setup_prompt": "the Write master is enabled, recent backup exists. Use hub_set_variable to create a temporary variable named BAT_E2E_DELETE_TEST with value 'scratch'.",
   "test_prompt": "We don't need BAT_E2E_DELETE_TEST any more. Use hub_delete_variable to remove it, then confirm via hub_get_variable that it's gone."
 }
 ```
@@ -2697,18 +2697,18 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write is enabled. Manually create a Hub Variable named TEST_CONNECTOR_VAR via Settings → Hub Variables UI (this lives in the connector namespace, not rule_engine).",
+  "setup_prompt": "the Write master is enabled. Manually create a Hub Variable named TEST_CONNECTOR_VAR via Settings → Hub Variables UI (this lives in the connector namespace, not rule_engine).",
   "test_prompt": "Use hub_delete_variable to remove TEST_CONNECTOR_VAR."
 }
 ```
 
 **Expected**: Tool returns MCP error (`-32602`) with message: `Variable 'TEST_CONNECTOR_VAR' not found in rule_engine namespace. (Connector-namespace deletion not yet supported via MCP — use Settings → Hub Variables UI.)`. AI surfaces the hint and offers to walk the user through the UI deletion. The variable is unchanged.
 
-### T226 — hub_delete_variable refuses without confirm flag (Hub Admin Write 24h gate)
+### T226 — hub_delete_variable refuses without confirm flag (the Write master 24h gate)
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write is enabled, recent backup exists. Use hub_set_variable to create BAT_E2E_NO_CONFIRM with value 'safe'.",
+  "setup_prompt": "the Write master is enabled, recent backup exists. Use hub_set_variable to create BAT_E2E_NO_CONFIRM with value 'safe'.",
   "test_prompt": "Use hub_delete_variable to remove BAT_E2E_NO_CONFIRM. Don't pass confirm — let's see what happens."
 }
 ```
@@ -2792,13 +2792,13 @@ These tests exercise the universal **Read** and **Write** master toggles and the
 
 ## Section 13: Driver Code Lifecycle Tests (hub_manage_code)
 
-All tests below require Hub Admin Write enabled and a recent backup. Tests are excluded from the auto-exercise sweep (destructive to hub code). Test artifacts use the `BAT_` name prefix per BAT convention so they can be identified and cleaned up independently.
+All tests below require the Write master enabled and a recent backup. Tests are excluded from the auto-exercise sweep (destructive to hub code). Test artifacts use the `BAT_` name prefix per BAT convention so they can be identified and cleaned up independently.
 
 ### T400 — hub_create_driver via sourceFile (File Manager path)
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Write a minimal driver stub to File Manager: hub_write_file(fileName='bat-test-driver.groovy', content='metadata { definition(name: \"BAT_DriverCodeLifecycle\", namespace: \"bat\", author: \"test\") { } }').",
+  "setup_prompt": "the Write master enabled, recent backup exists. Write a minimal driver stub to File Manager: hub_write_file(fileName='bat-test-driver.groovy', content='metadata { definition(name: \"BAT_DriverCodeLifecycle\", namespace: \"bat\", author: \"test\") { } }').",
   "test_prompt": "Install the driver using hub_create_driver with sourceFile='bat-test-driver.groovy' and confirm=true. Report the new driver ID.",
   "teardown_prompt": "Delete the driver installed in this test using hub_delete_item (type=driver) with the driverId returned above and confirm=true. Also delete the File Manager file bat-test-driver.groovy using hub_delete_file."
 }
@@ -2810,7 +2810,7 @@ All tests below require Hub Admin Write enabled and a recent backup. Tests are e
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled, recent backup exists. This test intentionally installs broken Groovy source -- the hub creates a stub slot in an error state (BAT_BrokenInstallStub). Note the driver ID returned for cleanup.",
+  "setup_prompt": "the Write master enabled, recent backup exists. This test intentionally installs broken Groovy source -- the hub creates a stub slot in an error state (BAT_BrokenInstallStub). Note the driver ID returned for cleanup.",
   "test_prompt": "Install a driver with deliberately broken syntax using hub_create_driver(source='this is not valid groovy {{ }}', confirm=true). Report what happens.",
   "teardown_prompt": "Delete the error-state driver slot created in this test using hub_delete_item (type=driver) with the driverId returned and confirm=true."
 }
@@ -2822,7 +2822,7 @@ All tests below require Hub Admin Write enabled and a recent backup. Tests are e
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Install two minimal BAT_ driver stubs via hub_create_driver: (1) source='metadata { definition(name: \"BAT_BulkUpdate1\", namespace: \"bat\", author: \"test\") { } }' and (2) source='metadata { definition(name: \"BAT_BulkUpdate2\", namespace: \"bat\", author: \"test\") { } }'. Note both driverIds. Write updated source for each to File Manager with a version comment appended: hub_write_file(fileName='bat-bulk-1.groovy', content='...updated source...') and similarly for bat-bulk-2.groovy.",
+  "setup_prompt": "the Write master enabled, recent backup exists. Install two minimal BAT_ driver stubs via hub_create_driver: (1) source='metadata { definition(name: \"BAT_BulkUpdate1\", namespace: \"bat\", author: \"test\") { } }' and (2) source='metadata { definition(name: \"BAT_BulkUpdate2\", namespace: \"bat\", author: \"test\") { } }'. Note both driverIds. Write updated source for each to File Manager with a version comment appended: hub_write_file(fileName='bat-bulk-1.groovy', content='...updated source...') and similarly for bat-bulk-2.groovy.",
   "test_prompt": "Update both drivers in a single call using hub_update_driver with updates=[{driverId: '<id1>', sourceFile: 'bat-bulk-1.groovy'}, {driverId: '<id2>', sourceFile: 'bat-bulk-2.groovy'}] and confirm=true.",
   "teardown_prompt": "Delete both BAT_ drivers using hub_delete_item (type=driver) with confirm=true for each driverId. Also delete the File Manager files bat-bulk-1.groovy and bat-bulk-2.groovy using hub_delete_file."
 }
@@ -2844,7 +2844,7 @@ All tests below require Hub Admin Write enabled and a recent backup. Tests are e
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Write two minimal driver stubs to File Manager: hub_write_file(fileName='bat-bulk-install-1.groovy', content='metadata { definition(name: \"BAT_BulkInstall1\", namespace: \"bat\", author: \"test\") { } }') and hub_write_file(fileName='bat-bulk-install-2.groovy', content='metadata { definition(name: \"BAT_BulkInstall2\", namespace: \"bat\", author: \"test\") { } }').",
+  "setup_prompt": "the Write master enabled, recent backup exists. Write two minimal driver stubs to File Manager: hub_write_file(fileName='bat-bulk-install-1.groovy', content='metadata { definition(name: \"BAT_BulkInstall1\", namespace: \"bat\", author: \"test\") { } }') and hub_write_file(fileName='bat-bulk-install-2.groovy', content='metadata { definition(name: \"BAT_BulkInstall2\", namespace: \"bat\", author: \"test\") { } }').",
   "test_prompt": "Install both drivers in a single call using hub_create_driver with installs=[{sourceFile: 'bat-bulk-install-1.groovy'}, {sourceFile: 'bat-bulk-install-2.groovy'}] and confirm=true. Report the driver IDs returned.",
   "teardown_prompt": "Delete both BAT_ drivers installed above using hub_delete_item (type=driver) with confirm=true for each driverId. Also delete the File Manager files bat-bulk-install-1.groovy and bat-bulk-install-2.groovy using hub_delete_file."
 }
@@ -2856,7 +2856,7 @@ All tests below require Hub Admin Write enabled and a recent backup. Tests are e
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Write one driver stub to File Manager: hub_write_file(fileName='bat-bulk-partial.groovy', content='metadata { definition(name: \"BAT_BulkPartial\", namespace: \"bat\", author: \"test\") { } }'). Do NOT write 'bat-bulk-missing.groovy'.",
+  "setup_prompt": "the Write master enabled, recent backup exists. Write one driver stub to File Manager: hub_write_file(fileName='bat-bulk-partial.groovy', content='metadata { definition(name: \"BAT_BulkPartial\", namespace: \"bat\", author: \"test\") { } }'). Do NOT write 'bat-bulk-missing.groovy'.",
   "test_prompt": "Install two drivers in a single bulk call: hub_create_driver with installs=[{sourceFile: 'bat-bulk-partial.groovy'}, {sourceFile: 'bat-bulk-missing.groovy'}] and confirm=true. Report what happens for each item.",
   "teardown_prompt": "Delete the successfully installed BAT_BulkPartial driver using hub_delete_item (type=driver) with confirm=true. Delete the File Manager file bat-bulk-partial.groovy using hub_delete_file."
 }
@@ -2878,10 +2878,10 @@ All tests below require Hub Admin Write enabled and a recent backup. Tests are e
 
 ## Section 14: Library Management Tests
 
-Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with type=library) live in the `hub_manage_code` gateway and require Hub Admin Write + confirm + a hub backup within the last 24 hours. `hub_get_source` with type=library (read-only) lives in the `hub_read_apps_code` gateway and requires Hub Admin Read only. Tests use the `BAT_` prefix and clean up after themselves.
+Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with type=library) live in the `hub_manage_code` gateway and require the Write master + confirm + a hub backup within the last 24 hours. `hub_get_source` with type=library (read-only) lives in the `hub_read_apps_code` gateway and requires the Read master only. Tests use the `BAT_` prefix and clean up after themselves.
 
 **Pre-flight (manual one-time):**
-1. Enable **Hub Admin Read Tools** and **Hub Admin Write Tools** in MCP Rule Server settings.
+1. Enable **the Read master** and **the Write master** in MCP Rule Server settings.
 2. Create a hub backup via `hub_create_backup`.
 
 **Safety note:** Tests only create/modify/delete test-prefixed libraries. They do not touch any library with `usedByDeviceTypes` or `usedByAppTypes` populated.
@@ -2901,7 +2901,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled, recent backup exists.",
+  "setup_prompt": "the Write master enabled, recent backup exists.",
   "test_prompt": "Install a new Groovy library with name='BATTestLibInstall', namespace='bat_test', description='BAT test library for install scenario'. The library should define a single method `batHelper()` that returns 'bat_ok'.",
   "teardown_prompt": "Delete the BATTestLibInstall library (find it by name in the library list)."
 }
@@ -2913,7 +2913,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Use hub_create_library to create a library named 'BATTestLibUpdate', namespace='bat_test', with method `v1Method()` returning 'v1'.",
+  "setup_prompt": "the Write master enabled, recent backup exists. Use hub_create_library to create a library named 'BATTestLibUpdate', namespace='bat_test', with method `v1Method()` returning 'v1'.",
   "test_prompt": "Update the BATTestLibUpdate library to add a `v2Method()` that returns 'v2'. Use hub_update_library with source mode.",
   "teardown_prompt": "Delete BATTestLibUpdate library."
 }
@@ -2925,7 +2925,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled, recent backup exists. A library named 'BATTestLibResave' exists (install it if not).",
+  "setup_prompt": "the Write master enabled, recent backup exists. A library named 'BATTestLibResave' exists (install it if not).",
   "test_prompt": "Use hub_update_library with resave=true on BATTestLibResave to trigger recompilation without changing the source.",
   "teardown_prompt": "Delete BATTestLibResave library."
 }
@@ -2937,7 +2937,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Install a library named 'BATTestLibDelete', namespace='bat_test'.",
+  "setup_prompt": "the Write master enabled, recent backup exists. Install a library named 'BATTestLibDelete', namespace='bat_test'.",
   "test_prompt": "Delete the BATTestLibDelete library. Confirm it no longer appears in the hub library list.",
   "teardown_prompt": "(Library is already deleted — no teardown needed.)"
 }
@@ -2949,7 +2949,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled.",
+  "setup_prompt": "the Write master enabled.",
   "test_prompt": "Try to install a library with valid source but without setting confirm=true. Observe the error."
 }
 ```
@@ -2970,7 +2970,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled, recent backup exists. Install 'BATTestLibSourceFile' library. Upload a file named 'bat-lib-update.groovy' to File Manager via hub_write_file with updated library source.",
+  "setup_prompt": "the Write master enabled, recent backup exists. Install 'BATTestLibSourceFile' library. Upload a file named 'bat-lib-update.groovy' to File Manager via hub_write_file with updated library source.",
   "test_prompt": "Update BATTestLibSourceFile library using hub_update_library with sourceFile='bat-lib-update.groovy'.",
   "teardown_prompt": "Delete BATTestLibSourceFile library. Delete bat-lib-update.groovy from File Manager."
 }
@@ -2988,17 +2988,17 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ## Section 15: HPM Package State Tests
 
-Tools in this section require **Hub Admin Read** and HPM itself must be installed on the hub. `hub_list_hpm_packages` lives in the `hub_read_apps_code` gateway. Tests assume at least one package has been installed via HPM.
+Tools in this section require **the Read master** and HPM itself must be installed on the hub. `hub_list_hpm_packages` lives in the `hub_read_apps_code` gateway. Tests assume at least one package has been installed via HPM.
 
 **Pre-flight (manual one-time):**
-1. Enable **Hub Admin Read Tools** in MCP Rule Server settings.
+1. Enable **the Read master** in MCP Rule Server settings.
 2. Verify HPM is installed (`hub_list_apps` with scope=instances should show "Hubitat Package Manager").
 
 ### T600 — hub_list_hpm_packages: enumerate all HPM-tracked packages
 
 ```json
 {
-  "setup_prompt": "Hub Admin Read is enabled. HPM is installed with at least one package.",
+  "setup_prompt": "the Read master is enabled. HPM is installed with at least one package.",
   "test_prompt": "List all packages tracked by Hubitat Package Manager. Include their names, versions, and whether they are beta.",
   "teardown_prompt": "No teardown needed."
 }
@@ -3012,7 +3012,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Read is enabled. HPM is installed with at least one package.",
+  "setup_prompt": "the Read master is enabled. HPM is installed with at least one package.",
   "test_prompt": "Check for any HPM package drift -- missing required components or orphaned app code definitions. Summarize what you find.",
   "teardown_prompt": "No teardown needed."
 }
@@ -3028,13 +3028,13 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 }
 ```
 
-**Expected**: AI calls `hub_read_apps_code` with no args, finds `hub_list_hpm_packages` in the catalog (with its `includeDrift` parameter for drift detection) and full parameter schema. AI describes the tool and its Hub Admin Read requirement.
+**Expected**: AI calls `hub_read_apps_code` with no args, finds `hub_list_hpm_packages` in the catalog (with its `includeDrift` parameter for drift detection) and full parameter schema. AI describes the tool and its the Read master requirement.
 
 ### T603 — hub_list_hpm_packages (includeDrift): data-quality-only entry does not inflate summary drift count
 
 ```json
 {
-  "setup_prompt": "Hub Admin Read is enabled. HPM is installed. At least one HPM-tracked package has a non-scalar or empty heID on a component.",
+  "setup_prompt": "the Read master is enabled. HPM is installed. At least one HPM-tracked package has a non-scalar or empty heID on a component.",
   "test_prompt": "Check HPM drift. If a package has only dataQualityWarnings and no actionable signals, confirm the summary says No drift detected even though drift[] has an entry for that package.",
   "teardown_prompt": "No teardown needed."
 }
@@ -3046,7 +3046,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Read is enabled. HPM is installed. Use hub_list_apps (scope=instances) to find an app that is NOT Hubitat Package Manager (e.g. the MCP Rule Server itself) and note its appId.",
+  "setup_prompt": "the Read master is enabled. HPM is installed. Use hub_list_apps (scope=instances) to find an app that is NOT Hubitat Package Manager (e.g. the MCP Rule Server itself) and note its appId.",
   "test_prompt": "Call hub_list_hpm_packages with includeDrift=true and the non-HPM appId you just found as hpmAppId. Then call hub_list_hpm_packages again with the same non-HPM appId but includeDrift omitted. Confirm both calls reject it with a descriptive error naming the actual app type.",
   "teardown_prompt": "No teardown needed."
 }
@@ -3060,7 +3060,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Read is enabled. HPM is installed. Use hub_list_apps (scope=instances) to find an app that is NOT Hubitat Package Manager (e.g. Simple Automation Rules or a user-installed app) and note its appId.",
+  "setup_prompt": "the Read master is enabled. HPM is installed. Use hub_list_apps (scope=instances) to find an app that is NOT Hubitat Package Manager (e.g. Simple Automation Rules or a user-installed app) and note its appId.",
   "test_prompt": "Call hub_list_hpm_packages with the non-HPM appId as hpmAppId. Confirm the tool rejects it with a descriptive error that names the supplied ID and the actual app type.",
   "teardown_prompt": "No teardown needed."
 }
@@ -3090,7 +3090,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create an RM rule called 'BAT SetVariable Test'. Also ensure at least one hub connector variable exists (use hub_manage_variables hub_set_variable to create 'bat_setvar_test' = 0 if it does not exist).",
+  "setup_prompt": "the Write master is enabled. Create an RM rule called 'BAT SetVariable Test'. Also ensure at least one hub connector variable exists (use hub_manage_variables hub_set_variable to create 'bat_setvar_test' = 0 if it does not exist).",
   "test_prompt": "Add an action to the 'BAT SetVariable Test' rule: capability='setVariable', variable='bat_setvar_test', value=99. Then call hub_get_rule_health on the rule and confirm no broken markers are present.",
   "teardown_prompt": "Delete the 'BAT SetVariable Test' rule. Delete the hub variable 'bat_setvar_test'."
 }
@@ -3104,7 +3104,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Note the hub's current mode names via hub_list_modes. Create an RM rule called 'BAT ModeName Test'.",
+  "setup_prompt": "the Write master is enabled. Note the hub's current mode names via hub_list_modes. Create an RM rule called 'BAT ModeName Test'.",
   "test_prompt": "Add an action to 'BAT ModeName Test': capability='mode', modeName='<any valid mode name from hub_list_modes>'. Then call hub_get_rule_health and confirm no broken markers.",
   "teardown_prompt": "Delete the 'BAT ModeName Test' rule."
 }
@@ -3118,7 +3118,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write enabled. Create hub variable 'bat_cpvar_test' (numeric, value 50). Create a virtual switch device named 'BAT RunCmd Switch' via hub_manage_virtual_device. Create RM rule 'BAT RunCommand Variable Param'.",
+  "setup_prompt": "the Write master enabled. Create hub variable 'bat_cpvar_test' (numeric, value 50). Create a virtual switch device named 'BAT RunCmd Switch' via hub_manage_virtual_device. Create RM rule 'BAT RunCommand Variable Param'.",
   "test_prompt": "Add an action: capability='runCommand', command='setLevel', deviceIds=[<BAT RunCmd Switch id>], parameters=[{type:'number', variable:'bat_cpvar_test'}]. Then call hub_get_rule_health.",
   "teardown_prompt": "Delete 'BAT RunCommand Variable Param' rule. Delete bat_cpvar_test variable. Delete virtual device 'BAT RunCmd Switch'."
 }
@@ -3132,7 +3132,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create hub variables 'bat_sv_src' (numeric, value 77) and 'bat_sv_dst' (numeric, value 0). Create RM rule 'BAT SetVariable Source Test'.",
+  "setup_prompt": "the Write master is enabled. Create hub variables 'bat_sv_src' (numeric, value 77) and 'bat_sv_dst' (numeric, value 0). Create RM rule 'BAT SetVariable Source Test'.",
   "test_prompt": "Add an action to 'BAT SetVariable Source Test': capability='setVariable', variable='bat_sv_dst', sourceVariable='bat_sv_src'. Then call hub_get_rule_health and confirm no broken markers.",
   "teardown_prompt": "Delete 'BAT SetVariable Source Test'. Delete hub variables bat_sv_src and bat_sv_dst."
 }
@@ -3146,7 +3146,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create hub variable 'bat_re_walker_var' (numeric, value 0). Note the hub's modes via hub_list_modes -- pick one valid mode name and the hub variable name. Create RM rule 'BAT Walker Parity Test'.",
+  "setup_prompt": "the Write master is enabled. Create hub variable 'bat_re_walker_var' (numeric, value 0). Note the hub's modes via hub_list_modes -- pick one valid mode name and the hub variable name. Create RM rule 'BAT Walker Parity Test'.",
   "test_prompt": "First, add a Required Expression to 'BAT Walker Parity Test' using addRequiredExpression: conditions=[{capability:'Mode', state:'<valid mode name>'}, {capability:'Variable', variable:'bat_re_walker_var', comparator:'>', value:0}], operator='AND'. Then add an ifThen action: capability='ifThen', expression={conditions:[{capability:'Mode', state:'<valid mode name>'}]}. Then call hub_get_rule_health and confirm no broken markers.",
   "teardown_prompt": "Delete 'BAT Walker Parity Test'. Delete hub variable bat_re_walker_var."
 }
@@ -3160,7 +3160,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Between Two Times Test'.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Between Two Times Test'.",
   "test_prompt": "Add a Required Expression to 'BAT Between Two Times Test' using addRequiredExpression: conditions=[{capability:'Between two times', start:{type:'clock', time:'08:00'}, end:{type:'clock', time:'22:00'}}]. Then call hub_get_rule_health and confirm no broken markers.",
   "teardown_prompt": "Delete 'BAT Between Two Times Test'."
 }
@@ -3176,7 +3176,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT DeviceId Norm Test'. Identify one motion sensor deviceId on the hub.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT DeviceId Norm Test'. Identify one motion sensor deviceId on the hub.",
   "test_prompt": "Add a Required Expression to 'BAT DeviceId Norm Test' using addRequiredExpression: conditions=[{capability:'Motion', deviceId:<motionSensorId>, state:'active'}] -- pass the integer deviceId directly (not deviceIds:[N]). Then call hub_get_rule_health and confirm no broken markers.",
   "teardown_prompt": "Delete 'BAT DeviceId Norm Test'."
 }
@@ -3192,7 +3192,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT AddTrigger Cond DeviceId'. Identify one Switch deviceId and one Motion sensor deviceId on the hub.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT AddTrigger Cond DeviceId'. Identify one Switch deviceId and one Motion sensor deviceId on the hub.",
   "test_prompt": "Add a conditional trigger to 'BAT AddTrigger Cond DeviceId' using addTrigger: {capability:'Switch', deviceIds:[<switchId>], state:'on', condition:{capability:'Motion', deviceId:<motionId>, state:'active'}} -- the condition Map uses singular integer deviceId. Then hub_get_rule_health and confirm no broken markers.",
   "teardown_prompt": "Delete 'BAT AddTrigger Cond DeviceId'."
 }
@@ -3208,7 +3208,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT AddAction Cond DeviceId'. Identify one Custom Attribute capable device on the hub (humidity sensor preferred).",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT AddAction Cond DeviceId'. Identify one Custom Attribute capable device on the hub (humidity sensor preferred).",
   "test_prompt": "Add an ifThen action to 'BAT AddAction Cond DeviceId' using addAction: {capability:'ifThen', expression:{conditions:[{capability:'Custom Attribute', deviceId:<humidityDeviceId>, attribute:'humidity', comparator:'<', value:40}]}} -- the expression condition uses singular integer deviceId. Verify the IF action bakes without broken markers.",
   "teardown_prompt": "Delete 'BAT AddAction Cond DeviceId'."
 }
@@ -3224,7 +3224,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT NestedCond Reject'. Identify one Motion sensor deviceId on the hub.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT NestedCond Reject'. Identify one Motion sensor deviceId on the hub.",
   "test_prompt": "Add an ifThen action to 'BAT NestedCond Reject' using addAction: {capability:'ifThen', expression:{conditions:[{capability:'Motion', deviceIds:[<motionId>], state:'active'}, {subExpression:{conditions:[{capability:'Motion', deviceIds:[<motionId>], state:'inactive'}]}}], operator:'OR'}} -- the second condition is a nested subExpression. Verify the call rejects WITHOUT writing anything to the rule.",
   "teardown_prompt": "Delete 'BAT NestedCond Reject'."
 }
@@ -3240,7 +3240,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Reveal Fallback'. Identify one mode name (e.g. 'Night') on the hub.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Reveal Fallback'. Identify one mode name (e.g. 'Night') on the hub.",
   "test_prompt": "Add a Required Expression to 'BAT Reveal Fallback' using addRequiredExpression: {conditions:[{capability:'Mode', state:'Night'}]}. After it commits, inspect result.settingsSkipped -- if the firmware exposes modes<N> always-visible (static schema rather than progressive disclosure), the entry should include {key: '<pattern>', reason: 'reveal_fallback_to_existing_field', condIdx: 0}. If the firmware exposes modes<N> only after the rCapab='Mode' write (progressive disclosure -- typical on current firmware), no sentinel fires and the entry is absent. Confirm result.success=true and result.partial!=true in BOTH cases -- the sentinel is informational and does NOT degrade.",
   "teardown_prompt": "Delete 'BAT Reveal Fallback'."
 }
@@ -3261,7 +3261,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT CompareToDevice'. Identify two Temperature-capable devices on the hub (deviceA + deviceB)."
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT CompareToDevice'. Identify two Temperature-capable devices on the hub (deviceA + deviceB)."
 ,
   "test_prompt": "Add a Required Expression to 'BAT CompareToDevice' using addRequiredExpression: {conditions:[{capability:'Temperature', deviceIds:[<deviceA>], comparator:'>', state:70, compareToDevice:{deviceId:<deviceB>, attribute:'temperature'}}]}. Inspect result.partial and result.settingsSkipped after the call.",
   "teardown_prompt": "Delete 'BAT CompareToDevice'."
@@ -3280,7 +3280,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Hub timezone is set (Settings > Location and Modes). Create RM rule 'BAT Between Sunrise'."
+  "setup_prompt": "the Write master is enabled. Hub timezone is set (Settings > Location and Modes). Create RM rule 'BAT Between Sunrise'."
 ,
   "test_prompt": "Add a Required Expression to 'BAT Between Sunrise' using addRequiredExpression: {conditions:[{capability:'Between two times', start:{type:'clock', time:'08:00'}, end:{type:'sunset', offset:-30}}]}. Inspect the rule paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Between Sunrise'."
@@ -3297,7 +3297,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create two hub variables (number type) named 'BatVarA' and 'BatVarB'. Create RM rule 'BAT VarVsVar'.",
+  "setup_prompt": "the Write master is enabled. Create two hub variables (number type) named 'BatVarA' and 'BatVarB'. Create RM rule 'BAT VarVsVar'.",
   "test_prompt": "Add a Required Expression to 'BAT VarVsVar' using addRequiredExpression: {conditions:[{capability:'Variable', variable:'BatVarA', comparator:'>', compareToVariable:'BatVarB'}]}. Then inspect the rule paragraph on mainPage and result.settingsApplied.",
   "teardown_prompt": "Delete 'BAT VarVsVar' and remove BatVarA / BatVarB."
 }
@@ -3315,7 +3315,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify two Temperature-capable devices (deviceA + deviceB). Create RM rule 'BAT CtdNoComp'.",
+  "setup_prompt": "the Write master is enabled. Identify two Temperature-capable devices (deviceA + deviceB). Create RM rule 'BAT CtdNoComp'.",
   "test_prompt": "Add a Required Expression to 'BAT CtdNoComp' using addRequiredExpression: {conditions:[{capability:'Temperature', deviceIds:[<deviceA>], compareToDevice:{deviceId:<deviceB>, attribute:'temperature'}}]} -- deliberately OMITTING comparator. Observe the error.",
   "teardown_prompt": "Delete 'BAT CtdNoComp'."
 }
@@ -3331,7 +3331,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device exposing a custom attribute (e.g. a sensor with a 'water' attribute). Create RM rule 'BAT CustomChanged'.",
+  "setup_prompt": "the Write master is enabled. Identify a device exposing a custom attribute (e.g. a sensor with a 'water' attribute). Create RM rule 'BAT CustomChanged'.",
   "test_prompt": "Add a trigger to 'BAT CustomChanged' using addTrigger: {capability:'Custom Attribute', deviceIds:[<deviceId>], attribute:'water', comparator:'*changed*'}. Inspect result.partial and result.settingsSkipped.",
   "teardown_prompt": "Delete 'BAT CustomChanged'."
 }
@@ -3347,7 +3347,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Seconds'.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Seconds'.",
   "test_prompt": "Add a trigger to 'BAT Periodic Seconds' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Seconds', everyN:5}}. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Seconds'."
 }
@@ -3363,7 +3363,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Minutes'.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Minutes'.",
   "test_prompt": "Add a trigger to 'BAT Periodic Minutes' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Minutes', everyN:15}}. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Minutes'."
 }
@@ -3379,7 +3379,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Weekly'.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Weekly'.",
   "test_prompt": "Add a trigger to 'BAT Periodic Weekly' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Weekly', daysOfWeek:['Monday','Friday'], startingTime:'08:00'}}. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Weekly'."
 }
@@ -3395,7 +3395,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Monthly'.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Monthly'.",
   "test_prompt": "Add a trigger to 'BAT Periodic Monthly' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Monthly', dayOfMonth:15, everyNMonths:2, startingTime:'09:30'}}. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Monthly'."
 }
@@ -3411,7 +3411,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Yearly'.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Yearly'.",
   "test_prompt": "Add a trigger to 'BAT Periodic Yearly' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Yearly', months:'December', weekOfMonth:'First', dayOfWeek:'Monday', startingTime:'08:00'}}. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Yearly'."
 }
@@ -3427,7 +3427,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Cron'.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Cron'.",
   "test_prompt": "Add a trigger to 'BAT Periodic Cron' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Cron String', cronString:'0 0 12 * * ?'}}. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Cron'."
 }
@@ -3443,7 +3443,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Enum'.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Enum'.",
   "test_prompt": "Add a trigger to 'BAT Periodic Enum' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Minutes', everyN:7}}. Observe the tool's response.",
   "teardown_prompt": "Delete 'BAT Periodic Enum'."
 }
@@ -3459,7 +3459,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Monthly Nth'.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Monthly Nth'.",
   "test_prompt": "Add a trigger to 'BAT Periodic Monthly Nth' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Monthly', weekOfMonth:'Second', dayOfWeek:'Monday', everyNMonths:1, startingTime:'08:00'}}. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Monthly Nth'."
 }
@@ -3475,7 +3475,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Periodic Monthly Excl'.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Monthly Excl'.",
   "test_prompt": "Add a trigger to 'BAT Periodic Monthly Excl' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Monthly', dayOfMonth:15, weekOfMonth:'Second'}}. Observe the tool's response.",
   "teardown_prompt": "Delete 'BAT Periodic Monthly Excl'."
 }
@@ -3491,7 +3491,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT Two Periodic'.",
+  "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Two Periodic'.",
   "test_prompt": "Add TWO triggers to 'BAT Two Periodic': first addTrigger {capability:'Periodic Schedule', periodic:{frequency:'Minutes', everyN:5}}, then addTrigger {capability:'Periodic Schedule', periodic:{frequency:'Daily', everyN:1, startingTime:'07:00'}}. Inspect both trigger paragraphs on mainPage.",
   "teardown_prompt": "Delete 'BAT Two Periodic'."
 }

@@ -17613,7 +17613,7 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "fadeSeconds", type: "Integer", description: "Optional for setLevel/toggle/adjust"],
                     [name: "targetLevel", type: "Integer", description: "Required for fade"],
                     [name: "minutes", type: "Integer", description: "Required for fade"],
-                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Required for fade and startRaiseLower"],
+                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Optional for fade and startRaiseLower -- defaults to lower (verified live: the action bakes without it)"],
                     [name: "intervalSeconds", type: "Integer", description: "Optional for fade"],
                     [name: "perMode", type: "Map", description: "For setLevelPerMode: {modeIdOrName: level, ...}"],
                     [name: "levelVariable", type: "String", description: "Hub variable name -- use instead of level for variable-sourced setLevel"],
@@ -17624,8 +17624,7 @@ private Map _rmActionSchemaForDiscover() {
                     setLevel: "level (or levelVariable for a variable-sourced level)",
                     toggle: "level (the on-level used when toggling from off)",
                     adjust: "adjustBy",
-                    fade: "targetLevel + minutes + direction",
-                    startRaiseLower: "direction",
+                    fade: "targetLevel + minutes",
                     setLevelPerMode: "perMode"
                 ]
             ],
@@ -17664,7 +17663,7 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "targetKelvin", type: "Integer", description: "Target color temperature in Kelvin -- required for fadeColorTemp (NOT 'kelvin')"],
                     [name: "level", type: "Integer"],
                     [name: "minutes", type: "Integer", description: "Required for fadeColorTemp"],
-                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Required for fadeColorTemp"],
+                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Optional for fadeColorTemp -- defaults to lower"],
                     [name: "perMode", type: "Map", description: "For setColorTempPerMode: {modeIdOrName: {kelvin: 2700, level: 70}, ...}"],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
@@ -17672,7 +17671,7 @@ private Map _rmActionSchemaForDiscover() {
                 conditionalRequired: [
                     setColorTemp: "kelvin",
                     toggleColorTemp: "kelvin",
-                    fadeColorTemp: "targetKelvin + minutes (+ direction)",
+                    fadeColorTemp: "targetKelvin + minutes",
                     setColorTempPerMode: "perMode"
                 ]
             ],
@@ -17705,7 +17704,8 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "adjustCooling", type: "Number"],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
-                ]
+                ],
+                notes: "Requires at least one setting (mode / fanMode / heatingSetpoint / adjustHeating / coolingSetpoint / adjustCooling) -- a thermostat action with deviceIds but no setting does not bake."
             ],
             [
                 name: "shade",
@@ -19603,6 +19603,12 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         }
     } else if (cap == "thermostat") {
         // Thermostat with optional mode, fan, heating/cooling setpoints.
+        // Verified live: a thermostat action with NO setting registers (thermo.<N>
+        // written) but never bakes. Require at least one setting. Fail fast.
+        if (actionSpec.mode == null && actionSpec.fanMode == null && actionSpec.heatingSetpoint == null &&
+            actionSpec.adjustHeating == null && actionSpec.coolingSetpoint == null && actionSpec.adjustCooling == null) {
+            throw new IllegalArgumentException("thermostat action requires at least one setting: 'mode', 'fanMode', 'heatingSetpoint', 'adjustHeating', 'coolingSetpoint', or 'adjustCooling'. Without any, the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+        }
         actType = "lockActs"
         actSubType = "getSetThermostat"
         fields = ["thermo.@N": deviceIds]
@@ -20025,6 +20031,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         actSubType = "getDisable"
         fields = ["disEn.@N": (action != "disable"), "devDisable.@N": deviceIds]
     } else if (cap == "delay") {
+        // Verified live: a delay with no duration (no hours/minutes/seconds and no
+        // variable source) registers but never bakes. Fail fast.
+        if (actionSpec.variable == null && actionSpec.hours == null && actionSpec.minutes == null && actionSpec.seconds == null) {
+            throw new IllegalArgumentException("delay action requires a duration: 'hours', 'minutes', and/or 'seconds' (or 'variable' for a variable-sourced delay). Without any, the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+        }
         actType = "delayActs"
         actSubType = "getDelay"
         fields = [:]
@@ -20077,6 +20088,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         actSubType = "getComment"
         fields = ["comment.@N": (actionSpec.text ?: "")]
     } else if (cap == "repeat") {
+        // Verified live: a repeat with no interval (hours/minutes/seconds) registers
+        // but never bakes -- 'times' alone is NOT enough. Fail fast.
+        if (actionSpec.hours == null && actionSpec.minutes == null && actionSpec.seconds == null) {
+            throw new IllegalArgumentException("repeat action requires an interval: 'hours', 'minutes', and/or 'seconds' (how often to repeat). 'times' alone does not bake. Without an interval the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+        }
         actType = "repeatActs"
         actSubType = "getRepeat"
         fields = [:]
