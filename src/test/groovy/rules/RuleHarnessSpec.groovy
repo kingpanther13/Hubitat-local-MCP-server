@@ -126,6 +126,11 @@ abstract class RuleHarnessSpec extends Specification {
     @Shared protected Boolean stubTimeOfDayResult = false
     @Shared protected Map<String, Date> stubSunriseSunset = null
     @Shared protected Throwable stubHttpGetException = null
+    // When true, the httpGet/httpPost stubs invoke the response closure with a fake
+    // [status: 200] so success-path response handlers actually run (e.g. the redacted
+    // log.debug inside the http_request action). Default false: most specs only assert
+    // on the recorded request args, not the response body.
+    @Shared protected Boolean stubInvokeHttpResponse = false
 
     // Per-feature backing field — each test gets its own instance, so
     // resetting _parent to null in setup() guarantees isolation without
@@ -209,8 +214,12 @@ abstract class RuleHarnessSpec extends Specification {
         mock.httpGet(_, _) >> { args ->
             httpGetCalls << (args as List)
             if (stubHttpGetException) throw stubHttpGetException
+            if (stubInvokeHttpResponse && args[1] instanceof Closure) args[1].call([status: 200])
         }
-        mock.httpPost(_, _) >> { args -> httpPostCalls << (args as List) }
+        mock.httpPost(_, _) >> { args ->
+            httpPostCalls << (args as List)
+            if (stubInvokeHttpResponse && args[1] instanceof Closure) args[1].call([status: 200])
+        }
         // subscribe(source, attribute, handlerName) is class-2 (declared on
         // AppExecutor). Route every call into SubscriptionRecorder so specs
         // can both assert on the wire-up ("device_event rule subscribed
@@ -324,6 +333,8 @@ abstract class RuleHarnessSpec extends Specification {
         stubTimeOfDayResult = false
         stubSunriseSunset = null
         stubHttpGetException = null
+        stubInvokeHttpResponse = false
+        sharedLog.messages.clear()
         // Propagate unconditionally so the script's parent exactly matches
         // a freshly-reset `_parent` (null) on entry to each test.
         // eighty20results' sandbox installs a default InstalledAppWrapperImpl

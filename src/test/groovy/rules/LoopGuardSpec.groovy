@@ -119,6 +119,24 @@ class LoopGuardSpec extends RuleHarnessSpec {
         appExecutor.getApp().settingsStore.ruleEnabled == false
     }
 
+    def "just below threshold: rule fires and is NOT auto-disabled (locks the >= boundary)"() {
+        given: 'loopGuardMax-1 in-window executions (2 of max 3)'
+        settingsMap.ruleEnabled = true
+        settingsMap.ruleName = 'Just Below'
+        appExecutor.getApp().settingsStore.ruleEnabled = true
+        parent = new LoopGuardParent(settings: [loopGuardMax: 3, loopGuardWindowSec: 60])
+        atomicStateMap.conditions = []
+        atomicStateMap.actions = []
+        atomicStateMap.recentExecutions = [FIXED_NOW - 5_000L, FIXED_NOW - 1_000L]
+
+        when:
+        script.executeRule('test')
+
+        then: 'the rule still fires (not disabled); the new exec appends to reach exactly max'
+        appExecutor.getApp().settingsStore.ruleEnabled == true
+        atomicStateMap.recentExecutions.size() == 3
+    }
+
     // ---- the loop-guard window is reset on the disable / edit / re-init paths ----
     // (auto-disable already clears it above; these are the manual/edit paths that
     // previously left stale timestamps behind, so a re-enabled rule could re-trip early.)

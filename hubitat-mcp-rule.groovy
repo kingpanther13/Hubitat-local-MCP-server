@@ -3392,7 +3392,7 @@ def executeAction(action, actionIndex = null, evt = null) {
 
         case "set_mode":
             if (!action.mode) {
-                ruleLog("error", "set_mode action missing 'mode' value")
+                ruleLog("error", "Rule '${settings.ruleName}' set_mode action missing 'mode' value")
                 break // skip this misconfigured action, continue the rule
             }
             location.setMode(action.mode)
@@ -3400,7 +3400,7 @@ def executeAction(action, actionIndex = null, evt = null) {
 
         case "set_hsm":
             if (!action.status) {
-                ruleLog("error", "set_hsm action missing 'status' value")
+                ruleLog("error", "Rule '${settings.ruleName}' set_hsm action missing 'status' value")
                 break // skip this misconfigured action, continue the rule
             }
             sendLocationEvent(name: "hsmSetArm", value: action.status)
@@ -3653,7 +3653,7 @@ def executeAction(action, actionIndex = null, evt = null) {
                     }
                 }
             } catch (Exception e) {
-                ruleLog("error", "Error executing HTTP ${action.method ?: 'GET'} to ${redactUrlForLog(action.url)}: ${e.message}")
+                ruleLog("error", "Error executing HTTP ${action.method ?: 'GET'} to ${redactUrlForLog(action.url)}: ${redactUrlForLog(e.message)}")
             }
             break
 
@@ -3965,10 +3965,11 @@ def ruleLog(String level, String message, Map extraData = null) {
     }
 }
 
-// Redact secrets from a request URL before it is logged (MCP buffer / hub log).
-// Strips basic-auth userinfo (scheme://user:pass@host -> scheme://host) and masks
-// sensitive query-param values. Sandbox-safe: only String.replaceAll + a null guard.
-// The real URL is still sent to httpGet/httpPost; only the logged copy is redacted.
+// Redact credentials from a URL (or any string that may embed one) before logging
+// it to the MCP buffer / hub log: strips basic-auth userinfo and masks sensitive
+// query-param VALUES. Secrets embedded in the URL path (e.g. token-in-path webhooks)
+// are NOT redacted. The real URL is still sent to httpGet/httpPost — only logged
+// copies pass through here.
 private String redactUrlForLog(url) {
     if (url == null) return null
     def out = url.toString()
@@ -3977,7 +3978,7 @@ private String redactUrlForLog(url) {
     out = out.replaceAll("://[^/?#\\s@]+@", "://")
     // Mask the value of any sensitive query param. Exact names, '=' anchored, so
     // lookalikes like keyword= / author= / authuser= are left untouched.
-    out = out.replaceAll("(?i)([?&](?:token|api_key|apikey|access_token|access_key|password|passwd|pwd|client_secret|secret_key|secretkey|secret|signature|sig|auth|bearer|key)=)[^&\\s]*", "\$1***")
+    out = out.replaceAll("(?i)([?&](?:token|api_key|apikey|access_token|access_key|password|passwd|pwd|client_secret|secret_key|secretkey|secret|signature|sig|auth|bearer|key)=)[^&#\\s]*", "\$1***")
     return out
 }
 

@@ -814,6 +814,8 @@ class ActionTypesSpec extends RuleHarnessSpec {
             'http://h/x?auth=***&sig=***&signature=***&client_secret=***&pwd=***&passwd=***&bearer=***&access_key=***'
         and: 'a pathless URL with an @ in the query is not over-redacted (host + query preserved)'
         script.redactUrlForLog('http://host?u=a@b.com&token=t') == 'http://host?u=a@b.com&token=***'
+        and: 'a fragment after a sensitive value is preserved — only the value is masked'
+        script.redactUrlForLog('https://host/api?token=SECRET#fragment') == 'https://host/api?token=***#fragment'
         and: 'plain URLs and null pass through untouched'
         script.redactUrlForLog('https://host/path') == 'https://host/path'
         script.redactUrlForLog(null) == null
@@ -850,6 +852,59 @@ class ActionTypesSpec extends RuleHarnessSpec {
 
         and: 'the real (unredacted) URL was still sent to httpGet'
         httpGetCalls[0][0] == [uri: 'https://user:pass@host/api?token=SECRET']
+    }
+
+    def "http_request GET success log redacts credentials in the URL"() {
+        given: 'fire the response closure so the success-path log.debug actually runs'
+        stubInvokeHttpResponse = true
+
+        when:
+        script.executeAction([type: 'http_request', url: 'https://user:pass@host/api?token=SECRET'])
+
+        then: 'the GET success debug line logged the redacted URL'
+        def gets = appExecutor.getLog().messages.findAll { it.startsWith('debug:HTTP GET') }
+        gets.size() == 1
+        gets[0].contains('host/api')
+        gets[0].contains('***')
+        !gets[0].contains('pass@')
+        !gets[0].contains('SECRET')
+
+        and: 'the real (unredacted) URL was still sent to httpGet'
+        httpGetCalls[0][0] == [uri: 'https://user:pass@host/api?token=SECRET']
+    }
+
+    def "http_request POST success log redacts credentials in the URL"() {
+        given:
+        stubInvokeHttpResponse = true
+
+        when:
+        script.executeAction([type: 'http_request', method: 'POST',
+                              url: 'https://user:pass@host/api?token=SECRET',
+                              contentType: 'application/json', body: '{}'])
+
+        then:
+        def posts = appExecutor.getLog().messages.findAll { it.startsWith('debug:HTTP POST') }
+        posts.size() == 1
+        posts[0].contains('host/api')
+        posts[0].contains('***')
+        !posts[0].contains('pass@')
+        !posts[0].contains('SECRET')
+    }
+
+    def "http_request error log redacts credentials embedded in the exception message"() {
+        given: 'an exception whose message echoes the raw URL (as Hubitat HTTP errors often do)'
+        def logging = new LoggingActionParent()
+        parent = logging
+        stubHttpGetException = new RuntimeException('connect failed: https://user:pass@host/x?token=SEKRIT')
+
+        when:
+        script.executeAction([type: 'http_request', url: 'https://user:pass@host/x?token=SEKRIT'])
+
+        then: 'neither the URL argument nor the exception text leaks credentials'
+        def errs = logging.logCalls.findAll { it[0] == 'error' }
+        errs.size() == 1
+        !errs[0][2].contains('pass@')
+        !errs[0][2].contains('SEKRIT')
     }
 
     // -------- log / comment --------
