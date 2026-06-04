@@ -3,7 +3,7 @@
 # PR's source via update_app_code. On a verified write, drops a
 # "deploy landed" marker that mcp_restore_source.sh checks before
 # pushing anything back -- so a no-op deploy (e.g. blocked by cloud
-# body cap) doesn't trigger a wasted 1.2MB cleanup write.
+# body cap) doesn't trigger a wasted 1.5MB cleanup write.
 #
 # Usage: mcp_deploy_source.sh [path/to/hubitat-mcp-server.groovy]
 # Env:   MCP_URL     -- full cloud OAuth URL with access_token
@@ -37,7 +37,7 @@ DEPLOY_LANDED_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_landed"
 APP_NAMESPACE="mcp"
 APP_NAME="MCP Rule Server"
 
-# Cloud's gateway window is ~10s; a 1.2MB Groovy recompile on a real C-7/
+# Cloud's gateway window is ~10s; a 1.5MB Groovy recompile on a real C-7/
 # C-8 hub takes ~10-25s. When cloud returns 5xx, we sleep, then poll
 # get_app_source until totalLength changes from PRE_LEN (proving the
 # write landed) or we hit the timeout.
@@ -159,16 +159,23 @@ if [ "$PRE_BYTES" -lt 1000 ]; then
 fi
 
 NEW_BYTES=$(wc -c < "$SOURCE_FILE")
-echo "Pushing $SOURCE_FILE ($NEW_BYTES bytes) to class $CLASS_ID..."
+: "${PR_SOURCE_URL:?PR_SOURCE_URL env var required -- the raw URL the hub fetches via update_app_code importUrl mode (the workflow sets it from the PR head SHA)}"
+echo "Deploying class $CLASS_ID via importUrl (hub fetches ${NEW_BYTES} bytes from ${PR_SOURCE_URL})..."
 
-# Build the RPC envelope as a file (jq --rawfile handles JSON-escaping the
-# 1.2MB source), then pipe to curl via stdin so we never put the body on
-# the command line. Same dodge for the restore script.
+# importUrl mode (issue #228): the hub fetches the PR branch's raw source
+# directly, so the ~1.5MB blob never crosses the cloud gateway -- an inline
+# source=... write reliably 504s before the hub receives it, but the
+# importUrl RPC body is tiny (just the URL). importUrl shipped on
+# update_app_code in #213 (2026-05-26), BEFORE the hub_ rename in #224
+# (2026-06-02), so the pre-rename server currently on the test hub already
+# exposes it. Self-update recompiles the MCP app mid-call, so the call may
+# not return cleanly -- the 5xx / curl-failure tolerance and the
+# get_app_source verify below already handle that.
 DEPLOY_RPC_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_rpc.json"
 jq -nc \
   --arg id "$CLASS_ID" \
-  --rawfile src "$SOURCE_FILE" \
-  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"update_app_code",arguments:{appId:$id,source:$src,confirm:true}}}' \
+  --arg url "$PR_SOURCE_URL" \
+  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"update_app_code",arguments:{appId:$id,importUrl:$url,confirm:true}}}' \
   > "$DEPLOY_RPC_FILE"
 
 # Poll get_app_source until totalLength differs from PRE_LEN, proving the

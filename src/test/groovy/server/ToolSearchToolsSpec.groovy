@@ -61,25 +61,45 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         second.results == first.results
     }
 
-    def "a toggle flip re-filters visibility per-request without rebuilding the shared full-corpus token cache"() {
-        given: 'cache built over the full corpus with both engines on'
+    def "a toggle flip hides the right tools per-request without rebuilding the shared full-corpus token cache"() {
+        given: 'a clean cache with the custom rule engine ON'
         searchEnabled()
         atomicStateMap.remove('toolSearchCorpus')
         atomicStateMap.remove('toolSearchTokens')
-        script.toolSearchTools([query: 'rule create delete', maxResults: 20])
+
+        when: 'search with the engine ON'
+        def onResult = script.toolSearchTools([query: 'custom rule create delete clone', maxResults: 25])
         def fullSize = atomicStateMap.toolSearchTokens.size()
 
-        when: 'flip a visibility toggle WITHOUT clearing the cache, then search again'
-        settingsMap.enableCustomRuleEngine = false
-        def offResult = script.toolSearchTools([query: 'rule create delete', maxResults: 20])
+        then: 'a custom_* tool is visible'
+        onResult.results*.tool.contains('hub_create_custom_rule')
 
-        then: 'the full-corpus token cache is untouched by the toggle (filtering is per-request, not a rebuild)'
+        when: 'flip the engine OFF WITHOUT clearing the cache, then search again'
+        settingsMap.enableCustomRuleEngine = false
+        def offResult = script.toolSearchTools([query: 'custom rule create delete clone', maxResults: 25])
+
+        then: 'the custom_* tool is now hidden (per-request visibility filter, NOT a cache rebuild)'
+        !offResult.results*.tool.contains('hub_create_custom_rule')
+
+        and: 'the full-corpus token cache is untouched by the toggle'
         atomicStateMap.toolSearchTokens.size() == fullSize
         atomicStateMap.toolSearchTokens.size() == atomicStateMap.toolSearchCorpus.size()
 
-        and: 'the search still returns a well-formed result set under the new toggle state'
-        offResult.results instanceof List
+        and: 'results remain well-formed (deduped)'
         offResult.results*.tool == offResult.results*.tool.unique()
+    }
+
+    def "a query semantically anchors to the right corpus entry (proves token<->corpus alignment)"() {
+        given:
+        searchEnabled()
+
+        when: 'a query whose strongest matches are the room tools'
+        def result = script.toolSearchTools([query: 'room rooms list', maxResults: 8])
+
+        then: 'a room tool surfaces with positive relevance -- the score is tied to the right corpus entry'
+        def roomHit = result.results.find { it.tool.contains('room') }
+        roomHit != null
+        roomHit.relevance > 0
     }
 
     def "updated() invalidates both BM25 atomicState entries and the gateway requiredParams memo in lockstep"() {

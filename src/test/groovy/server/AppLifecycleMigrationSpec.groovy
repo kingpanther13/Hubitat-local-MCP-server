@@ -378,4 +378,66 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
     // (confirmRegenerateTokenPage is static UI: dynamicPage cannot be rendered outside a
     // preferences() reader context in this harness, so its body is compile-validated by the
     // sandbox load; the regenerate behaviour is covered by the appButtonHandler test above.)
+
+    // -----------------------------------------------------------------------
+    // handleUpdateCheckResponse failure paths stamp a checkedAt so the
+    // first-install gate flips + the 24h guard engages on offline hubs, but
+    // MUST NOT clobber a previously-known update result (lifecycle-version-
+    // check-on-every-save fix + its review follow-up).
+    // -----------------------------------------------------------------------
+
+    def "handleUpdateCheckResponse on a non-200 stamps checkedAt + lastError without flagging an update"() {
+        given:
+        stateMap.remove('updateCheck')
+
+        when:
+        script.handleUpdateCheckResponse([status: 500, data: ''], null)
+
+        then: 'the gate is flipped (record exists) and the 24h guard is armed, no banner'
+        stateMap.updateCheck != null
+        stateMap.updateCheck.checkedAt == 1234567890000L
+        stateMap.updateCheck.lastError == 'http 500'
+        !stateMap.updateCheck.updateAvailable
+    }
+
+    def "handleUpdateCheckResponse on a 200 with no version field stamps a failure record"() {
+        given:
+        stateMap.remove('updateCheck')
+
+        when:
+        script.handleUpdateCheckResponse([status: 200, data: '{}'], null)
+
+        then:
+        stateMap.updateCheck.checkedAt == 1234567890000L
+        stateMap.updateCheck.lastError == 'no version field'
+        !stateMap.updateCheck.updateAvailable
+    }
+
+    def "handleUpdateCheckResponse on unparseable body stamps a failure record (caught)"() {
+        given:
+        stateMap.remove('updateCheck')
+
+        when:
+        script.handleUpdateCheckResponse([status: 200, data: 'not json at all'], null)
+
+        then:
+        noExceptionThrown()
+        stateMap.updateCheck.checkedAt == 1234567890000L
+        stateMap.updateCheck.lastError != null
+        !stateMap.updateCheck.updateAvailable
+    }
+
+    def "a transient version-check failure does NOT clobber a previously-surfaced 'update available' result"() {
+        given: 'a prior successful check that found an update'
+        stateMap.updateCheck = [latestVersion: '9.9.9', updateAvailable: true, checkedAt: 1L]
+
+        when: 'a later check fails (GitHub briefly unreachable)'
+        script.handleUpdateCheckResponse([status: 503, data: ''], null)
+
+        then: 'the known update is preserved (banner stays); only checkedAt + lastError refresh'
+        stateMap.updateCheck.updateAvailable == true
+        stateMap.updateCheck.latestVersion == '9.9.9'
+        stateMap.updateCheck.checkedAt == 1234567890000L
+        stateMap.updateCheck.lastError == 'http 503'
+    }
 }

@@ -25758,7 +25758,13 @@ def toolExportNativeApp(args) {
         def refreshResp = _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, null)
         String jsonContent = _appClonerExtractJsonFromResponse(refreshResp?.data)
         if (!jsonContent) {
-            throw new IllegalStateException("appCloner export fired but no JSON content could be extracted from cloner ${clonerAppId} — wire format may have changed (looked for configPage.sections[].input[].filecontent)")
+            // Distinguish an unreadable response body (the struct read path returns
+            // data:null on a 2xx when the body read fails mid-stream) from a genuine
+            // format change, so the operator isn't sent chasing the wrong root cause.
+            def reason = (refreshResp?.data == null)
+                ? "the cloner response body was empty/unreadable (status ${refreshResp?.status})"
+                : "no JSON content could be extracted (looked for configPage.sections[].input[].filecontent) — wire format may have changed"
+            throw new IllegalStateException("appCloner export fired but ${reason} for cloner ${clonerAppId}")
         }
 
         def result = [
@@ -26156,18 +26162,19 @@ def handleUpdateCheckResponse(resp, data) {
     try {
         if (resp.status != 200) {
             mcpLog("warn", "server", "Version check HTTP error: ${resp.status}")
-            // Stamp a checkedAt-bearing failure sentinel so the first-install gate in
-            // initialize() flips and the 24h guard in checkForUpdate engages even when
-            // the check never succeeds (e.g. a hub that can't reach GitHub) -- otherwise
-            // every settings save would re-egress. updateAvailable:false => no banner.
-            state.updateCheck = [checkedAt: now(), updateAvailable: false, lastError: "http ${resp.status}"]
+            // Merge checkedAt + lastError onto the existing record (do NOT replace it)
+            // so the first-install gate in initialize() flips and the 24h guard engages
+            // even when the check never succeeds (e.g. a hub that can't reach GitHub),
+            // WITHOUT clobbering a previously-known latestVersion/updateAvailable -- a
+            // transient failure must not silently drop an already-surfaced update banner.
+            state.updateCheck = (state.updateCheck ?: [:]) + [checkedAt: now(), lastError: "http ${resp.status}"]
             return
         }
         def json = new groovy.json.JsonSlurper().parseText(resp.data)
         def latestVersion = json.version
         if (!latestVersion) {
             mcpLog("warn", "server", "Version check: no version field in response")
-            state.updateCheck = [checkedAt: now(), updateAvailable: false, lastError: "no version field"]
+            state.updateCheck = (state.updateCheck ?: [:]) + [checkedAt: now(), lastError: "no version field"]
             return
         }
         def installed = currentVersion()
@@ -26184,7 +26191,7 @@ def handleUpdateCheckResponse(resp, data) {
         }
     } catch (Exception e) {
         mcpLog("warn", "server", "Version check response parsing failed: ${e.message}")
-        state.updateCheck = [checkedAt: now(), updateAvailable: false, lastError: e.message]
+        state.updateCheck = (state.updateCheck ?: [:]) + [checkedAt: now(), lastError: e.message]
     }
 }
 
