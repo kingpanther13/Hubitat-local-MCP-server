@@ -776,6 +776,28 @@ class TestRunner:
         except (McpToolError, McpError) as exc:
             assert "hub_set_rule" in str(exc), f"rejection should point to hub_set_rule: {exc}"
 
+    @test("native_apps")
+    def test_set_native_app_nonrm_label(self) -> None:
+        # A NON-RM app type (button_controller) must apply the caller's `name` as
+        # the installed-app label. RM-family apps copy origLabel->label via their
+        # own page logic, but other classic types have no origLabel input, so the
+        # create path sets the label generically. Before the fix the label stayed
+        # the default type name (e.g. "Button Controller-5.1") and the documented
+        # `name` param was silently ignored for these types.
+        created = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app",
+            "args": {"appType": "button_controller", "name": f"{PREFIX}BtnLabel", "confirm": True},
+        })
+        app_id = created.get("appId")
+        assert app_id, f"hub_set_native_app button_controller create did not return appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+        cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
+        app_obj = cfg.get("app") or {}
+        label = str(app_obj.get("label") or "")
+        assert f"{PREFIX}BtnLabel" in label, \
+            f"non-RM create did not apply `name` as the label; got label={label!r} (expected to contain {PREFIX}BtnLabel)"
+        self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
+
     # ---- shared helpers for the native-authoring coverage below ----
 
     def _create_native_rule(self, suffix: str) -> Any:
@@ -838,6 +860,11 @@ class TestRunner:
         first = self._set_rule(app_id, {"addAction": {"capability": "log", "message": "three"}})
         idx = first.get("actionIndex")
         assert idx is not None, f"addAction did not return an actionIndex (contract regression): {first}"
+        # moveAction now re-polls for a late move-arrow commit before concluding
+        # the position did not shift -- _set_rule would raise if it hard-failed a
+        # successful-but-slow move (the false-negative this guards against).
+        moved = self._set_rule(app_id, {"moveAction": {"index": 1, "direction": "down"}})
+        assert moved.get("success") is not False, f"moveAction should succeed (re-poll absorbs late commit): {moved}"
         self._set_rule(app_id, {"removeAction": {"index": idx}})
         self._set_rule(app_id, {"clearActions": True})
         self._set_rule(app_id, {"replaceActions": [{"capability": "log", "message": "final"}]})
@@ -852,7 +879,13 @@ class TestRunner:
         added = self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
         tidx = added.get("triggerIndex")
         assert tidx is not None, f"addTrigger did not return a triggerIndex (contract regression): {added}"
-        self._set_rule(app_id, {"modifyTrigger": {"index": tidx, "mods": {"state": "off"}}})
+        mod = self._set_rule(app_id, {"modifyTrigger": {"index": tidx, "mods": {"state": "off"}}})
+        # modifyTrigger now reads the PERSISTED tstate (configure/json), so
+        # verifiedState echoes the new value instead of always being null
+        # (the old readback hit the closed selectTriggers wizard page).
+        if mod.get("verificationFetchFailed") is not True:
+            assert mod.get("verifiedState") == "off", \
+                f"modifyTrigger verifiedState should echo the persisted new state 'off', got {mod.get('verifiedState')!r}: {mod}"
         self._set_rule(app_id, {"removeTrigger": {"index": tidx}})
         self._assert_rule_healthy(app_id)
         self._delete_native(app_id)

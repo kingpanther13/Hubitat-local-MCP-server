@@ -24188,24 +24188,33 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // removeTrigger/addTrigger as the rebuild path.
         //
         // Drives partial via verificationFetchFailed=true: throw on the
-        // POST-COMMIT selectTriggers fetch (after hasAll click) so
+        // POST-COMMIT configure/json fetch (after hasAll click) so
         // _rmModifyTrigger's verify path sets verificationFetchFailed=true.
-        // The dispatcher then flips trigInnerPartial=true and the new
-        // inner-only hint should fire because updateRuleFailed stays false.
-        // Both-ways pending (orchestrator).
+        // (The post-commit readback reads the PERSISTED configure/json settings
+        // now, not the closed selectTriggers wizard page.) The dispatcher then
+        // flips trigInnerPartial=true and the new inner-only hint should fire
+        // because updateRuleFailed stays false. Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
         def hasAllClicked = false
         def selectTrigFetchSeq = 0
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        def noPageFetchAfterHasAll = 0
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            // The FIRST no-page configure/json fetch after the hasAll commit is
+            // _rmModifyTrigger's verification read -- make it throw to drive
+            // verificationFetchFailed=true. Later no-page reads (health, etc.)
+            // succeed normally so the rest of the dispatcher path proceeds.
+            if (hasAllClicked) {
+                noPageFetchAfterHasAll++
+                if (noPageFetchAfterHasAll == 1) {
+                    throw new RuntimeException("simulated post-commit configure/json fetch failure (verificationFetchFailed path)")
+                }
+            }
+            ruleConfigJson(100, "r", [])
+        }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
             selectTrigFetchSeq++
-            // After hasAll click, the next selectTriggers fetch is the
-            // verification fetch -- make it throw to drive verificationFetchFailed.
-            if (hasAllClicked) {
-                throw new RuntimeException("simulated post-commit selectTriggers fetch failure (verificationFetchFailed path)")
-            }
             // Fixture: schema includes tstate1 so _rmModifyTrigger reaches the
             // settings-write path. Paragraphs change every fetch so the write
             // routes to settingsApplied (renderShifted=true).

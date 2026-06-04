@@ -18467,12 +18467,17 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     def verifiedState = null
     def verificationFetchFailed = false
     try {
-        def verifyCfg = _rmFetchConfigJson(appId, "selectTriggers")
-        def verifySchema = _rmCollectInputSchema(verifyCfg?.configPage)
-        verifiedState = verifySchema?.get("tstate${triggerIdx}")?.value?.toString()
+        // Read the PERSISTED tstate from the rule's configure/json settings
+        // (the same ground-truth surface hub_get_app_config reports), NOT the
+        // post-commit selectTriggers wizard page: once hasAll closes the
+        // trigger editor, selectTriggers no longer exposes a populated
+        // tstate<N> input, so the old schema readback always echoed null even
+        // on a successful modify (the change had really landed).
+        def verifyCfg = _rmFetchConfigJson(appId)
+        verifiedState = verifyCfg?.settings?."tstate${triggerIdx}"?.toString()
     } catch (Exception verifyExc) {
         verificationFetchFailed = true
-        mcpLog("warn", "rm-native", "_rmModifyTrigger: post-commit selectTriggers fetch failed for app ${appId} (${verifyExc.message}) -- cannot echo-verify new state; returning verificationFetchFailed=true")
+        mcpLog("warn", "rm-native", "_rmModifyTrigger: post-commit configure/json fetch failed for app ${appId} (${verifyExc.message}) -- cannot echo-verify new state; returning verificationFetchFailed=true")
     }
     def success = verificationFetchFailed ? false : (verifiedState != null ? verifiedState == mods.state?.toString() : !applied.isEmpty())
     return [
@@ -18626,8 +18631,24 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     if (!isBoundary) {
         def expectedShift = direction == "up" ? -1 : 1
         def actualShift = afterPosition - beforePosition
+        // Slow hubs commit the move-arrow click AFTER the immediate re-read
+        // (observed live: the position flips a few seconds post-click, so the
+        // first check still sees the pre-move order). Without this poll, a late
+        // commit is reported as a HARD failure -- a false-negative that tempts
+        // a caller into a second move that double-shifts the action. Mirror
+        // removeAction's bounded retry (~10s budget; immediate-success path
+        // skips all sleeps) before concluding the position did not shift.
         if (actualShift != expectedShift) {
-            throw new IllegalStateException("moveAction(${actionIdx}, ${direction}): click returned 200 but action position did NOT shift -- state.editAct was clear at pre-flight, so this is likely an extreme propagation lag or race with another edit. Before position: ${beforePosition}, after position: ${afterPosition}, expected shift: ${expectedShift}.")
+            def retryDelaysMs = [1000, 3000, 6000]
+            for (int attempt = 1; attempt < 4 && actualShift != expectedShift; attempt++) {
+                pauseExecution(retryDelaysMs[attempt - 1] as Integer)
+                afterOrderRaw = _rmCollectActionIndices(appId)
+                afterPosition = afterOrderRaw.indexOf(actionIdx)
+                actualShift = afterPosition - beforePosition
+            }
+        }
+        if (actualShift != expectedShift) {
+            throw new IllegalStateException("moveAction(${actionIdx}, ${direction}): after the move-arrow click and ~10s of polling, action position still did NOT shift -- state.editAct was clear at pre-flight, so the most likely cause is a DROPPED move-arrow click. Before position: ${beforePosition}, after position: ${afterPosition}, expected shift: ${expectedShift}. Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and inspect the action order. If unchanged -> the click dropped; safe to retry moveAction. If already shifted -> it committed late; do NOT retry (a second move would shift it the other way).")
         }
     }
     return [success: true, index: actionIdx, direction: direction, beforePosition: beforePosition, afterPosition: afterPosition, indicesAfter: afterOrderRaw.sort()]
@@ -22353,6 +22374,25 @@ def _createNativeAppShell(args) {
         // for installed apps), but if a future appType needs a different
         // commit button, the registry can carry a commitButton field.
         _rmClickAppButton(newId, "updateRule")
+
+        // Label fallback for non-RM app types. RM-family apps copy origLabel
+        // -> the installed-app label via their own page logic on updateRule,
+        // so the write above is enough for them. Other classic types (Button
+        // Controller, etc.) have no origLabel input, so the label would
+        // otherwise stay the default type name ("Button Controller-5.1")
+        // instead of the caller's `name` (which the param documents as the
+        // label). Self-gating: for RM the label already equals `name` here, so
+        // this is a no-op; only non-RM shells hit the admin update endpoint.
+        // Best-effort: wrapped so a failure never fails an otherwise-successful
+        // create (the app already exists and is usable).
+        try {
+            def curLabel = _rmFetchConfigJson(newId)?.app?.label
+            if (curLabel?.toString() != name) {
+                hubInternalPostForm("/installedapp/update", [id: newId.toString(), label: name])
+            }
+        } catch (Exception labelExc) {
+            mcpLog("warn", "rm-native", "_createNativeAppShell: generic label set for app ${newId} (appType=${appType}) failed (${labelExc.message}) -- the app may display the default type name instead of '${name}'")
+        }
 
         // Optional bulk-trigger creation. When `triggers` is passed, walk
         // the list and call _rmAddTrigger for each spec. After all are
