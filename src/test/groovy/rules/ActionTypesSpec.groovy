@@ -855,14 +855,11 @@ class ActionTypesSpec extends RuleHarnessSpec {
     }
 
     def "http_request GET success log redacts credentials in the URL"() {
-        given: 'fire the response closure so the success-path log.debug actually runs'
-        stubInvokeHttpResponse = true
-
-        when:
+        when: 'a successful GET fires the response handler, which logs the redacted URL'
         script.executeAction([type: 'http_request', url: 'https://user:pass@host/api?token=SECRET'])
 
         then: 'the GET success debug line logged the redacted URL'
-        def gets = appExecutor.getLog().messages.findAll { it.startsWith('debug:HTTP GET') }
+        def gets = capturedLogs().findAll { it.startsWith('debug:HTTP GET') }
         gets.size() == 1
         gets[0].contains('host/api')
         gets[0].contains('***')
@@ -874,16 +871,13 @@ class ActionTypesSpec extends RuleHarnessSpec {
     }
 
     def "http_request POST success log redacts credentials in the URL"() {
-        given:
-        stubInvokeHttpResponse = true
-
-        when:
+        when: 'a successful POST fires the response handler'
         script.executeAction([type: 'http_request', method: 'POST',
                               url: 'https://user:pass@host/api?token=SECRET',
                               contentType: 'application/json', body: '{}'])
 
         then:
-        def posts = appExecutor.getLog().messages.findAll { it.startsWith('debug:HTTP POST') }
+        def posts = capturedLogs().findAll { it.startsWith('debug:HTTP POST') }
         posts.size() == 1
         posts[0].contains('host/api')
         posts[0].contains('***')
