@@ -55,6 +55,7 @@ def installed() {
 def updated() {
     log.info "MCP Rule '${settings.ruleName}' updated"
     state.updatedAt = now()
+    atomicState.localVarsWarned = false  // re-arm local-variable size warning on each save
     // Update the app label to match the rule name (for display in Apps list)
     if (settings.ruleName) {
         app.updateLabel(settings.ruleName)
@@ -75,6 +76,8 @@ def initialize() {
     clearDurationState()
     // Clear stale cancelled delay IDs (scheduled callbacks were cancelled by unschedule())
     atomicState.cancelledDelayIds = [:]
+    // Reset loop-guard window on (re)initialization so an edited/re-enabled rule starts fresh
+    atomicState.recentExecutions = []
 
     // Initialize previousMode so mode_change triggers with fromMode work on first event
     state.previousMode = location.mode
@@ -2529,7 +2532,7 @@ def describeAction(action) {
             return "Set thermostat ${tstatDevName} (${tstatParts.join(', ')})"
 
         case "http_request":
-            return "${action.method ?: 'GET'} ${action.url}"
+            return "${action.method ?: 'GET'} ${redactUrlForLog(action.url)}"
 
         case "speak":
             def speakDev = parent.findDevice(action.deviceId)
@@ -3390,7 +3393,7 @@ def executeAction(action, actionIndex = null, evt = null) {
         case "set_mode":
             if (!action.mode) {
                 ruleLog("error", "set_mode action missing 'mode' value")
-                return false
+                break // skip this misconfigured action, continue the rule
             }
             location.setMode(action.mode)
             break
@@ -3398,7 +3401,7 @@ def executeAction(action, actionIndex = null, evt = null) {
         case "set_hsm":
             if (!action.status) {
                 ruleLog("error", "set_hsm action missing 'status' value")
-                return false
+                break // skip this misconfigured action, continue the rule
             }
             sendLocationEvent(name: "hsmSetArm", value: action.status)
             break
@@ -3476,6 +3479,7 @@ def executeAction(action, actionIndex = null, evt = null) {
             def vars = atomicState.localVariables ?: [:]
             vars[action.variableName] = substituteVariables(action.value?.toString() ?: "", evt)
             atomicState.localVariables = vars
+            checkLocalVarsSize(vars)
             break
 
         case "activate_scene":
@@ -3634,21 +3638,22 @@ def executeAction(action, actionIndex = null, evt = null) {
 
         case "http_request":
             try {
+                def safeUrl = redactUrlForLog(action.url)
                 def method = action.method ?: "GET"
                 if (method == "GET") {
                     httpGet([uri: action.url]) { resp ->
-                        log.debug "HTTP GET ${action.url} returned status ${resp.status}"
+                        log.debug "HTTP GET ${safeUrl} returned status ${resp.status}"
                     }
                 } else if (method == "POST") {
                     def params = [uri: action.url]
                     if (action.contentType) params.contentType = action.contentType
                     if (action.body) params.body = action.body
                     httpPost(params) { resp ->
-                        log.debug "HTTP POST ${action.url} returned status ${resp.status}"
+                        log.debug "HTTP POST ${safeUrl} returned status ${resp.status}"
                     }
                 }
             } catch (Exception e) {
-                ruleLog("error", "Error executing HTTP ${action.method ?: 'GET'} to ${action.url}: ${e.message}")
+                ruleLog("error", "Error executing HTTP ${action.method ?: 'GET'} to ${redactUrlForLog(action.url)}: ${e.message}")
             }
             break
 
@@ -3752,6 +3757,7 @@ def executeAction(action, actionIndex = null, evt = null) {
             if (scope == "local") {
                 locals[varName] = mathResult
                 atomicState.localVariables = locals
+                checkLocalVarsSize(locals)
             } else {
                 setGlobalVar(varName, mathResult)
             }
@@ -3879,6 +3885,12 @@ def updateRuleFromParent(data) {
     unsubscribe()
     unschedule()
     clearDurationState()  // Clear duration state when rule is updated to prevent orphaned triggers
+    // unschedule() above cancelled every pending resumeDelayedActions callback, so any
+    // cancelledDelayIds markers are now dead weight (and may key off delays the edited
+    // action list no longer contains). Reset to match initialize()'s re-init hygiene.
+    atomicState.cancelledDelayIds = [:]
+    atomicState.recentExecutions = []  // Reset loop-guard window — edited rule starts its loop count fresh
+    atomicState.localVarsWarned = false  // re-arm local-variable size warning (parity with updated(); MCP edits don't fire updated())
     if (shouldBeEnabled) {
         subscribeToTriggers()
     }
@@ -3888,6 +3900,7 @@ def enableRule() {
     app.updateSetting("ruleEnabled", true)
     state.updatedAt = now()
     clearDurationState()  // Clear orphaned duration state from previous disable
+    atomicState.recentExecutions = []  // Start the loop-guard window fresh on (re-)enable
     unsubscribe()
     unschedule()
     subscribeToTriggers()
@@ -3923,6 +3936,18 @@ def notifyLoopGuard(String message) {
     }
 }
 
+// Passive size guard for atomicState.localVariables: user-named variables are
+// meaningful so we DON'T evict; warn once when the map first crosses the threshold
+// so an accidentally-unbounded namer is visible in the logs. Re-arms on rule save.
+def checkLocalVarsSize(Map locals) {
+    if (locals != null && locals.size() >= 100 && !atomicState.localVarsWarned) {
+        atomicState.localVarsWarned = true
+        ruleLog("warn", "Rule '${settings.ruleName}' now has ${locals.size()} local variables; " +
+            "this map persists in atomicState and is not auto-pruned. Verify variable names are " +
+            "not being generated dynamically (e.g. from event data). Remove unused variables to keep state lean.")
+    }
+}
+
 // Bridge to parent's mcpLog for MCP debug log visibility
 // Falls back to standard logging if parent method unavailable
 def ruleLog(String level, String message, Map extraData = null) {
@@ -3940,10 +3965,27 @@ def ruleLog(String level, String message, Map extraData = null) {
     }
 }
 
+// Redact secrets from a request URL before it is logged (MCP buffer / hub log).
+// Strips basic-auth userinfo (scheme://user:pass@host -> scheme://host) and masks
+// sensitive query-param values. Sandbox-safe: only String.replaceAll + a null guard.
+// The real URL is still sent to httpGet/httpPost; only the logged copy is redacted.
+private String redactUrlForLog(url) {
+    if (url == null) return null
+    def out = url.toString()
+    // Strip basic-auth userinfo: scheme://user:pass@host -> scheme://host. The class
+    // excludes / ? # so a pathless URL with an @ in its query isn't over-redacted.
+    out = out.replaceAll("://[^/?#\\s@]+@", "://")
+    // Mask the value of any sensitive query param. Exact names, '=' anchored, so
+    // lookalikes like keyword= / author= / authuser= are left untouched.
+    out = out.replaceAll("(?i)([?&](?:token|api_key|apikey|access_token|access_key|password|passwd|pwd|client_secret|secret_key|secretkey|secret|signature|sig|auth|bearer|key)=)[^&\\s]*", "\$1***")
+    return out
+}
+
 def disableRule() {
     app.updateSetting("ruleEnabled", false)
     state.updatedAt = now()
     clearDurationState()  // Clear duration state to prevent orphaned durationFired flags
+    atomicState.recentExecutions = []  // Reset loop-guard window so a re-enabled rule starts fresh
     unsubscribe()
     unschedule()
 }

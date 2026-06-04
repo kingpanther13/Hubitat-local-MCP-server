@@ -119,6 +119,77 @@ class LoopGuardSpec extends RuleHarnessSpec {
         appExecutor.getApp().settingsStore.ruleEnabled == false
     }
 
+    // ---- the loop-guard window is reset on the disable / edit / re-init paths ----
+    // (auto-disable already clears it above; these are the manual/edit paths that
+    // previously left stale timestamps behind, so a re-enabled rule could re-trip early.)
+
+    def "disableRule resets the loop-guard window so a re-enabled rule starts fresh"() {
+        given:
+        settingsMap.ruleName = 'Disable Reset'
+        appExecutor.getApp().settingsStore.ruleEnabled = true
+        atomicStateMap.recentExecutions = [FIXED_NOW - 5_000L, FIXED_NOW - 1_000L]
+
+        when:
+        script.disableRule()
+
+        then:
+        atomicStateMap.recentExecutions == []
+        appExecutor.getApp().settingsStore.ruleEnabled == false
+        unsubscribeCount == 1
+        unscheduleAllCount == 1
+    }
+
+    def "updateRuleFromParent resets the loop-guard window on an in-place edit"() {
+        given:
+        parent = new LoopGuardParent(settings: [loopGuardMax: 30, loopGuardWindowSec: 60])
+        atomicStateMap.recentExecutions = [FIXED_NOW - 2_000L]
+
+        when: 'enabled:false so subscribeToTriggers wiring is skipped'
+        script.updateRuleFromParent([triggers: [], conditions: [], actions: [], enabled: false])
+
+        then:
+        atomicStateMap.recentExecutions == []
+    }
+
+    def "updated re-initialises and resets the loop-guard window"() {
+        given: 'ruleEnabled=false so initialize() skips subscribeToTriggers'
+        settingsMap.ruleName = 'Updated Reset'
+        settingsMap.ruleEnabled = false
+        atomicStateMap.recentExecutions = [FIXED_NOW - 3_000L, FIXED_NOW - 1_000L]
+
+        when:
+        script.updated()
+
+        then:
+        atomicStateMap.recentExecutions == []
+        unsubscribeCount == 1
+        unscheduleAllCount == 1
+    }
+
+    def "initialize resets the loop-guard window directly"() {
+        given: 'ruleEnabled=false so initialize() skips subscribeToTriggers'
+        settingsMap.ruleEnabled = false
+        atomicStateMap.recentExecutions = [FIXED_NOW - 2_000L, FIXED_NOW - 500L]
+
+        when:
+        script.initialize()
+
+        then:
+        atomicStateMap.recentExecutions == []
+    }
+
+    def "enableRule starts the loop-guard window fresh"() {
+        given:
+        settingsMap.ruleName = 'Enable Fresh'
+        atomicStateMap.recentExecutions = [FIXED_NOW - 1_000L]
+
+        when:
+        script.enableRule()
+
+        then:
+        atomicStateMap.recentExecutions == []
+    }
+
     /**
      * Minimal loop-guard parent. {@code settings} map carries loopGuardMax
      * and loopGuardWindowSec; {@code getSelectedDevices()} returns an empty

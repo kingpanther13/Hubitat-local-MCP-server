@@ -333,12 +333,12 @@ class ActionTypesSpec extends RuleHarnessSpec {
         testLocation.mode == 'Night'
     }
 
-    def "set_mode with no mode value returns false without touching location"() {
-        when:
+    def "set_mode with no mode value is skipped and continues (does not stop the rule)"() {
+        when: 'a misconfigured set_mode (no mode) runs'
         def result = script.executeAction([type: 'set_mode'])
 
-        then:
-        result == false
+        then: 'skip-and-continue: returns the CONTINUE signal and never touches location'
+        result == true
         testLocation.modeSetCalls == []
     }
 
@@ -799,6 +799,59 @@ class ActionTypesSpec extends RuleHarnessSpec {
         1 * target.on()
     }
 
+    def "redactUrlForLog strips basic-auth userinfo and masks sensitive query-param values"() {
+        expect:
+        script.redactUrlForLog('https://user:pass@host/api?token=SECRET&z=keep') ==
+            'https://host/api?token=***&z=keep'
+        script.redactUrlForLog('http://h/api?api_key=A&apikey=B&access_token=C&password=D&key=E&secret=F') ==
+            'http://h/api?api_key=***&apikey=***&access_token=***&password=***&key=***&secret=***'
+        and: 'a non-sensitive key whose name merely starts with a sensitive word is NOT masked'
+        script.redactUrlForLog('http://host/api?keyword=harmless') == 'http://host/api?keyword=harmless'
+        and: 'an @ inside a query value (e.g. an email) is preserved — only authority userinfo is stripped'
+        script.redactUrlForLog('http://host/api?email=a@b.com&token=t') == 'http://host/api?email=a@b.com&token=***'
+        and: 'the broader secret-param set (auth/sig/client_secret/pwd/bearer/access_key/...) is masked'
+        script.redactUrlForLog('http://h/x?auth=A&sig=B&signature=G&client_secret=C&pwd=D&passwd=H&bearer=E&access_key=I') ==
+            'http://h/x?auth=***&sig=***&signature=***&client_secret=***&pwd=***&passwd=***&bearer=***&access_key=***'
+        and: 'a pathless URL with an @ in the query is not over-redacted (host + query preserved)'
+        script.redactUrlForLog('http://host?u=a@b.com&token=t') == 'http://host?u=a@b.com&token=***'
+        and: 'plain URLs and null pass through untouched'
+        script.redactUrlForLog('https://host/path') == 'https://host/path'
+        script.redactUrlForLog(null) == null
+    }
+
+    def "describeAction redacts credentials in an http_request URL (the always-logged action summary)"() {
+        when: 'the per-action summary that executeAction logs on every action'
+        def desc = script.describeAction([type: 'http_request',
+                                          url: 'https://user:pass@host/api?token=SECRET'])
+
+        then: 'host is visible but userinfo + secret query value are redacted'
+        desc.contains('host/api')
+        desc.contains('***')
+        !desc.contains('pass@')
+        !desc.contains('SECRET')
+    }
+
+    def "http_request error log redacts credentials in the URL pushed to the MCP buffer"() {
+        given: 'a parent that records mcpLog pushes, and a failing httpGet'
+        def logging = new LoggingActionParent()
+        parent = logging
+        stubHttpGetException = new RuntimeException('boom')
+
+        when:
+        script.executeAction([type: 'http_request', url: 'https://user:pass@host/api?token=SECRET'])
+
+        then: 'exactly one error was buffered, with host visible but credentials redacted'
+        def errs = logging.logCalls.findAll { it[0] == 'error' }
+        errs.size() == 1
+        errs[0][2].contains('host/api')
+        errs[0][2].contains('***')
+        !errs[0][2].contains('pass@')
+        !errs[0][2].contains('SECRET')
+
+        and: 'the real (unredacted) URL was still sent to httpGet'
+        httpGetCalls[0][0] == [uri: 'https://user:pass@host/api?token=SECRET']
+    }
+
     // -------- log / comment --------
 
     def "log action substitutes variables into the message"() {
@@ -857,6 +910,15 @@ class ActionTypesSpec extends RuleHarnessSpec {
 
         Map getCapturedState(String key) {
             savedStates[key]
+        }
+    }
+
+    /** Records parent.mcpLog pushes so log-buffer content (e.g. redaction) is observable. */
+    static class LoggingActionParent {
+        List<List> logCalls = []
+        Object findDevice(id) { null }
+        void mcpLog(String level, String category, String message, String ruleId, Map extraData) {
+            logCalls << [level, category, message, ruleId, extraData]
         }
     }
 }

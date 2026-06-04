@@ -102,10 +102,10 @@ class ErrorPathsSpec extends RuleHarnessSpec {
         result == true
     }
 
-    def "set_mode missing the 'mode' field returns false (stops the chain)"() {
+    def "set_mode missing the 'mode' field is skipped — the chain continues"() {
         given:
         atomicStateMap.actions = [
-            // missing mode field → executeAction returns false → executeActionsFromIndex breaks its outer loop
+            // missing mode field → logged as an error and skipped (it no longer stops the chain)
             [type: 'set_mode'],
             [type: 'device_command', deviceId: 1L, command: 'on']
         ]
@@ -115,11 +115,14 @@ class ErrorPathsSpec extends RuleHarnessSpec {
         when:
         script.executeActions()
 
-        then: 'the second action is NOT reached because set_mode returned false'
-        0 * target.on()
+        then: 'the misconfigured set_mode is skipped and the following action still runs'
+        1 * target.on()
+
+        and: 'the invalid set_mode never touched location'
+        testLocation.modeSetCalls == []
     }
 
-    def "set_hsm missing the 'status' field returns false (stops the chain)"() {
+    def "set_hsm missing the 'status' field is skipped — the chain continues"() {
         given:
         atomicStateMap.actions = [
             [type: 'set_hsm'],
@@ -131,8 +134,11 @@ class ErrorPathsSpec extends RuleHarnessSpec {
         when:
         script.executeActions()
 
-        then:
-        0 * target.on()
+        then: 'the misconfigured set_hsm is skipped and the following action still runs'
+        1 * target.on()
+
+        and: 'no HSM event was emitted for the invalid action'
+        sendLocationEventCalls == []
     }
 
     static class ErrorParent {
