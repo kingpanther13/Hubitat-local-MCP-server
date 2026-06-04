@@ -5409,6 +5409,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.capabilities.any { it.name == "dimmer" }
         result.capabilities.any { it.name == "ifThen" }
         result.capabilities.any { it.name == "log" }
+
+        and: "dimmer declares per-action required fields (toggle/setLevel need level) -- not buried in optionalFields"
+        def dimmer = result.capabilities.find { it.name == "dimmer" }
+        dimmer.conditionalRequired != null
+        dimmer.conditionalRequired.toggle?.toString()?.contains("level")
+        dimmer.conditionalRequired.setLevel?.toString()?.contains("level")
+        dimmer.conditionalRequired.adjust?.toString()?.contains("adjustBy")
     }
 
     def "addTrigger discover=true does not require Hub Admin Write"() {

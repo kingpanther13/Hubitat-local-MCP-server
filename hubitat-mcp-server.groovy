@@ -17611,6 +17611,14 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "levelVariable", type: "String", description: "Hub variable name -- use instead of level for variable-sourced setLevel"],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
+                ],
+                conditionalRequired: [
+                    setLevel: "level (or levelVariable for a variable-sourced level)",
+                    toggle: "level (the on-level used when toggling from off)",
+                    adjust: "adjustBy",
+                    fade: "targetLevel + minutes + direction",
+                    startRaiseLower: "direction",
+                    setLevelPerMode: "perMode"
                 ]
             ],
             [
