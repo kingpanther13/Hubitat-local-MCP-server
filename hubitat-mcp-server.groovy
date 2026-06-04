@@ -22385,24 +22385,14 @@ def _createNativeAppShell(args) {
         // commit button, the registry can carry a commitButton field.
         _rmClickAppButton(newId, "updateRule")
 
-        // Label fallback for non-RM app types. RM-family apps copy origLabel
-        // -> the installed-app label via their own page logic on updateRule,
-        // so the write above is enough for them. Other classic types (Button
-        // Controller, etc.) have no origLabel input, so the label would
-        // otherwise stay the default type name ("Button Controller-5.1")
-        // instead of the caller's `name` (which the param documents as the
-        // label). Self-gating: for RM the label already equals `name` here, so
-        // this is a no-op; only non-RM shells hit the admin update endpoint.
-        // Best-effort: wrapped so a failure never fails an otherwise-successful
-        // create (the app already exists and is usable).
-        try {
-            def curLabel = _rmFetchConfigJson(newId)?.app?.label
-            if (curLabel?.toString() != name) {
-                hubInternalPostForm("/installedapp/update", [id: newId.toString(), label: name])
-            }
-        } catch (Exception labelExc) {
-            mcpLog("warn", "rm-native", "_createNativeAppShell: generic label set for app ${newId} (appType=${appType}) failed (${labelExc.message}) -- the app may display the default type name instead of '${name}'")
-        }
+        // NOTE: the origLabel write above becomes the installed-app label only
+        // for RM-family apps (RM copies origLabel -> label on updateRule). Other
+        // classic types (Button Controller, etc.) have no origLabel input and
+        // are NOT fully supported here (rule_machine is the only fully-registered
+        // appType), so they keep the default type-name label -- a known
+        // limitation of the non-rule_machine appTypes. A prior attempt to set
+        // the label generically via /installedapp/update did not take effect on
+        // a live Button Controller, so it was removed rather than shipped dead.
 
         // Optional bulk-trigger creation. When `triggers` is passed, walk
         // the list and call _rmAddTrigger for each spec. After all are

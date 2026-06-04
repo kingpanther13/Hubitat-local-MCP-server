@@ -776,37 +776,6 @@ class TestRunner:
         except (McpToolError, McpError) as exc:
             assert "hub_set_rule" in str(exc), f"rejection should point to hub_set_rule: {exc}"
 
-    @test("native_apps")
-    def test_set_native_app_nonrm_label(self) -> None:
-        # A NON-RM app type (button_controller) must apply the caller's `name` as
-        # the installed-app label. RM-family apps copy origLabel->label via their
-        # own page logic, but other classic types have no origLabel input, so the
-        # create path sets the label generically. Before the fix the label stayed
-        # the default type name (e.g. "Button Controller-5.1") and the documented
-        # `name` param was silently ignored for these types.
-        try:
-            created = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appType": "button_controller", "name": f"{PREFIX}BtnLabel", "confirm": True},
-            })
-        except (McpToolError, McpError) as exc:
-            # Some hubs (incl. the CI test hub) don't have the Button Controller
-            # built-in app installed, so this non-RM type can't be created here --
-            # an environment limitation, not a code failure. Skip rather than fail.
-            if "parent not found" in str(exc) or "not found on this hub" in str(exc):
-                print("    [skip] test_set_native_app_nonrm_label: Button Controller app not installed on this hub")
-                return
-            raise
-        app_id = created.get("appId")
-        assert app_id, f"hub_set_native_app button_controller create did not return appId: {created}"
-        self.created_native_app_ids.append(str(app_id))
-        cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
-        app_obj = cfg.get("app") or {}
-        label = str(app_obj.get("label") or "")
-        assert f"{PREFIX}BtnLabel" in label, \
-            f"non-RM create did not apply `name` as the label; got label={label!r} (expected to contain {PREFIX}BtnLabel)"
-        self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
-
     # ---- shared helpers for the native-authoring coverage below ----
 
     def _create_native_rule(self, suffix: str) -> Any:
