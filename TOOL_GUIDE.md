@@ -786,7 +786,7 @@ Degenerate-case semantics: `actionsRequestedForRemoval: null` indicates the pre-
 
 ##### appType options
 
-`appType` (default: `rule_machine`) selects which class of native app to create:
+`appType` selects which class of native app to create. NOTE: this selector belongs to `hub_set_native_app` — `hub_set_rule` always creates `rule_machine` rules (default: `rule_machine`):
 
 - `rule_machine` — Rule Machine 5.1 (the only registered type today; verified live). Creates an RM 5.1 rule specifically; RM 5.0 is not selectable.
 - Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family via `hub_set_native_app` — register them in `_appTypeRegistry` to enable creation. `hub_set_native_app` (edit) / `hub_delete_native_app` already work on them today via their `appId`.

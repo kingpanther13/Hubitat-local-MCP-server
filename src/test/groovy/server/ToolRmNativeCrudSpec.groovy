@@ -3305,6 +3305,121 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.partial == true
     }
 
+    def "moveAction late commit: the short re-check catches the shift and reports clean success (F2 recovery branch)"() {
+        // The move-arrow click can commit AFTER the immediate post-click read on
+        // a slow hub. _rmMoveAction does ONE short re-check (pauseExecution is a
+        // harness no-op) and, if the position HAS shifted by then, reports a
+        // clean success -- the entire reason the re-check loop exists. The
+        // happy-path tests shift on the first read (no re-check fires) and the
+        // no-shift test never shifts; neither exercises this late-commit RECOVERY
+        // path. A regression that deleted the re-check try block (server
+        // ~18658-18664) would silently turn a recoverable late commit into a soft
+        // asyncCommitLikely fail, and the rest of the suite would stay green.
+        given:
+        enableWrite()
+        def clickFired = false
+        def postClickReads = 0
+        def beforeActionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
+        def afterActionsMap  = ["2": "Delay", "1": "Switch On", "3": "Switch Off"]
+        def makeStatus = { Map actMap ->
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [
+                    [name: "actType.1", value: "switchActs"],
+                    [name: "actType.2", value: "delayActs"],
+                    [name: "actType.3", value: "switchActs"]
+                ],
+                eventSubscriptions: [[name: "evt1"]],
+                scheduledJobs: [],
+                appState: [:],
+                actions: actMap,
+                childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (!clickFired) return makeStatus(beforeActionsMap)
+            postClickReads++
+            // First post-click read (the immediate afterPosition) STILL shows the
+            // pre-move order -> shift not yet seen -> triggers the re-check. The
+            // second post-click read (the re-check, after the short pause) shows
+            // the late commit. Later reads (health) keep the post-move order.
+            postClickReads >= 2 ? makeStatus(afterActionsMap) : makeStatus(beforeActionsMap)
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.stateAttribute == "arrowDn") clickFired = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, moveAction: [index: 1, direction: "down"], confirm: true])
+
+        then: "the re-check catches the late commit -> clean success, NOT a soft asyncCommitLikely fail"
+        result.success == true
+        result.asyncCommitLikely != true
+        result.verifyHint == null
+
+        and: "the position fields reflect the confirmed shift"
+        result.beforePosition == 0
+        result.afterPosition == 1
+    }
+
+    def "moveAction: a throw on the re-check fetch falls through to the soft asyncCommitLikely return (F2 catch branch)"() {
+        // The post-pause re-check read is wrapped in try/catch (server
+        // ~18658-18664): a transient relay flake on that one fetch must fall
+        // through to the soft asyncCommitLikely return rather than escaping
+        // _rmMoveAction as a hard exception. Throw ONLY on the re-check read
+        // (after the immediate post-click read already showed no shift); the
+        // later health read still succeeds so the dispatcher folds the soft
+        // result normally.
+        given:
+        enableWrite()
+        def clickFired = false
+        def postClickReads = 0
+        def actionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
+        def makeStatus = {
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [
+                    [name: "actType.1", value: "switchActs"],
+                    [name: "actType.2", value: "delayActs"],
+                    [name: "actType.3", value: "switchActs"]
+                ],
+                eventSubscriptions: [[name: "evt1"]],
+                scheduledJobs: [],
+                appState: [:],
+                actions: actionsMap,
+                childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (!clickFired) return makeStatus()
+            postClickReads++
+            // Post-click read #1 = immediate afterPosition (no shift). Read #2 =
+            // the re-check -> throw to exercise the catch. Read #3+ = health (ok).
+            if (postClickReads == 2) throw new RuntimeException("relay flake on re-check fetch")
+            makeStatus()
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.stateAttribute == "arrowDn") clickFired = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, moveAction: [index: 1, direction: "down"], confirm: true])
+
+        then: "the re-check throw is swallowed -> soft asyncCommitLikely return, no hard throw"
+        result.asyncCommitLikely == true
+        result.success == false
+        result.partial == true
+        result.verifyHint?.contains("VERIFY before retrying")
+    }
+
     // ---------- state.editAct pre-flight guard (applies to removeAction AND moveAction) ----------
 
     def "removeAction pre-flight detects stuck state.editAct and throws immediately"() {

@@ -4631,7 +4631,10 @@ Requires the Write master + confirm=true + recent hub backup.""",
                     success: [type: "boolean", description: "Whether the create/edit succeeded"],
                     appId: [type: "integer", description: "App ID created or edited"],
                     appType: [type: "string", description: "create: app type created"],
-                    name: [type: "string", description: "create: app label"],
+                    name: [type: "string", description: "create: requested app label"],
+                    labelApplied: [type: "boolean", description: "create: true if the requested name became the display label (verified for rule_machine only; false for partial-support appTypes -- see note)"],
+                    partialTriggers: [type: "array", description: "create: indices of bundled triggers that failed to fully bake (always empty for this generic tool -- no trigger sugar)", items: [type: "integer"]],
+                    partialActions: [type: "array", description: "create: indices of bundled actions that failed to fully bake (always empty for this generic tool -- no action sugar)", items: [type: "integer"]],
                     parentAppId: [type: "integer", description: "create: parent app ID"],
                     statusSummary: [type: "object", description: "create: eventSubscriptions and scheduledJobs counts"],
                     backup: [type: "object", description: "edit: pre-write backup metadata (backupKey, type, fileName, ...)"],
@@ -4871,17 +4874,18 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
                     expressionNotLive: [type: "boolean", description: "addRequiredExpression: not live after update"],
                     wizardDoneAutoRetry: [type: "boolean", description: "settings/button: wizard-done auto-retry fired"],
                     warning: [type: "string", description: "Non-fatal warning"],
-                    asyncCommitLikely: [type: "boolean", description: "clearActions: async commit likely"],
+                    asyncCommitLikely: [type: "boolean", description: "clearActions/replaceActions/moveAction: the operation could not be confirmed within the verify window -- verify before retrying (always paired with success:false)"],
                     httpWriteStatus: [description: "clearActions: HTTP write status"],
                     actionsRequestedForRemoval: [type: "integer", description: "clearActions: actions requested for removal"],
                     actionsStillPresent: [type: "integer", description: "clearActions: actions still present after"],
                     possibleStateEditAct: [description: "clearActions: possible state-edit action"],
-                    verifyHint: [type: "string", description: "clearActions: verification hint"],
+                    verifyHint: [type: "string", description: "clearActions/replaceActions/moveAction: human-readable verify-before-retry guidance for an unconfirmed async commit"],
                     safeRecovery: [type: "object", description: "clearActions: safe-recovery guidance"],
                     partialTriggers: [type: "array", description: "create: indices of bundled triggers that failed to fully bake", items: [type: "integer"]],
                     partialActions: [type: "array", description: "create: indices of bundled actions that failed to fully bake", items: [type: "integer"]],
                     appType: [type: "string", description: "create: app type created (rule_machine)"],
                     name: [type: "string", description: "create: rule label"],
+                    labelApplied: [type: "boolean", description: "create: true if the requested name became the display label (always true for rule_machine)"],
                     parentAppId: [type: "integer", description: "create: parent (Rule Machine) app ID"],
                     statusSummary: [type: "object", description: "create: eventSubscriptions and scheduledJobs counts"],
                     orphanCleanup: [type: "string", description: "create: present when a failed create's half-built shell was cleaned up"]
@@ -18467,11 +18471,12 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     }
     // Commit the in-flight edit via hasAll on selectTriggers.
     _rmClickAppButton(appId, "hasAll", null, "selectTriggers")
-    // Post-commit verification: re-fetch selectTriggers to confirm the
-    // new state value echoes back. Mirrors the _rmAddTrigger pattern --
-    // RM may silently accept the write but not persist it if the wizard
-    // is in an unexpected state. verificationFetchFailed lets the caller
-    // check via hub_get_app_config rather than assuming success.
+    // Post-commit verification: read the new state back to confirm the write
+    // persisted. RM may silently accept a write but not persist it if the
+    // wizard is in an unexpected state, so verificationFetchFailed lets the
+    // caller fall back to hub_get_app_config rather than assuming success. The
+    // readback source is the persisted configure/json settings (see the next
+    // comment) -- NOT the post-commit selectTriggers wizard page.
     def verifiedState = null
     def verificationFetchFailed = false
     try {
@@ -22506,6 +22511,7 @@ def _createNativeAppShell(args) {
             appId: newId,
             appType: appType,
             name: name,
+            labelApplied: (appType == "rule_machine"),
             parentAppId: parentId,
             statusSummary: [
                 eventSubscriptions: (status?.eventSubscriptions?.size() ?: 0),
@@ -22518,6 +22524,15 @@ def _createNativeAppShell(args) {
         ]
         if (triggerSpecs) result.triggers = triggerResults
         if (actionSpecs) result.actions = actionResults
+        // Honesty caveat: only rule_machine reliably copies origLabel -> the
+        // installed-app display label on commit. For other (partial-support)
+        // appTypes the requested name may NOT become the visible label, so flag
+        // it via labelApplied + a note rather than letting the {success, name}
+        // envelope imply the label landed.
+        if (appType != "rule_machine") {
+            result.note = ((result.note ?: "") +
+                " NOTE: appType '${appType}' is partial-support -- the requested name may NOT have been applied as the app's display label (only rule_machine is verified to copy origLabel->label on commit). Verify via hub_get_app_config(appId=${newId}) and rename in the Hubitat UI if needed.").toString().trim()
+        }
         return result
     } catch (Exception e) {
         // Orphan cleanup: caller didn't get a usable app, so remove the
