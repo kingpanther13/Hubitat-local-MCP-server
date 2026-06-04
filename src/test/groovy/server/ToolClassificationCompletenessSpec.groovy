@@ -21,8 +21,9 @@ class ToolClassificationCompletenessSpec extends ToolSpecBase {
         (readOnly - all).isEmpty()
         // disjoint
         readOnly.intersect(writes).isEmpty()
-        // total
-        (readOnly + writes) == all
+        // total (cast LHS to Set so the union compares as Set==Set regardless of
+        // whether getReadOnlyToolNames() returns a Set or a List)
+        ((readOnly as Set) + writes) == all
     }
 
     def "no gateway NAME is in the read-only leaf set (gateways are gated per sub-tool)"() {

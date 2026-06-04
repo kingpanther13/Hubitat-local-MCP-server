@@ -44,7 +44,7 @@ if [ "$DEV_MODE" != "true" ]; then
 fi
 
 PRE_RULE_ENGINE="$(echo "$PRE_INFO_JSON"  | jq -r '.customRuleEngineEnabled // false')"
-PRE_READ="$(echo        "$PRE_INFO_JSON"  | jq -r '.readEnabled            // true')"
+PRE_READ="$(echo        "$PRE_INFO_JSON"  | jq -r 'if .readEnabled == null then true else .readEnabled end')"
 
 jq -nc \
   --argjson re  "$PRE_RULE_ENGINE" \
