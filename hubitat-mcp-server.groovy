@@ -32,6 +32,7 @@ definition(
 preferences {
     page(name: "mainPage")
     page(name: "confirmDeletePage")
+    page(name: "confirmRegenerateTokenPage")
 }
 
 def mainPage() {
@@ -49,6 +50,9 @@ def mainPage() {
                 if (state.updateCheck?.updateAvailable) {
                     paragraph "<b style='color: orange;'>&#9888; Update available: v${state.updateCheck.latestVersion}</b> (you have v${currentVersion()}). Update via <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server' target='_blank'>GitHub</a> or Hubitat Package Manager."
                 }
+                href name: "regenerateToken", page: "confirmRegenerateTokenPage",
+                     title: "Regenerate access token",
+                     description: "Issue a new token if the current one may be compromised. WARNING: the token is part of the endpoint URL above, so regenerating CHANGES both endpoint URLs -- you must re-copy the new URL into every MCP client afterward."
             }
         }
 
@@ -252,6 +256,22 @@ def confirmDeletePage(params) {
     }
 }
 
+def confirmRegenerateTokenPage() {
+    dynamicPage(name: "confirmRegenerateTokenPage", title: "Regenerate access token?") {
+        section {
+            paragraph "<b>Are you sure you want to regenerate the MCP access token?</b>"
+            paragraph "The access token is part of the MCP endpoint URL. Regenerating it <b>immediately changes both the Local and Cloud endpoint URLs</b>."
+            paragraph "<b style='color: red;'>&#9888; Every MCP client using the old URL will stop working until you re-copy the new URL.</b> After regenerating, reopen this app and copy the new endpoint URL into each client."
+            paragraph "Use this only if the current token may be compromised. This action cannot be undone."
+        }
+
+        section {
+            input "regenerateTokenBtn", "button", title: "Yes, Regenerate Token"
+            href name: "cancelRegenerate", page: "mainPage", title: "Cancel"
+        }
+    }
+}
+
 def appButtonHandler(btn) {
     if (btn == "confirmDeleteBtn" && state.ruleToDelete) {
         def childApp = getChildAppById(state.ruleToDelete)
@@ -261,6 +281,15 @@ def appButtonHandler(btn) {
             log.info "Deleted rule: ${ruleName}"
         }
         state.remove("ruleToDelete")
+    } else if (btn == "regenerateTokenBtn") {
+        // User-initiated token rotation. Clearing state.accessToken then calling
+        // createAccessToken() re-issues a fresh token, which changes both endpoint
+        // URLs (the token is in the URL); the user must re-copy the new URL into
+        // every MCP client. initialize()'s !state.accessToken guard is the only
+        // other caller, so the token is otherwise stable (never auto-rotated).
+        state.remove("accessToken")
+        createAccessToken()
+        mcpLog("warn", "server", "MCP access token regenerated via UI; endpoint URLs changed, clients must re-copy the new URL")
     }
 }
 
@@ -277,7 +306,9 @@ def installed() {
 
 def updated() {
     log.info "MCP Rule Server updated"
-    state.remove("toolSearchCorpus")  // Invalidate BM25 search cache on app update
+    atomicState.remove("toolSearchCorpus")        // Invalidate BM25 corpus cache on app update
+    atomicState.remove("toolSearchTokens")        // ...and the paired BM25 token cache in lockstep
+    atomicState.remove("requiredParamsByTool")    // ...and the gateway required-param memo
     initialize()
 
     // ===== One-time custom-engine rename migration =====
@@ -318,6 +349,20 @@ def updated() {
 
 def uninstalled() {
     log.info "MCP Rule Server uninstalled"
+
+    // Clean up this app's hub-variable in-use registrations so deleting the
+    // app doesn't leave Hubitat warning users about vars no rule references
+    // anymore. Diff against our tracked set (NOT removeAllInUseGlobalVar) so we
+    // only clear registrations this app made. Idempotent, mirrors the
+    // _refreshHubVarInUseRegistrations try/catch pattern.
+    ((atomicState.inUseHubVars ?: []) as List).each { name ->
+        try { removeInUseGlobalVar(name) } catch (Exception e) { /* idempotent */ }
+    }
+    atomicState.remove('inUseHubVars')
+
+    // Drop the variable subscriptions and the daily checkForUpdate schedule.
+    try { unsubscribe() } catch (Exception e) { /* best-effort teardown */ }
+    try { unschedule() } catch (Exception e) { /* best-effort teardown */ }
 }
 
 def initialize() {
@@ -328,9 +373,19 @@ def initialize() {
     if (!state.ruleVariables) {
         state.ruleVariables = [:]
     }
-    // Schedule daily version update check at 3am and run immediately
+    // Schedule daily version update check at 3am and run immediately.
+    // unschedule() first so each updated()->initialize() cycle declaratively
+    // rebuilds the schedule set instead of stacking duplicate cron jobs
+    // (mirrors the unsubscribe() symmetry below). Must precede schedule() and
+    // checkForUpdate() so the immediate run still fires.
+    try { unschedule() }
+    catch (Exception e) { mcpLog("warn", "server", "unschedule() before re-schedule failed: ${e.message} -- duplicate schedules may persist") }
     schedule("0 0 3 ? * *", "checkForUpdate")
-    checkForUpdate()
+    // Only egress to GitHub immediately on first install. state.updateCheck is
+    // null until the first check completes; once set, routine settings saves
+    // skip the immediate call and rely on the daily schedule + the in-function
+    // 24h guard for steady-state freshness.
+    if (state.updateCheck == null) checkForUpdate()
 
     // Issue #92: subscribe to every hub variable's location event
     // ("variable:NAME") so the AI can see what changed and when via
@@ -418,11 +473,11 @@ private void _refreshHubVarInUseRegistrations() {
         // they delete a variable a rule depends on. Warn-level would be
         // dropped at the default mcpLogLevel="error" config.
         try { addInUseGlobalVar(name) }
-        catch (Exception e) { mcpLog("error", "hub-vars", "addInUseGlobalVar('${name}') failed: ${e.message} -- in-use safety warning will not surface for this var") }
+        catch (Exception e) { mcpLogError("hub-vars", "addInUseGlobalVar('${name}') failed -- in-use safety warning will not surface for this var", e) }
     }
     toRemove.each { name ->
         try { removeInUseGlobalVar(name) }
-        catch (Exception e) { mcpLog("error", "hub-vars", "removeInUseGlobalVar('${name}') failed: ${e.message} -- stale in-use registration will linger") }
+        catch (Exception e) { mcpLogError("hub-vars", "removeInUseGlobalVar('${name}') failed -- stale in-use registration will linger", e) }
     }
 
     atomicState.inUseHubVars = (currentVars as List).sort()
@@ -518,6 +573,10 @@ def handleHubVariableEvent(evt) {
         timestamp: now(),
         descriptionText: evt.descriptionText?.toString()
     ]
+    // Best-effort, non-transactional read-append-cap-write. atomicState gives
+    // per-write durability, not read-then-write atomicity, and the sandbox has
+    // no CAS primitive: concurrent variable: events may read the same snapshot
+    // and drop an append. Acceptable for a best-effort history buffer.
     def history = atomicState.variableHistory ?: []
     history << entry
     // Cap the buffer. 200 entries is enough to survive an MCP-tool
@@ -562,6 +621,10 @@ def toolGetVariableHistory(args) {
 // ==================== MCP REQUEST HANDLERS ====================
 
 mappings {
+    // Server-to-server only; no CORS/OPTIONS by design (token-in-query local
+    // endpoint). Browser/cross-origin clients are out of scope, and Hubitat
+    // render() cannot emit Access-Control-* headers from a mapped endpoint, so
+    // no OPTIONS handler is registered (a stub would only pretend to do CORS).
     path("/mcp") {
         action: [
             GET: "handleMcpGet",
@@ -573,19 +636,43 @@ mappings {
     }
 }
 
+// Single source of truth for the hub's hard JSON-RPC response cap (131072 = 128 KiB).
+// Method-constant, not `private static final` (script-scope rejects the field in the
+// Hubitat sandbox). The two response-size guards and toolGetHubLogs derive their
+// thresholds from this with explicit headroom so the cap lives in exactly one place.
+def hubResponseCapBytes() { 131072 }
+
 def handleHealth() {
-    def ver = currentVersion()
-    return render(contentType: "application/json", data: """{"status":"ok","server":"hubitat-mcp-rule-server","version":"${ver}"}""")
+    return render(contentType: "application/json", data: groovy.json.JsonOutput.toJson([
+        status: "ok",
+        server: "hubitat-mcp-rule-server",
+        version: currentVersion()
+    ]))
 }
 
+// POST-only: this MCP endpoint is request-response over POST. No SSE/GET
+// streaming is supported (intentional -- SSE is impractical on the Hubitat
+// HEM endpoint). GET returns a JSON-RPC-shaped 405 so a JSON-RPC client sees
+// a coherent error rather than an ad-hoc body.
 def handleMcpGet() {
     return render(status: 405, contentType: "application/json",
-                  data: '{"error":"GET not supported, use POST"}')
+                  data: groovy.json.JsonOutput.toJson(jsonRpcError(null, -32600,
+                      "This MCP endpoint is request-response only (POST). SSE/GET streaming is not supported.")))
 }
 
+// Transport contract: JSON-RPC application errors (parse / invalid-request /
+// method-not-found / internal) are returned with HTTP 200 and an error envelope
+// per JSON-RPC 2.0. Only transport-level conditions set a non-200 status:
+// 405 for GET (handleMcpGet), and 204/202 for an all-notifications POST (no
+// response objects). Do NOT convert application-level JSON-RPC errors to 4xx --
+// spec-compliant clients expect the error inside a 200 body.
 def handleMcpRequest() {
     def requestBody
     try {
+        // Content-Type is intentionally not validated: Hubitat's mapped-endpoint
+        // inbound request object does not reliably expose the header in the
+        // sandbox, and a wrong content-type already degrades to the -32700
+        // parse-error path below (request.JSON throws or returns null).
         requestBody = request.JSON
     } catch (Exception e) {
         // Bug fix: return proper JSON-RPC parse error (-32700)
@@ -598,35 +685,58 @@ def handleMcpRequest() {
         return render(contentType: "application/json", data: groovy.json.JsonOutput.toJson(errResp))
     }
 
-    logDebug("MCP Request: ${requestBody}")
+    logDebug("MCP Request: ${requestBody.toString().take(500)}${requestBody.toString().length() > 500 ? '...[truncated]' : ''}")
 
     def response
     if (requestBody instanceof List) {
         // Bug fix: empty batch array must return error per JSON-RPC 2.0 spec
         if (requestBody.isEmpty()) {
             response = jsonRpcError(null, -32600, "Invalid Request: empty batch array")
+        } else if (requestBody.size() > 50) {
+            // Inbound batch cap: reject oversized batches before per-element
+            // dispatch so a single request can't fan out unbounded hub work.
+            return render(contentType: "application/json", data: groovy.json.JsonOutput.toJson(
+                jsonRpcError(null, -32600, "Invalid Request: batch too large (${requestBody.size()} elements, max 50)")))
         } else {
-            response = requestBody.collect { msg -> processJsonRpcMessage(msg) }.findAll { it != null }
+            // Batch members must serialize normally. handleToolsCall hands back a
+            // {__preserialized: <json string>} sentinel on the single-message fast path;
+            // unwrap any such element back to a parsed object here so a sentinel can never
+            // leak into the batch JSON array (the rare batch tools/call accepts a re-parse).
+            response = requestBody.collect { msg -> processJsonRpcMessage(msg) }.findAll { it != null }.collect { _unwrapPreserialized(it) }
         }
     } else {
         response = processJsonRpcMessage(requestBody)
     }
 
-    // Per JSON-RPC 2.0 spec: if no response objects (all notifications), return nothing
+    // Per JSON-RPC 2.0 spec: if no response objects (all notifications), return
+    // nothing. MCP Streamable HTTP prescribes 202 Accepted for this case.
     if (response == null || (response instanceof List && response.isEmpty())) {
-        return render(status: 204, contentType: "application/json", data: "")
+        return render(status: 202, contentType: "application/json", data: "")
     }
 
-    def jsonResponse = groovy.json.JsonOutput.toJson(response)
+    // Single-message verbatim-passthrough: when handleToolsCall already produced the wire
+    // JSON (the common under-cap tools/call path), it returns a {__preserialized: <string>}
+    // sentinel. Render that string as-is rather than re-encoding the object a second time.
+    // Only the exact sentinel shape takes this branch -- every normal response is
+    // {jsonrpc, id, result|error} and falls through to the standard encode.
+    def jsonResponse
+    if (response instanceof Map && response.containsKey("__preserialized")) {
+        jsonResponse = response.__preserialized
+    } else {
+        jsonResponse = groovy.json.JsonOutput.toJson(response)
+    }
 
     // Safety guard: hub enforces 128KB response limit — use byte length for accurate sizing
-    def maxResponseSize = 124000 // Leave 4KB headroom under 128KB limit
+    def maxResponseSize = hubResponseCapBytes() - 7072 // =124000; ~7 KB headroom under the 131072-byte (128 KiB) hub cap
     // Only compute byte length for large responses (avoid byte array allocation for small ones)
     def responseBytes = jsonResponse.length() > (maxResponseSize - 8000) ? jsonResponse.getBytes("UTF-8").length : jsonResponse.length()
     if (responseBytes > maxResponseSize) {
-        mcpLog("error", "system", "MCP response too large: ${responseBytes} bytes (limit ${maxResponseSize}). Returning error instead.")
+        mcpLog("error", "server", "MCP response too large: ${responseBytes} bytes (limit ${maxResponseSize}). Returning error instead.")
+        // On the preserialized fast path `response` is the sentinel, not a JSON-RPC object,
+        // so there is no id to echo -- fall back to null (matches the prior non-Map behaviour).
+        def echoId = (response instanceof Map && !response.containsKey("__preserialized")) ? response.id : null
         def errResp = jsonRpcError(
-            (response instanceof Map) ? response.id : null,
+            echoId,
             -32603,
             "Response too large (${responseBytes} bytes exceeds hub's 128KB limit). Try requesting less data or use a more specific query."
         )
@@ -678,9 +788,30 @@ def processJsonRpcMessage(msg) {
     }
 }
 
+// Unwrap the {__preserialized: <json string>} sentinel handleToolsCall emits on the
+// single-message fast path back into a parsed object, so batch members serialize normally
+// and no sentinel key leaks into the batch JSON array. Non-sentinel values pass through.
+def _unwrapPreserialized(item) {
+    if (item instanceof Map && item.containsKey("__preserialized")) {
+        return new groovy.json.JsonSlurper().parseText(item.__preserialized)
+    }
+    return item
+}
+
 def handleNotification(msg) {
     logDebug("MCP Notification: ${msg.method}")
 }
+
+def serverInstructions() {
+    "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page)."
+}
+
+// Protocol versions this server can speak, newest first. Echo-allowlist:
+// handleInitialize honors the client's requested version when it is one of
+// these, else falls back to the default. PR1C ships outputSchema (a 2025-06-18
+// feature) on every tool, so a strict 2025-06-18 client is fully supported.
+def supportedProtocolVersions() { ["2025-06-18", "2025-03-26", "2024-11-05"] }
+def defaultProtocolVersion() { "2024-11-05" }
 
 def handleInitialize(msg) {
     def info = [
@@ -690,12 +821,17 @@ def handleInitialize(msg) {
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
     }
+    // Echo the client's requested protocolVersion when supported; otherwise the
+    // default. A client that omits it (or sends an unknown one) gets the default.
+    def requested = msg.params?.protocolVersion
+    def negotiated = supportedProtocolVersions().contains(requested) ? requested : defaultProtocolVersion()
     return jsonRpcResult(msg.id, [
-        protocolVersion: "2024-11-05",
+        protocolVersion: negotiated,
         capabilities: [
             tools: [:]
         ],
-        serverInfo: info
+        serverInfo: info,
+        instructions: serverInstructions()
     ])
 }
 
@@ -771,8 +907,14 @@ def handleToolsCall(msg) {
         // could slip the inner guard yet still trip the outer -32603 fallback that
         // #174 was filed to eliminate.
         def candidateResponse = jsonRpcResult(msg.id, [content: [[type: "text", text: jsonText]]])
-        int wireBytes = groovy.json.JsonOutput.toJson(candidateResponse).getBytes("UTF-8").length
-        final int responseSizeLimit = 120000  // 8KB headroom under the 128KB hub cap
+        // Serialize the wire form ONCE here. We measure its byte length for the inner cap,
+        // then (on the common under-limit path) hand the already-built string to
+        // handleMcpRequest via a __preserialized sentinel so it renders verbatim instead of
+        // re-encoding the same object a second time. KEEP byte-accurate getBytes("UTF-8")
+        // sizing -- do NOT regress to char length.
+        String candidateJson = groovy.json.JsonOutput.toJson(candidateResponse)
+        int wireBytes = candidateJson.getBytes("UTF-8").length
+        final int responseSizeLimit = hubResponseCapBytes() - 11072  // =120000; ~11 KB headroom under the 131072-byte (128 KiB) hub cap
         if (wireBytes > responseSizeLimit) {
             // Gateway calls (manage_*) carry the real sub-tool name in args.tool; the
             // gateway-config whitelist check rules out a non-gateway caller who happens
@@ -784,7 +926,12 @@ def handleToolsCall(msg) {
             ])
             return jsonRpcResult(msg.id, [content: [[type: "text", text: groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(hintTool, wireBytes, responseSizeLimit))]]])
         }
-        return candidateResponse
+        // Single-message verbatim-passthrough: handleMcpRequest's single-Map branch detects
+        // this sentinel and renders __preserialized as-is (no re-encode). The batch-collect
+        // path re-parses it back to an object so it never leaks into the batch JSON array.
+        // The sentinel is internal -- never visible on the wire. The oversize branch above
+        // deliberately returns a normal Map (not a sentinel); re-encoding that rare path is fine.
+        return [__preserialized: candidateJson]
     } catch (IllegalArgumentException e) {
         mcpLog("warn", "server", "Validation error in ${toolName}: ${e.message}", null, [
             details: [tool: toolName, error: e.message]
@@ -1366,7 +1513,8 @@ def annotationsForGateway(List visibleSubTools, Set readOnlyNames) {
 }
 
 def handleGateway(gatewayName, toolName, toolArgs) {
-    def config = getGatewayConfig()[gatewayName]
+    def gwConfig = getGatewayConfig()
+    def config = gwConfig[gatewayName]
     if (!config) {
         throw new IllegalArgumentException("Unknown gateway: ${gatewayName}")
     }
@@ -1404,7 +1552,7 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     // fires first if toolName matches a registered gateway. Kept as a guard
     // in case a future gateway config ever lists another gateway's name in
     // its tools array.
-    if (getGatewayConfig().containsKey(toolName)) {
+    if (gwConfig.containsKey(toolName)) {
         throw new IllegalArgumentException("Cannot call a gateway from within a gateway")
     }
 
@@ -1433,13 +1581,14 @@ def handleGateway(gatewayName, toolName, toolArgs) {
         toolArgs = parsed as Map
     }
 
-    // Option D: Pre-validate required parameters and return helpful error with full schema.
-    // Strip [[FLAT_TRIM]] marker tokens before reading param descriptions for the hint --
-    // missing-param error is a client-visible surface where markers would leak.
+    // Option D: Pre-validate required parameters and return a helpful error.
     def safeArgs = toolArgs ?: [:]
-    def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
-        .collectEntries { [(it.name): it] }
-    def toolDef = defMap[toolName]
+    // Read this tool's required-param list from the small memoized map instead of
+    // rebuilding the whole ~111-tool catalog on every gateway call. A missing key
+    // means the tool has no required params. The full catalog (with the
+    // [[FLAT_TRIM]]-stripped param descriptions for the hint) is rebuilt lazily
+    // only inside the if (missing) branch below, which fires rarely.
+    def required = requiredParamsByTool()[toolName]
     // Gate-bypassing meta-calls return pure static content with NO hub mutation and
     // short-circuit at the very top of their handler (before any gate / appId check),
     // so they must also bypass this required-param pre-validation -- otherwise the
@@ -1451,12 +1600,18 @@ def handleGateway(gatewayName, toolName, toolArgs) {
         (safeArgs.addTrigger instanceof Map && safeArgs.addTrigger.discover == true) ||
         (safeArgs.addAction instanceof Map && safeArgs.addAction.discover == true)
     )
-    if (toolDef?.inputSchema?.required && !isGatedMetaCall) {
-        def missing = toolDef.inputSchema.required.findAll { !safeArgs.containsKey(it) }
+    if (required && !isGatedMetaCall) {
+        def missing = required.findAll { !safeArgs.containsKey(it) }
         if (missing) {
-            def props = toolDef.inputSchema.properties ?: [:]
+            // Missing-param hint only (rare path): rebuild the full catalog here so
+            // param descriptions are available. Strip [[FLAT_TRIM]] marker tokens --
+            // this error is a client-visible surface where markers would leak.
+            def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
+                .collectEntries { [(it.name): it] }
+            def toolDef = defMap[toolName]
+            def props = toolDef?.inputSchema?.properties ?: [:]
             def paramList = props.collect { pName, pDef ->
-                def req = toolDef.inputSchema.required.contains(pName) ? "REQUIRED" : "optional"
+                def req = required.contains(pName) ? "REQUIRED" : "optional"
                 def hint = "  ${pName} (${pDef.type ?: 'any'}, ${req})"
                 if (pDef.enum) hint += " — one of: ${pDef.enum.join(', ')}"
                 else if (pDef.description) hint += " — ${pDef.description}"
@@ -1673,6 +1828,32 @@ def getToolDefinitions() {
 // Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)
 def getAllToolDefinitions() {
     return _getAllToolDefinitions_part1() + _getAllToolDefinitions_part2() + _getAllToolDefinitions_part3() + _getAllToolDefinitions_part4() + _getAllToolDefinitions_part5() + _getAllToolDefinitions_part6() + _getAllToolDefinitions_part7() + _getAllToolDefinitions_part8()
+}
+
+// Lightweight memoized name -> inputSchema.required map for the gateway
+// dispatch-path missing-param pre-check. handleGateway used to rebuild the
+// entire ~111-tool catalog (applyDescriptionTransform(getAllToolDefinitions())
+// + collectEntries) on EVERY gateway call just to read one tool's required
+// array. required arrays carry no [[FLAT_TRIM]] markers and applyDescriptionTransform
+// never touches them (it only rewrites descriptions), and required is identical
+// in flat and gateway mode -- so no transform is needed here. Stored as a plain
+// Map<String,List<String>> (fresh String copies, never the mutable raw def list)
+// in atomicState; invalidated in updated() alongside the BM25 corpus. Tools with
+// no/empty inputSchema.required are omitted, so a miss == "no required params".
+def requiredParamsByTool() {
+    def cached = atomicState.requiredParamsByTool
+    if (cached instanceof Map) {
+        return cached
+    }
+    def built = [:]
+    getAllToolDefinitions().each { tool ->
+        def req = tool?.inputSchema?.required
+        if (req instanceof List && !req.isEmpty()) {
+            built[tool.name as String] = req.collect { it as String }
+        }
+    }
+    atomicState.requiredParamsByTool = built
+    return built
 }
 
 def _getAllToolDefinitions_part1() {
@@ -4974,12 +5155,10 @@ def executeTool(toolName, args) {
         // Version Check
         case "hub_get_update_status": return toolCheckForUpdate(args)
 
-        // Hub Admin Read Tools
-        // get_hub_details merged into hub_get_info
+        // Hub Admin Read Tools (hub_get_details + hub_get_health merged into hub_get_info)
         case "hub_list_apps": return (args?.scope == "types") ? toolListHubApps(args) : toolListInstalledApps(args)
         case "hub_list_drivers": return toolListHubDrivers(args)
         case "hub_get_radio_details": return toolGetRadioDetails(args)
-        // get_hub_health merged into hub_get_info
 
         // Monitoring Tools
         case "hub_get_logs": return toolGetHubLogs(args)
@@ -5852,7 +6031,7 @@ def toolPollUntilAttribute(args) {
             // pauseExecution wraps Thread.sleep() and throws InterruptedException
             // when the hub is restarting or the app is being reloaded.
             elapsedMs = (now() - startMs) as Integer
-            mcpLog("warn", "device-tools", "poll_until_attribute interrupted after ${polledCount} poll(s) (elapsed=${elapsedMs}ms): ${e.message}")
+            mcpLog("warn", "device", "poll_until_attribute interrupted after ${polledCount} poll(s) (elapsed=${elapsedMs}ms): ${e.message}")
             return [
                 success     : false,
                 interrupted : true,
@@ -6702,7 +6881,7 @@ def toolGetHubInfo(args = null) {
             def msg = e.message ?: e.toString()
             info.identifyHubTriggered = false
             info.identifyHubError = msg
-            mcpLog("warn", "system", "identifyHub blinkLED request failed [${e.class.simpleName}]: ${msg}")
+            mcpLog("warn", "server", "identifyHub blinkLED request failed [${e.class.simpleName}]: ${msg}")
         }
     }
 
@@ -6761,7 +6940,7 @@ def toolListVariables(args = null) {
         // Surface to mcpLog (not just logDebug) so a "no hub variables" response can be
         // distinguished from "hub variable API broke" via hub_get_debug_logs.
         hubVarsError = e.message ?: e.toString()
-        mcpLog("warn", "variables", "hub_list_variables: getAllGlobalVars() failed: ${hubVarsError} -- returning empty hubVariables", null, [details: [error: hubVarsError]])
+        mcpLog("warn", "hub-vars", "hub_list_variables: getAllGlobalVars() failed: ${hubVarsError} -- returning empty hubVariables", null, [details: [error: hubVarsError]])
     }
 
     def ruleVariables = state.ruleVariables?.collect { name, value ->
@@ -7620,7 +7799,7 @@ def listCapturedStates() {
             stateId: stateId,
             deviceCount: entry.deviceCount ?: entry.devices?.size() ?: (entry instanceof List ? entry.size() : 0),
             timestamp: entry.timestamp ?: null,
-            capturedAt: entry.timestamp ? new Date(entry.timestamp).format("yyyy-MM-dd HH:mm:ss") : "unknown"
+            capturedAt: formatTimestamp(entry.timestamp)
         ]
     }.sort { a, b -> (b.timestamp ?: 0) <=> (a.timestamp ?: 0) } // Sort newest first
 }
@@ -8300,6 +8479,14 @@ def getSelectedDevices() {
  * Returns null if Hub Security is not enabled or credentials are not configured.
  * Caches the cookie for 30 minutes to avoid excessive login requests.
  */
+// Single source for the hub's internal API base URI (was an 11x-repeated literal).
+def hubBaseUri() { "http://127.0.0.1:8080" }
+
+// Timeout rationale: reads are fast localhost fetches; writes (native-RM wizard steps,
+// large app/driver/library save+compile) can legitimately take minutes.
+def hubReadTimeoutSec() { 30 }
+def hubWriteTimeoutSec() { 420 }
+
 def getHubSecurityCookie() {
     if (!settings.hubSecurityEnabled) return null
     if (!settings.hubSecurityUser || !settings.hubSecurityPassword) {
@@ -8307,16 +8494,17 @@ def getHubSecurityCookie() {
         return null
     }
 
-    // Check if we have a valid cached cookie
-    if (state.hubSecurityCookie && state.hubSecurityCookieExpiry && state.hubSecurityCookieExpiry > now()) {
-        return state.hubSecurityCookie
+    // Cached cookie lives in atomicState (thread-safe): it authorizes every hubInternal* call
+    // and is touched concurrently by overlapping requests and the cookie-refresh retry path.
+    if (atomicState.hubSecurityCookie && atomicState.hubSecurityCookieExpiry && atomicState.hubSecurityCookieExpiry > now()) {
+        return atomicState.hubSecurityCookie
     }
 
     // Authenticate
     def cookie = null
     try {
         httpPost([
-            uri: "http://127.0.0.1:8080",
+            uri: hubBaseUri(),
             path: "/login",
             body: [username: settings.hubSecurityUser, password: settings.hubSecurityPassword],
             textParser: true,
@@ -8325,13 +8513,13 @@ def getHubSecurityCookie() {
             cookie = resp?.headers?.'Set-Cookie'?.split(';')?.getAt(0)
         }
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Hub Security authentication failed: ${e.message}")
+        mcpLogError("hub-admin", "Hub Security authentication failed", e)
         throw new RuntimeException("Hub Security authentication failed. Check your username and password in MCP Rule Server settings.")
     }
 
     if (cookie) {
-        state.hubSecurityCookie = cookie
-        state.hubSecurityCookieExpiry = now() + (30 * 60 * 1000) // 30 minutes
+        atomicState.hubSecurityCookie = cookie
+        atomicState.hubSecurityCookieExpiry = now() + (30 * 60 * 1000) // 30 minutes
         mcpLog("debug", "hub-admin", "Hub Security authentication successful")
     } else {
         mcpLog("warn", "hub-admin", "Hub Security authentication returned no cookie")
@@ -8345,13 +8533,110 @@ def getHubSecurityCookie() {
  * If so, clears the cached cookie and returns true.
  */
 private boolean shouldRetryWithFreshCookie(Exception e, boolean isRetry) {
-    if (!isRetry && settings.hubSecurityEnabled &&
-        (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized"))) {
-        state.hubSecurityCookie = null
-        state.hubSecurityCookieExpiry = null
+    if (isRetry || !settings.hubSecurityEnabled) return false
+    // Prefer the HTTP status the exception carries (duck-typed e.response.status -- naming
+    // HttpResponseException NCDFEs at parse time on the test classpath). Fall back to a
+    // message substring only when no status is available.
+    def resp = null
+    try { resp = e.response } catch (Exception ignore) { resp = null }
+    Integer status = null
+    try { status = resp?.status as Integer } catch (Exception ignore) { status = null }
+    boolean authFail = (status == 401 || status == 403) ||
+        (status == null && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized")))
+    if (authFail) {
+        atomicState.hubSecurityCookie = null
+        atomicState.hubSecurityCookieExpiry = null
         return true
     }
     return false
+}
+
+/**
+ * Read an HTTPBuilder response body as text. With textParser:true the hub hands back a Reader,
+ * but some paths (and test stubs) hand back a plain String. A CharSequence is already its own
+ * text, so we take it as-is -- we never call toString() on a half-consumed Reader/InputStream,
+ * which would yield junk like "java.io.BufferedReader@1a2b3c" that downstream code would treat
+ * as a real body. A genuine Reader/stream read failure (socket reset mid-stream, gzip CRC,
+ * decode error) propagates so the caller can re-throw rather than swallow junk.
+ */
+private String _readRespText(resp) {
+    def d = resp?.data
+    if (d == null) return null
+    if (d instanceof CharSequence) return d.toString()
+    return d.text  // Reader/InputStream -- may throw on a mid-stream read failure
+}
+
+/**
+ * Shared core for the six hubInternal* variants: cookie attach, request, duck-typed body read
+ * (read failures are re-thrown, never swallowed into a Reader.toString() junk string), and the
+ * single cookie-refresh retry. The thin public wrappers below project their distinguishing
+ * options + return shape. This is the clean seam #209 can later lift into a HubHttpClientLib.
+ */
+private _hubRequest(String method, String path, Map opts = [:]) {
+    def cookie = getHubSecurityCookie()
+    def params = [
+        uri: hubBaseUri(),
+        path: path,
+        textParser: true,
+        ignoreSSLIssues: true,
+        timeout: (opts.timeout != null ? opts.timeout : hubReadTimeoutSec())
+    ]
+    if (opts.query) params.query = opts.query
+    if (opts.requestContentType) params.requestContentType = opts.requestContentType
+    if (opts.followRedirects != null) params.followRedirects = opts.followRedirects
+    def headers = [:]
+    if (opts.keepAlive) headers["Connection"] = "keep-alive"
+    if (cookie) headers["Cookie"] = cookie
+    if (headers) params.headers = headers
+    if (opts.body != null) params.body = opts.body
+
+    def result = null
+    def readError = null
+    def reader = { resp ->
+        def bodyText = null
+        try { bodyText = _readRespText(resp) }
+        catch (Exception re) { readError = re }
+        if (opts.returnShape == 'struct') {
+            // Struct callers (form/raw/getRaw) key on .status; the HTTPBuilder closure
+            // only runs for a non-error (2xx) response (4xx/5xx throw into the catch
+            // below), so a body-read failure here is a write that COMMITTED with an
+            // unreadable body -- surface status + null data rather than failing the
+            // operation for a status-only caller (e.g. _rmClickAppButton). The read
+            // error is consumed here; text callers, whose body IS the result, still
+            // re-throw it after the closure.
+            result = [status: resp.status, location: resp.headers?."Location"?.toString(), data: (readError != null ? null : bodyText)]
+            readError = null
+        } else if (readError == null) {
+            result = bodyText
+        }
+    }
+    try {
+        if (method == 'GET') httpGet(params, reader)
+        else httpPost(params, reader)
+    } catch (Exception e) {
+        // hubInternalGetRaw path: a 3xx with followRedirects=false is the success case (read the
+        // Location header), not an error.
+        if (opts.handle3xx) {
+            def resp = null
+            try { resp = e.response } catch (Exception ignore) { resp = null }
+            Integer st = null
+            try { st = resp?.status as Integer } catch (Exception ignore) { st = null }
+            if (resp != null && st != null && st >= 300 && st < 400) {
+                def b = null
+                try { b = _readRespText(resp) } catch (Exception ignore) { b = null }
+                return [status: st, location: resp.headers?."Location"?.toString(), data: b]
+            }
+        }
+        if (shouldRetryWithFreshCookie(e, opts.isRetry)) {
+            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on ${method} ${path}")
+            return _hubRequest(method, path, opts + [isRetry: true])
+        }
+        throw e
+    }
+    // Re-throw a mid-stream read failure rather than returning a Reader/stream toString() junk
+    // string that downstream code would treat as a real body (matches the hardened deploy path).
+    if (readError != null) throw readError
+    return result
 }
 
 /**
@@ -8360,40 +8645,7 @@ private boolean shouldRetryWithFreshCookie(Exception e, boolean isRetry) {
  * Returns the response body as text.
  */
 def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
-    def cookie = getHubSecurityCookie()
-    def params = [
-        uri: "http://127.0.0.1:8080",
-        path: path,
-        textParser: true,
-        ignoreSSLIssues: true,
-        timeout: timeout
-    ]
-    if (query) {
-        params.query = query
-    }
-    if (cookie) {
-        params.headers = ["Cookie": cookie]
-    }
-
-    def responseText = null
-    try {
-        httpGet(params) { resp ->
-            // textParser: true returns a Reader/InputStream — try .text first to read it fully
-            // Sandbox blocks instanceof and getClass(), so use try-catch duck typing
-            try {
-                responseText = resp.data.text
-            } catch (Exception readErr) {
-                responseText = resp.data?.toString()
-            }
-        }
-    } catch (Exception e) {
-        if (shouldRetryWithFreshCookie(e, isRetry)) {
-            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on GET ${path}")
-            return hubInternalGet(path, query, timeout, true)
-        }
-        throw e
-    }
-    return responseText
+    _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text', isRetry: isRetry])
 }
 
 /**
@@ -8408,59 +8660,9 @@ def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRe
  * Spock test classpath, and naming it would NCDFE at parse time.
  */
 def hubInternalGetRaw(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
-    def cookie = getHubSecurityCookie()
-    def params = [
-        uri: "http://127.0.0.1:8080",
-        path: path,
-        textParser: true,
-        ignoreSSLIssues: true,
-        timeout: timeout,
-        // HTTPBuilder follows redirects by default; disable so we can read
-        // the 302 Location header. Keep the cookie so auth still works.
-        followRedirects: false
-    ]
-    if (query) params.query = query
-    if (cookie) params.headers = ["Cookie": cookie]
-
-    def result = null
-    try {
-        httpGet(params) { resp ->
-            def body
-            try { body = resp.data.text } catch (Exception readErr) { body = resp.data?.toString() }
-            result = [
-                status: resp.status,
-                location: resp.headers?."Location"?.toString(),
-                data: body
-            ]
-        }
-    } catch (Exception e) {
-        // HTTPBuilder throws on non-2xx when followRedirects=false. The
-        // exception carries a `response` property (duck-typed — avoids a
-        // hard dependency on groovyx.net.http.HttpResponseException). If
-        // the failure is a 3xx redirect, that's exactly what we want —
-        // extract status + Location and return. Anything else escalates
-        // through the existing cookie-retry / rethrow paths.
-        def resp = null
-        try { resp = e.response } catch (Exception ignore) { resp = null }
-        def status = null
-        try { status = resp?.status as Integer } catch (Exception ignore) { status = null }
-        if (resp != null && status != null && status >= 300 && status < 400) {
-            def body
-            try { body = resp.data?.text } catch (Exception readErr) { body = resp.data?.toString() }
-            result = [
-                status: status,
-                location: resp.headers?."Location"?.toString(),
-                data: body
-            ]
-            return result
-        }
-        if (shouldRetryWithFreshCookie(e, isRetry)) {
-            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on GET-raw ${path}")
-            return hubInternalGetRaw(path, query, timeout, true)
-        }
-        throw e
-    }
-    return result
+    // followRedirects:false + handle3xx so the 302 Location header (new-child id) is readable.
+    _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'struct',
+                              followRedirects: false, handle3xx: true, isRetry: isRetry])
 }
 
 /**
@@ -8648,35 +8850,8 @@ private Map _createUserAppInstance(Integer codeAppId) {
  * Automatically includes Hub Security cookie if configured.
  * Returns the response body as text.
  */
-def hubInternalPost(String path, Map body = null, boolean isRetry = false) {
-    def cookie = getHubSecurityCookie()
-    def params = [
-        uri: "http://127.0.0.1:8080",
-        path: path,
-        textParser: true,
-        ignoreSSLIssues: true,
-        timeout: 30
-    ]
-    if (cookie) {
-        params.headers = ["Cookie": cookie]
-    }
-    if (body) {
-        params.body = body
-    }
-
-    def responseText = null
-    try {
-        httpPost(params) { resp ->
-            responseText = resp.data?.text?.toString() ?: resp.data?.toString()
-        }
-    } catch (Exception e) {
-        if (shouldRetryWithFreshCookie(e, isRetry)) {
-            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on POST ${path}")
-            return hubInternalPost(path, body, true)
-        }
-        throw e
-    }
-    return responseText
+def hubInternalPost(String path, Map body = null, int timeout = 30, boolean isRetry = false) {
+    _hubRequest('POST', path, [body: body, timeout: timeout, returnShape: 'text', isRetry: isRetry])
 }
 
 /**
@@ -8691,82 +8866,15 @@ def hubInternalPost(String path, Map body = null, boolean isRetry = false) {
  * themselves; this method passes the body string straight through.
  */
 def hubInternalPostFormRaw(String path, String encodedBody, int timeout = 420, boolean isRetry = false) {
-    def cookie = getHubSecurityCookie()
-    def params = [
-        uri: "http://127.0.0.1:8080",
-        path: path,
-        requestContentType: "application/x-www-form-urlencoded",
-        textParser: true,
-        headers: ["Connection": "keep-alive"],
-        body: encodedBody,
-        timeout: timeout,
-        ignoreSSLIssues: true
-    ]
-    if (cookie) params.headers["Cookie"] = cookie
-    def result = null
-    try {
-        httpPost(params) { resp ->
-            def responseData = resp.data
-            try { responseData = responseData.text }
-            catch (Exception readErr) { responseData = responseData?.toString() }
-            result = [
-                status: resp.status,
-                location: resp.headers?."Location"?.toString(),
-                data: responseData
-            ]
-        }
-    } catch (Exception e) {
-        if (shouldRetryWithFreshCookie(e, isRetry)) {
-            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on POST-form-raw ${path}")
-            return hubInternalPostFormRaw(path, encodedBody, timeout, true)
-        }
-        throw e
-    }
-    return result
+    _hubRequest('POST', path, [body: encodedBody, timeout: timeout,
+                              requestContentType: "application/x-www-form-urlencoded", keepAlive: true,
+                              returnShape: 'struct', isRetry: isRetry])
 }
 
 def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetry = false) {
-    def cookie = getHubSecurityCookie()
-    def params = [
-        uri: "http://127.0.0.1:8080",
-        path: path,
-        requestContentType: "application/x-www-form-urlencoded",
-        textParser: true, // Accept any content type without parse errors
-        headers: [
-            "Connection": "keep-alive"
-        ],
-        body: body,
-        timeout: timeout,
-        ignoreSSLIssues: true
-    ]
-    if (cookie) {
-        params.headers["Cookie"] = cookie
-    }
-
-    def result = null
-    try {
-        httpPost(params) { resp ->
-            def responseData = resp.data
-            // textParser: true returns a Reader/InputStream — try .text to read it fully
-            try {
-                responseData = responseData.text
-            } catch (Exception readErr) {
-                responseData = responseData?.toString()
-            }
-            result = [
-                status: resp.status,
-                location: resp.headers?."Location"?.toString(),
-                data: responseData
-            ]
-        }
-    } catch (Exception e) {
-        if (shouldRetryWithFreshCookie(e, isRetry)) {
-            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on POST-form ${path}")
-            return hubInternalPostForm(path, body, timeout, true)
-        }
-        throw e
-    }
-    return result
+    _hubRequest('POST', path, [body: body, timeout: timeout,
+                              requestContentType: "application/x-www-form-urlencoded", keepAlive: true,
+                              returnShape: 'struct', isRetry: isRetry])
 }
 
 /**
@@ -8774,50 +8882,19 @@ def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetr
  * which accept Content-Type: application/json (unlike app/driver endpoints that use form-encoded).
  * Returns a parsed Map/List from the JSON response body, or null on empty response.
  */
-def hubInternalPostJson(String path, String jsonBody, boolean isRetry = false) {
-    def cookie = getHubSecurityCookie()
-    def params = [
-        uri: "http://127.0.0.1:8080",
-        path: path,
-        requestContentType: "application/json",
-        textParser: true, // Prevent sandbox from auto-parsing JSON response; read raw text then parse ourselves
-        headers: [
-            "Connection": "keep-alive"
-        ],
-        body: jsonBody,
-        timeout: 420,
-        ignoreSSLIssues: true
-    ]
-    if (cookie) {
-        params.headers["Cookie"] = cookie
-    }
-
-    def result = null
-    try {
-        httpPost(params) { resp ->
-            def responseData = resp.data
-            try {
-                responseData = responseData.text
-            } catch (Exception readErr) {
-                responseData = responseData?.toString()
-            }
-            if (responseData) {
-                try {
-                    result = new groovy.json.JsonSlurper().parseText(responseData)
-                } catch (Exception parseErr) {
-                    mcpLog("warn", "hub-admin", "hubInternalPostJson response not JSON: ${responseData?.take(200)}")
-                    result = null
-                }
-            }
+def hubInternalPostJson(String path, String jsonBody, int timeout = 420, boolean isRetry = false) {
+    def bodyText = _hubRequest('POST', path, [body: jsonBody, timeout: timeout,
+                              requestContentType: "application/json", keepAlive: true,
+                              returnShape: 'text', isRetry: isRetry])
+    if (bodyText) {
+        try {
+            return new groovy.json.JsonSlurper().parseText(bodyText)
+        } catch (Exception parseErr) {
+            mcpLog("error", "hub-admin", "hubInternalPostJson response not JSON: ${bodyText?.take(200)}")
+            return null
         }
-    } catch (Exception e) {
-        if (shouldRetryWithFreshCookie(e, isRetry)) {
-            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on POST-json ${path}")
-            return hubInternalPostJson(path, jsonBody, true)
-        }
-        throw e
     }
-    return result
+    return null
 }
 
 /**
@@ -8897,7 +8974,7 @@ def backupItemSource(String type, String id) {
     try {
         uploadHubFile(fileName, parsed.source.getBytes("UTF-8"))
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Failed to save backup file '${fileName}': ${e.message}")
+        mcpLogError("hub-admin", "Failed to save backup file '${fileName}'", e)
         throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: file upload failed -- ${e.message}")
     }
 
@@ -9019,7 +9096,7 @@ def toolGetItemBackup(args) {
         if (bytes == null) throw new Exception("File not found in File Manager")
         source = new String(bytes, "UTF-8")
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Failed to read backup file '${entry.fileName}': ${e.message}")
+        mcpLogError("hub-admin", "Failed to read backup file '${entry.fileName}'", e)
         return [
             error: "Backup file '${entry.fileName}' could not be read: ${e.message}",
             backupKey: args.backupKey,
@@ -9105,7 +9182,7 @@ def toolRestoreItemBackup(args) {
         try {
             return _rmRestoreFromBackup(entry)
         } catch (Exception e) {
-            mcpLog("error", "hub-admin", "RM rule restore failed for key ${args.backupKey}: ${e.message}")
+            mcpLogError("hub-admin", "RM rule restore failed for key ${args.backupKey}", e)
             return [success: false, error: e.message, backupKey: args.backupKey, type: "rm-rule"]
         }
     }
@@ -9117,7 +9194,7 @@ def toolRestoreItemBackup(args) {
         if (bytes == null) throw new Exception("File not found in File Manager")
         source = new String(bytes, "UTF-8")
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Failed to read backup file '${entry.fileName}' for restore: ${e.message}")
+        mcpLogError("hub-admin", "Failed to read backup file '${entry.fileName}' for restore", e)
         return [
             success: false,
             error: "Backup file '${entry.fileName}' could not be read: ${e.message}",
@@ -9225,7 +9302,7 @@ def toolRestoreItemBackup(args) {
             ]
         }
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Restore failed with exception for ${entryCopy.type} ID ${entryCopy.id}: ${e.message}")
+        mcpLogError("hub-admin", "Restore failed with exception for ${entryCopy.type} ID ${entryCopy.id}", e)
         return [
             success: false,
             error: "Restore failed: ${e.message}",
@@ -9385,7 +9462,7 @@ def toolReadFile(args) {
         if (bytes == null) throw new Exception("File not found in File Manager")
         content = new String(bytes, "UTF-8")
     } catch (Exception e) {
-        mcpLog("error", "file-manager", "Failed to read file '${args.fileName}': ${e.message}")
+        mcpLogError("file-manager", "Failed to read file '${args.fileName}'", e)
         return [
             success: false,
             error: "File '${args.fileName}' could not be read: ${e.message}",
@@ -9475,7 +9552,7 @@ def toolWriteFile(args) {
         }
         return result
     } catch (Exception e) {
-        mcpLog("error", "file-manager", "Failed to write file '${args.fileName}': ${e.message}")
+        mcpLogError("file-manager", "Failed to write file '${args.fileName}'", e)
         return [
             success: false,
             error: "Failed to write file '${args.fileName}': ${e.message}"
@@ -9546,7 +9623,7 @@ def toolDeleteFile(args) {
         }
         return result
     } catch (Exception e) {
-        mcpLog("error", "file-manager", "Failed to delete file '${args.fileName}': ${e.message}")
+        mcpLogError("file-manager", "Failed to delete file '${args.fileName}'", e)
         return [
             success: false,
             error: "Failed to delete '${args.fileName}': ${e.message}",
@@ -9570,6 +9647,10 @@ def formatAge(Long timestamp) {
     return "${days} ${days == 1 ? 'day' : 'days'} ago"
 }
 
+// RC-only protocol items (_meta request echo, ttlMs/cacheScope list-cache
+// hints, tools/list nextCursor) are intentionally NOT implemented -- they are
+// next-revision RC features and no shipped client negotiates that
+// protocolVersion yet. Revisit when the spec publishes and a client uses it.
 def jsonRpcResult(id, result) {
     return [jsonrpc: "2.0", id: id, result: result]
 }
@@ -9627,6 +9708,9 @@ def shouldLog(level) {
     def levels = getLogLevels()
     def currentIndex = levels.indexOf(getConfiguredLogLevel())
     def logIndex = levels.indexOf(level)
+    // Fail open on an unrecognized level so a typo'd level is never silently
+    // swallowed -- the mcpLog switch default below emits a self-diagnosing warn.
+    if (logIndex == -1) return true
     return logIndex >= currentIndex
 }
 
@@ -9642,14 +9726,20 @@ def mcpLog(String level, String component, String message, String ruleId = null,
         timestamp: now(),
         level: level,
         component: component,
-        message: message
+        // Cap stored payload so each buffer entry stays bounded -- the
+        // `state.debugLogs = state.debugLogs` writeback below re-serializes the
+        // whole buffer on every log line, so an uncapped caller message/trace
+        // would inflate every subsequent write. Mirrors the 500-char response
+        // cap idiom in handleMcpRequest. details stays a structured Map (every
+        // caller passes a small bounded Map, not unbounded text).
+        message: message?.take(500)
     ]
 
     if (ruleId) entry.ruleId = ruleId
     if (extraData?.duration) entry.duration = extraData.duration
     if (extraData?.ruleName) entry.ruleName = extraData.ruleName
     if (extraData?.details) entry.details = extraData.details
-    if (extraData?.stackTrace) entry.stackTrace = extraData.stackTrace
+    if (extraData?.stackTrace) entry.stackTrace = extraData.stackTrace?.toString()?.take(1000)
 
     state.debugLogs.entries << entry
 
@@ -9662,12 +9752,16 @@ def mcpLog(String level, String component, String message, String ruleId = null,
     // Force top-level state reassignment to ensure nested mutations are persisted
     state.debugLogs = state.debugLogs
 
-    // Also log to Hubitat logs
+    // Also log to Hubitat logs. Append the structured stackTrace (class + message,
+    // set by mcpLogError) to the warn/error native lines so the exception detail
+    // stays visible on the Hubitat Logs page, not only in the MCP debug buffer.
+    def traceSuffix = extraData?.stackTrace ? " -- ${extraData.stackTrace.toString().take(1000)}" : ""
     switch (level) {
         case "debug": log.debug "[${component}] ${message}"; break
         case "info": log.info "[${component}] ${message}"; break
-        case "warn": log.warn "[${component}] ${message}"; break
-        case "error": log.error "[${component}] ${message}"; break
+        case "warn": log.warn "[${component}] ${message}${traceSuffix}"; break
+        case "error": log.error "[${component}] ${message}${traceSuffix}"; break
+        default: log.warn "[${component}] (unknown level '${level}') ${message}${traceSuffix}"; break
     }
 }
 
@@ -10195,70 +10289,6 @@ _Add any other context, screenshots, or transcripts when filing._
 
 // ==================== HUB ADMIN READ TOOL IMPLEMENTATIONS ====================
 
-def toolGetHubDetails(args) {
-    requireHubAdminRead()
-
-    def hub = location.hub
-    def details = [
-        name: hub?.name,
-        localIP: hub?.localIP,
-        timeZone: location.timeZone?.ID,
-        temperatureScale: location.temperatureScale,
-        latitude: location.latitude,
-        longitude: location.longitude,
-        zipCode: location.zipCode
-    ]
-
-    // Safe property access for hub properties
-    try { details.model = hub?.hardwareID } catch (Exception e) { details.model = "unavailable" }
-    try { details.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { details.firmwareVersion = "unavailable" }
-    try { details.uptime = hub?.uptime } catch (Exception e) { details.uptime = "unavailable" }
-    try { details.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { details.zigbeeChannel = "unavailable" }
-    try { details.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { details.zwaveVersion = "unavailable" }
-    try { details.zigbeeId = hub?.zigbeeId } catch (Exception e) { details.zigbeeId = "unavailable" }
-    try { details.type = hub?.type } catch (Exception e) { details.type = "unavailable" }
-    try { details.hubData = hub?.data } catch (Exception e) { details.hubData = null }
-
-    // Extended info via internal API
-    try {
-        def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
-        if (freeMemory) details.freeMemoryKB = freeMemory.trim()
-    } catch (Exception e) {
-        details.freeMemoryKB = "unavailable (${e.message})"
-        mcpLog("debug", "hub-admin", "Could not get free memory: ${e.message}")
-    }
-
-    try {
-        def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
-        if (tempC) details.internalTempCelsius = tempC.trim()
-    } catch (Exception e) {
-        details.internalTempCelsius = "unavailable (${e.message})"
-        mcpLog("debug", "hub-admin", "Could not get internal temperature: ${e.message}")
-    }
-
-    // Hub database size via internal API
-    try {
-        def dbSize = hubInternalGet("/hub/advanced/databaseSize")
-        if (dbSize) details.databaseSizeKB = dbSize.trim()
-    } catch (Exception e) {
-        details.databaseSizeKB = "unavailable"
-        mcpLog("debug", "hub-admin", "Could not get database size: ${e.message}")
-    }
-
-    details.mcpServerVersion = currentVersion()
-    details.selectedDeviceCount = settings.selectedDevices?.size() ?: 0
-    details.ruleCount = getChildApps()?.size() ?: 0
-    details.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
-    details.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
-    details.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
-    details.builtinAppEnabled = settings.enableBuiltinApp ?: false
-    details.customRuleEngineEnabled = settings.enableCustomRuleEngine == true
-    details.developerModeEnabled = settings.enableDeveloperMode ?: false
-
-    mcpLog("info", "hub-admin", "Retrieved extended hub details")
-    return details
-}
-
 def toolListHubApps(args) {
     requireHubAdminRead()
 
@@ -10447,93 +10477,6 @@ def toolGetZigbeeDetails(args) {
 
     mcpLog("info", "hub-admin", "Retrieved Zigbee details")
     return result
-}
-
-def toolGetHubHealth(args) {
-    requireHubAdminRead()
-
-    def hub = location.hub
-    def health = [
-        timestamp: formatTimestamp(now())
-    ]
-
-    // Uptime
-    try { health.uptimeSeconds = hub?.uptime } catch (Exception e) { health.uptimeSeconds = "unavailable" }
-    if (health.uptimeSeconds && health.uptimeSeconds instanceof Number) {
-        def days = (health.uptimeSeconds / 86400).toInteger()
-        def hours = ((health.uptimeSeconds % 86400) / 3600).toInteger()
-        def mins = ((health.uptimeSeconds % 3600) / 60).toInteger()
-        health.uptimeFormatted = "${days}d ${hours}h ${mins}m"
-    }
-
-    // Free memory
-    try {
-        def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
-        if (freeMemory) {
-            health.freeMemoryKB = freeMemory.trim()
-            try {
-                def memKB = freeMemory.trim() as Integer
-                if (memKB < 50000) {
-                    health.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
-                } else if (memKB < 100000) {
-                    health.memoryNote = "Memory is moderate: ${memKB}KB free."
-                }
-            } catch (NumberFormatException nfe) {
-                mcpLog("debug", "hub-admin", "Free memory value not numeric: ${freeMemory.trim()}")
-            }
-        }
-    } catch (Exception e) {
-        health.freeMemoryKB = "unavailable"
-        mcpLog("debug", "hub-admin", "Could not get free memory: ${e.message}")
-    }
-
-    // Internal temperature
-    try {
-        def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
-        if (tempC) {
-            health.internalTempCelsius = tempC.trim()
-            try {
-                def temp = tempC.trim() as Double
-                if (temp > 70) {
-                    health.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
-                } else if (temp > 60) {
-                    health.temperatureNote = "Temperature is warm: ${temp}°C."
-                }
-            } catch (NumberFormatException nfe) {
-                mcpLog("debug", "hub-admin", "Temperature value not numeric: ${tempC.trim()}")
-            }
-        }
-    } catch (Exception e) {
-        health.internalTempCelsius = "unavailable"
-        mcpLog("debug", "hub-admin", "Could not get internal temperature: ${e.message}")
-    }
-
-    // Database size
-    try {
-        def dbSize = hubInternalGet("/hub/advanced/databaseSize")
-        if (dbSize) {
-            health.databaseSizeKB = dbSize.trim()
-            try {
-                def dbKB = dbSize.trim() as Integer
-                if (dbKB > 500000) {
-                    health.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
-                }
-            } catch (NumberFormatException nfe) {
-                mcpLog("debug", "hub-admin", "Database size value not numeric: ${dbSize.trim()}")
-            }
-        }
-    } catch (Exception e) {
-        health.databaseSizeKB = "unavailable"
-    }
-
-    // MCP-specific health
-    health.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
-    health.mcpRuleCount = getChildApps()?.size() ?: 0
-    health.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
-    health.mcpCapturedStates = atomicState.capturedDeviceStates?.size() ?: 0
-
-    mcpLog("info", "hub-admin", "Hub health check completed")
-    return health
 }
 
 // ==================== MONITORING TOOL IMPLEMENTATIONS ====================
@@ -10758,7 +10701,7 @@ def toolGetHubLogs(args) {
     try {
         responseText = hubInternalGet("/logs/past/json", query, 30)
     } catch (Exception e) {
-        mcpLog("error", "monitoring", "Failed to fetch hub logs: ${e.message}")
+        mcpLogError("monitoring", "Failed to fetch hub logs", e)
         throw new IllegalStateException("Failed to fetch hub logs: ${e.message}")
     }
 
@@ -10932,7 +10875,7 @@ def toolGetHubLogs(args) {
     // count, the per-message take(200) bounds the message body so a single oversized
     // entry can't push the page past the cap on its own.
     def estimatedJsonSize = paged.page.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 }
-    if (estimatedJsonSize > 120000) {
+    if (estimatedJsonSize > hubResponseCapBytes() - 11072) {  // =120000; matches handleToolsCall responseSizeLimit
         paged.page.each { it.message = it.message?.take(200) }
         result.truncated = true
         result.note = "Log messages truncated to fit response size limit"
@@ -11099,7 +11042,7 @@ def toolGetPerformanceStats(args) {
     try {
         data = fetchLogsJson()
     } catch (Exception e) {
-        mcpLog("error", "monitoring", "Failed to fetch performance stats: ${e.message}")
+        mcpLogError("monitoring", "Failed to fetch performance stats", e)
         return [error: "Failed to fetch performance stats: ${e.message}"]
     }
 
@@ -11178,7 +11121,7 @@ def toolGetHubJobs(args) {
     try {
         data = fetchLogsJson()
     } catch (Exception e) {
-        mcpLog("error", "monitoring", "Failed to fetch hub jobs: ${e.message}")
+        mcpLogError("monitoring", "Failed to fetch hub jobs", e)
         return [error: "Failed to fetch hub jobs: ${e.message}"]
     }
 
@@ -11422,7 +11365,7 @@ def toolGetMemoryHistory(args) {
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
 
-    mcpLog("info", "diagnostics", "Memory history retrieved: ${paged.page.size()} entries (${allEntries.size()} total)")
+    mcpLog("info", "server", "Memory history retrieved: ${paged.page.size()} entries (${allEntries.size()} total)")
     return result
 }
 
@@ -11465,7 +11408,7 @@ def toolForceGarbageCollection(args) {
         result.summary = "GC triggered but could not read memory values for comparison"
     }
 
-    mcpLog("info", "diagnostics", "Forced GC: before=${beforeKB}KB, after=${afterKB}KB")
+    mcpLog("info", "server", "Forced GC: before=${beforeKB}KB, after=${afterKB}KB")
     return result
 }
 
@@ -11692,7 +11635,7 @@ def toolCreateHubBackup(args) {
             note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore."
         ]
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Hub backup FAILED: ${e.message}")
+        mcpLogError("hub-admin", "Hub backup FAILED", e)
         return [
             success: false,
             error: "Backup failed: ${e.message}",
@@ -11717,7 +11660,7 @@ def toolRebootHub(args) {
             response: responseText?.take(500)
         ]
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Hub reboot failed: ${e.message}")
+        mcpLogError("hub-admin", "Hub reboot failed", e)
         return [
             success: false,
             error: "Reboot failed: ${e.message}",
@@ -11741,7 +11684,7 @@ def toolShutdownHub(args) {
             response: responseText?.take(500)
         ]
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Hub shutdown failed: ${e.message}")
+        mcpLogError("hub-admin", "Hub shutdown failed", e)
         return [
             success: false,
             error: "Shutdown failed: ${e.message}",
@@ -11767,7 +11710,7 @@ def toolZwaveRepair(args) {
             response: responseText?.take(500)
         ]
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Z-Wave repair failed to start: ${e.message}")
+        mcpLogError("hub-admin", "Z-Wave repair failed to start", e)
         return [
             success: false,
             error: "Z-Wave repair failed: ${e.message}",
@@ -11843,7 +11786,7 @@ def toolGetItemSource(String type, String idParam, args) {
         }
         return result
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Failed to get ${type} source: ${e.message}")
+        mcpLogError("hub-admin", "Failed to get ${type} source", e)
         return [success: false, error: "Failed to get ${type} source: ${e.message}"]
     }
 }
@@ -12559,7 +12502,7 @@ private Map toolInstallItemSingle(String type, args) {
         if (sourceMode == "importUrl") installResult.note = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript)."
         return installResult
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "${type.capitalize()} installation failed: ${e.message}")
+        mcpLogError("hub-admin", "${type.capitalize()} installation failed", e)
         return [
             success: false,
             error: "${type.capitalize()} installation failed: ${e.message}",
@@ -12804,7 +12747,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
             ]
         }
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "${type} update failed: ${e.message}")
+        mcpLogError("hub-admin", "${type} update failed", e)
         return [
             success: false,
             error: "${type.capitalize()} update failed: ${e.message}",
@@ -12963,7 +12906,7 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
             ]
         }
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "${type.capitalize()} deletion failed: ${e.message}")
+        mcpLogError("hub-admin", "${type.capitalize()} deletion failed", e)
         return [success: false, error: "${type.capitalize()} deletion failed: ${e.message}"]
     }
 }
@@ -13009,7 +12952,7 @@ private Map backupLibrarySource(String libraryId) {
     try {
         uploadHubFile(fileName, backupSource.getBytes("UTF-8"))
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Failed to save library backup file '${fileName}': ${e.message}")
+        mcpLogError("hub-admin", "Failed to save library backup file '${fileName}'", e)
         throw new IllegalArgumentException("Cannot back up library ID ${libraryId}: file upload failed -- ${e.message}")
     }
 
@@ -13122,7 +13065,7 @@ def toolGetLibrarySource(args) {
         }
         return result
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Failed to get library source: ${e.message}")
+        mcpLogError("hub-admin", "Failed to get library source", e)
         return [success: false, error: "Failed to get library source: ${e.message}"]
     }
 }
@@ -13262,7 +13205,7 @@ def toolInstallLibrary(args) {
         if (verifyError != null) installResult.verifyError = "${verifyError} -- use hub_get_source(type='library', id=${newLibraryId}) to confirm."
         return installResult
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Library installation failed: ${e.message}")
+        mcpLogError("hub-admin", "Library installation failed", e)
         return [
             success: false,
             error: "Library installation failed: ${e.message}",
@@ -13409,7 +13352,7 @@ def toolUpdateLibraryCode(args) {
         if (sourceMode == "sourceFile") successResult.note = "Source was read from File Manager file '${args.sourceFile}' -- no cloud size limits."
         return successResult
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Library update failed: ${e.message}")
+        mcpLogError("hub-admin", "Library update failed", e)
         return [success: false, error: "Library update failed: ${e.message}"]
     }
 }
@@ -13496,7 +13439,7 @@ def toolDeleteLibrary(args) {
             ]
         }
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Library deletion failed: ${e.message}")
+        mcpLogError("hub-admin", "Library deletion failed", e)
         return [success: false, error: "Library deletion failed: ${e.message}"]
     }
 }
@@ -13654,7 +13597,7 @@ def toolDeleteDevice(args) {
         def responseText = hubInternalGet("/device/forceDelete/${deviceId}/yes", null, 30)
         mcpLog("debug", "hub-admin", "Force delete response for device ${deviceId}: ${responseText?.take(500)}")
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Device force delete FAILED for '${deviceName}' (${deviceId}): ${e.message}")
+        mcpLogError("hub-admin", "Device force delete FAILED for '${deviceName}' (${deviceId})", e)
         return [
             success: false,
             error: "Force delete failed: ${e.message}",
@@ -13978,7 +13921,7 @@ def toolDeleteVirtualDevice(args) {
     try {
         deleteChildDevice(dni)
     } catch (Exception e) {
-        mcpLog("error", "device", "Failed to delete virtual device '${deviceLabel}' (DNI: ${dni}): ${e.message}")
+        mcpLogError("device", "Failed to delete virtual device '${deviceLabel}' (DNI: ${dni})", e)
         throw new RuntimeException("Failed to delete virtual device: ${e.message}")
     }
 
@@ -14139,38 +14082,17 @@ def toolUpdateDevice(args) {
                 def deviceIdInt = deviceId as Integer
 
                 // Helper: POST JSON to /room/save and check for errors
+                // Routed through hubInternalPostJson so room writes share the Hub Security
+                // cookie-refresh retry (a stale cookie no longer fails the save outright).
+                // It returns the parsed body (or null on empty/non-JSON); the
+                // verify-after-write step below is the real safety net for this path.
                 def roomSavePost = { Map bodyMap ->
-                    def cookie = getHubSecurityCookie()
                     def jsonStr = groovy.json.JsonOutput.toJson(bodyMap)
-                    def postParams = [
-                        uri: "http://127.0.0.1:8080",
-                        path: "/room/save",
-                        requestContentType: "application/json",
-                        body: jsonStr,
-                        textParser: true,
-                        timeout: 30,
-                        ignoreSSLIssues: true
-                    ]
-                    if (cookie) { postParams.headers = ["Cookie": cookie] }
-                    def respBody = null
-                    httpPost(postParams) { resp ->
-                        try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
+                    def parsed = hubInternalPostJson("/room/save", jsonStr, 30)
+                    if (parsed?.error) {
+                        throw new RuntimeException("Room API error: ${parsed.error}")
                     }
-                    // Parse JSON response to check for error field
-                    if (respBody) {
-                        try {
-                            def parsed = new groovy.json.JsonSlurper().parseText(respBody)
-                            if (parsed?.error) {
-                                throw new RuntimeException("Room API error: ${parsed.error}")
-                            }
-                        } catch (groovy.json.JsonException ignored) {
-                            // Non-JSON response — check raw text
-                            if (respBody.toLowerCase().contains("error")) {
-                                throw new RuntimeException("Room API error (non-JSON): ${respBody.take(500)}")
-                            }
-                        }
-                    }
-                    return respBody
+                    return parsed
                 }
 
                 // Helper: check if device is in a room's device list
@@ -14450,40 +14372,21 @@ def toolCreateRoom(args) {
     // Build device IDs list
     def deviceIds = args.deviceIds?.collect { it as Integer } ?: []
 
-    // POST /room/save with roomId: 0 to create (Grails convention)
-    def cookie = getHubSecurityCookie()
+    // POST /room/save with roomId: 0 to create (Grails convention). Routed through
+    // hubInternalPostJson for the shared Hub Security cookie-refresh retry; the
+    // creation is confirmed against getRooms() below.
     def body = [roomId: 0, name: roomName, deviceIds: deviceIds]
     def jsonStr = groovy.json.JsonOutput.toJson(body)
     mcpLog("debug", "room", "hub_create_room: POST /room/save body: ${jsonStr}")
 
-    def respBody = null
+    def parsed
     try {
-        def postParams = [
-            uri: "http://127.0.0.1:8080",
-            path: "/room/save",
-            requestContentType: "application/json",
-            body: jsonStr,
-            textParser: true,
-            timeout: 30,
-            ignoreSSLIssues: true
-        ]
-        if (cookie) { postParams.headers = ["Cookie": cookie] }
-        httpPost(postParams) { resp ->
-            try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
-            mcpLog("debug", "room", "hub_create_room: response status=${resp.status} body=${respBody?.take(500)}")
-        }
+        parsed = hubInternalPostJson("/room/save", jsonStr, 30)
     } catch (Exception httpErr) {
         throw new RuntimeException("Failed to create room '${roomName}': ${httpErr.message}")
     }
-
-    // Parse JSON response to check for error
-    if (respBody) {
-        try {
-            def parsed = new groovy.json.JsonSlurper().parseText(respBody)
-            if (parsed?.error) {
-                throw new RuntimeException("Failed to create room: ${parsed.error}")
-            }
-        } catch (groovy.json.JsonException ignored) {}
+    if (parsed?.error) {
+        throw new RuntimeException("Failed to create room: ${parsed.error}")
     }
 
     // Verify creation (case-insensitive to handle any normalization)
@@ -14522,7 +14425,6 @@ def toolDeleteRoom(args) {
     def deviceCount = room.deviceIds?.size() ?: 0
     mcpLog("debug", "room", "hub_delete_room: deleting room '${roomName}' (ID: ${roomId}), ${deviceCount} devices will be unassigned")
 
-    def cookie = getHubSecurityCookie()
     def deleteSuccess = false
     def deleteError = null
 
@@ -14535,29 +14437,10 @@ def toolDeleteRoom(args) {
         if (deleteSuccess) break
         try {
             if (att.method == "POST") {
-                def postParams = [
-                    uri: "http://127.0.0.1:8080",
-                    path: "/room/delete/${roomId}",
-                    requestContentType: "application/json",
-                    body: groovy.json.JsonOutput.toJson([roomId: roomId as Integer]),
-                    textParser: true,
-                    timeout: 30,
-                    ignoreSSLIssues: true
-                ]
-                if (cookie) { postParams.headers = ["Cookie": cookie] }
-                def postRespBody = null
-                httpPost(postParams) { resp ->
-                    try { postRespBody = resp.data?.text?.toString() } catch (Exception ignored) { postRespBody = resp.data?.toString() }
-                    mcpLog("debug", "room", "hub_delete_room: ${att.desc} status=${resp.status} body=${postRespBody?.take(500)}")
-                }
-                // Check response for error
-                if (postRespBody) {
-                    try {
-                        def parsed = new groovy.json.JsonSlurper().parseText(postRespBody)
-                        if (parsed?.error) {
-                            throw new RuntimeException("API error: ${parsed.error}")
-                        }
-                    } catch (groovy.json.JsonException ignored) {}
+                // Routed through hubInternalPostJson for the shared cookie-refresh retry.
+                def parsed = hubInternalPostJson("/room/delete/${roomId}", groovy.json.JsonOutput.toJson([roomId: roomId as Integer]), 30)
+                if (parsed?.error) {
+                    throw new RuntimeException("API error: ${parsed.error}")
                 }
                 deleteSuccess = true
             } else {
@@ -14622,40 +14505,21 @@ def toolRenameRoom(args) {
     def roomId = room.id
     def deviceIds = room.deviceIds?.collect { it as Integer } ?: []
 
-    // POST /room/save with existing roomId and new name
-    def cookie = getHubSecurityCookie()
+    // POST /room/save with existing roomId and new name. Routed through
+    // hubInternalPostJson for the shared cookie-refresh retry; the rename is
+    // confirmed against getRooms() below.
     def body = [roomId: roomId as Integer, name: newName, deviceIds: deviceIds]
     def jsonStr = groovy.json.JsonOutput.toJson(body)
     mcpLog("debug", "room", "hub_update_room: POST /room/save body: ${jsonStr}")
 
-    def respBody = null
+    def parsed
     try {
-        def postParams = [
-            uri: "http://127.0.0.1:8080",
-            path: "/room/save",
-            requestContentType: "application/json",
-            body: jsonStr,
-            textParser: true,
-            timeout: 30,
-            ignoreSSLIssues: true
-        ]
-        if (cookie) { postParams.headers = ["Cookie": cookie] }
-        httpPost(postParams) { resp ->
-            try { respBody = resp.data?.text?.toString() } catch (Exception ignored) { respBody = resp.data?.toString() }
-            mcpLog("debug", "room", "hub_update_room: response status=${resp.status} body=${respBody?.take(500)}")
-        }
+        parsed = hubInternalPostJson("/room/save", jsonStr, 30)
     } catch (Exception httpErr) {
         throw new RuntimeException("Failed to rename room '${oldName}': ${httpErr.message}")
     }
-
-    // Parse JSON response to check for error
-    if (respBody) {
-        try {
-            def parsed = new groovy.json.JsonSlurper().parseText(respBody)
-            if (parsed?.error) {
-                throw new RuntimeException("Failed to rename room: ${parsed.error}")
-            }
-        } catch (groovy.json.JsonException ignored) {}
+    if (parsed?.error) {
+        throw new RuntimeException("Failed to rename room: ${parsed.error}")
     }
 
     // Verify rename
@@ -14771,7 +14635,7 @@ def toolListInstalledApps(args) {
         // Programmer error -- e.g. validFilters / switch drift on the filter whitelist.
         // Don't reframe as a transport failure; surface so the drift gets fixed instead
         // of swallowed under a misleading "hub blip" note.
-        mcpLog("error", "installed-apps", "hub_list_apps internal invariant violated: ${e.message}")
+        mcpLogError("installed-apps", "hub_list_apps internal invariant violated", e)
         throw e
     } catch (Exception e) {
         // The Built-in-App-Tools gate has already passed by the time we reach here, so
@@ -14779,7 +14643,7 @@ def toolListInstalledApps(args) {
         // (network blip, firmware change to /hub2/appsList) or the flatten/filter pipeline
         // (unexpected shape in a child entry). The error message itself will usually
         // distinguish the two.
-        mcpLog("error", "installed-apps", "hub_list_apps failed: ${e.message}")
+        mcpLogError("installed-apps", "hub_list_apps failed", e)
         return [success: false, error: "Failed to list installed apps: ${e.message}", note: "Hub transport error or unexpected /hub2/appsList response shape -- retry; if persistent, inspect the raw response for firmware-side drift."]
     }
 }
@@ -14869,7 +14733,7 @@ def toolGetDeviceInUseBy(args) {
         }
         return result
     } catch (Exception e) {
-        mcpLog("error", "installed-apps", "hub_list_device_dependents failed for device ${deviceId}: ${e.message}")
+        mcpLogError("installed-apps", "hub_list_device_dependents failed for device ${deviceId}", e)
         return [success: false, error: "Failed: ${e.message}", note: "Verify the device ID is valid and Built-in App Tools is enabled."]
     }
 }
@@ -22381,7 +22245,7 @@ def toolCreateNativeApp(args) {
         // common cause is that the registry's namespace/appName combo
         // doesn't match an installed app on this hub. Surface a clear
         // hint instead of the generic "unexpected error".
-        mcpLog("error", "rm-native", "createchild failed for appType='${appType}' (ns=${reg.namespace}, appName=${reg.appName}, parent=${parentId}): ${createExc.message}")
+        mcpLogError("rm-native", "createchild failed for appType='${appType}' (ns=${reg.namespace}, appName=${reg.appName}, parent=${parentId})", createExc)
         throw new IllegalArgumentException(
             "hub_create_native_app failed at the createchild step for appType='${appType}'. " +
             "The hub rejected namespace='${reg.namespace}' + appName='${reg.appName}' " +
@@ -22522,7 +22386,7 @@ def toolCreateNativeApp(args) {
         // Orphan cleanup: caller didn't get a usable app, so remove the
         // half-created shell rather than leaving it under the parent.
         // forcedelete/quiet is idempotent on already-gone ids.
-        mcpLog("error", "rm-native", "hub_create_native_app setup failed after createchild for ${newId} (appType=${appType}): ${e.message} -- cleaning up")
+        mcpLogError("rm-native", "hub_create_native_app setup failed after createchild for ${newId} (appType=${appType}) -- cleaning up", e)
         try { _rmForceDeleteApp(newId) } catch (Exception ce) {
             mcpLog("warn", "rm-native", "Orphan cleanup failed for ${newId}: ${ce.message}")
         }
@@ -24190,7 +24054,7 @@ def toolUpdateNativeApp(args) {
             }
             return result
         } catch (Exception e) {
-            mcpLog("error", "rm-native", "walkStep failed for app ${appId}: ${e.message}")
+            mcpLogError("rm-native", "walkStep failed for app ${appId}", e)
             return [
                 success: false,
                 appId: appId,
@@ -24334,6 +24198,9 @@ def toolUpdateNativeApp(args) {
             // re-derives cleanedError for the same reason -- if e.message
             // didn't carry the marker, replace() returns the original string.
             def cleanedError = e.message?.replace(getAsyncCommitMarker(), "")
+            // Intentionally plain mcpLog (NOT mcpLogError): this site deliberately
+            // sanitizes the asyncCommit marker out of the message, and mcpLogError
+            // would re-leak the raw e.message (marker included) into stackTrace.
             mcpLog("error", "rm-native", "action mutation failed for app ${appId}: ${cleanedError}")
             // Defensive eventual-consistency response shape for the rare
             // clearActions verification-window-exhausted residual. The trashActs
@@ -24505,7 +24372,7 @@ def toolUpdateNativeApp(args) {
                 trigMutResult = _rmModifyTrigger(appId, trigIdxOut, modifyTriggerSpec.mods as Map)
             }
         } catch (Exception e) {
-            mcpLog("error", "rm-native", "trigger mutation failed for app ${appId}: ${e.message}")
+            mcpLogError("rm-native", "trigger mutation failed for app ${appId}", e)
             // removeTrigger / modifyTrigger retry-exhaustion stays on the legacy
             // flat error shape (success:false + restoreHint hint). The structured
             // asyncCommitLikely envelope -- with safeRecovery, actionsRequestedForRemoval,
@@ -24618,7 +24485,7 @@ def toolUpdateNativeApp(args) {
         try {
             trigResult = _rmAddTrigger(appId, addTriggerSpec)
         } catch (Exception e) {
-            mcpLog("error", "rm-native", "addTrigger failed for app ${appId}: ${e.message}")
+            mcpLogError("rm-native", "addTrigger failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup)
         }
         // Auto-fire updateRule after a successful commit so eventSubscriptions
@@ -24685,7 +24552,7 @@ def toolUpdateNativeApp(args) {
         try {
             actResult = _rmAddAction(appId, addActionSpec)
         } catch (Exception e) {
-            mcpLog("error", "rm-native", "addAction failed for app ${appId}: ${e.message}")
+            mcpLogError("rm-native", "addAction failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup)
         }
         return [
@@ -24919,7 +24786,7 @@ def toolUpdateNativeApp(args) {
             }
         } catch (Exception e) {
             patchErr = e.message
-            mcpLog("error", "rm-native", "patches application failed: ${e.message}")
+            mcpLogError("rm-native", "patches application failed", e)
         }
         def opsOk = patchResults.count { it?.success != false }
         def health = _rmCheckRuleHealth(appId)
@@ -24970,7 +24837,7 @@ def toolUpdateNativeApp(args) {
         try {
             varResult = _rmAddLocalVariable(appId, addLocalVariableSpec)
         } catch (Exception e) {
-            mcpLog("error", "rm-native", "addLocalVariable failed for app ${appId}: ${e.message}")
+            mcpLogError("rm-native", "addLocalVariable failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup)
         }
         // Trailing-updateRule failure propagation (sibling pattern from F2 on
@@ -25040,7 +24907,7 @@ def toolUpdateNativeApp(args) {
         try {
             reResult = _rmAddRequiredExpression(appId, addRequiredExpressionSpec)
         } catch (Exception e) {
-            mcpLog("error", "rm-native", "addRequiredExpression failed for app ${appId}: ${e.message}")
+            mcpLogError("rm-native", "addRequiredExpression failed for app ${appId}", e)
             // STPage is the wizard page this branch operates on; the helper threads it
             // into the wizardStuck restoreHint and surfaces preflight refusals with the
             // current health block (which a future preflight on this branch would set).
@@ -25141,7 +25008,7 @@ def toolUpdateNativeApp(args) {
                 }
             }
         } catch (Exception e) {
-            mcpLog("error", "rm-native", "addTriggers/addActions bulk failed for app ${appId}: ${e.message}")
+            mcpLogError("rm-native", "addTriggers/addActions bulk failed for app ${appId}", e)
             def bulkResult = _rmBuildUpdateErrorResponse(appId, e.message, backup)
             bulkResult.triggerResults = triggerResults
             bulkResult.actionResults = actionResults
@@ -25369,7 +25236,7 @@ def toolUpdateNativeApp(args) {
         return result
     } catch (Exception e) {
         def msg = e.message ?: e.toString()
-        mcpLog("error", "rm-native", "hub_update_native_app failed for ${appId}: ${msg}")
+        mcpLogError("rm-native", "hub_update_native_app failed for ${appId}: ${msg}", e)
         return _rmBuildUpdateErrorResponse(appId, msg, backup)
     }
 }
@@ -25891,7 +25758,13 @@ def toolExportNativeApp(args) {
         def refreshResp = _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, null)
         String jsonContent = _appClonerExtractJsonFromResponse(refreshResp?.data)
         if (!jsonContent) {
-            throw new IllegalStateException("appCloner export fired but no JSON content could be extracted from cloner ${clonerAppId} — wire format may have changed (looked for configPage.sections[].input[].filecontent)")
+            // Distinguish an unreadable response body (the struct read path returns
+            // data:null on a 2xx when the body read fails mid-stream) from a genuine
+            // format change, so the operator isn't sent chasing the wrong root cause.
+            def reason = (refreshResp?.data == null)
+                ? "the cloner response body was empty/unreadable (status ${refreshResp?.status})"
+                : "no JSON content could be extracted (looked for configPage.sections[].input[].filecontent) — wire format may have changed"
+            throw new IllegalStateException("appCloner export fired but ${reason} for cloner ${clonerAppId}")
         }
 
         def result = [
@@ -26289,12 +26162,19 @@ def handleUpdateCheckResponse(resp, data) {
     try {
         if (resp.status != 200) {
             mcpLog("warn", "server", "Version check HTTP error: ${resp.status}")
+            // Merge checkedAt + lastError onto the existing record (do NOT replace it)
+            // so the first-install gate in initialize() flips and the 24h guard engages
+            // even when the check never succeeds (e.g. a hub that can't reach GitHub),
+            // WITHOUT clobbering a previously-known latestVersion/updateAvailable -- a
+            // transient failure must not silently drop an already-surfaced update banner.
+            state.updateCheck = (state.updateCheck ?: [:]) + [checkedAt: now(), lastError: "http ${resp.status}"]
             return
         }
         def json = new groovy.json.JsonSlurper().parseText(resp.data)
         def latestVersion = json.version
         if (!latestVersion) {
             mcpLog("warn", "server", "Version check: no version field in response")
+            state.updateCheck = (state.updateCheck ?: [:]) + [checkedAt: now(), lastError: "no version field"]
             return
         }
         def installed = currentVersion()
@@ -26311,6 +26191,7 @@ def handleUpdateCheckResponse(resp, data) {
         }
     } catch (Exception e) {
         mcpLog("warn", "server", "Version check response parsing failed: ${e.message}")
+        state.updateCheck = (state.updateCheck ?: [:]) + [checkedAt: now(), lastError: e.message]
     }
 }
 
@@ -26348,13 +26229,24 @@ def toolSearchTools(args) {
     if (!query?.trim()) return [error: "query is required"]
     def maxResults = args.maxResults != null ? Math.max(0, args.maxResults as Integer) : 5
 
-    // Build searchable corpus (cached in state for performance on resource-constrained hub).
-    // The full corpus is always cached; visibility filtering is applied per-request so that
-    // toggle changes take effect immediately without invalidating the cache.
-    def corpus = state.toolSearchCorpus
-    if (!corpus) {
+    // Build searchable corpus (cached in atomicState for performance on a resource-
+    // constrained hub: build-once/read-many, so the atomicState write cost is negligible
+    // and it stays off the hot state-flush path and survives restart). The full corpus is
+    // always cached; visibility filtering is applied per-request so toggle changes take
+    // effect immediately without invalidating the cache. The per-doc tokenization is cached
+    // in lockstep (atomicState.toolSearchTokens, index-aligned to the FULL corpus) so
+    // queries never re-tokenize; both entries invalidate together in updated(). The cache
+    // is a pure function of the tool definitions, so app-update invalidation is sufficient.
+    def corpus = atomicState.toolSearchCorpus
+    def docTokensAll = atomicState.toolSearchTokens
+    if (!corpus || !docTokensAll || docTokensAll.size() != corpus.size()) {
         corpus = buildToolSearchCorpus()
-        state.toolSearchCorpus = corpus
+        // Tokenize every corpus entry once, in corpus order, so docTokensAll[i] is the
+        // tokenization of corpus[i] (a pure function of that entry). Plain List<List<String>>
+        // (sandbox-safe; whole-value single assignment, no nested-subscript mutation).
+        docTokensAll = corpus.collect { bm25Tokenize("${it.name} ${it.description} ${it.params ?: ''} ${it.hints ?: ''}") }
+        atomicState.toolSearchCorpus = corpus
+        atomicState.toolSearchTokens = docTokensAll
     }
 
     // Apply the same visibility filter that getToolDefinitions() uses so that
@@ -26380,18 +26272,24 @@ def toolSearchTools(args) {
         }
         // hub_get_custom_rule (list/get/diagnostics modes) stays visible in readonly mode
     }
-    // Filter corpus to only tools the current toggle state allows.
-    def visibleCorpus = corpus.findAll { entry ->
-        if (searchHideByName.contains(entry.name)) return false
+    // Filter corpus to only tools the current toggle state allows. Co-filter the cached
+    // full-corpus tokens in the SAME pass so docTokens[k] stays aligned with visibleCorpus[k]
+    // (docTokensAll[i] is the tokenization of corpus[i]; selecting both by the same surviving
+    // index i preserves the pairing). A plain findAll would drop the original index, so
+    // iterate with eachWithIndex and push both lists together.
+    def visibleCorpus = []
+    def docTokens = []
+    corpus.eachWithIndex { entry, i ->
+        if (searchHideByName.contains(entry.name)) return
         if (entry.gateway) {
             def hiddenInGw = searchHideGwSubTools[entry.gateway]
-            if (hiddenInGw && hiddenInGw.contains(entry.name)) return false
+            if (hiddenInGw && hiddenInGw.contains(entry.name)) return
         }
-        return true
+        visibleCorpus << entry
+        docTokens << docTokensAll[i]
     }
 
-    // Tokenize all documents and the query
-    def docTokens = visibleCorpus.collect { bm25Tokenize("${it.name} ${it.description} ${it.params ?: ''} ${it.hints ?: ''}") }
+    // Tokenize the query (docs already tokenized from the cache above)
     def queryTokens = bm25Tokenize(query)
 
     if (!queryTokens) return [results: [], message: "No searchable terms in query"]

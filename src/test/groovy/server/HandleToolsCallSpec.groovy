@@ -86,4 +86,30 @@ class HandleToolsCallSpec extends ToolSpecBase {
         inner.logs == []
         inner.count == 0
     }
+
+    def "handleToolsCall returns a __preserialized sentinel on the under-cap success path (serialize-once)"() {
+        // The sentinel is the mechanism that lets handleMcpRequest render verbatim without a
+        // second JsonOutput.toJson. Pinning the sentinel shape here guards the serialize-once
+        // contract -- a regression that went back to returning the plain jsonRpcResult object
+        // would re-introduce the double encode. (Dispatch tests above prove the wire form is
+        // still correct because handleMcpRequest renders __preserialized verbatim.)
+        given:
+        script.metaClass.getRooms = { -> [[id: 1L, name: 'Den']] }
+        def msg = [jsonrpc: '2.0', id: 5, method: 'tools/call', params: [name: 'hub_list_rooms', arguments: [:]]]
+
+        when:
+        def result = script.handleToolsCall(msg)
+
+        then: 'the success path returns the preserialized sentinel, not a bare jsonRpcResult Map'
+        result instanceof Map
+        result.containsKey('__preserialized')
+        result.__preserialized instanceof String
+
+        and: 'the sentinel string is itself the complete, well-formed JSON-RPC wire result'
+        def decoded = new groovy.json.JsonSlurper().parseText(result.__preserialized)
+        decoded.jsonrpc == '2.0'
+        decoded.id == 5
+        decoded.result.content[0].type == 'text'
+        new groovy.json.JsonSlurper().parseText(decoded.result.content[0].text).rooms*.name == ['Den']
+    }
 }

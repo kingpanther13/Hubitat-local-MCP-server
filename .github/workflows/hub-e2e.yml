@@ -131,17 +131,57 @@ jobs:
         # itself is off (UI-only to enable).
         run: bash .github/scripts/mcp_setup_env.sh
 
+      - name: Compute PR source URL for importUrl deploy
+        if: steps.gate.outputs.available == 'true'
+        # The hub fetches the PR branch's raw source itself (importUrl mode), so the
+        # ~1.5MB blob never crosses the cloud gateway. Resolve head repo + SHA for the
+        # three trigger shapes (PR, dispatch-with-pr_number, plain dispatch).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_INPUT: ${{ inputs.pr_number }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DEFAULT_REPO: ${{ github.repository }}
+          DEFAULT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            REPO="$PR_HEAD_REPO"; SHA="$PR_HEAD_SHA"
+          elif [ -n "${PR_INPUT:-}" ]; then
+            # Validate the dispatch input before it reaches gh api.
+            if ! printf '%s' "$PR_INPUT" | grep -qE '^[0-9]+$'; then
+              echo "::error::pr_number must be numeric"; exit 1
+            fi
+            REPO=$(gh api "repos/$DEFAULT_REPO/pulls/$PR_INPUT" --jq '.head.repo.full_name')
+            SHA=$(gh api "repos/$DEFAULT_REPO/pulls/$PR_INPUT" --jq '.head.sha')
+          else
+            REPO="$DEFAULT_REPO"; SHA="$DEFAULT_SHA"
+          fi
+          # Defense-in-depth: only a 40-hex SHA and an owner/name repo may form the
+          # URL, so a malformed value can't inject into $GITHUB_ENV or the URL.
+          if ! printf '%s' "$SHA" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::unexpected head SHA shape"; exit 1
+          fi
+          if ! printf '%s' "$REPO" | grep -qE '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'; then
+            echo "::error::unexpected head repo shape"; exit 1
+          fi
+          URL="https://raw.githubusercontent.com/$REPO/$SHA/hubitat-mcp-server.groovy"
+          echo "PR_SOURCE_URL=$URL" >> "$GITHUB_ENV"
+          echo "::notice::importUrl deploy source: $URL"
+
       - name: Deploy PR source to test hub
         if: steps.gate.outputs.available == 'true'
         # Self-update is permitted because mcp_setup_env.sh already verified
         # Developer Mode is on (the guard update_app_code checks for
         # self-modification on the MCP server's own app row).
         #
-        # continue-on-error: a ~1.18 MB inline update_app_code(source=...)
-        # reliably 504s at the cloud gateway before the hub receives it.
-        # Until a chunked manage_files write tool exists, deploy is
-        # advisory — the snapshot reads (small) still work, so restore
-        # logic stays meaningful once a deploy ever lands.
+        # continue-on-error: the hub recompiles the MCP app mid-call when it
+        # self-updates, so the deploy call can return a cloud 5xx / drop the
+        # connection; the script tolerates that and polls get_app_source to
+        # verify. importUrl mode (issue #228) has the hub fetch the source
+        # itself, so the ~1.5MB blob never crosses the cloud gateway (an inline
+        # source=... write reliably 504s before the hub receives it).
         continue-on-error: true
         run: bash .github/scripts/mcp_deploy_source.sh hubitat-mcp-server.groovy
 

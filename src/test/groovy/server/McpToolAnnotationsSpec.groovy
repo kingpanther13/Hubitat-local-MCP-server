@@ -428,4 +428,45 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         flatInfo != null
         flatInfo.containsKey('outputSchema') == false
     }
+
+    def "getAllToolDefinitions() returns a FRESH list each call -- mutating one return must not leak to the next"() {
+        // Pins the clean-copy invariant: applyDescriptionTransform mutates descriptions
+        // in place, so getAllToolDefinitions() MUST hand back fresh Map literals every
+        // call. A future naive memo that cached and returned the literal list would let
+        // one consumer's in-place edit poison the next caller -- this trips loudly then.
+        when: 'first call, then mutate the returned hub_list_devices description'
+        def first = script.getAllToolDefinitions()
+        def firstDev = first.find { it.name == 'hub_list_devices' }
+        firstDev.description = 'MUTATED-BY-TEST'
+
+        and: 'second call'
+        def second = script.getAllToolDefinitions()
+        def secondDev = second.find { it.name == 'hub_list_devices' }
+
+        then: 'the mutation did not leak into the fresh copy'
+        secondDev.description != 'MUTATED-BY-TEST'
+        secondDev.description.contains('List all devices')
+    }
+
+    def "flat-mode in-place FLAT_TRIM strip does not leak into a subsequent getAllToolDefinitions() call"() {
+        // getToolDefinitions(useGateways=false) strips the [[FLAT_TRIM]] block IN PLACE on
+        // its fresh maps. Because each getAllToolDefinitions() rebuilds, the next caller
+        // must still see the un-stripped FLAT_TRIM content. hub_list_devices carries one.
+        given:
+        settingsMap.useGateways = false
+
+        when: 'run the flat-mode strip path (mutates its own fresh copy in place)'
+        def flat = script.getToolDefinitions()
+        def flatDev = flat.find { it.name == 'hub_list_devices' }
+
+        and: 'a fresh full-definition call afterwards'
+        def freshDev = script.getAllToolDefinitions().find { it.name == 'hub_list_devices' }
+
+        then: 'flat copy had the FLAT_TRIM markers removed'
+        !flatDev.description.contains('[[FLAT_TRIM]]')
+
+        and: 'the fresh copy still carries the original FLAT_TRIM markers + wrapped content'
+        freshDev.description.contains('[[FLAT_TRIM]]')
+        freshDev.description.contains('Summary mode returns currentStates')
+    }
 }

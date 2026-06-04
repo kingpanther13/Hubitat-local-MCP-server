@@ -9,7 +9,7 @@
 #
 # Toggles enabled (all in update_mcp_settings allowlist):
 #   - enableCustomRuleEngine (custom_create_rule / custom_update_rule / custom_delete_rule paths)
-#   - enableHubAdminRead     (get_hub_info PII fields, list_hub_apps, etc.)
+#   - enableHubAdminRead     (hub_get_info PII fields, hub_list_apps, etc.)
 #   - enableBuiltinApp       (list_installed_apps, list_rm_rules, native CRUD tools)
 #
 # Not touched here:
@@ -32,10 +32,10 @@ mcp_call() {
     -d "$1"
 }
 
-# Pull the toggle state from get_hub_info. The settings-visibility block on
+# Pull the toggle state from hub_get_info. The settings-visibility block on
 # lines 3026+ of hubitat-mcp-server.groovy exposes these fields without
 # requiring Hub Admin Read.
-PRE_INFO_JSON="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_hub_info","arguments":{}}}' \
+PRE_INFO_JSON="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' \
   | jq -r '.result.content[0].text')"
 
 DEV_MODE="$(echo "$PRE_INFO_JSON" | jq -r '.developerModeEnabled // false')"
@@ -60,7 +60,7 @@ cat "$PRE_STATE_FILE"
 
 # Enable everything E2E needs in a single batch. update_mcp_settings is
 # atomic — a single bad key would block the whole batch.
-mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"manage_mcp_self","arguments":{"tool":"update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"enableHubAdminRead":true,"enableBuiltinApp":true},"confirm":true}}}}' \
+mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"enableHubAdminRead":true,"enableBuiltinApp":true},"confirm":true}}}}' \
   | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null
 
 echo "Test environment configured: enableCustomRuleEngine=true, enableHubAdminRead=true, enableBuiltinApp=true"
