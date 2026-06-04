@@ -83,4 +83,13 @@ class AdvancedOverridesFilterSpec extends ToolSpecBase {
         expect:
         script.getEffectiveDisabledTools().isEmpty()
     }
+
+    def "a stale/unknown gateway name in disabled_gateways is a safe no-op (no NPE)"() {
+        given: "a gateway name persisted from before a rename, no longer in getGatewayConfig()"
+        settingsMap.disabled_gateways = ["hub_nonexistent_gateway"]
+
+        expect: "the ?. navigation makes expansion safe, and the catalog still builds"
+        script.getEffectiveDisabledTools().isEmpty()
+        script.getToolDefinitions() != null
+    }
 }

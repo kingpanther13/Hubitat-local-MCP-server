@@ -158,10 +158,10 @@ def mainPage() {
                           "For new rule creation, prefer <code>hub_manage_native_rules_and_apps</code> hub_create_native_app -- those rules are visible in Hubitat's Rule Machine app list and web UI."
             }
             input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine (legacy)",
-                  description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Built-in App Tools ON = read-only mode: hub_get_custom_rule (list/get/diagnostics modes), hub_update_custom_rule(enabled only), hub_test_custom_rule are visible; create/delete/export/import/clone are hidden. OFF + Built-in App Tools OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
+                  description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Read master ON = read-only mode: hub_get_custom_rule (list/get/diagnostics modes), hub_update_custom_rule(enabled only), hub_test_custom_rule are visible; create/delete/export/import/clone are hidden. OFF + Read master OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (governed by the Read/Write masters) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
                   defaultValue: false, submitOnChange: true
             input "useGateways", "bool", title: "Consolidate tools behind category gateways",
-                  description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and hub_search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other toggles (Built-in App Tools, Custom Rule Engine) also add or remove entries from tools/list independently of this setting.",
+                  description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and hub_search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other settings (the Read/Write masters, the Custom Rule Engine, and Advanced per-tool/per-gateway overrides) also add or remove entries from tools/list independently of this setting.",
                   defaultValue: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
@@ -1230,7 +1230,7 @@ def getGatewayConfig() {
             summaries: [
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history. Read-only by default; recordSnapshot=true also persists a snapshot. Args: recordSnapshot, trendPoints",
                 hub_get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Read master",
-                hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires Read master",
+                hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires the Write master",
                 hub_get_device_health: "Check device staleness, ICMP-ping arbitrary IPs (router, NAS, server), and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), identifyHub",
                 hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count). Args: radio (zwave|zigbee, omit for both). Requires Read master",
                 hub_call_zwave_repair: "Z-Wave network repair (⚠️ DISRUPTIVE, 5-30 min, devices unresponsive). Args: confirm=true",
@@ -1307,7 +1307,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_native_rules_and_apps: [
-            description: "WHEN TO USE: this is the right path for any user who says 'create a rule machine rule,' 'make a Hubitat rule,' or wants the rule visible in Hubitat's Rule Machine app list / web UI. Use this for default rule-creation requests. The custom_* MCP rule engine (separate surface) is only appropriate when the user EXPLICITLY wants a sandbox MCP-managed rule that does not appear in Hubitat's UI -- uncommon outside power-user / testing scenarios. QUICK FLOW for a default rule create: (1) hub_create_native_app(appType='rule_machine', name='...', confirm=true) returns appId. (2) hub_update_native_app(appId=N, addTrigger={capability:'Certain Time (and optional date)', time:'A specific time', atTime:'17:00'}, confirm=true). (3) hub_update_native_app(appId=N, addAction={capability:'log', message:'...'}, confirm=true). Three calls. Each call returns settingsApplied so you can confirm the rule baked. Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules -- any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete, plus clone/copy/duplicate and export/import, by appId). Writes snapshot before every change; restore via the unified hub_list_backups (in hub_read_apps_code) + hub_restore_backup (in hub_manage_code) tools. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Write master. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via hub_get_app_config(appId=N) and inspect persisted settings before retrying.",
+            description: "WHEN TO USE: this is the right path for any user who says 'create a rule machine rule,' 'make a Hubitat rule,' or wants the rule visible in Hubitat's Rule Machine app list / web UI. Use this for default rule-creation requests. The custom_* MCP rule engine (separate surface) is only appropriate when the user EXPLICITLY wants a sandbox MCP-managed rule that does not appear in Hubitat's UI -- uncommon outside power-user / testing scenarios. QUICK FLOW for a default rule create: (1) hub_create_native_app(appType='rule_machine', name='...', confirm=true) returns appId. (2) hub_update_native_app(appId=N, addTrigger={capability:'Certain Time (and optional date)', time:'A specific time', atTime:'17:00'}, confirm=true). (3) hub_update_native_app(appId=N, addAction={capability:'log', message:'...'}, confirm=true). Three calls. Each call returns settingsApplied so you can confirm the rule baked. Native rules + apps (RM rules, Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules -- any classic SmartApp). Two surfaces: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (create/update/delete, plus clone/copy/duplicate and export/import, by appId). Writes snapshot before every change; restore via the unified hub_list_backups (in hub_read_apps_code) + hub_restore_backup (in hub_manage_code) tools. Completely separate from the MCP custom rule engine (custom_* tools). Reads require the Read master; CRUD requires the Write master (destructive CRUD additionally requires confirm=true + a recent backup). Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via hub_get_app_config(appId=N) and inspect persisted settings before retrying.",
             tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_create_native_app", "hub_update_native_app", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
@@ -1572,7 +1572,7 @@ def annotationsForLeaf(String toolName, Set readOnlyNames) {
 // Aggregates annotations for a gateway entry from its currently-visible
 // sub-tools. Read-only iff every visible sub-tool is read-only; otherwise
 // write+destructive. Callers pass `visibleSubTools` so feature-toggle hiding
-// (Built-in App Tools off, custom engine readonly) propagates into the
+// (a Read/Write master OFF, custom engine readonly, or an Advanced override) propagates into the
 // gateway label.
 def annotationsForGateway(List visibleSubTools, Set readOnlyNames) {
     if (!visibleSubTools) {
@@ -1596,10 +1596,17 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     }
 
     if (!toolName) {
-        // Catalog mode: return full schemas for all tools in this gateway.
+        // Catalog mode: return full schemas for the VISIBLE tools in this gateway.
+        // Filter config.tools through getHiddenToolNames() -- the same single source
+        // getToolDefinitions() and toolSearchTools() use -- so a sub-tool hidden by a
+        // Read/Write master or by an Advanced #114 override never leaks (with its full
+        // schema) on this surface either. The dispatch path (toolName set) is already
+        // gated centrally in executeTool on re-entry; this closes the catalog surface.
         // Strip [[FLAT_TRIM]] marker tokens but KEEP the content -- gateway catalog
         // mode is the disclosure surface where full descriptions belong (size cap
         // does not apply per-tool here, only the per-response cap).
+        def hidden = getHiddenToolNames()
+        def visibleSubTools = config.tools.findAll { !hidden.contains(it) }
         def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
             .collectEntries { [(it.name): it] }
 
@@ -1607,7 +1614,7 @@ def handleGateway(gatewayName, toolName, toolArgs) {
             gateway: gatewayName,
             mode: "catalog",
             message: "Call again with tool='<name>' and args={...} to execute a tool.",
-            tools: config.tools.collect { name ->
+            tools: visibleSubTools.collect { name ->
                 def d = defMap[name]
                 def entry = [name: name, description: d?.description, inputSchema: d?.inputSchema]
                 // Forward outputSchema when the tool declares one (PR1C). The flat
@@ -3273,7 +3280,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
         ],
         [
             name: "hub_call_gc",
-            description: "Force JVM garbage collection to reclaim memory. Returns before/after free memory and delta. Non-destructive but may cause a brief pause. Requires Read master.",
+            description: "Force JVM garbage collection to reclaim memory. Returns before/after free memory and delta. Non-destructive but may cause a brief pause. Requires the Write master.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -4877,7 +4884,7 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
         ],
         [
             name: "hub_clone_native_app",
-            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner system app. Lower-overhead alternative to rebuilding via the wizard — clone an existing rule that has the shape you want, then surgically edit fields via hub_update_native_app. Preserves the full rule shape (state.actNdx, conditions, expressions, IF/THEN/ELSE positional arrays). Drives the appCloner's 4-step wizard (cloneRuleButton → confirmation → importRule sub-page → importNow); the actual clone fires in tens of seconds for typical rules. Returns newAppId on success. Requires Built-in App Tools enabled + Write master + confirm=true.""",
+            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner system app. Lower-overhead alternative to rebuilding via the wizard — clone an existing rule that has the shape you want, then surgically edit fields via hub_update_native_app. Preserves the full rule shape (state.actNdx, conditions, expressions, IF/THEN/ELSE positional arrays). Drives the appCloner's 4-step wizard (cloneRuleButton → confirmation → importRule sub-page → importNow); the actual clone fires in tens of seconds for typical rules. Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4904,7 +4911,7 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
         ],
         [
             name: "hub_export_native_app",
-            description: """Export any classic native automation app to its canonical JSON shape via Hubitat's first-party appCloner. The exported JSON is the same format Hubitat's UI 'Export' button produces — a self-contained document with appReplacements + deviceReplacements + the full rule state — that round-trips cleanly through hub_import_native_app. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer. Pass saveAs to also write the JSON to the hub's File Manager (e.g. for HPM-style distribution). Requires Built-in App Tools enabled.""",
+            description: """Export any classic native automation app to its canonical JSON shape via Hubitat's first-party appCloner. The exported JSON is the same format Hubitat's UI 'Export' button produces — a self-contained document with appReplacements + deviceReplacements + the full rule state — that round-trips cleanly through hub_import_native_app. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer. Pass saveAs to also write the JSON to the hub's File Manager (e.g. for HPM-style distribution). Requires the Write master (it instantiates a cloner app and persists, so it is a write operation; no confirm/backup required).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4932,7 +4939,7 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
         ],
         [
             name: "hub_import_native_app",
-            description: """Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Pair with hub_export_native_app for round-trip edits or backup/restore workflows. Pass jsonContent (the exported JSON string) OR fromFile (a File Manager filename written by hub_export_native_app). The cloner needs an existing rule under the target parent to seed itself — pass parentHintAppId (any existing rule id under the same parent app you want the imported rule to land under, e.g. another RM rule for an RM import). Requires Built-in App Tools enabled + Write master + confirm=true.""",
+            description: """Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Pair with hub_export_native_app for round-trip edits or backup/restore workflows. Pass jsonContent (the exported JSON string) OR fromFile (a File Manager filename written by hub_export_native_app). The cloner needs an existing rule under the target parent to seed itself — pass parentHintAppId (any existing rule id under the same parent app you want the imported rule to land under, e.g. another RM rule for an RM import). Requires the Write master + confirm=true (+ a recent backup).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -5328,7 +5335,7 @@ def executeTool(toolName, args) {
             // a hint pointing at the real sub-tools instead.
             if (settings.useGateways == false) {
                 // Filter the hint against the live flat catalog so we don't recommend tools
-                // that other toggles (Built-in App / Custom Rule Engine) have also hidden.
+                // that other settings (Read/Write masters or Custom Rule Engine) have also hidden.
                 def visibleNames = getToolDefinitions()*.name as Set
                 def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll { visibleNames.contains(it) }
                 def hint = subTools
@@ -23963,8 +23970,9 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
 def toolUpdateNativeApp(args) {
     // Discover mode short-circuit: {addTrigger: {discover: true}} or
     // {addAction: {discover: true}} returns static schema with no hub
-    // interaction -- bypass ALL gates (Built-in App, Write master,
-    // backup snapshot). Pure static data; no hub dependency whatsoever.
+    // interaction -- bypass the in-handler requireDestructiveConfirm gate (confirm
+    // + backup snapshot). The Write master still gates this write centrally in
+    // executeTool. Pure static data; no hub dependency whatsoever.
     if (args?.addTrigger instanceof Map && args.addTrigger.discover == true) {
         return _rmAddTrigger(0, args.addTrigger as Map)
     }
@@ -26700,7 +26708,7 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ar
 
 **hub_manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules:**
 
-RMUtils-based control surface (Built-in App Tools gate only):
+RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
 - **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)
 - **hub_call_rule** — trigger an existing RM rule
   - action="rule" (default): full evaluation (triggers + conditions + actions)

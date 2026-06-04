@@ -62,4 +62,30 @@ class ExecuteToolMasterGateSpec extends ToolSpecBase {
         noExceptionThrown()
         result != null
     }
+
+    def "hub_export_native_app (write, no longer Built-in-App-gated) is blocked by the Write master"() {
+        // It lost its requireBuiltinApp() gate and has no requireDestructiveConfirm,
+        // so the central Write master is now its only protection.
+        given:
+        settingsMap.enableWrite = false
+
+        when:
+        script.executeTool("hub_export_native_app", [appId: 1])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("Write tools are disabled")
+    }
+
+    def "hub_list_rules (read, formerly Built-in-App-gated) is blocked by the Read master"() {
+        given:
+        settingsMap.enableRead = false
+
+        when:
+        script.executeTool("hub_list_rules", [:])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("Read tools are disabled")
+    }
 }

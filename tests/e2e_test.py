@@ -1110,10 +1110,6 @@ class TestRunner:
     #   - lastBackupTimestamp within 24h
     #   - enableCustomRuleEngine, enableRead: true (enableRead default ON)
     #
-    # NOTE: .github/scripts/mcp_setup_env.sh still seeds the removed
-    # enableBuiltinApp setting -- a lockstep follow-up should drop it there
-    # (out of scope for this file).
-    #
     # T219 (toggle-OFF refusal) is omitted — would require briefly disabling
     # Developer Mode via UI, which CI can't do (toggle excluded from
     # hub_update_mcp_settings allowlist by design). Covered by ToolUpdateMcpSettingsSpec

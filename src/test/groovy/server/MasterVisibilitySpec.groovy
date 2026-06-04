@@ -53,4 +53,22 @@ class MasterVisibilitySpec extends ToolSpecBase {
         expect:
         script.getToolDefinitions().size() == 30
     }
+
+    @spock.lang.Unroll
+    def "getCustomEngineMode is '#expected' for engine=#engine read=#read"() {
+        given:
+        if (engine == null) settingsMap.remove('enableCustomRuleEngine') else settingsMap.enableCustomRuleEngine = engine
+        if (read == null) settingsMap.remove('enableRead') else settingsMap.enableRead = read
+
+        expect: "engine ON => full; else readonly when the Read master is on, off when it is off"
+        script.getCustomEngineMode() == expected
+
+        where:
+        engine | read  || expected
+        true   | true  || "full"
+        true   | false || "full"
+        false  | true  || "readonly"
+        null   | null  || "readonly"
+        false  | false || "off"
+    }
 }
