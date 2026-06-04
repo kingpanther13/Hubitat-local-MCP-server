@@ -1778,14 +1778,14 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: Both soft and force delete return a structured response distinguishing 'deleted real rule' from 'no such rule / no-op'. The hub's `/installedapp/forcedelete/<id>/quiet` endpoint returns 302 for any input (including nonexistent IDs); the tool MUST not interpret that as 'successfully deleted a real rule' when the ID was never valid. Companion to T385 and T450.
 
-### T452 — MCP feature flag gating: tools absent when Rule Machine Tools disabled
+### T452 — MCP feature flag gating: tools absent when the Rule Machine gateways are denied
 
 ```json
 {
-  "setup_prompt": "Record the current enabled/disabled state of the MCP app's 'Enable Built-in App Tools' setting (visible in the MCP Rule Server app settings page under Built-in App Integration). This is the gate that controls all manage_native_rules_and_apps sub-tools.",
-  "test_prompt": "Disable the MCP-app setting that gates the native RM CRUD tools ('Enable Built-in App Tools'). Then call MCP `tools/list` (or equivalent listing endpoint). Assert that `set_rule`, `delete_native_app`, `check_rule_health` are COMPLETELY ABSENT from the returned tool list -- NOT present with a 'disabled' flag, NOT present but erroring on call, literally absent from tools/list. The gating design: when 'Enable Built-in App Tools' is off, the manage_rule_machine RM-authoring tools and all manage_native_rules_and_apps sub-tools disappear from the visible catalog entirely. Then re-enable the setting and confirm the tools reappear in tools/list.",
-  "teardown_prompt": "Restore the MCP setting to its original state as recorded in setup."
+  "setup_prompt": "Record the current Advanced: Per-tool Overrides state (MCP Rule Server app settings, under the Read/Write masters) for the `hub_manage_rule_machine` and `hub_manage_native_rules_and_apps` gateways. These deny-only per-gateway overrides hide a whole gateway's sub-tools from the catalog. (Post-#113/#114 the legacy single 'Enable Built-in App Tools' toggle is gone; gating is the Read/Write masters plus per-tool/per-gateway overrides.)",
+  "test_prompt": "Deny both the `hub_manage_rule_machine` and `hub_manage_native_rules_and_apps` gateways via Advanced: Per-tool Overrides. Then call MCP `tools/list` (or equivalent listing endpoint). Assert that `set_rule`, `delete_native_app`, `check_rule_health` are COMPLETELY ABSENT from the returned tool list -- NOT present with a 'disabled' flag, NOT present but erroring on call, literally absent from tools/list. The gating design: a per-gateway override removes every sub-tool of that gateway (writes AND reads) from the visible catalog entirely. Then remove the overrides and confirm the tools reappear in tools/list.",
+  "teardown_prompt": "Restore the Per-tool Overrides to their original state as recorded in setup."
 }
 ```
 
-**Expected**: With 'Enable Built-in App Tools' OFF, `tools/list` does NOT include `set_rule`, `delete_native_app`, or `check_rule_health`. With the setting ON, all three appear with their full schemas. This guards against the anti-pattern of returning tools that immediately error -- the tool surface must match the user's enablement state.
+**Expected**: With the `hub_manage_rule_machine` + `hub_manage_native_rules_and_apps` gateways denied via Per-tool Overrides, `tools/list` does NOT include `set_rule`, `delete_native_app`, or `check_rule_health`. With the overrides removed, all three appear with their full schemas. This guards against the anti-pattern of returning tools that immediately error -- the tool surface must match the user's enablement state.

@@ -748,12 +748,14 @@ class TestRunner:
         })
         assert edited.get("success") is not False, f"hub_set_native_app edit reported failure: {edited}"
 
-        # VERIFY via the read-only hub_get_app_config. Identity (label/name) is
-        # nested under the `app` object in the response (toolGetAppConfig shape).
+        # VERIFY the RENAME actually applied via the read-only hub_get_app_config.
+        # Identity (label/name) is nested under the `app` object (toolGetAppConfig
+        # shape). Asserting the post-rename token (not just PREFIX, which the create
+        # label already carries) proves the settings edit landed, not just succeeded.
         cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
         app_obj = cfg.get("app") or {}
         label = str(app_obj.get("label") or app_obj.get("name") or "")
-        assert PREFIX in label, f"created app label missing the {PREFIX} prefix: {label!r} (cfg keys: {list(cfg.keys())})"
+        assert "_Renamed" in label, f"hub_set_native_app rename did not land; label={label!r} (cfg keys: {list(cfg.keys())})"
 
         # DELETE.
         self.client.call_tool("hub_manage_native_rules_and_apps", {
@@ -835,8 +837,8 @@ class TestRunner:
         ]})
         first = self._set_rule(app_id, {"addAction": {"capability": "log", "message": "three"}})
         idx = first.get("actionIndex")
-        if idx is not None:
-            self._set_rule(app_id, {"removeAction": {"index": idx}})
+        assert idx is not None, f"addAction did not return an actionIndex (contract regression): {first}"
+        self._set_rule(app_id, {"removeAction": {"index": idx}})
         self._set_rule(app_id, {"clearActions": True})
         self._set_rule(app_id, {"replaceActions": [{"capability": "log", "message": "final"}]})
         self._assert_rule_healthy(app_id)
@@ -849,9 +851,9 @@ class TestRunner:
         app_id = self._create_native_rule("Trig_Mut")
         added = self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
         tidx = added.get("triggerIndex")
-        if tidx is not None:
-            self._set_rule(app_id, {"modifyTrigger": {"index": tidx, "mods": {"state": "off"}}})
-            self._set_rule(app_id, {"removeTrigger": {"index": tidx}})
+        assert tidx is not None, f"addTrigger did not return a triggerIndex (contract regression): {added}"
+        self._set_rule(app_id, {"modifyTrigger": {"index": tidx, "mods": {"state": "off"}}})
+        self._set_rule(app_id, {"removeTrigger": {"index": tidx}})
         self._assert_rule_healthy(app_id)
         self._delete_native(app_id)
 

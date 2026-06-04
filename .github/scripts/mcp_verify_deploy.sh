@@ -56,10 +56,15 @@ if [ -f "$CLASS_ID_FILE" ]; then
   CLASS_ID="$(cat "$CLASS_ID_FILE")"
 fi
 if [ -z "$CLASS_ID" ] || [ "$CLASS_ID" = "null" ]; then
-  LIST_RESP=$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}')
+  # `|| true`: a transient curl/relay flake on this one call shouldn't abort the
+  # gate via set -e -- fall through to the empty/null check below, which fails
+  # loudly with a clear message (never a false pass).
+  LIST_RESP=$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}' || true)
   LIST_TEXT=$(echo "$LIST_RESP" | jq -r '.result.content[0].text // empty')
+  # `[ ... ][0]` (not `... | head -n1`): selecting the first match inside jq avoids
+  # a SIGPIPE-on-head abort under `set -o pipefail`.
   CLASS_ID=$(echo "$LIST_TEXT" | jq -r --arg ns "$APP_NAMESPACE" --arg name "$APP_NAME" \
-    '.apps[]? | select(.namespace == $ns and .name == $name) | .id' | head -n1)
+    'first(.apps[]? | select(.namespace == $ns and .name == $name) | .id) // empty')
 fi
 if [ -z "$CLASS_ID" ] || [ "$CLASS_ID" = "null" ]; then
   echo "::error::Could not resolve the Apps Code class id for $APP_NAMESPACE:$APP_NAME to verify the deploy."

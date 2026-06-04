@@ -3507,7 +3507,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ```json
 {
-  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create a virtual switch named 'BAT Bundle Switch' via hub_manage_virtual_device and note its device ID.",
+  "setup_prompt": "The Write master is enabled. Create a virtual switch named 'BAT Bundle Switch' via hub_manage_virtual_device and note its device ID.",
   "test_prompt": "In a SINGLE hub_set_rule call (omit appId so it creates), create a new Rule Machine rule named 'BAT Bundle Create' AND bundle its first trigger and action in the same call: addTriggers=[{capability:'Switch', deviceIds:[<BAT Bundle Switch id>], state:'on'}] and addActions=[{capability:'Switch', deviceIds:[<BAT Bundle Switch id>], command:'off'}]. Do NOT make a second hub_set_rule edit call. Report the returned appId and confirm the bundled trigger and action both baked.",
   "teardown_prompt": "Delete the 'BAT Bundle Create' rule. Delete the virtual switch 'BAT Bundle Switch'."
 }

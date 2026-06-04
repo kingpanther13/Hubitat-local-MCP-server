@@ -20626,7 +20626,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
 
     def health = _rmCheckRuleHealth(appId)
     if (intraBatch && health instanceof Map && (health.structuralIssues as List)) {
-        // Bundled multi-action build (create_native_app actions[], addActions,
+        // Bundled multi-action build (hub_set_rule create actions[], addActions,
         // replaceActions, patches): an open block (IF before its END-IF, Repeat
         // before its End-Repeat) is legitimately unbalanced until the closer
         // bakes later in the SAME call, so the structural-imbalance signal on
@@ -24045,7 +24045,7 @@ def _applyNativeAppEdit(args) {
     if (args?.addAction instanceof Map && args.addAction.discover == true) {
         return _rmAddAction(0, args.addAction as Map)
     }
-    // Guide short-circuit: {guide: true} returns the update_native_app capability
+    // Guide short-circuit: {guide: true} returns the hub_set_rule capability
     // reference inline (same content as hub_get_tool_guide), with no hub interaction
     // and no rule change -- bypasses ALL gates exactly like discover mode above.
     if (args?.guide == true) {
@@ -24064,7 +24064,7 @@ def _applyNativeAppEdit(args) {
         def devKeyPattern = ~/^([tr]Dev[_-]?\d+|switch[A-Z]\w*|onOffSwitch\.\d+|lockLockUnlock\.\d+|shadeOpenClose\.\d+|fanRL\.\d+|tDev-\d+|deviceList|dimmerLevel\.\d+|ButtontDev_?\d+|pushButton\d+)$/
         settingsMap.each { k, v ->
             if (v instanceof List && k?.toString()?.matches(devKeyPattern)) {
-                _rmValidateDeviceIdsExist("hub_set_rule.settings.${k}", v)
+                _rmValidateDeviceIdsExist("settings.${k}", v)
             }
         }
     }
@@ -24094,7 +24094,7 @@ def _applyNativeAppEdit(args) {
     def modifyTriggerSpec = args?.modifyTrigger instanceof Map ? args.modifyTrigger : null
     if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList
             && !addRequiredExpressionSpec && !addLocalVariableSpec && !patchesList && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec && !removeTriggerSpec && !modifyTriggerSpec) {
-        throw new IllegalArgumentException("hub_set_rule requires 'settings' (Map), 'button' (String), 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'addLocalVariable' (Map), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
+        throw new IllegalArgumentException("Editing an app requires one of: 'settings' (Map) or 'button' (String) for any classic app; or, for Rule Machine rules via hub_set_rule, a structured shortcut -- 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'addLocalVariable' (Map), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
     }
 
     // Always snapshot before writing. No exceptions — this is the
