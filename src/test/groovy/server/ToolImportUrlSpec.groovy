@@ -46,8 +46,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
         nextHttpGetCaptured.clear()
     }
 
-    private void enableHubAdminWrite() {
-        settingsMap.enableHubAdminWrite = true
+    private void enableWrite() {
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
     }
 
@@ -167,7 +167,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_update_app with importUrl fetches via httpGet and POSTs the fetched source"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stubHttpGet(200, 'fetched-source-here')
         // app code endpoint returns the current version so the optimistic-lock path is satisfied
         hubGet.register('/app/ajax/code') { params ->
@@ -202,7 +202,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_create_app with importUrl fetches via httpGet and POSTs to /app/save"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stubHttpGet(200, 'definition(name: "FromUrl")')
         def captured = [:]
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -233,7 +233,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_create_library with importUrl fetches the URL and posts to library/saveOrUpdateJson"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stubHttpGet(200, 'library(name: "Lib")')
         def captured = [:]
         script.metaClass.hubInternalPostJson = { String path, String body ->
@@ -262,7 +262,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_create_app rejects multiple source modes together"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallApp([
@@ -278,7 +278,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_create_library rejects multiple source modes together"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallLibrary([
@@ -296,7 +296,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_create_app with installAsUserApp creates instance via /installedapp/create/<codeId> and parses Location"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def capturedPath = null
         script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
             capturedPath = path
@@ -320,7 +320,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_create_app with installAsUserApp returns success=false when hub returns non-302"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
             [status: 404, location: null, data: 'not found']
         }
@@ -340,7 +340,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         // Pins the status-aware error hints so a 401 auth-expired case doesn't get
         // misread as "codeAppId wrong" the way a generic non-302 message would.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
             [status: status, location: null, data: 'body']
         }
@@ -363,7 +363,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_create_app rejects installAsUserApp combined with importUrl"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallApp([
@@ -382,7 +382,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_update_app with triggerUpdated fires updated() POST after save and reports updatedFired=true"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "old", "version": 5}'
         }
@@ -413,7 +413,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_update_app with triggerUpdated reports updatedFired=false + repairHints when lifecycle POST throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "old", "version": 5}'
         }
@@ -449,7 +449,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_update_app without triggerUpdated does NOT fire updated() (negative pin matches UI behavior)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "old", "version": 5}'
         }
@@ -479,7 +479,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         // Pins the half-failure flag added so callers checking result.partial see
         // the lifecycle-fire failure without drilling into updatedFired.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "old", "version": 5}'
         }
@@ -507,7 +507,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_update_app rejects multiple source modes together"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateAppCode([
@@ -524,7 +524,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_update_library rejects multiple source modes together"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateLibraryCode([
@@ -546,7 +546,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         // could be tricked into fetching attacker-controlled URLs (SSRF probe) even
         // though the guard would later block the write. Pins guard-before-fetch ordering.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         settingsMap.enableDeveloperMode = false
         stubHttpGet(200, 'pwn')
 
@@ -564,7 +564,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     @spock.lang.Unroll
     def "hub_create_app installAsUserApp rejects invalid value (#value)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallApp([installAsUserApp: value, confirm: true])
@@ -579,7 +579,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_create_app installAsUserApp coerces stringified integer"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             [status: 302, location: '/installedapp/configure/9999/mainPage', data: '']
         }
@@ -598,7 +598,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     @spock.lang.Unroll
     def "hub_update_app triggerUpdated #value returns success+updatedFired:false+repairHints (code save still committed)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
         def lifecyclePostCount = 0
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -629,7 +629,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_create_driver with importUrl fetches via httpGet and POSTs to /driver/save"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stubHttpGet(200, 'metadata { definition (name: "FromUrl") {} }')
         def captured = [:]
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -649,7 +649,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_update_driver with importUrl POSTs the fetched source to /driver/ajax/update"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stubHttpGet(200, 'updated-driver-source')
         hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"old","version":3}' }
         def captured = [:]
@@ -671,7 +671,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_update_library with importUrl posts to /library/saveOrUpdateJson"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stubHttpGet(200, 'library(name: "Updated")')
         hubGet.register('/library/list/single/data/22') { params -> '[{"version":4,"source":"old"}]' }
         // Stub File Manager so library backup doesn't blow up trying to write.
@@ -696,7 +696,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_create_driver bulk: per-item importUrl is forwarded and fetched"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stubHttpGet(200, 'driver-from-url')
         def postPaths = []
         script.metaClass.hubInternalPostForm = { String path, Map body ->
@@ -722,7 +722,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     def "hub_update_driver bulk: per-item importUrl is forwarded and fetched"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         stubHttpGet(200, 'updated-bulk-driver')
         hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"old","version":2}' }
         def postPaths = []
@@ -753,7 +753,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     def "hub_create_app installAsUserApp via dispatch returns success envelope (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             [status: 302, location: '/installedapp/configure/8888/mainPage', data: '']
         }
@@ -776,7 +776,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     def "hub_create_app installAsUserApp + importUrl via dispatch returns -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_app', [
@@ -797,7 +797,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     def "hub_update_app with importUrl via dispatch returns success envelope (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         stubHttpGet(200, 'dispatch-fetched-source')
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":9}' }
         script.metaClass.hubInternalPostForm = { String path, Map body ->

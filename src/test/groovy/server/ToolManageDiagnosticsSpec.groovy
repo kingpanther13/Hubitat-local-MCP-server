@@ -19,7 +19,7 @@ import support.ToolSpecBase
  * - toolGetRuleDiagnostics  -> hub_get_custom_rule (detailed=true)
  * - toolGetZwaveDetails     -> hub_get_radio_details (radio=zwave)
  * - toolGetZigbeeDetails    -> hub_get_radio_details (radio=zigbee)
- * - toolZwaveRepair         -> hub_call_zwave_repair        (Hub Admin Write + confirm)
+ * - toolZwaveRepair         -> hub_call_zwave_repair        (Write master + confirm + 24h backup)
  * - toolListCapturedStates  -> hub_list_captured_states
  * - toolDeleteCapturedState -> hub_delete_captured_state (stateId omitted = delete ALL)
  *
@@ -56,25 +56,28 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         sharedLocation.hub = null
     }
 
-    private void enableHubAdminWrite() {
-        settingsMap.enableHubAdminWrite = true
+    private void enableWrite() {
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
     }
 
     // -------- toolGetHubPerformance (hub_get_metrics) --------
 
-    def "hub_get_metrics throws when Hub Admin Read is disabled"() {
+    def "hub_get_metrics throws when the Read master is disabled"() {
+        given:
+        settingsMap.enableRead = false
+
         when:
-        script.toolGetHubPerformance([:])
+        script.executeTool('hub_get_metrics', [:])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Read')
+        ex.message.contains('Read tools are disabled')
     }
 
     def "hub_get_metrics snapshots memory/temp/db and records a CSV row"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(uptime: 172800G)  // 2 days
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '123456' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '45.5' }
@@ -110,7 +113,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "hub_get_metrics via dispatch snapshots memory/temp/db (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(uptime: 172800G)
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '123456' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '45.5' }
@@ -135,9 +138,10 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_get_metrics via dispatch maps Hub-Admin-Read-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_get_metrics via dispatch maps Read-master-disabled IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableRead = false
 
         when:
         def response = mcpDriver.callTool('hub_get_metrics', [:])
@@ -145,7 +149,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         then:
         response.error != null
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Read')
+        response.error.message.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -153,7 +157,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_get_metrics warns on high temperature"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(uptime: 3600G)
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '200000' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '75' }  // >70 triggers warning
@@ -171,7 +175,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_get_metrics warns on large database"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(uptime: 3600G)
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '200000' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '40' }
@@ -188,7 +192,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_get_metrics warns on low memory"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(uptime: 3600G)
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '40000' }  // <50000 triggers warning
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '40' }
@@ -206,7 +210,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_get_metrics respects recordSnapshot=false (no CSV write)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(uptime: 0G)
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '100000' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '50' }
@@ -227,18 +231,21 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     // -------- toolGetMemoryHistory --------
 
-    def "hub_get_memory_history throws when Hub Admin Read is disabled"() {
+    def "hub_get_memory_history throws when the Read master is disabled"() {
+        given:
+        settingsMap.enableRead = false
+
         when:
-        script.toolGetMemoryHistory([:])
+        script.executeTool('hub_get_memory_history', [:])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Read')
+        ex.message.contains('Read tools are disabled')
     }
 
     def "hub_get_memory_history parses CSV rows and computes summary"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def csv = [
             'Date/time,Free OS,5m CPU avg,Total Java,Free Java,Direct Java',
             '2026-04-19 10:00,200000,0.5,500000,100000,2000',
@@ -268,7 +275,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "hub_get_memory_history via dispatch parses CSV + summary (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def csv = [
             'Date/time,Free OS,5m CPU avg,Total Java,Free Java,Direct Java',
             '2026-04-19 10:00,200000,0.5,500000,100000,2000',
@@ -293,7 +300,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_get_memory_history emits low-memory warning when current is below 50000"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/hub/advanced/freeOSMemoryHistory') { params ->
             'Date/time,Free OS,5m CPU avg\n2026-04-19 10:00,30000,0.5\n'
         }
@@ -308,7 +315,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_get_memory_history applies limit to entries but keeps summary on full set"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def rows = (1..10).collect { i -> "2026-04-19 10:0${i},${100000 + i * 1000},0.${i}".toString() }
         hubGet.register('/hub/advanced/freeOSMemoryHistory') { params ->
             (['Date/time,Free OS,5m CPU avg'] + rows).join('\n')
@@ -326,7 +333,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_get_memory_history handles empty response"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/hub/advanced/freeOSMemoryHistory') { params -> null }
 
         when:
@@ -339,18 +346,21 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     // -------- toolForceGarbageCollection --------
 
-    def "hub_call_gc throws when Hub Admin Read is disabled"() {
+    def "hub_call_gc throws when the Write master is disabled"() {
+        given: 'hub_call_gc is a write (not in getReadOnlyToolNames), so the Write master gates it'
+        settingsMap.enableWrite = false
+
         when:
-        script.toolForceGarbageCollection([:])
+        script.executeTool('hub_call_gc', [:])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Read')
+        ex.message.contains('Write tools are disabled')
     }
 
     def "hub_call_gc triggers GC and reports before/after"() {
         given: 'two freeOSMemory reads pre + post, one forceGC between. pauseExecution is a no-op on the AppExecutor mock.'
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def beforeAfter = ['90000', '120000']
         def idx = 0
         hubGet.register('/hub/advanced/freeOSMemory') { params -> beforeAfter[idx++] }
@@ -375,7 +385,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "hub_call_gc via dispatch triggers GC and reports before/after (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def beforeAfter = ['90000', '120000']
         def idx = 0
         hubGet.register('/hub/advanced/freeOSMemory') { params -> beforeAfter[idx++] }
@@ -400,7 +410,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_call_gc reports 'could not read' summary when memory probes fail"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/hub/advanced/freeOSMemory') { params -> 'not a number' }
         hubGet.register('/hub/forceGC') { params -> '' }
 
@@ -1063,18 +1073,21 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     // -------- toolGetZwaveDetails (hub_get_radio_details radio=zwave) --------
 
-    def "hub_get_radio_details zwave throws when Hub Admin Read is disabled"() {
+    def "hub_get_radio_details zwave throws when the Read master is disabled"() {
+        given:
+        settingsMap.enableRead = false
+
         when:
-        script.toolGetZwaveDetails([:])
+        script.executeTool('hub_get_radio_details', [radio: 'zwave'])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Read')
+        ex.message.contains('Read tools are disabled')
     }
 
     def "hub_get_radio_details zwave combines hub-SDK zwaveVersion with parsed /hub/zwaveDetails/json"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(zwaveVersion: '7.17.1')
         hubGet.register('/hub/zwaveDetails/json') { params ->
             JsonOutput.toJson([firmware: '7.17.1', sdkVersion: '6.82', deviceCount: 12])
@@ -1095,7 +1108,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "hub_get_radio_details zwave via dispatch returns combined zwaveVersion + zwaveData (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(zwaveVersion: '7.17.1')
         hubGet.register('/hub/zwaveDetails/json') { params ->
             JsonOutput.toJson([firmware: '7.17.1', sdkVersion: '6.82', deviceCount: 12])
@@ -1118,7 +1131,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_get_radio_details zwave falls back to sdk_only when all zwave endpoints fail"() {
         given: 'both zwave endpoints throw realistic hub errors (404 on older firmware)'
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(zwaveVersion: '7.0.0')
         hubGet.register('/hub/zwaveDetails/json') { params -> throw new RuntimeException('404 Not Found') }
         hubGet.register('/hub2/zwaveInfo')        { params -> throw new RuntimeException('404 Not Found') }
@@ -1134,7 +1147,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_get_radio_details zwave captures raw response when endpoint returns non-JSON"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(zwaveVersion: '7.0.0')
         hubGet.register('/hub/zwaveDetails/json') { params -> '<html>not json</html>' }
 
@@ -1149,18 +1162,21 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     // -------- toolGetZigbeeDetails (hub_get_radio_details radio=zigbee) --------
 
-    def "hub_get_radio_details zigbee throws when Hub Admin Read is disabled"() {
+    def "hub_get_radio_details zigbee throws when the Read master is disabled"() {
+        given:
+        settingsMap.enableRead = false
+
         when:
-        script.toolGetZigbeeDetails([:])
+        script.executeTool('hub_get_radio_details', [radio: 'zigbee'])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Read')
+        ex.message.contains('Read tools are disabled')
     }
 
     def "hub_get_radio_details zigbee returns channel + zigbeeId + parsed details"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(zigbeeChannel: 25, zigbeeId: '0x1234')
         hubGet.register('/hub/zigbeeDetails/json') { params ->
             JsonOutput.toJson([panId: '0xABCD', channel: 25, deviceCount: 7])
@@ -1181,7 +1197,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "hub_get_radio_details zigbee via dispatch returns channel + zigbeeId + parsed details (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(zigbeeChannel: 25, zigbeeId: '0x1234')
         hubGet.register('/hub/zigbeeDetails/json') { params ->
             JsonOutput.toJson([panId: '0xABCD', channel: 25, deviceCount: 7])
@@ -1205,7 +1221,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_get_radio_details zigbee falls back to sdk_only when all endpoints fail"() {
         given: 'both zigbee endpoints throw realistic hub errors'
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(zigbeeChannel: 20, zigbeeId: '0xAAAA')
         hubGet.register('/hub/zigbeeDetails/json') { params -> throw new RuntimeException('404 Not Found') }
         hubGet.register('/hub2/zigbeeInfo')        { params -> throw new RuntimeException('404 Not Found') }
@@ -1220,7 +1236,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_get_radio_details zigbee captures raw response when endpoint returns non-JSON"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         sharedLocation.hub = new TestHub(zigbeeChannel: 25, zigbeeId: '0x1234')
         hubGet.register('/hub/zigbeeDetails/json') { params -> '<html>not json</html>' }
 
@@ -1233,11 +1249,11 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.note.contains('not JSON')
     }
 
-    // -------- toolZwaveRepair (DESTRUCTIVE: confirm + Hub Admin Write gate) --------
+    // -------- toolZwaveRepair (DESTRUCTIVE: Write master + confirm + 24h-backup gate) --------
 
     def "hub_call_zwave_repair throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolZwaveRepair([:])
@@ -1248,18 +1264,21 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ex.message.contains('confirm=true')
     }
 
-    def "hub_call_zwave_repair throws when Hub Admin Write is disabled"() {
-        when:
-        script.toolZwaveRepair([confirm: true])
+    def "hub_call_zwave_repair throws when the Write master is disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
+        when: 'the central Write master gate fires before the confirm/backup checks in the tool body'
+        script.executeTool('hub_call_zwave_repair', [confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     def "hub_call_zwave_repair throws when no recent backup exists"() {
         given:
-        settingsMap.enableHubAdminWrite = true
+        settingsMap.enableWrite = true
         // No stateMap.lastBackupTimestamp
 
         when:
@@ -1272,7 +1291,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_call_zwave_repair posts to /hub/zwaveRepair and reports success with warning"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def postedPath = null
         script.metaClass.hubInternalPost = { String path, Map body = null ->
             postedPath = path
@@ -1295,7 +1314,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "hub_call_zwave_repair via dispatch posts and reports success (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def postedPath = null
         script.metaClass.hubInternalPost = { String path, Map body = null ->
             postedPath = path
@@ -1321,7 +1340,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     def "hub_call_zwave_repair via dispatch maps confirm-missing IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_call_zwave_repair', [:])
@@ -1338,7 +1357,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
 
     def "hub_call_zwave_repair reports failure without throwing when POST throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPost = { String path, Map body = null ->
             throw new RuntimeException('hub unreachable')
         }

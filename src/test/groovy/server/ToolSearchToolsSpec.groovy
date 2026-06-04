@@ -15,7 +15,6 @@ class ToolSearchToolsSpec extends ToolSpecBase {
 
     private void searchEnabled() {
         settingsMap.useGateways = true
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
     }
 
@@ -33,6 +32,18 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         names == names.unique()
         def rel = result.results*.relevance
         rel == rel.sort { -it }
+    }
+
+    def "advanced-disabled tools are excluded from hub_search_tools results (#114)"() {
+        given:
+        searchEnabled()
+        settingsMap.disabled_tools = ["hub_set_mode"]
+
+        when:
+        def result = script.toolSearchTools([query: 'set hub mode location', maxResults: 25])
+
+        then: 'the deny-list filter (getHiddenToolNames) removes it from the searchable corpus'
+        !(result.results*.tool.contains("hub_set_mode"))
     }
 
     def "the corpus + tokens are built once into atomicState and a second identical query is served from cache"() {

@@ -8,7 +8,7 @@ import support.ToolSpecBase
  * Gateway tool under hub_read_apps_code -- executeTool() dispatches via case "hub_list_app_pages".
  *
  * Covers:
- *  - Hub Admin Read gate (throws when disabled)
+ *  - Read master gate (throws when disabled)
  *  - Missing appId validation (throws before HTTP)
  *  - Blank appId validation (throws before HTTP)
  *  - Non-numeric appId validation (throws before HTTP)
@@ -65,30 +65,30 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     // Gate enforcement
     // -------------------------------------------------------------------------
 
-    def "throws when Hub Admin Read is disabled"() {
+    def "throws when Read master is disabled"() {
         given:
-        settingsMap.enableHubAdminRead = false
+        settingsMap.enableRead = false
 
         when:
-        script.toolListAppPages([appId: 35])
+        script.executeTool("hub_list_app_pages", [appId: 35])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Read')
+        ex.message.contains('Read tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_list_app_pages via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
+    def "hub_list_app_pages via dispatch returns -32602 envelope when Read disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = false
+        settingsMap.enableRead = false
 
         when:
         def response = mcpDriver.callTool('hub_list_app_pages', [appId: 35])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Read')
+        response.error.message.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -100,7 +100,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "throws when appId is missing from args"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolListAppPages([:])
@@ -114,7 +114,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch returns -32602 envelope when appId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         def response = mcpDriver.callTool('hub_list_app_pages', [:])
@@ -129,7 +129,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "throws when appId is blank string"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         script.toolListAppPages([appId: '   '])
@@ -143,7 +143,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch returns -32602 envelope when appId is blank (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         def response = mcpDriver.callTool('hub_list_app_pages', [appId: '   '])
@@ -158,7 +158,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "throws when appId is non-numeric (no HTTP call made)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // Do NOT register the hub endpoint -- if validation fails to fire,
         // HubInternalGetMock will throw an unregistered-path error, which
         // surfaces as a different failure than the expected IAE.
@@ -175,7 +175,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch returns -32602 envelope when appId is non-numeric (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         def response = mcpDriver.callTool('hub_list_app_pages', [appId: 'not-a-number'])
@@ -194,7 +194,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "golden path HPM: returns all curated HPM page names"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson('Hubitat Package Manager', 'prefOptions', 'Main Menu')
         }
@@ -233,7 +233,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch returns all curated HPM page names (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson('Hubitat Package Manager', 'prefOptions', 'Main Menu')
         }
@@ -268,7 +268,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "golden path RM rule: returns single mainPage with single-page note"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson('Rule-5.1', 'mainPage', 'My Rule')
         }
@@ -289,7 +289,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch returns single mainPage with RM rule note (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson('Rule-5.1', 'mainPage', 'My Rule')
         }
@@ -318,7 +318,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "unknown app type: returns primary page only with uncurated note"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson('MyCustomCommunityApp', 'mainPage', 'Custom Settings')
         }
@@ -339,7 +339,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch returns primary page only with uncurated note (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson('MyCustomCommunityApp', 'mainPage', 'Custom Settings')
         }
@@ -367,7 +367,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "returns success=false when hub returns empty body"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/99') { params -> '' }
 
         when:
@@ -383,7 +383,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch returns success=false envelope when hub returns empty body (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/99') { params -> '' }
 
         when:
@@ -403,7 +403,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "returns success=false with fingerprint when hub returns app=null (unknown appId)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/9999') { params ->
             JsonOutput.toJson([
                 app       : null,
@@ -426,7 +426,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch returns success=false envelope for unknown appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/9999') { params ->
             JsonOutput.toJson([
                 app       : null,
@@ -453,7 +453,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "returns success=false with fingerprint when response is not a JSON object"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> '"just a string"' }
 
         when:
@@ -468,7 +468,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch returns success=false envelope when response is not a JSON object (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> '"just a string"' }
 
         when:
@@ -487,7 +487,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "returns success=false with fingerprint when configPage is missing"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             JsonOutput.toJson([
                 app      : [id: 35, label: 'My Rule', name: 'Rule-5.1', disabled: false,
@@ -510,7 +510,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch returns success=false envelope when configPage is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             JsonOutput.toJson([
                 app      : [id: 35, label: 'My Rule', name: 'Rule-5.1', disabled: false,
@@ -536,7 +536,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "returns success=false when hub response is unparseable JSON"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> '{not valid json' }
 
         when:
@@ -552,7 +552,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch returns success=false envelope when hub returns unparseable JSON (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> '{not valid json' }
 
         when:
@@ -576,7 +576,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "Room Lighting curated match: '#appTypeName' returns mainPage with Room Lighting note"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson(appTypeName, 'mainPage', 'Room Settings')
         }
@@ -599,7 +599,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch Room Lighting curated match '#appTypeName' returns Room Lighting note (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson(appTypeName, 'mainPage', 'Room Settings')
         }
@@ -627,7 +627,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "Mode Manager curated match returns mainPage with Mode Manager note"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson('Mode Manager', 'mainPage', 'Manage Setting of Modes')
         }
@@ -647,7 +647,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch Mode Manager curated match returns Mode Manager note (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson('Mode Manager', 'mainPage', 'Manage Setting of Modes')
         }
@@ -671,7 +671,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "Rule Machine parent app curated match returns mainPage with single-page note"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // "Rule Machine" is the parent app container (not an individual rule).
         // The production matcher uses contains("rule machine") -- should match.
         hubGet.register('/installedapp/configure/json/35') { params ->
@@ -693,7 +693,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch Rule Machine parent app returns mainPage (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson('Rule Machine', 'mainPage', 'Rule Machine')
         }
@@ -716,7 +716,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "HPM curated dispatch is case-insensitive: '#appTypeName'"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson(appTypeName, 'prefOptions', 'Main Menu')
         }
@@ -739,7 +739,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch HPM curated dispatch is case-insensitive '#appTypeName' (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson(appTypeName, 'prefOptions', 'Main Menu')
         }
@@ -773,7 +773,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
 
     def "integer appId is accepted (passes isInteger after toString)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson('Hubitat Package Manager', 'prefOptions', 'Main Menu')
         }
@@ -789,7 +789,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "hub_list_app_pages via dispatch accepts integer appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppJson('Hubitat Package Manager', 'prefOptions', 'Main Menu')
         }

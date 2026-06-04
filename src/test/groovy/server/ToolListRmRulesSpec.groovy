@@ -26,40 +26,37 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         rmUtils?.uninstall()
     }
 
-    def "throws when Built-in App Read is disabled"() {
+    def "throws when Read master is disabled"() {
         given:
-        settingsMap.enableBuiltinApp = false
+        settingsMap.enableRead = false
 
-        when:
-        script.toolListRmRules([:])
+        when: 'the central executeTool gate blocks the read tool (tool body no longer self-gates)'
+        script.executeTool('hub_list_rules', [:])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Built-in App')
+        ex.message.contains('Read tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_list_rules via dispatch returns -32602 envelope when Built-in App Read is disabled (useGateways=#useGateways)"() {
+    def "hub_list_rules via dispatch returns -32602 envelope when Read master is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = false
+        settingsMap.enableRead = false
 
         when:
         def response = mcpDriver.callTool('hub_list_rules', [:])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Built-in App')
+        response.error.message.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
     }
 
     def "RM 5.x single-entry Map shape with mixed String/Integer keys coerces all ids to Integer"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
-        and: 'one entry has a String key, the other an Integer key'
+        given: 'one entry has a String key, the other an Integer key'
         rmUtils.stubRuleList5 = [
             ['413': 'Living Room Relax'],
             [832: 'Auto - Living Room TV Lights']
@@ -79,7 +76,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     def "hub_list_rules via dispatch coerces mixed String/Integer keys to Integer (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         rmUtils.stubRuleList5 = [
             ['413': 'Living Room Relax'],
             [832: 'Auto - Living Room TV Lights']
@@ -103,8 +99,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "RM 4.x explicit-fields shape passes all fields through"() {
         given:
-        settingsMap.enableBuiltinApp = true
-
         rmUtils.stubRuleList4 = [
             [id: 100, label: 'Alpha', name: 'A', type: 'Rule-4.1']
         ]
@@ -125,7 +119,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     def "hub_list_rules via dispatch passes RM 4.x explicit fields through (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         rmUtils.stubRuleList4 = [
             [id: 100, label: 'Alpha', name: 'A', type: 'Rule-4.1']
         ]
@@ -150,8 +143,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "same rule id in both v4 and v5 appears exactly once (first-seen wins)"() {
         given:
-        settingsMap.enableBuiltinApp = true
-
         rmUtils.stubRuleList4 = [[id: 200, label: 'From v4', name: 'From v4', type: 'Rule-4.1']]
         rmUtils.stubRuleList5 = [[200: 'From v5']]
 
@@ -168,7 +159,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     def "hub_list_rules via dispatch dedups same id across v4 and v5 (first-seen wins) (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         rmUtils.stubRuleList4 = [[id: 200, label: 'From v4', name: 'From v4', type: 'Rule-4.1']]
         rmUtils.stubRuleList5 = [[200: 'From v5']]
 
@@ -188,10 +178,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     }
 
     def "both-absent quiet path: count=0, informational note, success NOT false"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
-        and: 'both versions throw NoClassDefFoundError (RM not installed)'
+        given: 'both versions throw NoClassDefFoundError (RM not installed)'
         rmUtils.throwOnGetRuleList4 = new NoClassDefFoundError("hubitat.helper.RMUtils")
         rmUtils.throwOnGetRuleList5 = new NoClassDefFoundError("hubitat.helper.RMUtils")
 
@@ -209,7 +196,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     def "hub_list_rules via dispatch both-absent NoClassDefFound quiet path (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         rmUtils.throwOnGetRuleList4 = new NoClassDefFoundError("hubitat.helper.RMUtils")
         rmUtils.throwOnGetRuleList5 = new NoClassDefFoundError("hubitat.helper.RMUtils")
 
@@ -231,7 +217,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "both-absent via sandbox-wrapped 'Cannot get property helper' shape: quiet path"() {
         given:
-        settingsMap.enableBuiltinApp = true
         // The real Hubitat Groovy sandbox resolves unknown `hubitat.helper.X`
         // namespace lookups to null, and the subsequent property dereference
         // throws this shape -- verified via live probe during PR #79 review.
@@ -254,7 +239,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     def "hub_list_rules via dispatch both-absent 'Cannot get property helper' quiet path (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'helper' on null object")
         rmUtils.throwOnGetRuleList5 = new RuntimeException("Cannot get property 'helper' on null object")
 
@@ -275,10 +259,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     }
 
     def "both failed with mixed shapes returns success=false error mentioning both versions"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
-        and: 'v4 is class-missing but v5 is a hard RuntimeException -- not a quiet path'
+        given: 'v4 is class-missing but v5 is a hard RuntimeException -- not a quiet path'
         rmUtils.throwOnGetRuleList4 = new NoClassDefFoundError("hubitat.helper.RMUtils")
         rmUtils.throwOnGetRuleList5 = new RuntimeException("timeout connecting to RM")
 
@@ -295,7 +276,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     def "hub_list_rules via dispatch both-failed mixed shapes returns success=false (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         rmUtils.throwOnGetRuleList4 = new NoClassDefFoundError("hubitat.helper.RMUtils")
         rmUtils.throwOnGetRuleList5 = new RuntimeException("timeout connecting to RM")
 
@@ -315,10 +295,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     }
 
     def "MissingMethodException mentioning getRuleList on one side is quiet (old firmware shape)"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
-        and: 'v4 throws an MME scoped to getRuleList (old firmware, no getRuleList overload)'
+        given: 'v4 throws an MME scoped to getRuleList (old firmware, no getRuleList overload)'
         rmUtils.throwOnGetRuleList4 = new RuntimeException("No signature of method getRuleList() is applicable")
         rmUtils.stubRuleList5 = [[500: 'My v5 Rule']]
 
@@ -335,7 +312,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     def "hub_list_rules via dispatch MissingMethodException on getRuleList is quiet (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         rmUtils.throwOnGetRuleList4 = new RuntimeException("No signature of method getRuleList() is applicable")
         rmUtils.stubRuleList5 = [[500: 'My v5 Rule']]
 
@@ -355,10 +331,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     }
 
     def "MissingMethodException NOT scoped to getRuleList surfaces as a warning"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
-        and: 'v4 throws an MME for an unrelated method name (not getRuleList)'
+        given: 'v4 throws an MME for an unrelated method name (not getRuleList)'
         rmUtils.throwOnGetRuleList4 = new RuntimeException("No signature of method setXYZ() is applicable")
         rmUtils.stubRuleList5 = [[600: 'My Rule']]
 
@@ -375,7 +348,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     def "hub_list_rules via dispatch MME not scoped to getRuleList surfaces warning (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         rmUtils.throwOnGetRuleList4 = new RuntimeException("No signature of method setXYZ() is applicable")
         rmUtils.stubRuleList5 = [[600: 'My Rule']]
 
@@ -395,10 +367,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     }
 
     def "Cannot-get-property with 'helper' substring is quiet (hubitat.helper path)"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
-        and: "v4 throws the sandbox null-resolution error for hubitat.helper.RMUtils"
+        given: "v4 throws the sandbox null-resolution error for hubitat.helper.RMUtils"
         rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'helper' on null object")
         rmUtils.stubRuleList5 = [[700: 'Only v5 Rule']]
 
@@ -414,7 +383,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     def "hub_list_rules via dispatch Cannot-get-property helper substring is quiet (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'helper' on null object")
         rmUtils.stubRuleList5 = [[700: 'Only v5 Rule']]
 
@@ -433,10 +401,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     }
 
     def "Cannot-get-property WITHOUT 'helper' substring surfaces as a warning"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
-        and: 'v4 throws a Cannot-get-property error unrelated to the helper path'
+        given: 'v4 throws a Cannot-get-property error unrelated to the helper path'
         rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'label' on null object")
         rmUtils.stubRuleList5 = [[800: 'Rule']]
 
@@ -452,7 +417,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     def "hub_list_rules via dispatch Cannot-get-property WITHOUT helper surfaces warning (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'label' on null object")
         rmUtils.stubRuleList5 = [[800: 'Rule']]
 
@@ -472,8 +436,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "hard RuntimeException on one side with other succeeding surfaces warning"() {
         given:
-        settingsMap.enableBuiltinApp = true
-
         rmUtils.throwOnGetRuleList4 = new RuntimeException("timeout")
         rmUtils.stubRuleList5 = [[900: 'My Rule']]
 
@@ -490,7 +452,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     def "hub_list_rules via dispatch hard RuntimeException on one side surfaces warning (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         rmUtils.throwOnGetRuleList4 = new RuntimeException("timeout")
         rmUtils.stubRuleList5 = [[900: 'My Rule']]
 
@@ -510,10 +471,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     }
 
     def "registerRmRule skips entries with non-Integer-coercible keys and emits a sandbox-safe warn log"() {
-        given:
-        settingsMap.enableBuiltinApp = true
-
-        and: 'collect mcpLog calls via per-test metaClass override'
+        given: 'collect mcpLog calls via per-test metaClass override'
         // mcpLog is a script-local method (not inherited from AppExecutor /
         // HubitatAppScript), so per-instance metaClass override works here —
         // see docs/testing.md "Which interception point to use".
@@ -559,7 +517,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     def "hub_list_rules via dispatch skips non-Integer-coercible keys and emits warn log (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
 
         and: 'collect mcpLog calls via per-test metaClass override'
         def mcpLogCalls = []
@@ -598,7 +555,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "hub_list_rules filters out RMUtils ghosts and reports them in ghostsFiltered"() {
         given: 'two rules in RMUtils; only one is live in /hub2/appsList'
-        settingsMap.enableBuiltinApp = true
         // RMUtils reports rule 300 and rule 301
         rmUtils.stubRuleList5 = [
             [300: 'Live Rule'],
@@ -631,7 +587,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
     def "hub_list_rules via dispatch filters out RMUtils ghosts and reports them in ghostsFiltered (useGateways=#useGateways)"() {
         given: 'two rules in RMUtils; only one is live in /hub2/appsList'
         settingsMap.useGateways = useGateways
-        settingsMap.enableBuiltinApp = true
         rmUtils.stubRuleList5 = [
             [300: 'Live Rule'],
             [301: 'Ghost Rule']
@@ -665,7 +620,6 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "gateway dispatch via handleGateway routes to hub_list_rules"() {
         given:
-        settingsMap.enableBuiltinApp = true
         rmUtils.stubRuleList5 = [[10: 'Test Rule']]
 
         when:

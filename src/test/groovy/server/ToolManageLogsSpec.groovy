@@ -59,7 +59,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs filters by level=#level"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/past/json') { params ->
             JsonOutput.toJson([
                 'App 1\tdebug\tDebug msg\t2026-04-19 10:00:00.000\ttype',
@@ -89,7 +89,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "hub_get_logs via dispatch filters by level=warn (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/past/json') { params ->
             JsonOutput.toJson([
                 'App 1\tdebug\tDebug msg\t2026-04-19 10:00:00.000\ttype',
@@ -116,7 +116,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs filters by source substring (case-insensitive)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/past/json') { params ->
             JsonOutput.toJson([
                 'Kitchen Light\tinfo\tSwitch turned on\t2026-04-19 10:00:00.000\ttype',
@@ -135,7 +135,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs trims to the limit argument (keeping newest)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def lines = (1..10).collect { i ->
             "App 1\tinfo\tMessage ${i}\t2026-04-19 10:00:0${i}.000\ttype".toString()
         }
@@ -154,7 +154,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs scopes to a selected device and passes type=dev&id=X in query"() {
         given: 'a selected device so findDevice succeeds'
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def device = new TestDevice(id: 42, name: 'K', label: 'K')
         settingsMap.selectedDevices = [device]
         def capturedParams = null
@@ -173,7 +173,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs rejects an unknown deviceId before hitting the hub"() {
         given: 'no selected device with id 999'
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // If the tool ever called hubInternalGet, HubInternalGetMock would throw
         // (unstubbed), so the IllegalArgumentException below proves the pre-HTTP
         // validation fired.
@@ -190,7 +190,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "hub_get_logs via dispatch maps unknown-deviceId IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
 
         when:
         def response = mcpDriver.callTool('hub_get_logs', [deviceId: '999'])
@@ -206,7 +206,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs scopes to an app and passes type=app&id=X in query"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def capturedParams = null
         hubGet.register('/logs/past/json') { params ->
             capturedParams = params
@@ -223,7 +223,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs truncates messages when estimated JSON exceeds the 120KB cloud limit"() {
         given: 'many entries with long messages so estimatedJsonSize trips the 120000-byte truncation guard'
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         def longMsg = 'x' * 2000
         def lines = (1..200).collect { i ->
             "App 1\tinfo\t${longMsg}\t2026-04-19 10:00:${String.format('%02d', (i % 60))}.000\ttype".toString()
@@ -241,7 +241,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_logs handles empty hub response gracefully"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/past/json') { params -> null }
 
         when:
@@ -467,7 +467,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_performance_stats returns device stats sorted by pct (default)"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/json') { params ->
             JsonOutput.toJson([
                 uptime: '5d 2h',
@@ -498,7 +498,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "hub_get_performance_stats via dispatch returns sorted device stats (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/json') { params ->
             JsonOutput.toJson([
                 uptime: '5d 2h',
@@ -527,7 +527,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_performance_stats sortBy=count reorders results"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/json') { params ->
             JsonOutput.toJson([
                 uptime: 'x',
@@ -549,7 +549,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_performance_stats type=app returns only app stats"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/json') { params ->
             JsonOutput.toJson([
                 uptime: 'x',
@@ -572,7 +572,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_performance_stats surfaces the largeState flag on flagged entries"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/json') { params ->
             JsonOutput.toJson([
                 uptime: 'x',
@@ -596,7 +596,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
     def "hub_get_performance_stats limit=0 returns all entries with the unlimited-response note"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/json') { params ->
             JsonOutput.toJson([
                 uptime: 'x',
@@ -613,24 +613,24 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.note?.contains('2 entries')
     }
 
-    def "hub_get_performance_stats returns an error map when fetchLogsJson throws (Hub Admin Read gate is indirect)"() {
-        // toolGetPerformanceStats has no direct requireHubAdminRead() call;
-        // the gate fires deeper inside fetchLogsJson (server ~line 5508)
-        // and the IllegalArgumentException is caught and wrapped into the
-        // returned error map at ~line 5524. Asserting "Hub Admin Read"
-        // in the error pins the current wrapping, not a public-surface gate.
+    def "hub_get_performance_stats is blocked by the central Read master gate"() {
+        // The read gate is now central (executeTool), not inside fetchLogsJson.
+        given:
+        settingsMap.enableRead = false
+
         when:
-        def result = script.toolGetPerformanceStats([:])
+        script.executeTool("hub_get_performance_stats", [:])
 
         then:
-        result.error.contains('Hub Admin Read')
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("Read tools are disabled")
     }
 
     // -------- toolGetHubJobs --------
 
     def "hub_get_jobs returns scheduled + running + hubActions"() {
         given:
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/json') { params ->
             JsonOutput.toJson([
                 uptime: '1d',
@@ -660,7 +660,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     def "hub_get_jobs via dispatch returns scheduled + running + hubActions (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         hubGet.register('/logs/json') { params ->
             JsonOutput.toJson([
                 uptime: '1d',
@@ -691,12 +691,16 @@ class ToolManageLogsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_get_jobs returns an error map when fetchLogsJson fails"() {
-        when: 'Hub Admin Read disabled — fetchLogsJson throws inside the tool'
-        def result = script.toolGetHubJobs([:])
+    def "hub_get_jobs is blocked by the central Read master gate"() {
+        given:
+        settingsMap.enableRead = false
+
+        when:
+        script.executeTool("hub_get_jobs", [:])
 
         then:
-        result.error.contains('Hub Admin Read')
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("Read tools are disabled")
     }
 
     // -------- toolGetDebugLogs --------

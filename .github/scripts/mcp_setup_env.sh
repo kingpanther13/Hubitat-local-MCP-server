@@ -7,19 +7,23 @@
 # Env:    MCP_URL — full cloud OAuth URL with access_token
 #         RUNNER_TEMP — GHA-provided temp dir; falls back to /tmp
 #
-# Toggles enabled (all in update_mcp_settings allowlist):
+# IMPORTANT: this script runs BEFORE the PR source is deployed (see hub-e2e.yml:
+# setup -> deploy -> tests -> restore), so it talks to the PRE-DEPLOY baseline app.
+# It therefore only touches `enableCustomRuleEngine`, the one toggle key that is
+# stable across server versions AND is needed by the custom_* e2e tests. The setting
+# persists through the source swap, so the deployed PR app inherits it.
+#
+# Toggles enabled:
 #   - enableCustomRuleEngine (custom_create_rule / custom_update_rule / custom_delete_rule paths)
-#   - enableHubAdminRead     (hub_get_info PII fields, hub_list_apps, etc.)
-#   - enableBuiltinApp       (list_installed_apps, list_rm_rules, native CRUD tools)
 #
 # Not touched here:
-#   - enableHubAdminWrite — excluded from update_mcp_settings allowlist by
-#     design (footgun: would let the agent disable its own write path
-#     mid-session). Must be enabled manually in the MCP rule app UI before
-#     any write-bearing test can pass.
-#   - enableDeveloperMode — same lockout protection. Must be on in the UI
-#     before this script can call update_mcp_settings at all (script aborts
-#     with a focused error if it isn't).
+#   - Read / Write access — under the universal Read/Write masters (PR #113) both
+#     default ON in the deployed app, so read- and write-bearing tests pass without
+#     any setup. (Under older server versions the equivalent Hub Admin / Built-in App
+#     toggles are likewise irrelevant to this pre-deploy step.)
+#   - enableDeveloperMode — lockout protection. Must be on in the UI before this
+#     script can call update_mcp_settings at all (script aborts with a focused
+#     error if it isn't).
 
 set -euo pipefail
 
@@ -45,22 +49,19 @@ if [ "$DEV_MODE" != "true" ]; then
 fi
 
 PRE_RULE_ENGINE="$(echo "$PRE_INFO_JSON"  | jq -r '.customRuleEngineEnabled // false')"
-PRE_HUB_READ="$(echo    "$PRE_INFO_JSON"  | jq -r '.hubAdminReadEnabled    // false')"
-PRE_BUILTIN_READ="$(echo "$PRE_INFO_JSON" | jq -r '.builtinAppEnabled      // false')"
 
 jq -nc \
   --argjson re  "$PRE_RULE_ENGINE" \
-  --argjson hr  "$PRE_HUB_READ" \
-  --argjson br  "$PRE_BUILTIN_READ" \
-  '{enableCustomRuleEngine: $re, enableHubAdminRead: $hr, enableBuiltinApp: $br}' \
+  '{enableCustomRuleEngine: $re}' \
   > "$PRE_STATE_FILE"
 
 echo "Captured pre-run state -> $PRE_STATE_FILE"
 cat "$PRE_STATE_FILE"
 
-# Enable everything E2E needs in a single batch. update_mcp_settings is
-# atomic — a single bad key would block the whole batch.
-mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"enableHubAdminRead":true,"enableBuiltinApp":true},"confirm":true}}}}' \
+# Enable the one toggle the e2e suite needs that is not ON by default. Read/Write
+# are masters (default ON in the deployed PR app); enableCustomRuleEngine is the
+# only stable key this pre-deploy step sets, and it persists through the deploy.
+mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true},"confirm":true}}}}' \
   | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null
 
-echo "Test environment configured: enableCustomRuleEngine=true, enableHubAdminRead=true, enableBuiltinApp=true"
+echo "Test environment configured: enableCustomRuleEngine=true (Read/Write masters are ON by default in the deployed app)"

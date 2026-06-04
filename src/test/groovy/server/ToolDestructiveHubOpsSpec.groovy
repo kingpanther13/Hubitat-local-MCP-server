@@ -9,11 +9,12 @@ import support.ToolSpecBase
  * - toolShutdownHub  -> hub_shutdown
  * - toolDeleteDevice -> hub_delete_device
  *
- * All three tools run through requireHubAdminWrite, so every golden-path test
- * must seed:
- *   settingsMap.enableHubAdminWrite = true
- *   stateMap.lastBackupTimestamp    = 1234567890000L  (matches HarnessSpec's fixed now())
- *   args.confirm                    = true
+ * All three tools run through requireDestructiveConfirm (confirm + 24h backup)
+ * and are gated centrally on the Write master in executeTool, so every
+ * golden-path test must seed:
+ *   settingsMap.enableWrite      = true
+ *   stateMap.lastBackupTimestamp = 1234567890000L  (matches HarnessSpec's fixed now())
+ *   args.confirm                 = true
  *
  * Mocking strategy (see docs/testing.md "Which interception point to use"):
  *   - hubInternalGet       — routed by HarnessSpec via hubGet.register(path) closures.
@@ -25,8 +26,8 @@ import support.ToolSpecBase
  */
 class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
-    private void enableHubAdminWrite() {
-        settingsMap.enableHubAdminWrite = true
+    private void enableWrite() {
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
     }
 
@@ -34,7 +35,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
     def "hub_reboot throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolRebootHub([:])
@@ -45,19 +46,22 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         ex.message.contains('confirm=true')
     }
 
-    def "hub_reboot throws when Hub Admin Write is disabled"() {
+    def "hub_reboot throws when Write tools are disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolRebootHub([confirm: true])
+        script.executeTool('hub_reboot', [confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     def "hub_reboot throws when no recent backup is available"() {
         given:
-        settingsMap.enableHubAdminWrite = true
-        // No stateMap.lastBackupTimestamp — requireHubAdminWrite's 24h window fails
+        settingsMap.enableWrite = true
+        // No stateMap.lastBackupTimestamp — requireDestructiveConfirm's 24h window fails
 
         when:
         script.toolRebootHub([confirm: true])
@@ -70,7 +74,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
     def "hub_reboot posts to /hub/reboot and reports success"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def postedPath = null
         script.metaClass.hubInternalPost = { String path, Map body = null ->
             postedPath = path
@@ -92,7 +96,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     def "hub_reboot via dispatch posts and reports success (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def postedPath = null
         script.metaClass.hubInternalPost = { String path, Map body = null ->
             postedPath = path
@@ -118,7 +122,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
     def "hub_reboot reports failure when the hub POST throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPost = { String path, Map body = null ->
             throw new RuntimeException('Connection refused')
         }
@@ -137,7 +141,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     def "hub_reboot via dispatch maps missing-confirm IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_reboot', [:])
@@ -156,7 +160,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     def "hub_reboot via dispatch returns success=false envelope when hub POST throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPost = { String path, Map body = null ->
             throw new RuntimeException('Connection refused')
         }
@@ -180,7 +184,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
     def "hub_shutdown throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolShutdownHub([:])
@@ -191,18 +195,21 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         ex.message.contains('confirm=true')
     }
 
-    def "hub_shutdown throws when Hub Admin Write is disabled"() {
+    def "hub_shutdown throws when Write tools are disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolShutdownHub([confirm: true])
+        script.executeTool('hub_shutdown', [confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     def "hub_shutdown posts to /hub/shutdown and warns about manual restart"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def postedPath = null
         script.metaClass.hubInternalPost = { String path, Map body = null ->
             postedPath = path
@@ -224,7 +231,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     def "hub_shutdown via dispatch posts and reports success (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def postedPath = null
         script.metaClass.hubInternalPost = { String path, Map body = null ->
             postedPath = path
@@ -249,7 +256,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
     def "hub_shutdown reports failure when the hub POST throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPost = { String path, Map body = null ->
             throw new RuntimeException('Timeout')
         }
@@ -264,9 +271,10 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_shutdown via dispatch maps Hub-Admin-Write-disabled IAE to -32602 (useGateways=#useGateways)"() {
+    def "hub_shutdown via dispatch maps Write-disabled IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = false
 
         when:
         def response = mcpDriver.callTool('hub_shutdown', [confirm: true])
@@ -274,7 +282,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         then:
         response.error != null
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Write')
+        response.error.message.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -284,7 +292,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
     def "hub_delete_device throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolDeleteDevice([deviceId: '42'])
@@ -295,18 +303,21 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         ex.message.contains('confirm=true')
     }
 
-    def "hub_delete_device throws when Hub Admin Write is disabled"() {
+    def "hub_delete_device throws when Write tools are disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolDeleteDevice([deviceId: '42', confirm: true])
+        script.executeTool('hub_delete_device', [deviceId: '42', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     def "hub_delete_device throws when deviceId is missing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolDeleteDevice([confirm: true])
@@ -318,7 +329,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
     def "hub_delete_device throws when the device is not found on the hub"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/device/fullJson/999') { params -> null }
 
         when:
@@ -332,7 +343,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
     def "hub_delete_device force-deletes the device and verifies the deletion"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         and: 'lookup returns the device on the first call, null on verify (device is gone)'
         def lookupCalls = 0
@@ -363,7 +374,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     def "hub_delete_device via dispatch force-deletes and verifies (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def lookupCalls = 0
         hubGet.register('/device/fullJson/42') { params ->
             lookupCalls++
@@ -393,7 +404,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
     def "hub_delete_device reports force-delete failure without throwing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/device/fullJson/77') { params ->
             '{"id": 77, "label": "Unlucky Device", "name": "Bulb", "typeName": "Virtual Bulb", "deviceNetworkId": "mcp-virtual-77"}'
         }
@@ -415,7 +426,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     def "hub_delete_device via dispatch maps deviceId-missing IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_delete_device', [confirm: true])
@@ -433,7 +444,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
     def "hub_delete_device via dispatch maps device-not-found IAE to -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/device/fullJson/999') { params -> null }
 
         when:
