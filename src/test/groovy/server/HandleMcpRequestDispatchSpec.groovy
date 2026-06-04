@@ -381,14 +381,14 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // Regression for a bug found by exercising guide:true on the live hub: the gateway's
         // required-param pre-validation rejected guide:true with "Missing required parameters:
         // appId, confirm" BEFORE the handler's gate-bypassing short-circuit could run. The unit
-        // test (calling toolUpdateNativeApp directly) skipped this layer -- so guard the FULL
+        // test (calling _applyNativeAppEdit directly) skipped this layer -- so guard the FULL
         // tools/call -> handleMcpRequest -> handleToolsCall -> handleGateway path that real
         // MCP clients take. addTrigger/addAction {discover:true} ride the same exemption.
-        given: 'gateway mode + builtin app on so the native gateway dispatches'
+        given: 'gateway mode + builtin app on so the rule machine gateway dispatches'
         settingsMap.useGateways = true
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 210, method: 'tools/call',
-            params: [name: 'hub_manage_native_rules_and_apps', arguments: [tool: 'hub_update_native_app', args: [guide: true]]]
+            params: [name: 'hub_manage_rule_machine', arguments: [tool: 'hub_set_rule', args: [guide: true]]]
         ])
 
         when:
@@ -402,7 +402,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         def inner = new groovy.json.JsonSlurper().parseText(text)
         inner.isError != true
         inner.success == true
-        inner.section == 'update_native_app_reference'
+        inner.section == 'set_rule_reference'
         (inner.content as String).contains('addTrigger')
         (inner.content as String).contains('walkStep')
     }

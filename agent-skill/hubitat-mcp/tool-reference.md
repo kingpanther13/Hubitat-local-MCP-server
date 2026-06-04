@@ -29,18 +29,18 @@ These 11 tools are never behind a gateway. Every other tool is reachable through
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `hub_manage_virtual_device` | Create or delete MCP-managed virtual devices (action="create"/"delete"). For create, provide exactly ONE of: `deviceType` (15 built-in types -- not-found is isError platform error) or `customDriver={namespace, name}` (installed driver -- not-found is -32602 input error with hub_list_drivers hint). The two are mutually exclusive (including blank/whitespace `deviceType` with `customDriver`). Create response: `{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias), capabilities, commands, attributes}}`. Delete response: `{success, deviceId, deviceNetworkId, deviceLabel, message}`. To list MCP-managed virtual devices with their states, use `hub_list_devices` with `filter='virtual'`. | Hub Admin Write |
+| `hub_manage_virtual_device` | Create or delete MCP-managed virtual devices (action="create"/"delete"). For create, provide exactly ONE of: `deviceType` (15 built-in types -- not-found is isError platform error) or `customDriver={namespace, name}` (installed driver -- not-found is -32602 input error with hub_list_drivers hint). The two are mutually exclusive (including blank/whitespace `deviceType` with `customDriver`). Create response: `{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias), capabilities, commands, attributes}}`. Delete response: `{success, deviceId, deviceNetworkId, deviceLabel, message}`. To list MCP-managed virtual devices with their states, use `hub_list_devices` with `filter='virtual'`. | Write master |
 
 ### System Tools (8)
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `hub_get_info` | Comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip) requires Hub Admin Read. | None |
+| `hub_get_info` | Comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip) requires the Read master. | None |
 | `hub_list_modes` | List location modes. | None |
 | `hub_set_mode` | Change location mode (Home, Away, Night, etc.). | None |
 | `hub_get_hsm_status` | Get Home Security Monitor status. | None |
 | `hub_set_hsm` | Change HSM arm mode. | None |
-| `hub_create_backup` | Create full hub database backup. | Hub Admin Write |
+| `hub_create_backup` | Create full hub database backup. | Write master |
 | `hub_get_update_status` | Check for MCP server updates. | None |
 | `hub_report_issue` | Generate comprehensive diagnostic report. | None |
 
@@ -65,15 +65,15 @@ Read-only access to apps, drivers, libraries, backups, installed-app inventory, 
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `hub_list_apps` | List apps. `scope='types'` enumerates installable app types; `scope='instances'` enumerates all installed apps (built-in + user) with parent/child tree, filterable by `all`/`builtin`/`user`/`disabled`/`parents`/`children`. Optional `cursor` opt-in pagination. | Hub Admin Read |
-| `hub_list_drivers` | List installed user drivers. | Hub Admin Read |
-| `hub_get_source` | Get Groovy source code for an app, driver, or library (`type`: "app", "driver", "library"; `id`). Chunked-read support via `offset`/`length`. Large files auto-saved to File Manager. | Hub Admin Read |
+| `hub_list_apps` | List apps. `scope='types'` enumerates installable app types; `scope='instances'` enumerates all installed apps (built-in + user) with parent/child tree, filterable by `all`/`builtin`/`user`/`disabled`/`parents`/`children`. Optional `cursor` opt-in pagination. | Read master |
+| `hub_list_drivers` | List installed user drivers. | Read master |
+| `hub_get_source` | Get Groovy source code for an app, driver, or library (`type`: "app", "driver", "library"; `id`). Chunked-read support via `offset`/`length`. Large files auto-saved to File Manager. | Read master |
 | `hub_list_backups` | List all source code backups. | None |
 | `hub_get_backup` | Retrieve source from a backup. | None |
-| `hub_list_device_dependents` | Given a `deviceId`, list apps referencing it (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.). | Built-in App Read |
-| `hub_get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.). Returns sections/inputs/values; multi-page apps via `pageName`. Workflow: hub_list_apps(scope=instances) or hub_list_rules -> hub_get_app_config with appId; multi-page apps accept pageName (HPM: prefPkgUninstall for full list). Read-only. | Hub Admin Read |
-| `hub_list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before hub_get_app_config on multi-page apps. | Hub Admin Read |
-| `hub_list_hpm_packages` | List all HPM-tracked packages with full component inventory (apps, drivers, files). **Pass `includeDrift=true`** to also cross-reference HPM-tracked state against the hub; results nest under a `drift` key. Requires Hub Admin Read and HPM installed; auto-discovers HPM's installed-app ID unless `hpmAppId` is supplied. See `hub_get_tool_guide` for the full drift response shape. | Hub Admin Read |
+| `hub_list_device_dependents` | Given a `deviceId`, list apps referencing it (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.). | Read master |
+| `hub_get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.). Returns sections/inputs/values; multi-page apps via `pageName`. Workflow: hub_list_apps(scope=instances) or hub_list_rules -> hub_get_app_config with appId; multi-page apps accept pageName (HPM: prefPkgUninstall for full list). Read-only. | Read master |
+| `hub_list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before hub_get_app_config on multi-page apps. | Read master |
+| `hub_list_hpm_packages` | List all HPM-tracked packages with full component inventory (apps, drivers, files). **Pass `includeDrift=true`** to also cross-reference HPM-tracked state against the hub; results nest under a `drift` key. Requires the Read master and HPM installed; auto-discovers HPM's installed-app ID unless `hpmAppId` is supplied. See `hub_get_tool_guide` for the full drift response shape. | Read master |
 
 ### hub_read_devices (4 tools)
 
@@ -92,14 +92,14 @@ Read-only diagnostics: metrics, memory/CPU history, scheduled-job-free health ch
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `hub_get_logs` | Hub log entries, most recent first. Default 100, max 500. Filter by level/source/pattern (regex) or multi-pattern with AND/OR mode; time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`, max 30d -- throws if exceeded); or scope server-side to a single `deviceId` / `appId`. `pattern` matches the message field only (not source/name). Pathological regex like `(.*)*` may hang the matcher; prefer simple alternation. (Device/location event *history* is in `hub_list_device_events` via `hoursBack`.) | Hub Admin Read |
-| `hub_get_performance_stats` | Device/app performance stats from `/logs`: method call counts, % busy, cumulative total ms, state size, events. Sortable. | Hub Admin Read |
-| `hub_get_jobs` | Scheduled and running jobs on the hub. | Hub Admin Read |
+| `hub_get_logs` | Hub log entries, most recent first. Default 100, max 500. Filter by level/source/pattern (regex) or multi-pattern with AND/OR mode; time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`, max 30d -- throws if exceeded); or scope server-side to a single `deviceId` / `appId`. `pattern` matches the message field only (not source/name). Pathological regex like `(.*)*` may hang the matcher; prefer simple alternation. (Device/location event *history* is in `hub_list_device_events` via `hoursBack`.) | Read master |
+| `hub_get_performance_stats` | Device/app performance stats from `/logs`: method call counts, % busy, cumulative total ms, state size, events. Sortable. | Read master |
+| `hub_get_jobs` | Scheduled and running jobs on the hub. | Read master |
 | `hub_get_debug_logs` | Retrieve MCP debug log entries. Filter by level. Pass `mode='status'` to view logging system statistics instead. | None |
-| `hub_get_metrics` | Retrieve hub metrics with CSV trend history (read-only; `recordSnapshot` defaults to false). | Hub Admin Read |
-| `hub_get_memory_history` | Free OS memory + CPU load history (with Java heap + NIO buffer tracking for leak detection). | Hub Admin Read |
-| `hub_get_device_health` | Find stale/offline devices. Optional `cursor` opt-in pagination over `staleDevices` (page size 100). | Hub Admin Read |
-| `hub_get_radio_details` | Radio info -- Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. | Hub Admin Read |
+| `hub_get_metrics` | Retrieve hub metrics with CSV trend history (read-only; `recordSnapshot` defaults to false). | Read master |
+| `hub_get_memory_history` | Free OS memory + CPU load history (with Java heap + NIO buffer tracking for leak detection). | Read master |
+| `hub_get_device_health` | Find stale/offline devices. Optional `cursor` opt-in pagination over `staleDevices` (page size 100). | Read master |
+| `hub_get_radio_details` | Radio info -- Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. | Read master |
 | `hub_list_captured_states` | List saved device state snapshots. | None |
 
 ### hub_read_files (2 tools)
@@ -128,8 +128,8 @@ Read-only custom-rule access plus dry-run testing and native-rule listing/health
 |------|-------------|-------------|
 | `hub_get_custom_rule` | Full rule details (triggers, conditions, actions). Omit `ruleId` to list all rules with status and last-triggered; pass `detailed=true` for comprehensive diagnostics on a specific rule. | None |
 | `hub_test_custom_rule` | Dry-run: see what would happen without executing. | None |
-| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). | Built-in App Tools |
-| `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Built-in App Tools |
+| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). | Read master |
+| `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Read master |
 
 ### hub_read_variables (3 tools)
 
@@ -165,11 +165,11 @@ Custom-rule administration: get, create, update, delete, test, export, import, a
 | `hub_update_custom_rule` | Update rule triggers, conditions, or actions. Also handles enable/disable via `enabled=true/false`. | None |
 | `hub_delete_custom_rule` | Delete a rule (auto-backs up first). | None |
 | `hub_test_custom_rule` | Dry-run: see what would happen without executing. | None |
-| `hub_export_custom_rule` | Export rule as portable JSON (persists to File Manager via saveAs). | Hub Admin Write |
+| `hub_export_custom_rule` | Export rule as portable JSON (persists to File Manager via saveAs). | Write master |
 | `hub_import_custom_rule` | Import a rule from exported JSON. | None |
 | `hub_clone_custom_rule` | Duplicate an existing rule. | None |
 
-> **Built-in rule redirect:** `hub_get_custom_rule`, `hub_export_custom_rule`, `hub_update_custom_rule`, `hub_delete_custom_rule`, `hub_test_custom_rule`, and `hub_clone_custom_rule` operate only on MCP-native rules. If you pass an id belonging to a Hubitat built-in rule (Rule Machine, Room Lighting, Basic Rules, Visual Rules), the error message includes a redirect hint pointing to `hub_read_apps_code -> hub_get_app_config(appId=<id>)` (read) or, for write and delete verbs, the appropriate `hub_manage_native_rules_and_apps` CRUD tool. The test verb hint includes `hub_call_rule` only for Rule Machine rules; other built-in rule-likes receive `hub_get_app_config` for inspection because `hub_call_rule` is RM-only. This redirect fires only when Built-in App Tools are enabled. See `TOOL_GUIDE.md` "Hubitat Built-in Rule Redirect" for full details.
+> **Built-in rule redirect:** `hub_get_custom_rule`, `hub_export_custom_rule`, `hub_update_custom_rule`, `hub_delete_custom_rule`, `hub_test_custom_rule`, and `hub_clone_custom_rule` operate only on MCP-native rules. If you pass an id belonging to a Hubitat built-in rule (Rule Machine, Room Lighting, Basic Rules, Visual Rules), the error message includes a redirect hint pointing to `hub_read_apps_code -> hub_get_app_config(appId=<id>)` (read) or, for write and delete verbs, the appropriate `hub_manage_native_rules_and_apps` CRUD tool. The test verb hint includes `hub_call_rule` only for Rule Machine rules; other built-in rule-likes receive `hub_get_app_config` for inspection because `hub_call_rule` is RM-only. This redirect fires only when the Read master is enabled. See `TOOL_GUIDE.md` "Hubitat Built-in Rule Redirect" for full details.
 
 ### hub_manage_variables (8 tools)
 
@@ -180,10 +180,10 @@ Manage hub variables (every type — Number, Decimal, String, Boolean, DateTime)
 | `hub_list_variables` | List all hub variables (with type/connector linkage) and rule-engine variables. | None |
 | `hub_get_variable` | Get a variable's value + metadata (type, deviceId, attribute). | None |
 | `hub_set_variable` | Set an existing variable's value. Falls back to rule_engine namespace when no hub var matches. | None |
-| `hub_create_variable` | Create a new hub variable. Type enum: Number / Decimal / String / Boolean / DateTime. | Hub Admin Write |
-| `hub_delete_variable` | Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). `force=true` if rules reference it. | Hub Admin Write + recent backup |
-| `hub_create_connector` | Create a virtual-device connector for an existing hub variable. | Hub Admin Write |
-| `hub_delete_connector` | Remove the connector device for a hub variable (the variable itself is unchanged). | Hub Admin Write |
+| `hub_create_variable` | Create a new hub variable. Type enum: Number / Decimal / String / Boolean / DateTime. | Write master |
+| `hub_delete_variable` | Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). `force=true` if rules reference it. | Write master + recent backup |
+| `hub_create_connector` | Create a virtual-device connector for an existing hub variable. | Write master |
+| `hub_delete_connector` | Remove the connector device for a hub variable (the variable itself is unchanged). | Write master |
 | `hub_list_variable_changes` | Recent hub-variable changes since the MCP app last started. Filter by name, sinceMs, limit. | None |
 
 ### hub_manage_rooms (5 tools)
@@ -194,9 +194,9 @@ Manage hub rooms: list, view details, create, delete, and rename.
 |------|-------------|-------------|
 | `hub_list_rooms` | List all rooms with device counts. | None |
 | `hub_get_room` | Room details with full device info. Accepts name or ID. | None |
-| `hub_create_room` | Create a new room. | Hub Admin Write |
-| `hub_delete_room` | Delete a room (devices become unassigned). | Hub Admin Write |
-| `hub_update_room` | Rename an existing room. | Hub Admin Write |
+| `hub_create_room` | Create a new room. | Write master |
+| `hub_delete_room` | Delete a room (devices become unassigned). | Write master |
+| `hub_update_room` | Rename an existing room. | Write master |
 
 ### hub_manage_destructive_ops (3 tools)
 
@@ -204,9 +204,9 @@ Destructive hub operations: reboot, shutdown, and device deletion.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `hub_reboot` | Reboot hub (1-3 min downtime). | Hub Admin Write |
-| `hub_shutdown` | Power off hub (needs manual restart). | Hub Admin Write |
-| `hub_delete_device` | Permanently delete a device. **NO UNDO.** For ghost/orphaned devices only. | Hub Admin Write |
+| `hub_reboot` | Reboot hub (1-3 min downtime). | Write master |
+| `hub_shutdown` | Power off hub (needs manual restart). | Write master |
+| `hub_delete_device` | Permanently delete a device. **NO UNDO.** For ghost/orphaned devices only. | Write master |
 
 ### hub_manage_code (8 tools)
 
@@ -214,14 +214,14 @@ Write operations for apps, drivers, and libraries: install, update, delete, and 
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `hub_create_app` | Install a new Groovy app from `source` (inline) or `sourceFile` (File Manager filename). Verifies install compiled cleanly. | Hub Admin Write |
-| `hub_create_driver` | Install a new Groovy driver from `source` (inline) or `sourceFile` (File Manager filename). Bulk mode: `installs=[{source|sourceFile},...]` (continue-on-error). Verifies each install compiled cleanly. | Hub Admin Write |
-| `hub_create_library` | Install a new Groovy library (`#include namespace.Name`). Library source must include a `library()` block with `name`, `namespace`, `author`, `description` (4 required; `category` optional). | Hub Admin Write |
-| `hub_update_app` | Update existing app source code (source, sourceFile, or resave). | Hub Admin Write |
-| `hub_update_driver` | Update existing driver source code. Single-driver mode (driverId + source/sourceFile/resave) or bulk mode (updates array of {driverId, sourceFile} pairs, continue-on-error). | Hub Admin Write |
-| `hub_update_library` | Update existing library source code (libraryId + source/sourceFile/resave). Auto-backs up before modifying. | Hub Admin Write |
-| `hub_delete_item` | Delete an installed app, driver, or library (`type`: "app", "driver", "library"; auto-backs up). For libraries, ensure no apps/drivers `#include` it first. | Hub Admin Write |
-| `hub_restore_backup` | Restore app/driver to backed-up version. | Hub Admin Write |
+| `hub_create_app` | Install a new Groovy app from `source` (inline) or `sourceFile` (File Manager filename). Verifies install compiled cleanly. | Write master |
+| `hub_create_driver` | Install a new Groovy driver from `source` (inline) or `sourceFile` (File Manager filename). Bulk mode: `installs=[{source|sourceFile},...]` (continue-on-error). Verifies each install compiled cleanly. | Write master |
+| `hub_create_library` | Install a new Groovy library (`#include namespace.Name`). Library source must include a `library()` block with `name`, `namespace`, `author`, `description` (4 required; `category` optional). | Write master |
+| `hub_update_app` | Update existing app source code (source, sourceFile, or resave). | Write master |
+| `hub_update_driver` | Update existing driver source code. Single-driver mode (driverId + source/sourceFile/resave) or bulk mode (updates array of {driverId, sourceFile} pairs, continue-on-error). | Write master |
+| `hub_update_library` | Update existing library source code (libraryId + source/sourceFile/resave). Auto-backs up before modifying. | Write master |
+| `hub_delete_item` | Delete an installed app, driver, or library (`type`: "app", "driver", "library"; auto-backs up). For libraries, ensure no apps/drivers `#include` it first. | Write master |
+| `hub_restore_backup` | Restore app/driver to backed-up version. | Write master |
 
 ### hub_manage_logs (6 tools)
 
@@ -229,9 +229,9 @@ Hub and MCP log access, performance stats, and log configuration.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `hub_get_logs` | Hub log entries, most recent first. Default 100, max 500. Filter by level/source/pattern (regex) or multi-pattern with AND/OR mode; time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`, max 30d -- throws if exceeded); or scope server-side to a single `deviceId` / `appId`. `pattern` matches the message field only (not source/name). Pathological regex like `(.*)*` may hang the matcher; prefer simple alternation. (Device/location event *history* is in `hub_list_device_events` via `hoursBack`.) | Hub Admin Read |
-| `hub_get_performance_stats` | Device/app performance stats from `/logs`: method call counts, % busy, cumulative total ms, state size, events. Sortable. | Hub Admin Read |
-| `hub_get_jobs` | Scheduled and running jobs on the hub. | Hub Admin Read |
+| `hub_get_logs` | Hub log entries, most recent first. Default 100, max 500. Filter by level/source/pattern (regex) or multi-pattern with AND/OR mode; time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`, max 30d -- throws if exceeded); or scope server-side to a single `deviceId` / `appId`. `pattern` matches the message field only (not source/name). Pathological regex like `(.*)*` may hang the matcher; prefer simple alternation. (Device/location event *history* is in `hub_list_device_events` via `hoursBack`.) | Read master |
+| `hub_get_performance_stats` | Device/app performance stats from `/logs`: method call counts, % busy, cumulative total ms, state size, events. Sortable. | Read master |
+| `hub_get_jobs` | Scheduled and running jobs on the hub. | Read master |
 | `hub_get_debug_logs` | Retrieve MCP debug log entries. Filter by level. Pass `mode='status'` to view logging system statistics instead. | None |
 | `hub_delete_debug_logs` | Clear all MCP debug logs. | None |
 | `hub_set_log_level` | Set MCP log level (debug/info/warn/error). | None |
@@ -242,12 +242,12 @@ Performance monitoring, health checks, diagnostics, radio info, memory / GC, and
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `hub_get_metrics` | Retrieve hub metrics with CSV trend history (read-only; `recordSnapshot` defaults to false). | Hub Admin Read |
-| `hub_get_device_health` | Find stale/offline devices. Optional `cursor` opt-in pagination over `staleDevices` (page size 100). | Hub Admin Read |
-| `hub_get_radio_details` | Radio info -- Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. | Hub Admin Read |
-| `hub_get_memory_history` | Free OS memory + CPU load history (with Java heap + NIO buffer tracking for leak detection). | Hub Admin Read |
-| `hub_call_gc` | Force JVM GC and return before/after memory comparison. | Hub Admin Read |
-| `hub_call_zwave_repair` | Start Z-Wave network repair (5-30 min). | Hub Admin Write |
+| `hub_get_metrics` | Retrieve hub metrics with CSV trend history (read-only; `recordSnapshot` defaults to false). | Read master |
+| `hub_get_device_health` | Find stale/offline devices. Optional `cursor` opt-in pagination over `staleDevices` (page size 100). | Read master |
+| `hub_get_radio_details` | Radio info -- Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. | Read master |
+| `hub_get_memory_history` | Free OS memory + CPU load history (with Java heap + NIO buffer tracking for leak detection). | Read master |
+| `hub_call_gc` | Force JVM GC and return before/after memory comparison. | Read master |
+| `hub_call_zwave_repair` | Start Z-Wave network repair (5-30 min). | Write master |
 | `hub_list_captured_states` | List saved device state snapshots. | None |
 | `hub_delete_captured_state` | Delete a captured device state snapshot. Omit `stateId` to delete all snapshots. | None |
 
@@ -259,38 +259,39 @@ Manage hub File Manager: list, read, write, and delete files stored on the hub.
 |------|-------------|-------------|
 | `hub_list_files` | List all files in File Manager. | None |
 | `hub_read_file` | Read a file (inline for <60KB, URL for larger). | None |
-| `hub_write_file` | Create/update a file (auto-backs up existing). | Hub Admin Write |
-| `hub_delete_file` | Delete a file (auto-backs up first). | Hub Admin Write |
+| `hub_write_file` | Create/update a file (auto-backs up existing). | Write master |
+| `hub_delete_file` | Delete a file (auto-backs up first). | Write master |
 
-### hub_manage_native_rules_and_apps (11 tools)
+### hub_manage_native_rules_and_apps (10 tools)
 
-Two surfaces: RMUtils-based runtime control for RM rules (read/trigger/pause-resume) plus admin-layer CRUD that works uniformly across any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.). Requires Built-in App Tools enabled; CRUD operations additionally require Hub Admin Write.
-
-| Tool | Description | Access Gate |
-|------|-------------|-------------|
-| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). | Built-in App Tools |
-| `hub_call_rule` | Trigger an existing RM rule. `action`: `rule` (full), `actions` (bypass conditions), or `stop` (cancel in-flight). | Built-in App Tools |
-| `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible; paused rules don't fire on triggers). | Built-in App Tools |
-| `hub_set_rule_private_boolean` | Set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). | Built-in App Tools |
-| `hub_create_native_app` | Create a new empty classic SmartApp (RM 5.1 by default; `appType` enum extends to other types). Returns `appId`. | Built-in App Tools + Hub Admin Write |
-| `hub_update_native_app` | Modify any classic native app by appId. Structured shortcuts: addTrigger, addAction, addRequiredExpression, clearActions, replaceActions, patches, etc. Auto-snapshots before writing. clearActions / replaceActions commit the delete synchronously via a full selectActions page-form submit (RM's trashActs handler runs in-band), so the actions are gone when the call returns; a thin defensive verify-retry returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` on the rare residual -- verify via `hub_get_app_config` rather than rolling back. | Built-in App Tools + Hub Admin Write |
-| `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Built-in App Tools + Hub Admin Write |
-| `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. | Built-in App Tools + Hub Admin Write |
-| `hub_export_native_app` | Export a classic SmartApp to JSON (persists to File Manager), round-trippable with `hub_import_native_app`. Useful for backup, sharing, or export-mutate-import editing of complex rules. | Built-in App Tools + Hub Admin Write |
-| `hub_import_native_app` | Import previously-exported app JSON into a new instance. Pairs with `hub_export_native_app`. Returns the new `appId`. | Built-in App Tools + Hub Admin Write |
-| `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Built-in App Tools |
-
-### hub_manage_rule_machine (5 tools)
-
-RMUtils-based runtime control for Rule Machine rules: list, trigger, pause/resume, set private boolean, and check health. (CRUD and other classic-app operations live in `hub_manage_native_rules_and_apps`.)
+Two surfaces: RMUtils-based runtime control for RM rules (read/trigger/pause-resume) plus admin-layer CRUD that works uniformly across any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.). Requires the Read master; CRUD operations additionally require the Write master.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). | Built-in App Tools |
-| `hub_call_rule` | Trigger an existing RM rule. `action`: `rule` (full), `actions` (bypass conditions), or `stop` (cancel in-flight). | Built-in App Tools |
-| `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible; paused rules don't fire on triggers). | Built-in App Tools |
-| `hub_set_rule_private_boolean` | Set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). | Built-in App Tools |
-| `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Built-in App Tools |
+| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). | Read master |
+| `hub_call_rule` | Trigger an existing RM rule. `action`: `rule` (full), `actions` (bypass conditions), or `stop` (cancel in-flight). | Write master |
+| `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible; paused rules don't fire on triggers). | Write master |
+| `hub_set_rule_private_boolean` | Set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). | Write master |
+| `hub_set_native_app` | Create or edit any NON-RM classic SmartApp by appId (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule). Omit `appId` to create (`appType` enum, `name`); provide `appId` to edit via `settings`/`button`. Generic upsert with a lean schema -- NO trigger/action sugar; for Rule Machine rule authoring use `hub_set_rule` (in `hub_manage_rule_machine`). Auto-snapshots before writing. | Write master |
+| `hub_delete_native_app` | Delete any classic native app, type-agnostic (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Write master |
+| `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. | Write master |
+| `hub_export_native_app` | Export a classic SmartApp to JSON (persists to File Manager), round-trippable with `hub_import_native_app`. Useful for backup, sharing, or export-mutate-import editing of complex rules. | Write master |
+| `hub_import_native_app` | Import previously-exported app JSON into a new instance. Pairs with `hub_export_native_app`. Returns the new `appId`. | Write master |
+| `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Read master |
+
+### hub_manage_rule_machine (7 tools)
+
+Dedicated Rule Machine gateway: create/edit RM rules (`hub_set_rule`), delete them (`hub_delete_native_app`), plus RMUtils-based runtime control -- list, trigger, pause/resume, set private boolean, and check health. (Create/edit of NON-RM classic apps lives in `hub_manage_native_rules_and_apps`.)
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `hub_set_rule` | Create or edit a Rule Machine rule (RM 5.1) -- the full authoring surface. Omit `appId` to create (`name`); provide `appId` to edit. FAT schema: addTrigger, addAction, addRequiredExpression, addTriggers, addActions, replaceActions, removeAction, clearActions, moveAction, removeTrigger, modifyTrigger, addLocalVariable, patches, walkStep, or raw `settings`/`button`. Auto-snapshots before writing. clearActions / replaceActions commit the delete synchronously via a full selectActions page-form submit (RM's trashActs handler runs in-band), so the actions are gone when the call returns; a thin defensive verify-retry returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` on the rare residual -- verify via `hub_get_app_config` rather than rolling back. | Write master |
+| `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). | Read master |
+| `hub_call_rule` | Trigger an existing RM rule. `action`: `rule` (full), `actions` (bypass conditions), or `stop` (cancel in-flight). | Write master |
+| `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible; paused rules don't fire on triggers). | Write master |
+| `hub_set_rule_private_boolean` | Set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). | Write master |
+| `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Read master |
+| `hub_delete_native_app` | Delete any classic native app, type-agnostic (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Write master |
 
 ### hub_manage_mcp (1 tool)
 

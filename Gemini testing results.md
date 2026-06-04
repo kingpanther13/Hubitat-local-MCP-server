@@ -55,7 +55,7 @@ Attempts to bypass the MCP tools and replicate Rule Machine orchestrations via d
 
 1. **Internal State Isolation:** Rule Machine maintains a strict internal 'wizard state' (e.g., `state.actNdx`, `state.doActN`) per app ID. Even successful POSTs to initiate an action (`moreAct`) often return the `mainPage` JSON instead of the expected `doActPage` if the internal state is not perfectly primed.
 2. **Sequential Schema Enforcement:** The hub's API layer enforces the same 'wizard dance' as the UI. Setting `actType` or `actSubType` is a prerequisite for the next level of settings (like `hue`, `saturation`, or `perMode` maps) to even exist in the accepted schema.
-3. **Silent Drops:** Settings submitted via direct POST that are not part of the *currently active* wizard page are silently ignored by the hub. This is why bulk `create_native_app` payloads often result in 'empty' actions for anything more complex than a basic Switch on/off.
+3. **Silent Drops:** Settings submitted via direct POST that are not part of the *currently active* wizard page are silently ignored by the hub. This is why bulk `hub_set_rule` payloads often result in 'empty' actions for anything more complex than a basic Switch on/off.
 
 ### Recommendation for Refactoring
 The refactored tools (from Issue #137) will likely need to implement a more robust 'Walk-and-Wait' pattern:

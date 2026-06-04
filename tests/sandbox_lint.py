@@ -1324,8 +1324,8 @@ def check_tool_guide_pointers(src_override: str | None = None,
         "file_manager": "File Manager",
         "performance": "Performance Tips",
         "builtin_app_tools": "Installed-App & Native-Rule",
-        "update_native_app_reference": "`hub_update_native_app` capability reference",
-        "create_native_app_reference": "`hub_create_native_app` reference",
+        "set_rule_reference": "`hub_set_rule` capability reference",
+        "set_rule_create_reference": "`hub_set_rule` create reference",
     }
     for key in section_keys:
         hint = key_to_heading_hint.get(key)
@@ -1367,7 +1367,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
     #    represents a load-bearing API surface fact (capability name, error keyword,
     #    API endpoint slug, etc.).
     default_anchors = {
-        "update_native_app_reference": [
+        "set_rule_reference": [
             # setVariable / Hub Variable addAction family
             "setVariable",
             # Mode action's modeName-resolution behavior

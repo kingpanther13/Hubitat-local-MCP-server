@@ -128,7 +128,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_restore_backup',
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
-            'hub_create_native_app', 'hub_update_native_app', 'hub_clone_native_app',
+            'hub_set_rule', 'hub_set_native_app', 'hub_clone_native_app',
             'hub_import_native_app', 'hub_delete_native_app', 'hub_export_native_app'
         ]
     }
@@ -345,7 +345,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_restore_backup',
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
-            'hub_create_native_app', 'hub_update_native_app', 'hub_clone_native_app',
+            'hub_set_rule', 'hub_set_native_app', 'hub_clone_native_app',
             'hub_import_native_app', 'hub_delete_native_app', 'hub_export_native_app'
         ] as Set
 

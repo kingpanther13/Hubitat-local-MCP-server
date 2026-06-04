@@ -148,7 +148,7 @@ class GatewayToggleSpec extends ToolSpecBase {
             'hub_list_files', 'hub_read_file', 'hub_write_file', 'hub_delete_file',
             'hub_list_device_dependents', 'hub_get_app_config', 'hub_list_app_pages',
             'hub_list_rules', 'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
-            'hub_create_native_app', 'hub_update_native_app', 'hub_delete_native_app', 'hub_get_rule_health',
+            'hub_set_rule', 'hub_set_native_app', 'hub_delete_native_app', 'hub_get_rule_health',
             'hub_update_mcp_settings'
         ]
     }
@@ -200,7 +200,7 @@ class GatewayToggleSpec extends ToolSpecBase {
     def "useGateways=false + enableWrite=false: write native tools hidden in the flat catalog while read native tools remain"() {
         // Pins that the flat-mode branch reuses hideByName — a refactor that splits
         // hide-list construction out of the gateway-mode path would silently leak the
-        // write native tools (hub_create_native_app / hub_call_rule etc.) into flat mode.
+        // write native tools (hub_set_rule / hub_call_rule etc.) into flat mode.
         // With the Built-in App toggle removed (#113), the native RM tools are governed
         // by the universal masters: write natives by the Write master, read natives by Read.
         given:
@@ -212,8 +212,8 @@ class GatewayToggleSpec extends ToolSpecBase {
         def names = script.getToolDefinitions()*.name as Set
 
         then: 'write native tools are removed from the flat catalog, not just from gateway entries'
-        !names.contains('hub_create_native_app')
-        !names.contains('hub_update_native_app')
+        !names.contains('hub_set_rule')
+        !names.contains('hub_set_native_app')
         !names.contains('hub_delete_native_app')
         !names.contains('hub_call_rule')
         !names.contains('hub_set_rule_paused')
@@ -303,7 +303,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         then: 'guard fires, hint does not name any of the hidden sub-tools'
         result.isError == true
         !result.hint.contains('hub_list_rules')
-        !result.hint.contains('hub_create_native_app')
+        !result.hint.contains('hub_set_native_app')
 
         and: 'hint mentions the responsible masters instead'
         result.hint.contains('Read/Write masters') || result.hint.contains('Custom Rule Engine')

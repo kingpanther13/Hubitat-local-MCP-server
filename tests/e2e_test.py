@@ -284,6 +284,7 @@ class TestRunner:
         # Cleanup tracking
         self.created_device_dnis: list[str] = []
         self.created_rule_ids: list[str] = []
+        self.created_native_app_ids: list[str] = []
         self.created_variable_names: list[str] = []
 
         # Cached helpers
@@ -449,12 +450,12 @@ class TestRunner:
         assert "version" in data, "Health response missing version"
 
     @test("infrastructure")
-    def test_update_native_app_guide_param(self) -> None:
-        # guide:true returns the hub_update_native_app capability reference inline (no
+    def test_set_rule_guide_param(self) -> None:
+        # guide:true returns the hub_set_rule capability reference inline (no
         # separate hub_get_tool_guide call) and makes NO rule change -- a pure static
         # early-return alongside the discover-mode short-circuit. Pins the new param.
-        result = self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_update_native_app", "args": {"guide": True},
+        result = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule", "args": {"guide": True},
         })
         blob = str(result)
         assert "addTrigger" in blob and "walkStep" in blob, \
@@ -673,6 +674,310 @@ class TestRunner:
 
     def _last_rule_id(self) -> Optional[str]:
         return self.created_rule_ids[-1] if self.created_rule_ids else None
+
+    # -----------------------------------------------------------------------
+    # GROUP 4b: native_apps (3 tests) -- the issue #137 hub_set_rule /
+    # hub_set_native_app split, exercised end-to-end against the live hub.
+    # These are distinct from rule_crud above, which drives the LEGACY custom
+    # rule engine (custom_* tools); these drive the NATIVE Rule Machine + classic
+    # SmartApp surface that appears in Hubitat's own UI.
+    # -----------------------------------------------------------------------
+
+    def _untrack_native_app(self, app_id) -> None:
+        if str(app_id) in self.created_native_app_ids:
+            self.created_native_app_ids.remove(str(app_id))
+
+    @test("native_apps")
+    def test_set_rule_native_lifecycle(self) -> None:
+        # CREATE a native RM rule in ONE call: hub_set_rule with no appId, bundling
+        # a (device-free) Time trigger + a log action -- the headline new capability.
+        created = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule",
+            "args": {
+                "name": f"{PREFIX}NativeRule",
+                "addTrigger": {
+                    "capability": "Certain Time (and optional date)",
+                    "time": "A specific time", "atTime": "17:00",
+                },
+                "addActions": [{"capability": "log", "message": "E2E native rule fired"}],
+                "confirm": True,
+            },
+        })
+        app_id = created.get("appId")
+        assert app_id, f"hub_set_rule create did not return an appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+
+        # VERIFY: the new rule shows up in the NATIVE RM rule list (RMUtils).
+        rules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+        rule_list = rules if isinstance(rules, list) else rules.get("rules", [])
+        found = any(
+            str(r.get("id")) == str(app_id) or f"{PREFIX}NativeRule" in (r.get("name") or r.get("label") or "")
+            for r in rule_list
+        )
+        assert found, f"created native rule {app_id} not found in hub_list_rules"
+
+        # EDIT: hub_set_rule WITH appId routes to the edit engine -- add a second action.
+        edited = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule",
+            "args": {"appId": app_id, "addAction": {"capability": "log", "message": "second action"}, "confirm": True},
+        })
+        assert edited.get("success") is not False, f"hub_set_rule edit reported failure: {edited}"
+
+        # DELETE via the cross-listed hub_delete_native_app.
+        self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+        })
+        self._untrack_native_app(app_id)
+
+    @test("native_apps")
+    def test_set_native_app_lifecycle(self) -> None:
+        # hub_set_native_app: the GENERIC create-or-edit upsert. Create via the
+        # registry-driven create path, rename via a raw settings write, then delete.
+        created = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app",
+            "args": {"appType": "rule_machine", "name": f"{PREFIX}NativeApp", "confirm": True},
+        })
+        app_id = created.get("appId")
+        assert app_id, f"hub_set_native_app create did not return an appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+
+        # EDIT: generic settings write (rename via origLabel) -- the lean edit path.
+        edited = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app",
+            "args": {"appId": app_id, "settings": {"origLabel": f"{PREFIX}NativeApp_Renamed"}, "confirm": True},
+        })
+        assert edited.get("success") is not False, f"hub_set_native_app edit reported failure: {edited}"
+
+        # VERIFY the RENAME actually applied via the read-only hub_get_app_config.
+        # Identity (label/name) is nested under the `app` object (toolGetAppConfig
+        # shape). Asserting the post-rename token (not just PREFIX, which the create
+        # label already carries) proves the settings edit landed, not just succeeded.
+        cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
+        app_obj = cfg.get("app") or {}
+        label = str(app_obj.get("label") or app_obj.get("name") or "")
+        assert "_Renamed" in label, f"hub_set_native_app rename did not land; label={label!r} (cfg keys: {list(cfg.keys())})"
+
+        # DELETE.
+        self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+        })
+        self._untrack_native_app(app_id)
+
+    @test("native_apps")
+    def test_set_native_app_rejects_rm_params(self) -> None:
+        # The lean generic tool must REJECT Rule Machine authoring params with a
+        # pointer to hub_set_rule (rather than silently dropping them). No mutation.
+        try:
+            self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": 1, "addTrigger": {"capability": "Switch"}, "confirm": True},
+            })
+            raise AssertionError("hub_set_native_app should reject RM authoring params")
+        except (McpToolError, McpError) as exc:
+            assert "hub_set_rule" in str(exc), f"rejection should point to hub_set_rule: {exc}"
+
+    @test("native_apps")
+    def test_set_rule_addaction_missing_required_field_fails_fast(self) -> None:
+        # Several (capability, action) pairs were verified on a live hub to
+        # register the action row but NEVER bake when their key field is omitted
+        # (mainPage keeps the 'Define Actions' placeholder) -- a latent silent
+        # failure. The build now throws up front; the single-addAction edit path
+        # surfaces it as success:false + a field-naming error instead of a
+        # confusing partial. Spot-check colorTemp.setColorTemp (needs 'kelvin').
+        # No device is needed -- the field throw fires before any device write.
+        app_id = self._create_native_rule("CondReq")
+        try:
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {"appId": app_id, "addAction": {"capability": "colorTemp", "action": "setColorTemp"}, "confirm": True},
+            })
+            assert result.get("success") is False, f"omitting kelvin should fail fast (not partial): {result}"
+            assert "kelvin" in str(result.get("error", "")), f"error should name 'kelvin': {result}"
+        except (McpToolError, McpError) as exc:
+            assert "kelvin" in str(exc), f"fail-fast error should name 'kelvin': {exc}"
+        finally:
+            self._delete_native(app_id)
+
+    # ---- shared helpers for the native-authoring coverage below ----
+
+    def _create_native_rule(self, suffix: str) -> Any:
+        """Create an empty native RM rule via hub_set_rule (no appId), track it."""
+        created = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule", "args": {"name": f"{PREFIX}{suffix}", "confirm": True},
+        })
+        app_id = created.get("appId")
+        assert app_id, f"hub_set_rule create did not return appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+        return app_id
+
+    def _set_rule(self, app_id: Any, extra: dict) -> Any:
+        """hub_set_rule edit (appId present) with the given shortcut args."""
+        args = {"appId": app_id, "confirm": True}
+        args.update(extra)
+        result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
+        assert result.get("success") is not False, f"hub_set_rule({list(extra)}) reported failure: {result}"
+        return result
+
+    def _assert_rule_healthy(self, app_id: Any) -> None:
+        h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
+        assert h.get("ok") is not False, f"hub_get_rule_health reports the rule broken: {h}"
+
+    def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine") -> None:
+        self.client.call_tool(gateway, {"tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True}})
+        self._untrack_native_app(app_id)
+
+    # ---- one test per shortcut category that the new tools route to ----
+
+    @test("native_apps")
+    def test_set_rule_edit_trigger_and_action(self) -> None:
+        # hub_set_rule edit -> the device-state addTrigger + addAction wizard paths.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("Trig_Act")
+        self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
+        self._set_rule(app_id, {"addAction": {"capability": "switch", "action": "on", "deviceIds": [sw]}})
+        self._assert_rule_healthy(app_id)
+        self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_required_expression_and_local_var(self) -> None:
+        # hub_set_rule edit -> addLocalVariable + addRequiredExpression (STPage) wizards.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("RE_Var")
+        self._set_rule(app_id, {"addLocalVariable": {"name": "batCounter", "type": "Number", "value": 0}})
+        self._set_rule(app_id, {"addRequiredExpression": {"conditions": [
+            {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}})
+        self._assert_rule_healthy(app_id)
+        self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_action_mutations(self) -> None:
+        # hub_set_rule edit -> addActions (bulk) + removeAction + clearActions + replaceActions.
+        app_id = self._create_native_rule("Act_Mut")
+        self._set_rule(app_id, {"addActions": [
+            {"capability": "log", "message": "one"},
+            {"capability": "log", "message": "two"},
+        ]})
+        first = self._set_rule(app_id, {"addAction": {"capability": "log", "message": "three"}})
+        idx = first.get("actionIndex")
+        assert idx is not None, f"addAction did not return an actionIndex (contract regression): {first}"
+        self._set_rule(app_id, {"removeAction": {"index": idx}})
+        self._set_rule(app_id, {"clearActions": True})
+        self._set_rule(app_id, {"replaceActions": [{"capability": "log", "message": "final"}]})
+        self._assert_rule_healthy(app_id)
+        self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_move_action(self) -> None:
+        # hub_set_rule edit -> moveAction (isolated, short). On a slow hub the
+        # move-arrow click can commit late; the tool does one short re-check then
+        # returns a soft asyncCommitLikely envelope instead of a hard
+        # false-negative. Accept either a confirmed shift OR the soft envelope --
+        # call hub_set_rule directly since _set_rule would raise on success=False.
+        app_id = self._create_native_rule("Move")
+        self._set_rule(app_id, {"addActions": [
+            {"capability": "log", "message": "a"},
+            {"capability": "log", "message": "b"},
+            {"capability": "log", "message": "c"},
+        ]})
+        result = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule",
+            "args": {"appId": app_id, "moveAction": {"index": 1, "direction": "down"}, "confirm": True},
+        })
+        assert result.get("success") is True or result.get("asyncCommitLikely") is True, \
+            f"moveAction must confirm the shift OR report asyncCommitLikely (never a hard false-negative): {result}"
+        self._assert_rule_healthy(app_id)
+        self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_trigger_mutations(self) -> None:
+        # hub_set_rule edit -> modifyTrigger (state) + removeTrigger.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("Trig_Mut")
+        added = self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
+        tidx = added.get("triggerIndex")
+        assert tidx is not None, f"addTrigger did not return a triggerIndex (contract regression): {added}"
+        mod = self._set_rule(app_id, {"modifyTrigger": {"index": tidx, "mods": {"state": "off"}}})
+        # modifyTrigger now reads the PERSISTED tstate (configure/json), so
+        # verifiedState echoes the new value instead of always being null
+        # (the old readback hit the closed selectTriggers wizard page).
+        if mod.get("verificationFetchFailed") is not True:
+            assert mod.get("verifiedState") == "off", \
+                f"modifyTrigger verifiedState should echo the persisted new state 'off', got {mod.get('verifiedState')!r}: {mod}"
+        self._set_rule(app_id, {"removeTrigger": {"index": tidx}})
+        self._assert_rule_healthy(app_id)
+        self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_patches(self) -> None:
+        # hub_set_rule edit -> patches (atomic multi-op).
+        app_id = self._create_native_rule("Patches")
+        self._set_rule(app_id, {"patches": [
+            {"addAction": {"capability": "log", "message": "p1"}},
+            {"addAction": {"capability": "log", "message": "p2"}},
+        ]})
+        self._assert_rule_healthy(app_id)
+        self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_raw_settings_and_button(self) -> None:
+        # hub_set_rule edit -> the generic raw settings + button (page-transition) path,
+        # then read the value back via hub_get_app_config. (BAT-confirmed shapes.)
+        app_id = self._create_native_rule("Raw")
+        self._set_rule(app_id, {"settings": {"comments": "BAT_E2E raw settings", "logging": ["Triggers", "Actions"]}})
+        self._set_rule(app_id, {"button": "updateRule"})
+        cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+        settings = cfg.get("settings") or {}
+        assert settings.get("comments") == "BAT_E2E raw settings", f"comments did not round-trip: {settings.get('comments')!r}"
+        self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_walkstep_introspect(self) -> None:
+        # hub_set_rule edit -> walkStep (schema-aware single-step walker), read-only op.
+        app_id = self._create_native_rule("Walk")
+        result = self._set_rule(app_id, {"walkStep": {"page": "selectTriggers", "operation": "introspect"}})
+        assert isinstance(result, dict), f"walkStep introspect returned non-dict: {result}"
+        self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_discover_meta(self) -> None:
+        # hub_set_rule meta-call routing: {addTrigger:{discover:true}} returns the live
+        # schema with NO appId / NO mutation (routed to the edit engine's short-circuit).
+        result = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule", "args": {"addTrigger": {"discover": True}},
+        })
+        blob = str(result)
+        assert "capability" in blob, f"addTrigger discover did not return a schema: {blob[:200]}"
+
+    @test("native_apps")
+    def test_delete_native_app_from_native_gateway(self) -> None:
+        # hub_delete_native_app is cross-listed in BOTH gateways. Create via the RM
+        # gateway, delete via the native gateway, and confirm it is gone.
+        app_id = self._create_native_rule("CrossGwDelete")
+        self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True},
+        })
+        self._untrack_native_app(app_id)
+        try:
+            cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
+            assert cfg.get("success") is False, f"app {app_id} should be gone after delete, got: {cfg}"
+        except (McpToolError, McpError):
+            pass  # also acceptable: the read errors because the app no longer exists
+
+    @test("native_apps")
+    def test_set_native_app_button_edit(self) -> None:
+        # hub_set_native_app edit path also drives a page-transition button (generic).
+        created = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app",
+            "args": {"appType": "rule_machine", "name": f"{PREFIX}GenericButton", "confirm": True},
+        })
+        app_id = created.get("appId")
+        assert app_id, f"hub_set_native_app create did not return appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+        edited = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app", "args": {"appId": app_id, "button": "updateRule", "confirm": True},
+        })
+        assert edited.get("success") is not False, f"hub_set_native_app button edit failed: {edited}"
+        self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
 
     # -----------------------------------------------------------------------
     # GROUP 5: trigger_types (6 tests)
@@ -1579,6 +1884,35 @@ class TestRunner:
                             print(f"  [WARN] Sweep delete failed for rule '{rname}': {exc}")
         except Exception as exc:
             print(f"  [WARN] Rule sweep failed: {exc}")
+
+        # Layer 4: native RM rules / classic apps (issue #137). Tracked ids first,
+        # then a list-based sweep for anything a failed native_apps test left behind.
+        for app_id in list(self.created_native_app_ids):
+            try:
+                print(f"  Deleting tracked native app {app_id}")
+                self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+                })
+            except Exception as exc:
+                print(f"  [WARN] Failed to delete native app {app_id}: {exc}")
+        self.created_native_app_ids.clear()
+        try:
+            nrules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+            nlist = nrules if isinstance(nrules, list) else nrules.get("rules", [])
+            for r in nlist:
+                rname = r.get("name") or r.get("label") or ""
+                if PREFIX in rname:
+                    rid = str(r.get("id", r.get("appId", "")))
+                    if rid:
+                        try:
+                            print(f"  Sweep: deleting native rule '{rname}' (id={rid})")
+                            self.client.call_tool("hub_manage_rule_machine", {
+                                "tool": "hub_delete_native_app", "args": {"appId": rid, "confirm": True},
+                            })
+                        except Exception as exc:
+                            print(f"  [WARN] Native rule sweep delete failed for '{rname}': {exc}")
+        except Exception as exc:
+            print(f"  [WARN] Native rule sweep failed: {exc}")
 
         print("--- Cleanup complete ---\n")
 

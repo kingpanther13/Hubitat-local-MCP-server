@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Issue #181: the flat tools/list catalog (useGateways=false) sits ~360 bytes
- * under the hub's 124,000-byte response cap. hub_update_native_app alone is ~33 KB
+ * under the hub's 124,000-byte response cap. hub_set_rule alone is ~33 KB
  * (27% of the catalog), most of which is static capability enumeration that's
  * either (a) covered by the tool's {discover: true} mode or (b) documented in
  * TOOL_GUIDE.md / docs/rm_action_subtype_schemas.md.
@@ -97,9 +97,9 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         !catalogJson.contains(CLOSE_MARKER)
     }
 
-    def "hub_update_native_app gateway-catalog description is lean after the #181 / gateway trim"() {
+    def "hub_set_rule gateway-catalog description is lean after the #181 / gateway trim"() {
         // The per-capability reference moved OUT of the inline description into the
-        // update_native_app_reference guide (reachable inline via guide:true), so it is
+        // set_rule_reference guide (reachable inline via guide:true), so it is
         // gone from BOTH modes -- not merely FLAT_TRIM'd. Consequence: the flat-vs-gateway
         // delta is now small (most of what FLAT_TRIM used to drop no longer exists inline),
         // and the gateway def itself, previously ~54 KB, is now well under 40 KB. This test
@@ -109,13 +109,13 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
 
         when: 'flat-mode tools/list entry'
         settingsMap.useGateways = false
-        def flatDef = script.getToolDefinitions().find { it.name == 'hub_update_native_app' }
+        def flatDef = script.getToolDefinitions().find { it.name == 'hub_set_rule' }
         def flatBytes = JsonOutput.toJson(flatDef).getBytes('UTF-8').length
 
         and: 'gateway-catalog response from handleGateway (no toolName)'
         settingsMap.useGateways = true
-        def gatewayResp = script.handleGateway('hub_manage_native_rules_and_apps', null, [:])
-        def gwUpdateNative = gatewayResp.tools.find { it.name == 'hub_update_native_app' }
+        def gatewayResp = script.handleGateway('hub_manage_rule_machine', null, [:])
+        def gwUpdateNative = gatewayResp.tools.find { it.name == 'hub_set_rule' }
         def gwBytes = JsonOutput.toJson(gwUpdateNative).getBytes('UTF-8').length
 
         then: 'flat is still <= gateway (some FLAT_TRIM remains), and the gateway def is now lean (was ~54 KB)'
@@ -123,13 +123,13 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         gwBytes < 40_000
     }
 
-    def "hub_update_native_app flat-mode description keeps the discover/TOOL_GUIDE pointer for trimmed sections"() {
+    def "hub_set_rule flat-mode description keeps the discover/TOOL_GUIDE pointer for trimmed sections"() {
         given:
         settingsMap.useGateways = false
         enableEveryToggle()
 
         when:
-        def def_ = script.getToolDefinitions().find { it.name == 'hub_update_native_app' }
+        def def_ = script.getToolDefinitions().find { it.name == 'hub_set_rule' }
         def addTrigger = def_.inputSchema.properties.addTrigger.description
         def addAction = def_.inputSchema.properties.addAction.description
         def addRequiredExpression = def_.inputSchema.properties.addRequiredExpression.description
@@ -137,7 +137,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         then: 'addTrigger trimmed -- per-capability families gone, but pointers remain'
         !addTrigger.contains('Capability families and the spec fields each accepts')
         addTrigger.contains('{discover: true}')
-        addTrigger.contains("hub_get_tool_guide(section='update_native_app_reference')")
+        addTrigger.contains("hub_get_tool_guide(section='set_rule_reference')")
 
         and: 'addAction trimmed -- capability list gone, but pointers remain'
         !addAction.contains('Capability families and the spec fields each accepts')
@@ -146,12 +146,12 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
 
         and: 'addRequiredExpression trimmed -- STPage enum gone, hub_get_tool_guide pointer remains'
         !addRequiredExpression.contains("RM's STPage capability list")
-        addRequiredExpression.contains("hub_get_tool_guide(section='update_native_app_reference')")
+        addRequiredExpression.contains("hub_get_tool_guide(section='set_rule_reference')")
     }
 
-    def "hub_update_native_app per-capability reference lives in the guide; inline keeps a name summary + pointer"() {
+    def "hub_set_rule per-capability reference lives in the guide; inline keeps a name summary + pointer"() {
         // Post-#181/gateway trim: the exhaustive per-capability families moved OUT of the
-        // inline description (both modes) into the update_native_app_reference guide. The
+        // inline description (both modes) into the set_rule_reference guide. The
         // inline description keeps a capability-NAME summary + a guide pointer so an agent is
         // never blind, and can pull the full reference inline via guide:true / discover:true.
         given:
@@ -159,12 +159,12 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         enableEveryToggle()
 
         when: 'gateway-catalog disclosure (caller invokes the gateway with no toolName)'
-        def gatewayResp = script.handleGateway('hub_manage_native_rules_and_apps', null, [:])
-        def updateNative = gatewayResp.tools.find { it.name == 'hub_update_native_app' }
+        def gatewayResp = script.handleGateway('hub_manage_rule_machine', null, [:])
+        def updateNative = gatewayResp.tools.find { it.name == 'hub_set_rule' }
         def addTrigger = updateNative.inputSchema.properties.addTrigger.description
         def addAction = updateNative.inputSchema.properties.addAction.description
         def addRequiredExpression = updateNative.inputSchema.properties.addRequiredExpression.description
-        def guide = script.toolGetToolGuide('update_native_app_reference').content as String
+        def guide = script.toolGetToolGuide('set_rule_reference').content as String
 
         then: 'the inline descriptions no longer carry the exhaustive enumerations'
         !addTrigger.contains('Capability families and the spec fields each accepts')
@@ -173,11 +173,11 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
 
         and: 'they keep a capability-name summary + a guide pointer (agent never blind)'
         addTrigger.contains('Periodic Schedule')
-        addTrigger.contains("hub_get_tool_guide(section='update_native_app_reference')")
+        addTrigger.contains("hub_get_tool_guide(section='set_rule_reference')")
         addAction.contains('ifThen')
-        addRequiredExpression.contains("hub_get_tool_guide(section='update_native_app_reference')")
+        addRequiredExpression.contains("hub_get_tool_guide(section='set_rule_reference')")
 
-        and: 'the full per-capability reference lives in the update_native_app_reference guide'
+        and: 'the full per-capability reference lives in the set_rule_reference guide'
         guide.contains('`addTrigger` capability families')
         guide.contains('`addAction` capability families')
         guide.contains('`addRequiredExpression` STPage capability list')
@@ -274,7 +274,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         // SCOPE NOTE: `buildToolSearchCorpus` only feeds `tool.description` (core
         // branch) or `summary + gateway.description` (gateway branch) into BM25 --
         // it does NOT index `inputSchema.properties.*.description`. So today every
-        // [[FLAT_TRIM]] marker in the schema (all of them in `hub_update_native_app`'s
+        // [[FLAT_TRIM]] marker in the schema (all of them in `hub_set_rule`'s
         // property descriptions) is structurally outside this guard's reach.
         //
         // The guard is defensive against a future core tool wrapping prose in its
@@ -314,10 +314,12 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
     def "schema description pointers resolve to existing hub_get_tool_guide sections"() {
         given: 'schema descriptions tell callers to fetch reference content via hub_get_tool_guide(section=X)'
         def allDefs = script.getAllToolDefinitions()
-        def updateNativeDef = allDefs.find { it.name == 'hub_update_native_app' }
+        def updateNativeDef = allDefs.find { it.name == 'hub_set_rule' }
         def listDevicesDef = allDefs.find { it.name == 'hub_list_devices' }
         def hpmPackagesDef = allDefs.find { it.name == 'hub_list_hpm_packages' }
-        def createNativeDef = allDefs.find { it.name == 'hub_create_native_app' }
+        // The create-reference pointer now lives in hub_set_rule's create paragraph
+        // (the create+edit upsert absorbed the old hub_create_native_app).
+        def createNativeDef = updateNativeDef
         def addTriggerDesc = updateNativeDef.inputSchema.properties.addTrigger.description as String
         def addActionDesc = updateNativeDef.inputSchema.properties.addAction.description as String
         def addRequiredExprDesc = updateNativeDef.inputSchema.properties.addRequiredExpression.description as String
@@ -348,11 +350,11 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         // proves flat-mode callers can fetch the reference content the trim points them at.
         //
         // 4 unique sections across the 5 trimmed description sites:
-        // - update_native_app_reference (addTrigger + addRequiredExpression both point here)
+        // - set_rule_reference (addTrigger + addRequiredExpression both point here)
         // - performance (hub_list_devices top-level + .fields property)
         // - builtin_app_tools (hub_list_hpm_packages -- drift prose lives here post-merge)
-        // - create_native_app_reference (hub_create_native_app)
-        pointerSections.containsAll(['update_native_app_reference', 'performance', 'builtin_app_tools', 'create_native_app_reference'])
+        // - set_rule_create_reference (hub_set_rule create paragraph)
+        pointerSections.containsAll(['set_rule_reference', 'performance', 'builtin_app_tools', 'set_rule_create_reference'])
         pointerSections.every { it in validSections }
 
         and: 'each of the 4 trimmed tools carries at least one valid hub_get_tool_guide pointer in its flat-mode reachable description text'
@@ -368,10 +370,10 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         new File('docs/rm_action_subtype_schemas.md').exists()
 
         and: 'the two new sections this PR added are present and non-empty'
-        validSections.contains('update_native_app_reference')
-        validSections.contains('create_native_app_reference')
-        (script.getToolGuideSections()['update_native_app_reference'] as String).length() > 500
-        (script.getToolGuideSections()['create_native_app_reference'] as String).length() > 200
+        validSections.contains('set_rule_reference')
+        validSections.contains('set_rule_create_reference')
+        (script.getToolGuideSections()['set_rule_reference'] as String).length() > 500
+        (script.getToolGuideSections()['set_rule_create_reference'] as String).length() > 200
     }
 
     def "hub_get_tool_guide end-to-end: dispatcher resolves the new section keys and returns sentinel-bearing content"() {
@@ -384,17 +386,17 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         // tightens the normalization, or shifts the success-envelope shape
         // would slip past the previous test but not this one.
         when: 'fetch the two PR-introduced sections through the live dispatcher'
-        def updateNativeResult = script.toolGetToolGuide('update_native_app_reference')
-        def createNativeResult = script.toolGetToolGuide('create_native_app_reference')
+        def updateNativeResult = script.toolGetToolGuide('set_rule_reference')
+        def createNativeResult = script.toolGetToolGuide('set_rule_create_reference')
 
         then: 'success envelope with content matching the section names'
         updateNativeResult.success == true
-        updateNativeResult.section == 'update_native_app_reference'
+        updateNativeResult.section == 'set_rule_reference'
         createNativeResult.success == true
-        createNativeResult.section == 'create_native_app_reference'
+        createNativeResult.section == 'set_rule_create_reference'
 
         and: 'content carries sentinel phrases unique to each section -- catches drift to a stub even if the map key survives'
-        // update_native_app_reference must include all three sub-headings (catches
+        // set_rule_reference must include all three sub-headings (catches
         // a stub-replacement that drops one of the three families).
         updateNativeResult.content.contains('`addTrigger` capability families')
         updateNativeResult.content.contains('`addAction` capability families')
@@ -404,7 +406,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         updateNativeResult.content.contains('Periodic Schedule')
         updateNativeResult.content.contains('Custom Attribute')
 
-        and: 'create_native_app_reference must include both subsections'
+        and: 'set_rule_create_reference must include both subsections'
         createNativeResult.content.contains('appType options')
         createNativeResult.content.contains('Partial-success protocol')
         createNativeResult.content.contains('partialTriggers')
@@ -418,9 +420,10 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
     }
 
     def "the newly-trimmed tools strip their wrapped content in flat mode but keep it in gateway mode"() {
-        // hub_list_devices and hub_create_native_app each wrap a block of
-        // duplicate-of-TOOL_GUIDE prose. This is the per-tool counterpart to the
-        // hub_update_native_app gateway-catalog-preservation test (above) -- catches
+        // hub_list_devices FLAT_TRIM-wraps a block of duplicate-of-TOOL_GUIDE prose;
+        // hub_set_rule's create paragraph is NOT wrapped (condensed partial-success +
+        // guide pointer, inline in BOTH modes). This is the per-tool counterpart to the
+        // hub_set_rule gateway-catalog-preservation test (above) -- catches
         // a regression where a marker on just ONE of these tools is unbalanced
         // (content fails to drop in flat mode) or where the whole transform path
         // bypasses that tool's description.
@@ -438,25 +441,25 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         settingsMap.useGateways = false
         def flatTools = script.getToolDefinitions()
         def listDevicesFlat = flatTools.find { it.name == 'hub_list_devices' }.description as String
-        def createNativeFlat = flatTools.find { it.name == 'hub_create_native_app' }.description as String
+        def createNativeFlat = flatTools.find { it.name == 'hub_set_rule' }.description as String
 
         and: 'gateway-mode (token-only strip) descriptions via getAllToolDefinitions + applyDescriptionTransform(false)'
         def gwAll = script.applyDescriptionTransform(script.getAllToolDefinitions(), false)
         def listDevicesGw = gwAll.find { it.name == 'hub_list_devices' }.description as String
-        def createNativeGw = gwAll.find { it.name == 'hub_create_native_app' }.description as String
+        def createNativeGw = gwAll.find { it.name == 'hub_set_rule' }.description as String
 
         then: 'hub_list_devices flat-mode strips its wrapped sentinel prose; gateway keeps it'
         !listDevicesFlat.contains('Server-side filtering (all applied before pagination)')
         listDevicesGw.contains('Server-side filtering (all applied before pagination)')
 
-        and: 'hub_create_native_app no longer FLAT_TRIMs (deduped this PR): its condensed partial-success is inline in BOTH modes, with the full protocol in the guide'
+        and: 'hub_set_rule create paragraph is inline in BOTH modes (not FLAT_TRIM-wrapped): condensed partial-success + a pointer to the full protocol in the guide'
         // The old verbose [[FLAT_TRIM]] "PARTIAL-SUCCESS HANDLING" block was deduped down to a
         // single inline "Partial-success:" sentence (present in both modes) that points to
-        // hub_get_tool_guide(section='create_native_app_reference') for the full protocol.
+        // hub_get_tool_guide(section='set_rule_create_reference') for the full protocol.
         !createNativeFlat.contains('PARTIAL-SUCCESS HANDLING')
         createNativeFlat.contains('Partial-success')
         createNativeGw.contains('Partial-success')
-        createNativeFlat.contains("hub_get_tool_guide(section='create_native_app_reference')")
+        createNativeFlat.contains("hub_get_tool_guide(section='set_rule_create_reference')")
 
         and: 'flat-mode keeps a hub_get_tool_guide pointer for hub_list_devices too -- callers must have a fallback'
         listDevicesFlat.contains('hub_get_tool_guide(')
@@ -470,7 +473,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
 
     def "hub_list_devices.fields inline-marker drops the valid-name enumeration in flat mode but keeps it in gateway mode"() {
         // hub_list_devices isn't behind a gateway, but its `fields` property has an
-        // INLINE [[FLAT_TRIM]] marker (different from hub_update_native_app's
+        // INLINE [[FLAT_TRIM]] marker (different from hub_set_rule's
         // addRequiredExpression case in terms of placement). Pin both directions
         // explicitly so a regression in the inline-strip path surfaces here.
         given:
@@ -534,13 +537,13 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         // here -- next test gets a clean script instance.
     }
 
-    def "missing-param hint surface for hub_update_native_app strips marker tokens but keeps wrapped capability prose"() {
-        given: 'gateway dispatch to hub_update_native_app without required appId triggers the missing-param hint path'
+    def "missing-param hint surface for hub_set_rule strips marker tokens but keeps wrapped capability prose"() {
+        given: 'gateway dispatch to hub_set_rule without required appId triggers the missing-param hint path'
         settingsMap.useGateways = true
         enableEveryToggle()
 
         when:
-        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_update_native_app', [:])
+        def result = script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', [:])
 
         then: 'pre-validation surfaces a structured error envelope'
         result instanceof Map
@@ -553,36 +556,36 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         !((String) result.parameters).contains(CLOSE_MARKER)
 
         and: 'the capability-name summary + guide pointers from BOTH addTrigger and addRequiredExpression survive'
-        // The exhaustive families moved to the update_native_app_reference guide; the param
+        // The exhaustive families moved to the set_rule_reference guide; the param
         // descriptions retain the capability-name summary + guide pointer, which is what the
         // hint surfaces (token-only strip). An AND assertion catches one going stale.
         ((String) result.parameters).contains('Periodic Schedule')      // addTrigger name summary
-        ((String) result.parameters).contains("hub_get_tool_guide(section='update_native_app_reference')")  // addRequiredExpression guide pointer
+        ((String) result.parameters).contains("hub_get_tool_guide(section='set_rule_reference')")  // addRequiredExpression guide pointer
     }
 
     def "guide:true through the gateway bypasses the required-param pre-validation and returns the reference"() {
-        // Live-hub regression: guide:true short-circuits at the top of toolUpdateNativeApp
+        // Live-hub regression: guide:true short-circuits at the top of _applyNativeAppEdit
         // (before the appId/confirm gates), but handleGateway's OWN required-param
         // pre-validation runs first and would reject guide:true for missing appId/confirm
         // unless it too exempts the gate-bypassing meta-call. The unit test (which calls
-        // toolUpdateNativeApp directly) does not exercise this gateway layer.
+        // _applyNativeAppEdit directly) does not exercise this gateway layer.
         given:
         settingsMap.useGateways = true
         enableEveryToggle()
 
-        when: 'call hub_update_native_app via the gateway with ONLY guide:true (no appId/confirm)'
-        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_update_native_app', [guide: true])
+        when: 'call hub_set_rule via the gateway with ONLY guide:true (no appId/confirm)'
+        def result = script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', [guide: true])
 
         then: 'the gateway does NOT reject for missing appId/confirm -- the guide short-circuit ran'
         result instanceof Map
         result.isError != true
         result.success == true
-        result.section == 'update_native_app_reference'
+        result.section == 'set_rule_reference'
         (result.content as String).contains('addTrigger')
         (result.content as String).contains('walkStep')
 
         and: 'discover:true is exempted the same way (no appId/confirm needed via the gateway)'
-        def disc = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_update_native_app', [addAction: [discover: true]])
+        def disc = script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', [addAction: [discover: true]])
         disc instanceof Map
         disc.isError != true
     }
