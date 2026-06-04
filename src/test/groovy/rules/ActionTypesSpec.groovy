@@ -1,6 +1,5 @@
 package rules
 
-import spock.lang.IgnoreIf
 import support.TestDevice
 
 /**
@@ -855,12 +854,9 @@ class ActionTypesSpec extends RuleHarnessSpec {
         httpGetCalls[0][0] == [uri: 'https://user:pass@host/api?token=SECRET']
     }
 
-    // The two success-path tests below capture log.debug via the root RuleHarnessSpec
-    // (PermissiveLog recording + response-closure firing + capturedLogs()). The Groovy 2.5
-    // lane runs its own scaffold harness without those members, so they @IgnoreIf there;
-    // the production redaction they exercise is still covered under 2.5 by the redactUrlForLog
-    // unit test, the describeAction test, and the error-path tests above.
-    @IgnoreIf({ GroovySystem.version.startsWith('2') })
+    // The two success-path tests capture log.debug via the harness (PermissiveLog recording
+    // + response-closure firing + capturedLogs()), mirrored into both the root and the
+    // Groovy 2.5 scaffold RuleHarnessSpec so they run on both lanes.
     def "http_request GET success log redacts credentials in the URL"() {
         when: 'a successful GET fires the response handler, which logs the redacted URL'
         script.executeAction([type: 'http_request', url: 'https://user:pass@host/api?token=SECRET'])
@@ -877,7 +873,6 @@ class ActionTypesSpec extends RuleHarnessSpec {
         httpGetCalls[0][0] == [uri: 'https://user:pass@host/api?token=SECRET']
     }
 
-    @IgnoreIf({ GroovySystem.version.startsWith('2') })
     def "http_request POST success log redacts credentials in the URL"() {
         when: 'a successful POST fires the response handler'
         script.executeAction([type: 'http_request', method: 'POST',

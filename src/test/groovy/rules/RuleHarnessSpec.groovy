@@ -146,8 +146,8 @@ abstract class RuleHarnessSpec extends Specification {
      * Lines recorded by the shared PermissiveLog during the current feature
      * method, each as "level:message" (e.g. "debug:HTTP GET ..."). Cleared in
      * setup(). Typed accessor so specs don't reach through the Log interface.
-     * (The Groovy 2.5 lane uses its own scaffold harness without this member, so
-     * specs that call it guard with @IgnoreIf on the Groovy 2.x runtime.)
+     * (Mirrored into the Groovy 2.5 scaffold RuleHarnessSpec so the success-path
+     * redaction specs run on both lanes.)
      */
     protected List<String> capturedLogs() { sharedLog.messages }
 
