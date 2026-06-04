@@ -121,7 +121,7 @@ while :; do
     --arg id "$CLASS_ID" \
     --argjson off "$OFFSET" \
     --argjson len "$CHUNK_LEN" \
-    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{appId:$id,offset:$off,length:$len}}}')
+    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:$off,length:$len}}}')
   RESP=$(mcp_call "$RPC")
   TEXT=$(echo "$RESP" | jq -r '.result.content[0].text // empty')
   if [ -z "$TEXT" ]; then
@@ -195,7 +195,7 @@ verify_deploy_landed() {
   local rpc resp text current_len ok
   while [ $elapsed -lt $POST_DEPLOY_VERIFY_TIMEOUT ]; do
     rpc=$(jq -nc --arg id "$CLASS_ID" \
-      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{appId:$id,offset:0,length:1}}}')
+      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:1}}}')
     resp=$(mcp_call "$rpc")
     text=$(echo "$resp" | jq -r '.result.content[0].text // empty')
     ok=$(echo "$text" | jq -r '.success // false')
