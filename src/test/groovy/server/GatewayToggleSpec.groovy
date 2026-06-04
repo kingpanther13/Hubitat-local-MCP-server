@@ -151,7 +151,7 @@ class GatewayToggleSpec extends ToolSpecBase {
             'hub_list_files', 'hub_read_file', 'hub_write_file', 'hub_delete_file',
             'hub_list_device_dependents', 'hub_get_app_config', 'hub_list_app_pages',
             'hub_list_rules', 'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
-            'hub_create_native_app', 'hub_update_native_app', 'hub_delete_native_app', 'hub_get_rule_health',
+            'hub_set_rule', 'hub_set_native_app', 'hub_delete_native_app', 'hub_get_rule_health',
             'hub_update_mcp_settings'
         ]
     }
@@ -203,7 +203,7 @@ class GatewayToggleSpec extends ToolSpecBase {
     def "useGateways=false + enableBuiltinApp=false: built-in-app tools still hidden in the flat catalog"() {
         // Pins that the flat-mode branch reuses hideByName — a refactor that splits
         // hide-list construction out of the gateway-mode path would silently leak
-        // hub_list_rules / hub_create_native_app etc. into flat mode.
+        // hub_list_rules / hub_set_rule etc. into flat mode.
         given:
         settingsMap.useGateways = false
         settingsMap.enableBuiltinApp = false
@@ -214,7 +214,8 @@ class GatewayToggleSpec extends ToolSpecBase {
 
         then: 'built-in-app tools are removed from the flat catalog, not just from gateway entries'
         !names.contains('hub_list_rules')
-        !names.contains('hub_create_native_app')
+        !names.contains('hub_set_rule')
+        !names.contains('hub_set_native_app')
         !names.contains('hub_list_device_dependents')
         !names.contains('hub_get_rule_health')
 
@@ -298,7 +299,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         then: 'guard fires, hint does not name any of the hidden sub-tools'
         result.isError == true
         !result.hint.contains('hub_list_rules')
-        !result.hint.contains('hub_create_native_app')
+        !result.hint.contains('hub_set_native_app')
 
         and: 'hint mentions the responsible toggles instead'
         result.hint.contains('Built-in App Tools') || result.hint.contains('Custom Rule Engine')

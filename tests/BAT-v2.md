@@ -4,14 +4,14 @@ Updated for the installed-apps + Rule Machine interop + native CRUD + library ma
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
-> **Supplement**: see [`tests/BAT-rm-native-crud.md`](./BAT-rm-native-crud.md) for the native-RM CRUD suite (T300-T399) -- acceptance gate for the `hub_manage_native_rules_and_apps` CRUD tools (`hub_create_native_app`, `hub_update_native_app`, `hub_delete_native_app`, `hub_get_rule_health`). Those tools are shipped; all scenarios in that file should pass against the current codebase.
+> **Supplement**: see [`tests/BAT-rm-native-crud.md`](./BAT-rm-native-crud.md) for the native-RM CRUD suite (T300-T399) -- acceptance gate for the native CRUD tools (`hub_set_rule`, `hub_set_native_app`, `hub_delete_native_app`, `hub_get_rule_health`). Those tools are shipped; all scenarios in that file should pass against the current codebase.
 
 Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt`, and optional `teardown_prompt`. Run each prompt in the same AI session (setup → test → teardown). Each TEST SCENARIO starts a fresh session.
 
 ## Safety Rules
 
 - **All tests use the `BAT` prefix** for artifacts (rules, devices, rooms, files, variables) for easy identification and cleanup
-- **All rules are marked `testRule: true`** to skip backup on deletion — this applies to `hub_create_custom_rule`-created rules only; native rules created via `hub_create_native_app` use the `hub_delete_native_app` teardown path instead (no `testRule` flag)
+- **All rules are marked `testRule: true`** to skip backup on deletion — this applies to `hub_create_custom_rule`-created rules only; native rules created via `hub_set_rule` use the `hub_delete_native_app` teardown path instead (no `testRule` flag)
 - **Tests only create/modify/delete test artifacts** — never touch existing production devices, rules, or hub settings
 - **Device commands only target BAT-created virtual devices** — never command physical devices
 - **Destructive hub operations are excluded** — no reboot, shutdown, Z-Wave repair, app/driver install/update/delete, or real device deletion
@@ -1261,7 +1261,7 @@ Run with no devices selected for MCP access. **Expected**: Returns empty list or
 
 ### T109 — addAction partial=true is not a failure (Finding #4)
 
-Tests that agents correctly interpret the `partial=true` flag from `hub_update_native_app(addAction)`.
+Tests that agents correctly interpret the `partial=true` flag from `hub_set_rule(addAction)`.
 Per Finding #4 (shipped in commit `95654ad`), `success` and `partial` are orthogonal:
 - `success: true, partial: false` -- all fields landed cleanly
 - `success: true, partial: true` -- action committed but some sidecar fields were silently rejected by RM's wizard schema (e.g. `onOff.1` after `onOffSwitch.1` writes). **This is cosmetic when `health.ok=true`.**
@@ -1270,16 +1270,16 @@ Per Finding #4 (shipped in commit `95654ad`), `success` and `partial` are orthog
 ```json
 {
   "setup_prompt": "Create a virtual switch called 'BAT Partial Test Switch'. Note its device ID.",
-  "test_prompt": "Using hub_update_native_app with addAction, add a 'Switch: on' action targeting 'BAT Partial Test Switch' to a new RM rule called 'BAT Finding4 Rule'. The addAction response may return partial=true -- interpret this response correctly and report whether the action was successfully added to the rule.",
+  "test_prompt": "Using hub_set_rule with addAction, add a 'Switch: on' action targeting 'BAT Partial Test Switch' to a new RM rule called 'BAT Finding4 Rule'. The addAction response may return partial=true -- interpret this response correctly and report whether the action was successfully added to the rule.",
   "teardown_prompt": "Delete the rule 'BAT Finding4 Rule'. Delete the virtual switch 'BAT Partial Test Switch'."
 }
 ```
 
 **Expected**:
-- Agent calls `hub_manage_native_rules_and_apps(tool=hub_create_native_app)` to create the rule, then `hub_manage_native_rules_and_apps(tool=hub_update_native_app, args={addAction: ...})`.
+- Agent calls `hub_manage_rule_machine(tool=hub_set_rule)` to create the rule (name only, no appId), then `hub_manage_rule_machine(tool=hub_set_rule, args={appId: ..., addAction: ...})`.
 - The response returns `{success: true, partial: true, ...}` (empirically observed for Switch actions).
 - Agent does NOT panic, does NOT call `removeAction`, does NOT retry the `addAction` (which would create a duplicate).
-- Agent calls `hub_read_apps_code(tool=hub_get_app_config, args={appId: ..., includeSettings: true})` OR `hub_manage_native_rules_and_apps(tool=hub_update_native_app, args={walkStep: {page: "mainPage", operation: "introspect"}})` to verify the action rendered correctly in the rule.
+- Agent calls `hub_read_apps_code(tool=hub_get_app_config, args={appId: ..., includeSettings: true})` OR `hub_manage_rule_machine(tool=hub_set_rule, args={appId: ..., walkStep: {page: "mainPage", operation: "introspect"}})` to verify the action rendered correctly in the rule.
 - Agent reports the action was added successfully, noting the partial flag was cosmetic.
 
 **What an agent must NOT do**:
@@ -2429,7 +2429,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI calls `hub_manage_native_rules_and_apps.hub_create_native_app` (appType=rule_machine) to create the rule, then `hub_update_native_app` to add the motion trigger and switch action. Returns the new appId. Does NOT fall back to `hub_create_custom_rule` (that creates an MCP-engine rule, not a native RM rule).
+**Expected**: AI calls `hub_manage_rule_machine.hub_set_rule` (name only, no appId) to create the rule, then `hub_set_rule(appId=N, ...)` to add the motion trigger and switch action. Returns the new appId. Does NOT fall back to `hub_create_custom_rule` (that creates an MCP-engine rule, not a native RM rule).
 
 ### T208 — AI correctly refuses Room Lighting creation
 
@@ -2439,7 +2439,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI attempts `hub_manage_native_rules_and_apps.hub_create_native_app` for Room Lighting. Since Room Lighting is not yet in the `_appTypeRegistry`, the tool returns an error listing supported appTypes. AI relays the error and suggests using the native UI. Does not fabricate a fake result.
+**Expected**: AI attempts `hub_manage_native_rules_and_apps.hub_set_native_app` (appType=room_lighting) for Room Lighting. Since Room Lighting is not yet in the `_appTypeRegistry`, the tool returns an error listing supported appTypes. AI relays the error and suggests using the native UI. Does not fabricate a fake result.
 
 ### T209 — Pause and resume an RM rule (reversible)
 
@@ -3023,7 +3023,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 }
 ```
 
-**Expected**: `hub_update_native_app(appId=N, addAction={capability:'setVariable', variable:'bat_setvar_test', value:99}, confirm=true)` completes with `success=true`. `hub_get_rule_health` reports no broken-condition markers. The rule's action renders in the RM UI as "Set bat_setvar_test to 99".
+**Expected**: `hub_set_rule(appId=N, addAction={capability:'setVariable', variable:'bat_setvar_test', value:99}, confirm=true)` completes with `success=true`. `hub_get_rule_health` reports no broken-condition markers. The rule's action renders in the RM UI as "Set bat_setvar_test to 99".
 
 **Failure modes**: Tool returns "Unsupported capability 'setVariable'" (capability not wired). Rule health check reports broken marker (wrong actType/actSubType or field name). Value written as string instead of correct type. Passing an unknown `variable` returns `success=false` with an error listing available hub variables.
 
@@ -3037,7 +3037,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 }
 ```
 
-**Expected**: `hub_update_native_app(addAction={capability:'mode', modeName:'<name>'})` resolves the name to a numeric mode ID before writing. `hub_get_rule_health` reports no broken markers. Passing an unknown modeName returns `success=false` with an `error` field listing available mode names -- the agent should inspect `result.success` and `result.error`, not expect a protocol-level exception.
+**Expected**: `hub_set_rule(addAction={capability:'mode', modeName:'<name>'})` resolves the name to a numeric mode ID before writing. `hub_get_rule_health` reports no broken markers. Passing an unknown modeName returns `success=false` with an `error` field listing available mode names -- the agent should inspect `result.success` and `result.error`, not expect a protocol-level exception.
 
 **Failure modes**: Rule renders as "Mode: null" (name written literally instead of resolved ID). Unknown modeName is silently accepted and produces a broken action.
 
@@ -3065,7 +3065,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 }
 ```
 
-**Expected**: `hub_update_native_app(addAction={capability:'setVariable', variable:'bat_sv_dst', sourceVariable:'bat_sv_src'})` completes with `success=true`. RM wire: `xVarV.N='bat_sv_dst'`, `numOp.N='variable'`, `xVar3.N='bat_sv_src'` (xVar3 is schema-gated -- revealed only after `numOp=variable` is written; the digit is RM-assigned/discovered, not hardcoded). `hub_get_rule_health` reports no broken markers. Passing an unknown variable name (for either `variable` or `sourceVariable`) returns `success=false` with an error listing available hub variables.
+**Expected**: `hub_set_rule(addAction={capability:'setVariable', variable:'bat_sv_dst', sourceVariable:'bat_sv_src'})` completes with `success=true`. RM wire: `xVarV.N='bat_sv_dst'`, `numOp.N='variable'`, `xVar3.N='bat_sv_src'` (xVar3 is schema-gated -- revealed only after `numOp=variable` is written; the digit is RM-assigned/discovered, not hardcoded). `hub_get_rule_health` reports no broken markers. Passing an unknown variable name (for either `variable` or `sourceVariable`) returns `success=false` with an error listing available hub variables.
 
 **Failure modes**: Action renders as "Set bat_sv_dst to null" (numOp=number written instead of variable). xVar3 not written (sourceVariable dropped). Unknown variable name accepted silently and produces a broken action.
 
@@ -3234,7 +3234,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 **Wire-format note**: the right-hand variable picker field name is discovered from the live schema after `isVar_<N>=true`. On `selectTriggers` it is `xVarR_<N>`; the walker pages (STPage/doActPage) may expose a differently-suffixed field -- the walker discovers it rather than hardcoding. This is the field whose live name should be confirmed against the test hub.
 
-**Failure modes**: paragraph renders "BatVarA > 0" / "BatVarA > null" (the right-hand picker was never revealed and the comparison fell through to the numeric default -- the regression this fixes). "right-hand variable picker not revealed" (the firmware did not expose the picker after `isVar_<N>` -- legitimate fail-loud; the walker's `IllegalStateException` is caught by `hub_update_native_app`'s backup-and-catch wrapper and surfaces as a structured `success=false` map with `error`/`backup`/`restoreHint`, not a JSON-RPC error, so the bad render never commits). Supplying both `compareToVariable` and `value`/`state` returns the same `success=false` map with "mutually exclusive" in `error`. If the revealed RHS picker has an empty option list, the variable name still writes (best-effort) but `settingsSkipped` carries a `compareToVariable-validation` / `api_unavailable` sentinel and `partial=true`.
+**Failure modes**: paragraph renders "BatVarA > 0" / "BatVarA > null" (the right-hand picker was never revealed and the comparison fell through to the numeric default -- the regression this fixes). "right-hand variable picker not revealed" (the firmware did not expose the picker after `isVar_<N>` -- legitimate fail-loud; the walker's `IllegalStateException` is caught by `hub_set_rule`'s backup-and-catch wrapper and surfaces as a structured `success=false` map with `error`/`backup`/`restoreHint`, not a JSON-RPC error, so the bad render never commits). Supplying both `compareToVariable` and `value`/`state` returns the same `success=false` map with "mutually exclusive" in `error`. If the revealed RHS picker has an empty option list, the variable name still writes (best-effort) but `settingsSkipped` carries a `compareToVariable-validation` / `api_unavailable` sentinel and `partial=true`.
 
 ---
 
@@ -3248,7 +3248,7 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 }
 ```
 
-**Expected**: the walker's `IllegalArgumentException` is caught by `hub_update_native_app`'s backup-and-catch wrapper and surfaces as a structured `success=false` map whose `error` names the missing `comparator` (the map also carries `backup`/`restoreHint`); it is NOT a JSON-RPC `-32602`. No condition fields are written -- the rule has no half-built Temperature condition afterward (inspect mainPage to confirm nothing was added).
+**Expected**: the walker's `IllegalArgumentException` is caught by `hub_set_rule`'s backup-and-catch wrapper and surfaces as a structured `success=false` map whose `error` names the missing `comparator` (the map also carries `backup`/`restoreHint`); it is NOT a JSON-RPC `-32602`. No condition fields are written -- the rule has no half-built Temperature condition afterward (inspect mainPage to confirm nothing was added).
 
 **Failure modes**: `success=true` / `partial=true` with a half-written condition (regression to the pre-fix path where rCapab/rDev landed but no comparator/RHS, rendering an incomplete or `*BROKEN*` condition). Any condition fields present in `settingsApplied` (the reject must fire before any hub write).
 
@@ -3430,6 +3430,22 @@ Tools in this section require **Hub Admin Read** and HPM itself must be installe
 
 ---
 
+### T633 — hub_set_rule single-call create-with-bundle: new rule + trigger + action in one upsert (no appId)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create a virtual switch named 'BAT Bundle Switch' via hub_manage_virtual_device and note its device ID.",
+  "test_prompt": "In a SINGLE hub_set_rule call (omit appId so it creates), create a new Rule Machine rule named 'BAT Bundle Create' AND bundle its first trigger and action in the same call: addTriggers=[{capability:'Switch', deviceIds:[<BAT Bundle Switch id>], state:'on'}] and addActions=[{capability:'Switch', deviceIds:[<BAT Bundle Switch id>], command:'off'}]. Do NOT make a second hub_set_rule edit call. Report the returned appId and confirm the bundled trigger and action both baked.",
+  "teardown_prompt": "Delete the 'BAT Bundle Create' rule. Delete the virtual switch 'BAT Bundle Switch'."
+}
+```
+
+**Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_rule)` ONCE with NO `appId`, `name='BAT Bundle Create'`, plus `addTriggers`/`addActions` bundled into the same upsert (the create-with-bundle path). The response returns a NEW `appId` with the trigger and action already baked in -- inspect `partial`/`partialTriggers`/`partialActions` to confirm both committed (`success=true`, and `partial!=true` OR a cosmetic-only `partial=true` per T109 semantics). No second `hub_set_rule(appId=...)` edit call is needed. `result.brokenMarkers` is empty AND `result.health.ok=true`. mainPage renders both the Switch=on trigger row and the "Off: BAT Bundle Switch" action row.
+
+**Failure modes**: AI splits into two calls -- a create `hub_set_rule(name=...)` then a separate `hub_set_rule(appId=N, addTrigger=...)` -- instead of the single bundled upsert (acceptable result, but a Partial: the bundle was the point). The bundled `addTriggers`/`addActions` are silently dropped and only the empty named rule is created (`partialTriggers`/`partialActions` non-empty with the trigger/action listed as skipped). The response omits the new `appId` (create did not return the id needed for teardown). mainPage renders only the trigger OR only the action (one half of the bundle was lost).
+
+---
+
 ## Changes from BAT v1
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
@@ -3443,7 +3459,7 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `hub_manage_diagnostics` catalog
 8. **T104 updated**: Anti-recursion test uses `hub_manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
-10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total); paired-tool singular-deviceId coverage adds T614 (addTrigger.condition) + T615 (addAction expression) (181 total); subExpression rejection on addAction adds T616 (182 total -- T616 previously covered recursive subExpression normalization, which production now rejects at the doActPage pre-pass; T616 was rewritten to pin the rejection path); reveal-fallback sentinel adds T617 (183 total); compareToDevice fallback adds T618 (184 total); Between two times sunrise/sunset adds T619 (185 total); Variable compareToVariable on the walker pages adds T620, compareToDevice missing-comparator reject adds T621, and Custom-Attribute '*changed*' cosmetic-partial filter adds T622 (188 total); periodic-frequency completeness adds T623/T624/T625/T626/T627 (the five newly-supported frequencies: Seconds/Minutes/Weekly/Monthly/Yearly -- Monthly by-day and Yearly nth-weekday) + T628 (Cron field-name fix) + T629 (count-enum validation rejection) + T630 (Monthly nth-weekday mode) + T631 (Monthly dayOfMonth/weekOfMonth mutual-exclusivity rejection) + T632 (two periodic triggers in one rule -- no sub-page collision) (198 total). Note: `Total: 227 test scenarios` in the header above counts ALL scenarios including the NL (T501-T565 range), built-in-app integration (T801-T821 range), library management (T901-T909 range), and the unnumbered walker/normalization sub-scenarios. The cumulative T-numbered tally in this item (ending at 198) reflects only sequentially-numbered tests in the explicit-coverage section.
+10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total); paired-tool singular-deviceId coverage adds T614 (addTrigger.condition) + T615 (addAction expression) (181 total); subExpression rejection on addAction adds T616 (182 total -- T616 previously covered recursive subExpression normalization, which production now rejects at the doActPage pre-pass; T616 was rewritten to pin the rejection path); reveal-fallback sentinel adds T617 (183 total); compareToDevice fallback adds T618 (184 total); Between two times sunrise/sunset adds T619 (185 total); Variable compareToVariable on the walker pages adds T620, compareToDevice missing-comparator reject adds T621, and Custom-Attribute '*changed*' cosmetic-partial filter adds T622 (188 total); periodic-frequency completeness adds T623/T624/T625/T626/T627 (the five newly-supported frequencies: Seconds/Minutes/Weekly/Monthly/Yearly -- Monthly by-day and Yearly nth-weekday) + T628 (Cron field-name fix) + T629 (count-enum validation rejection) + T630 (Monthly nth-weekday mode) + T631 (Monthly dayOfMonth/weekOfMonth mutual-exclusivity rejection) + T632 (two periodic triggers in one rule -- no sub-page collision) (198 total); the #137 native-app tool rename adds T633 (hub_set_rule single-call create-with-bundle: new rule + trigger + action in one upsert) (199 total). Note: `Total: 227 test scenarios` in the header above counts ALL scenarios including the NL (T501-T565 range), built-in-app integration (T801-T821 range), library management (T901-T909 range), and the unnumbered walker/normalization sub-scenarios. The cumulative T-numbered tally in this item (ending at 198) reflects only sequentially-numbered tests in the explicit-coverage section.
 11. **Spec-only coverage by necessity**: the trailing-updateRule failure paths on `addTrigger`, `addRequiredExpression`, `addLocalVariable`, `addTriggers`/`addActions` (bulk), `patches`, and the action-mutation/trigger-mutation dispatchers (`removeAction`, `clearActions`, `replaceActions`, `moveAction`, `removeTrigger`, `modifyTrigger`) -- response slots `updateRuleFailed`, `subscriptionsNotLive` / `expressionNotLive` / `variableNotLive` / `patchesNotLive`, `updateRuleError`, and the recovery `repairHints` line -- are covered exclusively by Spock specs in `src/test/groovy/server/ToolRmNativeCrudSpec.groovy` (the single-path failure/SUCCESS pairs for `addTrigger` / `addRequiredExpression` / `addLocalVariable`, the three-row `@Unroll` failure/SUCCESS pairs for the bulk path covering `addTriggers`-only / `addActions`-only / both, and the corresponding patches and action-mutation envelope specs). The defensive `asyncCommitLikely` path on `clearActions` / `replaceActions` -- response slots `asyncCommitLikely`, `stage`, `actionsRequestedForRemoval`, `actionsStillPresent`, `pendingActionsToAdd`, `clearActionsResult`, `safeRecovery` -- is also spec-only: with the synchronous full-form trashActs submit the delete commits in-band, so this rare residual path (stuck `state.editAct` or a firmware commit lag still showing the actions present after the verify-retry) is not reproducible from an agent prompt against a live hub. Live-hub BAT coverage was considered but skipped: deterministically forcing the trailing `_rmClickAppButton(updateRule)` to throw against a real hub requires hub-side disruption (firmware downgrade / network partition mid-call / hub-config corruption) that is not realistically scriptable from an agent prompt. The Spock specs exercise the production response-shape contract directly via stub injection and constitute the regression gate.
 12. **PR1B read/write gateway split**: the 13-gateway flat-core layout was restructured into **19 gateways (7 `hub_read_*` pure-read + 12 `hub_manage_*` write-bearing) + 11 flat core tools** (30 on tools/list). Gateway renames: `hub_manage_rules` → `hub_manage_custom_rules`, `hub_manage_code_write` → `hub_manage_code`, `hub_manage_native_rules` → `hub_manage_native_rules_and_apps`. Removed gateways (read tools folded into `hub_read_apps_code`): `hub_manage_code_read`, `hub_manage_installed_apps`, `hub_manage_hpm`. `hub_list_installed_apps` merged into `hub_list_apps` (scope=types|instances). New pure-read gateways added: `hub_read_apps_code`, `hub_read_devices`, `hub_read_diagnostics`, `hub_read_files`, `hub_read_rooms`, `hub_read_rules`, `hub_read_variables`. Reads listed in a mixed `hub_manage_*` gateway are also surfaced in their `hub_read_*` gateway (multi-membership). Tool-behavior flips: `hub_export_custom_rule` and `hub_export_native_app` are now WRITES (they persist via saveAs); `hub_get_metrics` is now a READ (recordSnapshot default false). The previously-flat custom-rule and device tools (`hub_get_custom_rule`, `hub_create_custom_rule`, `hub_update_custom_rule`, `hub_list_devices`, `hub_get_device`, etc.) are now folded into gateways. `hub_report_issue` remains a flat core tool.
 
@@ -3460,8 +3476,8 @@ These are not BAT scenarios (they run autonomously, not via AI session prompts),
 The wizard probe systematically tests RM 5.1 wizard sub-flow sequences that have historically produced "**Broken Condition**" markers, silent setting rejections, or mis-labeled action rows when wizard accumulator state leaks across operations.
 
 For each probe:
-1. Creates a fresh RM rule via `hub_manage_native_rules_and_apps hub_create_native_app`
-2. Executes a sequence of `hub_update_native_app` calls (addTrigger, addRequiredExpression, addAction, etc.)
+1. Creates a fresh RM rule via `hub_manage_rule_machine hub_set_rule` (name only, no appId)
+2. Executes a sequence of `hub_set_rule` calls (appId + addTrigger, addRequiredExpression, addAction, etc.)
 3. Snapshots the rule's `mainPage` render via `hub_read_apps_code hub_get_app_config` after each step
 4. Evaluates expectations against the final render (e.g. `Broken Condition` must NOT be present)
 5. Deletes the test rule in a `try/finally` block regardless of outcome
@@ -3619,7 +3635,7 @@ Always cleans up the test rule via `try/finally` -- a crashed diag script will n
 
 **Escape-hatch step types (diag mode only):**
 
-The matrix YAML step ops cover the high-level `hub_update_native_app` arguments. For low-level investigation you sometimes need to fire a raw button click or raw settings write on a specific page mid-sequence. Two escape hatches exist:
+The matrix YAML step ops cover the high-level `hub_set_rule` arguments. For low-level investigation you sometimes need to fire a raw button click or raw settings write on a specific page mid-sequence. Two escape hatches exist:
 
 `raw_button` -- direct button click on a named page:
 

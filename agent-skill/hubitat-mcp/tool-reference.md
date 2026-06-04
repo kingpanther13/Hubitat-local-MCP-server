@@ -262,7 +262,7 @@ Manage hub File Manager: list, read, write, and delete files stored on the hub.
 | `hub_write_file` | Create/update a file (auto-backs up existing). | Hub Admin Write |
 | `hub_delete_file` | Delete a file (auto-backs up first). | Hub Admin Write |
 
-### hub_manage_native_rules_and_apps (11 tools)
+### hub_manage_native_rules_and_apps (10 tools)
 
 Two surfaces: RMUtils-based runtime control for RM rules (read/trigger/pause-resume) plus admin-layer CRUD that works uniformly across any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.). Requires Built-in App Tools enabled; CRUD operations additionally require Hub Admin Write.
 
@@ -272,25 +272,26 @@ Two surfaces: RMUtils-based runtime control for RM rules (read/trigger/pause-res
 | `hub_call_rule` | Trigger an existing RM rule. `action`: `rule` (full), `actions` (bypass conditions), or `stop` (cancel in-flight). | Built-in App Tools |
 | `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible; paused rules don't fire on triggers). | Built-in App Tools |
 | `hub_set_rule_private_boolean` | Set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). | Built-in App Tools |
-| `hub_create_native_app` | Create a new empty classic SmartApp (RM 5.1 by default; `appType` enum extends to other types). Returns `appId`. | Built-in App Tools + Hub Admin Write |
-| `hub_update_native_app` | Modify any classic native app by appId. Structured shortcuts: addTrigger, addAction, addRequiredExpression, clearActions, replaceActions, patches, etc. Auto-snapshots before writing. clearActions / replaceActions commit the delete synchronously via a full selectActions page-form submit (RM's trashActs handler runs in-band), so the actions are gone when the call returns; a thin defensive verify-retry returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` on the rare residual -- verify via `hub_get_app_config` rather than rolling back. | Built-in App Tools + Hub Admin Write |
-| `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Built-in App Tools + Hub Admin Write |
+| `hub_set_native_app` | Create or edit any NON-RM classic SmartApp by appId (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule). Omit `appId` to create (`appType` enum, `name`); provide `appId` to edit via `settings`/`button`. Generic upsert with a lean schema -- NO trigger/action sugar; for Rule Machine rule authoring use `hub_set_rule` (in `hub_manage_rule_machine`). Auto-snapshots before writing. | Built-in App Tools + Hub Admin Write |
+| `hub_delete_native_app` | Delete any classic native app, type-agnostic (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Built-in App Tools + Hub Admin Write |
 | `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. | Built-in App Tools + Hub Admin Write |
 | `hub_export_native_app` | Export a classic SmartApp to JSON (persists to File Manager), round-trippable with `hub_import_native_app`. Useful for backup, sharing, or export-mutate-import editing of complex rules. | Built-in App Tools + Hub Admin Write |
 | `hub_import_native_app` | Import previously-exported app JSON into a new instance. Pairs with `hub_export_native_app`. Returns the new `appId`. | Built-in App Tools + Hub Admin Write |
 | `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Built-in App Tools |
 
-### hub_manage_rule_machine (5 tools)
+### hub_manage_rule_machine (7 tools)
 
-RMUtils-based runtime control for Rule Machine rules: list, trigger, pause/resume, set private boolean, and check health. (CRUD and other classic-app operations live in `hub_manage_native_rules_and_apps`.)
+Dedicated Rule Machine gateway: create/edit RM rules (`hub_set_rule`), delete them (`hub_delete_native_app`), plus RMUtils-based runtime control -- list, trigger, pause/resume, set private boolean, and check health. (Create/edit of NON-RM classic apps lives in `hub_manage_native_rules_and_apps`.)
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
+| `hub_set_rule` | Create or edit a Rule Machine rule (RM 5.1) -- the full authoring surface. Omit `appId` to create (`name`); provide `appId` to edit. FAT schema: addTrigger, addAction, addRequiredExpression, addTriggers, addActions, replaceActions, removeAction, clearActions, moveAction, removeTrigger, modifyTrigger, addLocalVariable, patches, walkStep, or raw `settings`/`button`. Auto-snapshots before writing. clearActions / replaceActions commit the delete synchronously via a full selectActions page-form submit (RM's trashActs handler runs in-band), so the actions are gone when the call returns; a thin defensive verify-retry returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` on the rare residual -- verify via `hub_get_app_config` rather than rolling back. | Built-in App Tools + Hub Admin Write |
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). | Built-in App Tools |
 | `hub_call_rule` | Trigger an existing RM rule. `action`: `rule` (full), `actions` (bypass conditions), or `stop` (cancel in-flight). | Built-in App Tools |
 | `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible; paused rules don't fire on triggers). | Built-in App Tools |
 | `hub_set_rule_private_boolean` | Set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). | Built-in App Tools |
 | `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Built-in App Tools |
+| `hub_delete_native_app` | Delete any classic native app, type-agnostic (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Built-in App Tools + Hub Admin Write |
 
 ### hub_manage_mcp (1 tool)
 

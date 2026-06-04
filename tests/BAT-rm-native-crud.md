@@ -4,8 +4,7 @@ Supplement to `tests/BAT-v2.md`. Scenarios in this file exercise the native Rule
 
 **New tools exercised** (native CRUD, shipped in the same PR as this file):
 
-- `manage_native_rules_and_apps.create_native_app` (appType=rule_machine)
-- `manage_native_rules_and_apps.update_native_app`
+- `manage_rule_machine.set_rule` (omit appId to CREATE the rule; provide appId to EDIT it -- one upsert tool replacing the old create/update pair)
 - `manage_native_rules_and_apps.delete_native_app`
 - `manage_native_rules_and_apps.check_rule_health`
 
@@ -17,7 +16,7 @@ Supplement to `tests/BAT-v2.md`. Scenarios in this file exercise the native Rule
 - `manage_native_rules_and_apps.set_rm_rule_boolean`
 - `manage_installed_apps.get_app_config` (used as fallback verification)
 
-**Note on legacy test-prompt tool names:** many individual test prompts in this file were written before the gateway was named and still reference `create_rm_rule`, `update_rm_rule`, `delete_rm_rule`, and `get_rm_rule`. The actual implemented tool names are `create_native_app`, `update_native_app`, `delete_native_app` (no get_rm_rule -- use `get_app_config` from `manage_installed_apps` instead). When running these tests, map accordingly.
+**Note on legacy test-prompt tool names:** many individual test prompts in this file were written before the gateway was named and still reference `create_rm_rule`, `update_rm_rule`, `delete_rm_rule`, and `get_rm_rule`. The actual implemented tool names are `set_rule` (omit appId to create, provide appId to edit -- replaces both create_rm_rule and update_rm_rule) and `delete_native_app` (no get_rm_rule -- use `get_app_config` from `manage_installed_apps` instead). When running these tests, map accordingly.
 
 **Status:** Use this file as the acceptance bar for the native CRUD tools: every T### must pass before declaring the feature stable.
 
@@ -152,22 +151,22 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "setup_prompt": "Create a scratch native RM rule via create_native_app(appType='rule_machine', name='BAT-RM-Full Create', confirm=true). Capture the returned appId.",
-  "test_prompt": "STEP 1 (populate in one update): Call update_native_app(appId=<id>, settings={comments: 'Created with every rule-level field populated', useST: true, isFunction: false, logging: ['Triggers','Actions'], dValues: true}, confirm=true). Verify the response reports configPageError=null and settingsApplied lists all five keys.\n\nSTEP 2 (read-back #1): Call get_app_config(appId=<id>, includeSettings=true). Assert every one of these round-trips: app.label === 'BAT-RM-Full Create'; settings.comments === the exact string; settings.useST === 'true'; settings.isFunction === 'false'; settings.logging is a JSON array === ['Triggers','Actions'] (length 2, NOT collapsed to CSV); settings.dValues === 'true'. The page paragraphs MUST include 'Define Required Expression' — this proves useST=true actually exposed the required-expression editor section.\n\nSTEP 3 (force a re-init): Call update_native_app(appId=<id>, button='updateRule', confirm=true). Verify configPageError is null.\n\nSTEP 4 (read-back #2, post re-init): Call get_app_config(appId=<id>, includeSettings=true). Assert ALL fields from STEP 2 are still present with the same values and logging is STILL a 2-element array. This is the wire-format regression guard — enum-multi persisted from the in-memory write must survive the updateRule re-marshal.\n\nReport any field whose read value does not match what was sent, either after STEP 2 or after STEP 4.",
+  "setup_prompt": "Create a scratch native RM rule via set_rule(name='BAT-RM-Full Create', confirm=true) (omit appId to create). Capture the returned appId.",
+  "test_prompt": "STEP 1 (populate in one update): Call set_rule(appId=<id>, settings={comments: 'Created with every rule-level field populated', useST: true, isFunction: false, logging: ['Triggers','Actions'], dValues: true}, confirm=true). Verify the response reports configPageError=null and settingsApplied lists all five keys.\n\nSTEP 2 (read-back #1): Call get_app_config(appId=<id>, includeSettings=true). Assert every one of these round-trips: app.label === 'BAT-RM-Full Create'; settings.comments === the exact string; settings.useST === 'true'; settings.isFunction === 'false'; settings.logging is a JSON array === ['Triggers','Actions'] (length 2, NOT collapsed to CSV); settings.dValues === 'true'. The page paragraphs MUST include 'Define Required Expression' — this proves useST=true actually exposed the required-expression editor section.\n\nSTEP 3 (force a re-init): Call set_rule(appId=<id>, button='updateRule', confirm=true). Verify configPageError is null.\n\nSTEP 4 (read-back #2, post re-init): Call get_app_config(appId=<id>, includeSettings=true). Assert ALL fields from STEP 2 are still present with the same values and logging is STILL a 2-element array. This is the wire-format regression guard — enum-multi persisted from the in-memory write must survive the updateRule re-marshal.\n\nReport any field whose read value does not match what was sent, either after STEP 2 or after STEP 4.",
   "teardown_prompt": "Force-delete the rule via delete_native_app(appId=<id>, force=true, confirm=true)."
 }
 ```
 
-**Expected**: AI calls `create_native_app` → `update_native_app(settings={...})` (single multi-field update) → `get_app_config` → `update_native_app(button='updateRule')` → `get_app_config` → `delete_native_app(force=true)`.
+**Expected**: AI calls `set_rule(name=...)` (create, no appId) → `set_rule(appId=<id>, settings={...})` (single multi-field update) → `get_app_config` → `set_rule(appId=<id>, button='updateRule')` → `get_app_config` → `delete_native_app(force=true)`.
 
 **Pass criteria** (ALL must hold):
 - After STEP 2: `settings.comments`, `settings.useST`, `settings.isFunction`, `settings.logging`, `settings.dValues` all round-trip. `settings.logging` is a JSON array of exactly 2 strings `["Triggers","Actions"]` (NOT collapsed to the CSV string `"Triggers,Actions"`).
-- `app.label` round-trips as the rule name passed to `create_native_app`.
+- `app.label` round-trips as the rule name passed to the create-side `set_rule`.
 - `useST=true` exposes the required-expression editor section (look for the 'Define Required Expression' paragraph on mainPage).
 - After STEP 4: every field from STEP 2 is still present with unchanged values; `logging` is still a 2-element array.
 - [INV-1] `configPage.error == null` in both read-backs.
 
-**Why two-step, not single-call**: `create_native_app` is deliberately minimal (appType + name). All rule-level fields (useST, logging, dValues, isFunction, comments) are written through `update_native_app`. The test still verifies the important round-trip property — five non-trivial fields applied in one `settings` map, persisting through an updateRule re-init — which is the regression surface that matters.
+**Why two-step, not single-call**: the create-side `set_rule` (no appId) is deliberately minimal (name only). All rule-level fields (useST, logging, dValues, isFunction, comments) are written through the edit-side `set_rule(appId=<id>, settings={...})`. The test still verifies the important round-trip property — five non-trivial fields applied in one `settings` map, persisting through an updateRule re-init — which is the regression surface that matters.
 
 ### T307 — Soft delete succeeds on childless rule
 
@@ -1133,7 +1132,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: Calls `manage_rule_machine.create_rm_rule` with one required-expression condition, then `get_rm_rule` round-trips it. [INV-1] `configPage.error == null`. AI reports 1 condition, 1 trigger, and confirms the expression text matches.
 
-**LLM-discoverable path**: Use `update_native_app(addRequiredExpression={conditions: [{capability: 'Switch', deviceIds: [<id>], state: 'on'}]})`. The shortcut handles the full STPage walk (useST=true → navigate → cond=a → rCapab/rDev/state writes → hasAll → hasRule → done). Single-condition expressions don't need an `operator`. After commit, mainPage's paragraph renders the expression text and `cond=["<idx>"]` shows in settings (the cond counter is shared at the RM parent app, so idx may not start at 1 — that's expected, not a bug). Verified live 2026-04-26 — see `_rmAddRequiredExpression` in hubitat-mcp-server.groovy.
+**LLM-discoverable path**: Use `set_rule(appId=<id>, addRequiredExpression={conditions: [{capability: 'Switch', deviceIds: [<id>], state: 'on'}]})`. The shortcut handles the full STPage walk (useST=true → navigate → cond=a → rCapab/rDev/state writes → hasAll → hasRule → done). Single-condition expressions don't need an `operator`. After commit, mainPage's paragraph renders the expression text and `cond=["<idx>"]` shows in settings (the cond counter is shared at the RM parent app, so idx may not start at 1 — that's expected, not a bug). Verified live 2026-04-26 — see `_rmAddRequiredExpression` in hubitat-mcp-server.groovy.
 
 ### T401 — Create rule with AND of two conditions in Required Expression
 
@@ -1784,9 +1783,9 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Record the current enabled/disabled state of the MCP app's 'Enable Built-in App Tools' setting (visible in the MCP Rule Server app settings page under Built-in App Integration). This is the gate that controls all manage_native_rules_and_apps sub-tools.",
-  "test_prompt": "Disable the MCP-app setting that gates the native RM CRUD tools ('Enable Built-in App Tools'). Then call MCP `tools/list` (or equivalent listing endpoint). Assert that `create_native_app`, `update_native_app`, `delete_native_app`, `check_rule_health` are COMPLETELY ABSENT from the returned tool list -- NOT present with a 'disabled' flag, NOT present but erroring on call, literally absent from tools/list. The gating design: when 'Enable Built-in App Tools' is off, all manage_native_rules_and_apps sub-tools disappear from the visible catalog entirely. Then re-enable the setting and confirm the tools reappear in tools/list.",
+  "test_prompt": "Disable the MCP-app setting that gates the native RM CRUD tools ('Enable Built-in App Tools'). Then call MCP `tools/list` (or equivalent listing endpoint). Assert that `set_rule`, `delete_native_app`, `check_rule_health` are COMPLETELY ABSENT from the returned tool list -- NOT present with a 'disabled' flag, NOT present but erroring on call, literally absent from tools/list. The gating design: when 'Enable Built-in App Tools' is off, the manage_rule_machine RM-authoring tools and all manage_native_rules_and_apps sub-tools disappear from the visible catalog entirely. Then re-enable the setting and confirm the tools reappear in tools/list.",
   "teardown_prompt": "Restore the MCP setting to its original state as recorded in setup."
 }
 ```
 
-**Expected**: With 'Enable Built-in App Tools' OFF, `tools/list` does NOT include `create_native_app`, `update_native_app`, `delete_native_app`, or `check_rule_health`. With the setting ON, all four appear with their full schemas. This guards against the anti-pattern of returning tools that immediately error -- the tool surface must match the user's enablement state.
+**Expected**: With 'Enable Built-in App Tools' OFF, `tools/list` does NOT include `set_rule`, `delete_native_app`, or `check_rule_health`. With the setting ON, all three appear with their full schemas. This guards against the anti-pattern of returning tools that immediately error -- the tool surface must match the user's enablement state.

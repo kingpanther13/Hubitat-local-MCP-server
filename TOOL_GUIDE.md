@@ -385,7 +385,7 @@ Example redirect message:
 > "Rule 832 is a Hubitat built-in Rule-5.1 app. Use `hub_read_apps_code -> hub_get_app_config(appId=832)` to read its configuration."
 
 - Read verbs (`hub_get_custom_rule`, `hub_export_custom_rule`, `hub_clone_custom_rule`): points to `hub_get_app_config` and notes these tools only handle MCP's own rule engine.
-- Write verbs (`hub_update_custom_rule`): points to `hub_get_app_config` for inspection and `hub_manage_native_rules_and_apps -> hub_update_native_app` for programmatic modification (requires Built-in App Tools + Hub Admin Write).
+- Write verbs (`hub_update_custom_rule`): points to `hub_get_app_config` for inspection and `hub_manage_rule_machine -> hub_set_rule` for programmatic modification (requires Built-in App Tools + Hub Admin Write).
 - Delete verb (`hub_delete_custom_rule`): points to `hub_manage_native_rules_and_apps -> hub_delete_native_app` for programmatic deletion.
 - Test verb (`hub_test_custom_rule`): points to `hub_read_apps_code -> hub_get_app_config` for inspection. For Rule Machine rules specifically, the hint also includes a pointer to `hub_manage_native_rules_and_apps -> hub_call_rule` to trigger them; non-RM rule-likes (Room Lighting, Basic Rules, Visual Rule Builder) receive only the `hub_get_app_config` pointer because `hub_call_rule` routes through `RMUtils.sendAction` and is RM-only.
 - The redirect check is best-effort: if the hub appsList call fails, a plain "Rule not found" message is returned with no secondary error.
@@ -465,7 +465,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 
 ## Built-in App Tools
 
-The installed-apps reads (`hub_list_apps` scope=instances, `hub_list_device_dependents`, `hub_get_app_config`, `hub_list_app_pages`, `hub_list_hpm_packages`) live in the `hub_read_apps_code` gateway; the native-rule CRUD lives in `hub_manage_native_rules_and_apps`. These tools have mixed gate requirements. `hub_list_apps` (scope=instances) and `hub_list_device_dependents` require the **Enable Built-in App Tools** toggle (`requireBuiltinApp`). `hub_get_app_config` and `hub_list_app_pages` require **Hub Admin Read** (`requireHubAdminRead`). `hub_list_hpm_packages` (including its `includeDrift=true` mode) requires **Hub Admin Read** only -- no Built-in App Tools toggle needed. `hub_manage_native_rules_and_apps` tools require the **Enable Built-in App Tools** toggle for reads and **Hub Admin Write** (`requireHubAdminWrite`) for the CRUD path (`hub_create_native_app`, `hub_update_native_app`, `hub_delete_native_app`); Hub Admin Write also enforces a backup-within-24h gate before any write. If the user sees "Built-in App Tools are disabled", "Hub Admin Read is disabled", or "Hub Admin Write is disabled" errors, direct them to the MCP Rule Server app settings page to enable the relevant toggle. Note: Hub Admin Write operations additionally require a hub backup within the last 24 hours -- if the write gate blocks with a backup-age message, use `hub_create_backup` first.
+The installed-apps reads (`hub_list_apps` scope=instances, `hub_list_device_dependents`, `hub_get_app_config`, `hub_list_app_pages`, `hub_list_hpm_packages`) live in the `hub_read_apps_code` gateway; the native-rule CRUD lives in `hub_manage_native_rules_and_apps`. These tools have mixed gate requirements. `hub_list_apps` (scope=instances) and `hub_list_device_dependents` require the **Enable Built-in App Tools** toggle (`requireBuiltinApp`). `hub_get_app_config` and `hub_list_app_pages` require **Hub Admin Read** (`requireHubAdminRead`). `hub_list_hpm_packages` (including its `includeDrift=true` mode) requires **Hub Admin Read** only -- no Built-in App Tools toggle needed. `hub_manage_native_rules_and_apps` tools require the **Enable Built-in App Tools** toggle for reads and **Hub Admin Write** (`requireHubAdminWrite`) for the CRUD path (`hub_set_rule`, `hub_set_native_app`, `hub_delete_native_app`); Hub Admin Write also enforces a backup-within-24h gate before any write. If the user sees "Built-in App Tools are disabled", "Hub Admin Read is disabled", or "Hub Admin Write is disabled" errors, direct them to the MCP Rule Server app settings page to enable the relevant toggle. Note: Hub Admin Write operations additionally require a hub backup within the last 24 hours -- if the write gate blocks with a backup-age message, use `hub_create_backup` first.
 
 ### Installed-app reads (in `hub_read_apps_code`)
 
@@ -545,8 +545,8 @@ Two surfaces under one gateway: RMUtils-based runtime control for RM rules (RM-o
 
 If a user asks "create a new RM rule" or "modify this Room Lighting instance":
 
-1. **`hub_create_native_app(appType, name, confirm)`** — creates an empty classic SmartApp. `appType` is enum-driven (initially `rule_machine`; expand `_appTypeRegistry` for other types). Returns `appId`.
-2. **`hub_update_native_app(appId, settings|button, ...)`** — modifies any classic SmartApp instance by appId. Multi-device capability `multiple=true` contract emitted automatically. Auto-snapshots before every write.
+1. **`hub_set_rule(appId?, addTrigger|addAction|..., confirm)`** — create+edit upsert for Rule Machine rules (lives in `hub_manage_rule_machine`). Omit `appId` to create a new RM 5.1 rule; pass it to edit an existing one. Carries the FAT RM authoring schema (`addTrigger`, `addAction`, `addRequiredExpression`, `walkStep`, `patches`, `replaceActions`, `removeAction`, `clearActions`, `moveAction`, `removeTrigger`, `modifyTrigger`, `addLocalVariable`). Auto-snapshots before every write.
+2. **`hub_set_native_app(appId?, appType, name, settings|button, ...)`** — create+edit upsert for any NON-RM classic SmartApp (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule; lives in `hub_manage_native_rules_and_apps`). Omit `appId` to create (`appType` enum-driven; expand `_appTypeRegistry` for other types), pass it to modify by appId. LEAN schema — no trigger/action sugar. Multi-device capability `multiple=true` contract emitted automatically. Auto-snapshots before every write.
 3. **`hub_delete_native_app(appId, force, confirm)`** — soft delete (default) or `force=true` for `forcedelete/quiet` (the path the hub UI uses). Auto-snapshots first.
 4. **`hub_clone_native_app(appId, newName, confirm)`** — clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`.
 5. **`hub_export_native_app(appId)`** — export a classic SmartApp to JSON (round-trippable with `hub_import_native_app`). Useful for the export-mutate-import editing pattern when the wizard surface is too lossy to drive directly.
@@ -554,14 +554,14 @@ If a user asks "create a new RM rule" or "modify this Room Lighting instance":
 7. **`hub_get_rule_health(appId)`** — read-only health check on any installed app. Surfaces broken markers, multiple-flag poison, configPage errors. Use after a destructive operation to confirm the app is still well-formed.
 
 **Cross-references** (live in other gateways but commonly used together):
-- **`hub_get_app_config`** (in `hub_read_apps_code`) — read any installed app's current page schema, settings, and child apps. Use BEFORE every `hub_update_native_app` to discover the right input names.
+- **`hub_get_app_config`** (in `hub_read_apps_code`) — read any installed app's current page schema, settings, and child apps. Use BEFORE every `hub_set_rule` / `hub_set_native_app` edit to discover the right input names.
 - **`hub_list_backups`** + **`hub_restore_backup`** (in `hub_read_apps_code` / `hub_manage_code`) — enumerate and restore native-app snapshots (`type="rm-rule"` entries). Restore re-applies settings in place if the app exists, or recreates the app and replays settings if it was deleted.
 
-For Room Lighting / Button Controllers / Basic Rules: `hub_update_native_app` and `hub_delete_native_app` already work today (they take any classic-app appId). `hub_create_native_app` will work for them once their entries are added to `_appTypeRegistry()` — same endpoint family, just need namespace + appName + parentTypeName per type.
+For Room Lighting / Button Controllers / Basic Rules: `hub_set_native_app` (edit) and `hub_delete_native_app` already work today (they take any classic-app appId). `hub_set_native_app` creation will work for them once their entries are added to `_appTypeRegistry()` — same endpoint family, just need namespace + appName + parentTypeName per type.
 
-#### `hub_update_native_app` capability reference
+#### `hub_set_rule` capability reference
 
-Reference for the `hub_update_native_app` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`). The schema descriptions point here so flat-mode `tools/list` can stay under the 124 KB cap; gateway-mode catalog responses still carry the full enumerations inline. For machine-readable schemas, pass `{discover: true}` on `addTrigger` or `addAction` -- both return live structured Maps from the running code.
+Reference for the `hub_set_rule` structured shortcuts (`addTrigger`, `addAction`, `addRequiredExpression`). The schema descriptions point here so flat-mode `tools/list` can stay under the 124 KB cap; gateway-mode catalog responses still carry the full enumerations inline. For machine-readable schemas, pass `{discover: true}` on `addTrigger` or `addAction` -- both return live structured Maps from the running code.
 
 ##### `addTrigger` capability families
 
@@ -707,7 +707,7 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
   - `reveal_fallback_to_existing_field` -- the walker matched an already-visible field instead of a newly-revealed one (static-schema firmware path). **Informational** -- does NOT flip `partial` by itself.
   - `not_in_schema` -- a written field was absent from the current page schema, so the value did not land. This IS genuine degradation and flips `partial` on ALL paths (`addTrigger` AND the walker pages STPage/doActPage): a field the helper tried to write but the live schema never exposed means the value was lost. Note that a state-change comparator such as `*changed*` is itself written as a VALUE into the comparator field (e.g. `ReltDev_<N>`), not an absent RHS, so a clean `*changed*` trigger produces NO `not_in_schema` skip on its comparator -- if one appears on a real field, the value genuinely failed to write and the partial flag is real. The single non-degrading case is the cosmetic `isCondTrig.<N>` finalize toggle on `addTrigger`: after a non-conditional trigger commits, the helper writes `isCondTrig.<N>=false` best-effort to dismiss the residual "Conditional Trigger?" prompt RM only sometimes exposes; when the prompt already closed the field is gone and that skip is exempt (it does not flip `partial`).
 - Trailing-updateRule failure slots:
-  - `addRequiredExpression`: `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError: <message>` when the post-commit `updateRule` click is rejected. `success` flips false and `partial` flips true; `repairHints` adds a recovery line pointing at `hub_update_native_app(button='updateRule', confirm=true)`.
+  - `addRequiredExpression`: `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError: <message>` when the post-commit `updateRule` click is rejected. `success` flips false and `partial` flips true; `repairHints` adds a recovery line pointing at `hub_set_rule(button='updateRule', confirm=true)`.
   - `addTrigger`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The trigger row IS in the rule's appSettings but the running rule instance never re-subscribed to the device events -- retry `updateRule` to populate subscriptions.
   - `addLocalVariable`: `updateRuleFailed: true` + `variableNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The variable IS created on the hub but the rule's action map never re-evaluates against the new variable until updateRule fires -- retry as above.
   - `addTriggers` / `addActions` (bulk path): `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The per-item adds IS committed (triggers/actions arrays still surface on the success-shape keys) but the running rule instance never re-subscribed -- retry as above.
@@ -750,7 +750,7 @@ The tool keeps a thin defensive net: it still verifies the delete via a short re
     "recommended": "verify-then-decide",
     "verifyVia": "hub_get_app_config(appId: <id>)",
     "ifActionsAbsent": "treat as success -- clearActions committed post-response",
-    "ifActionsPresent": "wait 15s, then call hub_get_app_config to re-check. If actions still present, retry clearActions, or clear state.editAct via hub_update_native_app(button='cancelAct', pageName='doActPage', confirm=true) first.",
+    "ifActionsPresent": "wait 15s, then call hub_get_app_config to re-check. If actions still present, retry clearActions, or clear state.editAct via hub_set_rule(button='cancelAct', pageName='doActPage', confirm=true) first.",
     "avoid": ["cancelTrash"]
   },
   "backup": "<backup>",
@@ -771,14 +771,14 @@ Implication: when a `patches` sub-spec containing `clearActions` / `replaceActio
 
 Degenerate-case semantics: `actionsRequestedForRemoval: null` indicates the pre-write snapshot fetch failed; `actionsStillPresent: null` indicates the post-window re-fetch failed; `possibleStateEditAct: false` is the safe default when `_rmGetStateEditAct` fails. These three are best-effort diagnostic slots -- `null` does NOT mean "field absent," it means "fetch failed on this side; the structured envelope is still actionable via the other fields and `safeRecovery`."
 
-#### `hub_create_native_app` reference
+#### `hub_set_rule` create reference
 
 ##### appType options
 
 `appType` (default: `rule_machine`) selects which class of native app to create:
 
 - `rule_machine` — Rule Machine 5.1 (the only registered type today; verified live). Creates an RM 5.1 rule specifically; RM 5.0 is not selectable.
-- Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in `_appTypeRegistry` to enable creation. `hub_update_native_app` / `hub_delete_native_app` already work on them today via their `appId`.
+- Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family via `hub_set_native_app` — register them in `_appTypeRegistry` to enable creation. `hub_set_native_app` (edit) / `hub_delete_native_app` already work on them today via their `appId`.
 
 ##### Partial-success protocol
 
@@ -788,7 +788,7 @@ The tool ALWAYS creates the rule shell (you get an `appId` back) even if some tr
 - `repairHints: [...]` → concrete next-step instructions.
 - Each per-trigger / per-action result has its own `success`, `partial`, `settingsSkipped`, `repairHints`, and `health` block. `success: true, partial: true` on an inner result means the row was written but needs repair.
 
-The right move when `partial: true` is to follow the `repairHints`, NOT to delete the rule and retry from scratch. Tool-only repair via `hub_update_native_app(walkStep={...})` / `replaceActions` / `removeAction` can usually finish the job. Only declare failure after exhausting those repair attempts.
+The right move when `partial: true` is to follow the `repairHints`, NOT to delete the rule and retry from scratch. Tool-only repair via `hub_set_rule(walkStep={...})` / `replaceActions` / `removeAction` can usually finish the job. Only declare failure after exhausting those repair attempts.
 
 ---
 

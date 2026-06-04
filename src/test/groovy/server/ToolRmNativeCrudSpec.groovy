@@ -146,7 +146,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        script.toolCreateNativeApp([name: "BAT-RM-demo"])
+        script.toolSetRule([name: "BAT-RM-demo"])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -158,7 +158,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        script.toolCreateNativeApp([confirm: true])
+        script.toolSetRule([confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -184,7 +184,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateNativeApp([name: "BAT-RM-demo", confirm: true])
+        def result = script.toolSetRule([name: "BAT-RM-demo", confirm: true])
 
         then: "createchild hit with the RM parent id"
         createCalls.any { it == "/installedapp/createchild/hubitat/Rule-5.1/parent/21" }
@@ -224,7 +224,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolCreateNativeApp([name: "BAT-RM-orphan", confirm: true])
+        def result = script.toolSetRule([name: "BAT-RM-orphan", confirm: true])
 
         then:
         result.success == false
@@ -232,7 +232,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         rawCalls.any { it == "/installedapp/forcedelete/975/quiet" }
     }
 
-    def "hub_create_native_app caches RM parent id in state.parentAppIds.rule_machine"() {
+    def "hub_set_rule caches RM parent id in state.parentAppIds.rule_machine"() {
         given:
         enableHubAdminWrite()
         def appsListCalls = 0
@@ -251,7 +251,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        script.toolCreateNativeApp([name: "BAT-RM-demo", confirm: true])
+        script.toolSetRule([name: "BAT-RM-demo", confirm: true])
         def cached = atomicStateMap.parentAppIds?.rule_machine
 
         then:
@@ -266,20 +266,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        script.toolUpdateNativeApp([appId: 100, settings: [a: 1]])
+        script.toolSetRule([appId: 100, settings: [a: 1]])
 
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("SAFETY CHECK FAILED")
     }
 
-    def "guide:true returns the update_native_app capability reference inline and bypasses all gates"() {
+    def "guide:true returns the set_rule capability reference inline and bypasses all gates"() {
         when: "guide:true with NO confirm, NO appId, and Hub Admin Write NOT enabled"
-        def result = script.toolUpdateNativeApp([guide: true])
+        def result = script.toolSetRule([guide: true])
 
         then: "returns the guide section content without throwing (early-return before any gate/mutation, like discover mode)"
         result.success == true
-        result.section == "update_native_app_reference"
+        result.section == "set_rule_reference"
         result.content instanceof String
         // proves the real reference came back inline (these live only in the guide now)
         result.content.contains("addTrigger")
@@ -293,7 +293,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        script.toolUpdateNativeApp([appId: 100, confirm: true])
+        script.toolSetRule([appId: 100, confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -320,7 +320,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "settings pass a List for the multi-device input"
-        def result = script.toolUpdateNativeApp([appId: 100, settings: [tDev0: [8, 9]], confirm: true])
+        def result = script.toolSetRule([appId: 100, settings: [tDev0: [8, 9]], confirm: true])
 
         then: "settings POST carries all three fields together"
         def updatePost = posts.find { it.path == "/installedapp/update/json" }
@@ -365,7 +365,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, settings: [tDev0: [8, 9]], confirm: true])
+        def result = script.toolSetRule([appId: 100, settings: [tDev0: [8, 9]], confirm: true])
 
         then: "settings POSTed twice (once initially, once on retry)"
         posts.findAll { it.path == "/installedapp/update/json" }.size() == 2
@@ -390,7 +390,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, button: "updateRule", confirm: true])
+        def result = script.toolSetRule([appId: 100, button: "updateRule", confirm: true])
 
         then: "success=false when health check sees the configPage.error — fail-loud so the LLM sees the broken state"
         result.success == false
@@ -415,7 +415,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, button: "pausRule", confirm: true])
+        def result = script.toolSetRule([appId: 100, button: "pausRule", confirm: true])
 
         then:
         posts.any { it.path == "/installedapp/btn" && it.body.name == "pausRule" }
@@ -730,7 +730,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        script.toolUpdateNativeApp([appId: 100, settings: [tDev0: [8, 9]], confirm: true])
+        script.toolSetRule([appId: 100, settings: [tDev0: [8, 9]], confirm: true])
 
         then: "the update POST carries the deviceList=<keyname> sidecar marker"
         def updatePost = posts.find { it.path == "/installedapp/update/json" }
@@ -760,7 +760,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("100")
     }
 
-    def "hub_update_native_app surfaces success:false when the hub rejects the settings write (issue #105 PR2a #4)"() {
+    def "hub_set_rule surfaces success:false when the hub rejects the settings write (issue #105 PR2a #4)"() {
         given: 'a settings update the hub will reject with a 4xx'
         enableHubAdminWrite()
         hubGet.register('/installedapp/configure/json/100') { params ->
@@ -773,7 +773,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, settings: [origLabel: "x"], confirm: true])
+        def result = script.toolSetRule([appId: 100, settings: [origLabel: "x"], confirm: true])
 
         then: 'the tool reports failure -- a hub-rejected write is never surfaced as success'
         result.success == false
@@ -810,7 +810,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, settings: [tDev0: [8, 9]], confirm: true])
+        def result = script.toolSetRule([appId: 100, settings: [tDev0: [8, 9]], confirm: true])
 
         then: 'the retry actually fired and its rejection was not swallowed'
         updatePosts == 2
@@ -831,7 +831,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "we click a wizard-Done button via the button mode (which routes through _rmClickAppButton)"
-        script.toolUpdateNativeApp([appId: 100, button: "hasAll", pageName: "selectTriggers", confirm: true])
+        script.toolSetRule([appId: 100, button: "hasAll", pageName: "selectTriggers", confirm: true])
 
         then: "the button POST carries the bracket form + form-context fields together"
         def btnPost = posts.find { it.path == "/installedapp/btn" }
@@ -872,7 +872,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "we explicitly invoke the anotherWait button click (matching the live-UI XHR captured 2026-04-26)"
-        script.toolUpdateNativeApp([appId: 100, button: "anotherWait", stateAttribute: "anotherWait", pageName: "doActPage", confirm: true])
+        script.toolSetRule([appId: 100, button: "anotherWait", stateAttribute: "anotherWait", pageName: "doActPage", confirm: true])
 
         then: "the click POST carries stateAttribute=anotherWait (without it RM no-ops the click and tCapab-N+1 never appears)"
         def btnPost = posts.find { it.path == "/installedapp/btn" }
@@ -908,7 +908,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         when: "addRequiredExpression starts the STPage wizard"
         try {
-            script.toolUpdateNativeApp([
+            script.toolSetRule([
                 appId: 100,
                 addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
                 confirm: true
@@ -952,7 +952,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // open-paren cond=b write fires before any rCapab_<N> lookup that
         // would short-circuit the walk against a minimal schema stub.
         try {
-            script.toolUpdateNativeApp([
+            script.toolSetRule([
                 appId: 100,
                 addRequiredExpression: [conditions: [
                     [subExpression: [conditions: [
@@ -1044,7 +1044,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "addRequiredExpression completes (full STPage walk via stPageCondSchemaJson stubs)"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
             confirm: true
@@ -1134,7 +1134,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        script.toolUpdateNativeApp([
+        script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
             confirm: true
@@ -1203,7 +1203,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
             confirm: true
@@ -1243,7 +1243,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         when:
         try {
-            script.toolUpdateNativeApp([
+            script.toolSetRule([
                 appId: 100,
                 addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
                 confirm: true
@@ -1272,7 +1272,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [99999], state: "on"],
             confirm: true
@@ -1301,7 +1301,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "patches contains addTriggers with one valid + one bogus-id spec"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [[addTriggers: [
                 [capability: "Switch", deviceIds: [8], state: "on"],
@@ -1344,7 +1344,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: 'batch with addTrigger, addAction, addRequiredExpression, addLocalVariable, bogusOp'
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [
                 [addTrigger: [capability: "Switch", deviceIds: [8], state: "on"]],
@@ -1408,7 +1408,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addLocalVariable: [name: "counter", type: "Number", value: 42],
             confirm: true
@@ -1449,7 +1449,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        script.toolUpdateNativeApp([
+        script.toolSetRule([
             appId: 100,
             addLocalVariable: [name: "flag", type: "Boolean", value: true],
             confirm: true
@@ -1494,7 +1494,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addLocalVariable: [name: varName, type: rmType, value: rawValue],
             confirm: true
@@ -1543,7 +1543,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 1], confirm: true])
 
         then: "the silent no-op is surfaced as success: false with the honest dropped-click / verify-first recovery hint"
         result.success == false
@@ -1587,7 +1587,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 1], confirm: true])
 
         then: "success on the first check — no retries needed"
         result.success == true
@@ -1664,7 +1664,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 1], confirm: true])
 
         then: "success after one retry — race-recovery path"
         result.success == true
@@ -1705,7 +1705,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 1], confirm: true])
 
         then: "success on the third check -- last-chance recovery"
         result.success == true
@@ -1759,7 +1759,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
 
         then: "synchronous success -- no asyncCommitLikely envelope"
         result.success == true
@@ -1839,7 +1839,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
 
         then: "a warn fires from _rmSubmitFullPageForm naming the absent non-button input"
         def absentWarn = warnLogs.find {
@@ -1900,7 +1900,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
 
         then: "hard failure -- NOT promoted to the asyncCommitLikely envelope"
         result.success == false
@@ -1953,7 +1953,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
 
         then: "the clear still succeeds without a version token"
         result.success == true
@@ -2035,7 +2035,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, replaceActions: [], confirm: true])
+        def result = script.toolSetRule([appId: 100, replaceActions: [], confirm: true])
 
         then: "the trashActs submit fired -- the clear path actually ran"
         trashActsWritten
@@ -2093,7 +2093,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, patches: [[clearActions: true]], confirm: true])
+        def result = script.toolSetRule([appId: 100, patches: [[clearActions: true]], confirm: true])
 
         then: "synchronous success -- no asyncCommitLikely leakage at the rollup"
         result.success == true
@@ -2148,7 +2148,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, patches: [[replaceActions: []]], confirm: true])
+        def result = script.toolSetRule([appId: 100, patches: [[replaceActions: []]], confirm: true])
 
         then: "the trashActs submit fired -- the clear path actually ran"
         trashActsWritten
@@ -2200,7 +2200,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
 
         then: "success after one retry — race-recovery path mirroring _rmDeleteAction"
         result.success == true
@@ -2237,7 +2237,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
 
         then: "throws after retries exhaust"
         result.success == false
@@ -2266,7 +2266,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
 
         then: "result surfaces the failure to enter trash mode rather than silently returning empty"
         result.success == false
@@ -2296,7 +2296,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
 
         then: "error message uses singular form 'if the action really did get clobbered'"
         result.success == false
@@ -2328,7 +2328,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
 
         then: "error message uses plural 'if the actions really did get clobbered'"
         result.success == false
@@ -2379,7 +2379,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
 
         then: "trashActs write fired (HTTP 200 path was actually taken)"
         trashActsWritten
@@ -2473,7 +2473,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ]
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             replaceActions: replacements,
             confirm: true
@@ -2562,7 +2562,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]],
             confirm: true
@@ -2622,7 +2622,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]],
             confirm: true
@@ -2674,7 +2674,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 1], confirm: true])
 
         then: "delAct fired but the retry budget exhausted"
         delActFired
@@ -2732,7 +2732,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
 
         then: "structured envelope emitted with degraded actionsRequestedForRemoval"
         result.asyncCommitLikely == true
@@ -2795,7 +2795,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
 
         then: "structured envelope emitted (helper threw the marker, the catch ran)"
         result.asyncCommitLikely == true
@@ -2858,7 +2858,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, clearActions: true, confirm: true])
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
 
         then: "envelope returns coherently with the safer-default false"
         result.asyncCommitLikely == true
@@ -2917,7 +2917,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             replaceActions: [
                 [capability: "switch", action: "off", deviceIds: [8]],
@@ -2964,7 +2964,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addActions: [
                 [capability: "switch", action: "on", deviceIds: [8]],
@@ -2999,7 +2999,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addActions: [
                 [capability: "switch", action: "on", deviceIds: [8]],
@@ -3039,7 +3039,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addActions: [
                 [capability: "switch", action: "on", deviceIds: [8]],
@@ -3066,7 +3066,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, moveAction: [index: 1, direction: "sideways"], confirm: true])
+        def result = script.toolSetRule([appId: 100, moveAction: [index: 1, direction: "sideways"], confirm: true])
 
         then:
         result.success == false
@@ -3112,7 +3112,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, moveAction: [index: 1, direction: "down"], confirm: true])
+        def result = script.toolSetRule([appId: 100, moveAction: [index: 1, direction: "down"], confirm: true])
 
         then: "arrowDn click fires and result reports success"
         clickFired == true
@@ -3177,7 +3177,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, moveAction: [index: 2, direction: "up"], confirm: true])
+        def result = script.toolSetRule([appId: 100, moveAction: [index: 2, direction: "up"], confirm: true])
 
         then: "arrowUp click fires and result reports success"
         clickFired == true
@@ -3232,7 +3232,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 1], confirm: true])
 
         then: "pre-flight detects stuck editAct and reports it as an error"
         result.success == false
@@ -3271,7 +3271,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, moveAction: [index: 1, direction: "down"], confirm: true])
+        def result = script.toolSetRule([appId: 100, moveAction: [index: 1, direction: "down"], confirm: true])
 
         then: "pre-flight detects stuck editAct and reports it as an error"
         result.success == false
@@ -3309,7 +3309,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 1], confirm: true])
 
         then: "no stuck state -- delete proceeds and succeeds"
         result.success == true
@@ -3354,7 +3354,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, nestedIfThenSettings()) }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 12], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 12], confirm: true])
 
         then:
         result.success == false
@@ -3385,7 +3385,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, nestedIfThenSettings()) }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 9], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 9], confirm: true])
 
         then:
         result.success == false
@@ -3418,7 +3418,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 11], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 11], confirm: true])
 
         then:
         result.success == true
@@ -3450,7 +3450,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 9], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 9], confirm: true])
 
         then: "pre-flight allows the removal because it doesn't make things worse"
         result.success == true
@@ -3476,7 +3476,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, addAction: [capability: "endIf"], confirm: true])
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "endIf"], confirm: true])
 
         then:
         result.success == false
@@ -3503,7 +3503,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, []) }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, addAction: [capability: "stopRepeat"], confirm: true])
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "stopRepeat"], confirm: true])
 
         then:
         result.success == false
@@ -3530,7 +3530,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, []) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "ifThen", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
             confirm: true
@@ -3564,7 +3564,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             replaceActions: [
                 [capability: "ifThen", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
@@ -3605,7 +3605,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             replaceActions: [
                 [capability: "ifThen", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
@@ -3638,7 +3638,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, []) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [[replaceActions: [
                 [capability: "ifThen", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
@@ -3678,7 +3678,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, repeatSettings) }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 1], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 1], confirm: true])
 
         then:
         result.success == false
@@ -3706,7 +3706,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, repeatSettings) }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 3], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 3], confirm: true])
 
         then:
         result.success == false
@@ -3738,7 +3738,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 3], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 3], confirm: true])
 
         then: "deleting an ELSE-IF doesn't change IF/END-IF balance — pre-flight allows the delete"
         result.success == true
@@ -3763,7 +3763,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "elseIf", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
             confirm: true
@@ -3790,7 +3790,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, []) }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, addAction: [capability: "else"], confirm: true])
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "else"], confirm: true])
 
         then:
         result.success == false
@@ -3827,7 +3827,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             replaceActions: [
                 [capability: "ifThen", expression: [conditions: [[capability: "Switch", deviceIds: [1], state: "on"]]]],
@@ -3845,11 +3845,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.body?.get("name") == "trashAll" }
     }
 
-    // Coverage for the auto-attached health field on hub_update_native_app
+    // Coverage for the auto-attached health field on hub_set_rule
     // mutation responses — the PR's tool description promises this surface
     // but no existing test pins it.
 
-    def "hub_update_native_app attaches health.structuralIssues field on every mutation response"() {
+    def "hub_set_rule attaches health.structuralIssues field on every mutation response"() {
         given:
         enableHubAdminWrite()
         def delActFired = false
@@ -3874,7 +3874,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "remove the leaf lock action (no structural risk)"
-        def result = script.toolUpdateNativeApp([appId: 100, removeAction: [index: 2], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 2], confirm: true])
 
         then: "the response surfaces health AND specifically the structuralIssues field"
         result.success == true
@@ -3904,7 +3904,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             walkStep: [page: "selectTriggers", operation: "introspect"],
             confirm: true
@@ -3947,7 +3947,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             walkStep: [page: "selectActions", operation: "click", click: [name: "moreVar", stateAttribute: "moreVar"]],
             confirm: true
@@ -4011,7 +4011,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             walkStep: [page: "selectTriggers", operation: "navigate", navigate: [targetPage: "periodic"]],
             confirm: true
@@ -4086,7 +4086,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             walkStep: [
                 page: "periodic",
@@ -4158,7 +4158,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             walkStep: [
                 page: "periodic",
@@ -4212,7 +4212,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "Done on selectTriggers (no hrefContext — top-level page Done)"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             walkStep: [page: "selectTriggers", operation: "done"],
             confirm: true
@@ -4258,7 +4258,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "bulk addTriggers with one valid + one bogus-id spec"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTriggers: [
                 [capability: "Switch", deviceIds: [8], state: "on"],
@@ -5079,7 +5079,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // doesn't exercise _rmWriteSettingOnPage's renderHash path. To
         // exercise the helper directly, drive it via walkStep operation=write
         // on a sub-page.
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             walkStep: [page: "selectTriggers", operation: "write", write: [tCapab1: "Switch"]],
             confirm: true
@@ -5148,7 +5148,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
             confirm: true
@@ -5178,7 +5178,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "switch", action: "off", deviceIds: [77777]],
             confirm: true
@@ -5208,7 +5208,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [66666], state: "on"]]],
             confirm: true
@@ -5274,7 +5274,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableReadOnly()
 
         when:
-        def result = script.toolUpdateNativeApp([addTrigger: [discover: true]])
+        def result = script.toolSetRule([addTrigger: [discover: true]])
 
         then: "discriminator field is 'capability'"
         result.discriminator == "capability"
@@ -5294,7 +5294,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "backup-before-write is a hard gate: a backup failure aborts the call BEFORE any write/click POST is issued"() {
-        // Every non-discover hub_update_native_app path runs _rmBackupRuleSnapshot
+        // Every non-discover hub_set_rule path runs _rmBackupRuleSnapshot
         // before dispatching to a write helper (settings/button/addTrigger/
         // addAction/removeAction/clearActions/moveAction/walkStep/etc.).
         // If the snapshot throws (config fetch fails, uploadHubFile fails,
@@ -5318,7 +5318,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "a non-discover write path tries to run with a broken backup pipeline"
-        script.toolUpdateNativeApp([
+        script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
             confirm: true
@@ -5341,7 +5341,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableReadOnly()
 
         when:
-        def result = script.toolUpdateNativeApp([addAction: [discover: true]])
+        def result = script.toolSetRule([addAction: [discover: true]])
 
         then: "discriminator field is 'capability'"
         result.discriminator == "capability"
@@ -5367,7 +5367,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.remove("enableHubAdminWrite")
 
         when:
-        def result = script.toolUpdateNativeApp([addTrigger: [discover: true]])
+        def result = script.toolSetRule([addTrigger: [discover: true]])
 
         then: "no exception -- discover bypasses the Hub Admin Write gate"
         notThrown(IllegalArgumentException)
@@ -5380,7 +5380,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.remove("enableHubAdminWrite")
 
         when:
-        def result = script.toolUpdateNativeApp([addAction: [discover: true]])
+        def result = script.toolSetRule([addAction: [discover: true]])
 
         then: "no exception -- discover bypasses the Hub Admin Write gate"
         notThrown(IllegalArgumentException)
@@ -5393,7 +5393,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String fn, byte[] b -> backupCalls << fn }
 
         when:
-        script.toolUpdateNativeApp([addTrigger: [discover: true]])
+        script.toolSetRule([addTrigger: [discover: true]])
 
         then: "no file upload -- no backup taken"
         backupCalls.isEmpty()
@@ -5405,7 +5405,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String fn, byte[] b -> backupCalls << fn }
 
         when:
-        script.toolUpdateNativeApp([addAction: [discover: true]])
+        script.toolSetRule([addAction: [discover: true]])
 
         then: "no file upload -- no backup taken"
         backupCalls.isEmpty()
@@ -5418,7 +5418,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.remove("enableHubAdminRead")
 
         when:
-        def result = script.toolUpdateNativeApp([addTrigger: [discover: true]])
+        def result = script.toolSetRule([addTrigger: [discover: true]])
 
         then: "returns schema regardless of feature-flag state"
         result.discriminator == "capability"
@@ -5487,7 +5487,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
             confirm: true
@@ -5520,7 +5520,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
             confirm: true
@@ -5557,7 +5557,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
             confirm: true
@@ -5614,7 +5614,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
             confirm: true
@@ -5661,7 +5661,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
             confirm: true
@@ -5708,7 +5708,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             // Mode trigger: no deviceIds, so no tDev schema-guard fires.
             addTrigger: [capability: "Mode", state: "Day"],
@@ -5874,7 +5874,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Seconds", everyN: 5]],
             confirm: true
@@ -5896,7 +5896,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Minutes", everyN: 15]],
             confirm: true
@@ -5928,7 +5928,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Weekly", daysOfWeek: ["Monday", "Friday"], startingTime: "08:00"]],
             confirm: true
@@ -5950,7 +5950,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Monthly", dayOfMonth: 15, everyNMonths: 2, startingTime: "09:30"]],
             confirm: true
@@ -5978,7 +5978,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Monthly", dayOfMonth: 15, everyNMonths: 1, months: ["January", "July"], startingTime: "09:30"]],
             confirm: true
@@ -5999,7 +5999,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Monthly", weekOfMonth: "Second", dayOfWeek: "Monday", everyNMonths: 1, startingTime: "08:00"]],
             confirm: true
@@ -6034,7 +6034,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Monthly", dayOfMonth: 15, weekOfMonth: "Second"]],
             confirm: true
@@ -6057,7 +6057,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Yearly", months: "December", weekOfMonth: "First", dayOfWeek: "Monday", startingTime: "08:00"]],
             confirm: true
@@ -6087,7 +6087,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Yearly", months: "December", weekOfMonth: "First", dayOfWeek: "Monday", everyNMonths: 3, startingTime: "08:00"]],
             confirm: true
@@ -6109,7 +6109,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Cron String", cronString: "0 0 12 * * ?"]],
             confirm: true
@@ -6126,7 +6126,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Periodic #freq everyN outside the restricted enum is rejected as success=false before opening the wizard"() {
         // The up-front IllegalArgumentException is caught by the whole-tool
-        // backup-and-catch envelope in toolUpdateNativeApp and surfaced as a
+        // backup-and-catch envelope in toolSetRule and surfaced as a
         // structured success=false map (consistent with the sibling
         // compareToDevice missing-comparator guard on this same addTrigger
         // path), NOT a propagated -32602. The validation still fires before the
@@ -6147,7 +6147,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: freq, everyN: 7]],
             confirm: true
@@ -6172,7 +6172,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when: "30 is in the allowed set"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Minutes", everyN: 30]],
             confirm: true
@@ -6189,7 +6189,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when: "the alternative 'at specific minutes' mode is used instead of everyN"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Minutes", selectedMinutes: [0, 30]]],
             confirm: true
@@ -6209,7 +6209,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when: "a fractional everyN whose floor IS in the restricted enum"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Minutes", everyN: everyN]],
             confirm: true
@@ -6240,7 +6240,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "everyN is a non-numeric string"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: freq, everyN: "abc"]],
             confirm: true
@@ -6267,7 +6267,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when: "Hourly everyN mode with a start time"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Hourly", everyN: 2, startingTime: "06:15"]],
             confirm: true
@@ -6291,7 +6291,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         when: "Hourly specific-hours alt mode (selectedHours) with a minute offset"
         def posts2 = registerPeriodicHubSurface(101)
-        def result2 = script.toolUpdateNativeApp([
+        def result2 = script.toolSetRule([
             appId: 101,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Hourly", selectedHours: [9, 12], minutesOffset: 15]],
             confirm: true
@@ -6314,7 +6314,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Hourly", everyN: 7, startingTime: "06:00"]],
             confirm: true
@@ -6333,7 +6333,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = registerPeriodicHubSurface(100)
 
         when: "Daily everyN with weekdaysOnly toggle"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", everyN: 1, weekdaysOnly: true, startingTime: "07:00"]],
             confirm: true
@@ -6358,7 +6358,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         when: "Daily specific-days alt mode (selectedDaysOfMonth)"
         def posts2 = registerPeriodicHubSurface(101)
-        def result2 = script.toolUpdateNativeApp([
+        def result2 = script.toolSetRule([
             appId: 101,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", selectedDaysOfMonth: [1, 15]]],
             confirm: true
@@ -6415,7 +6415,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Hourly", everyN: 1]],
             confirm: true
@@ -6486,7 +6486,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", everyN: 1, startingTime: "07:00"]],
             confirm: true
@@ -6551,7 +6551,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", everyN: 1, startingTime: "07:00"]],
             confirm: true
@@ -6617,7 +6617,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", everyN: 1, startingTime: "07:00"]],
             confirm: true
@@ -6675,7 +6675,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", everyN: 1, startingTime: "07:00"]],
             confirm: true
@@ -6718,7 +6718,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Periodic Schedule", periodic: [frequency: "Daily", everyN: 1, startingTime: "07:00"]],
             confirm: true
@@ -6766,7 +6766,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
             confirm: true
@@ -6801,7 +6801,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
             confirm: true
@@ -6848,7 +6848,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Mode", state: "Day"],
             confirm: true
@@ -6887,7 +6887,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
             confirm: true
@@ -6927,7 +6927,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"S2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTriggers: [
                 [capability: "Switch", deviceIds: [8], state: "on"],
@@ -6969,7 +6969,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on", conditional: true],
             confirm: true
@@ -7040,7 +7040,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"S2"}' }
 
         when: "addTrigger with an explicit condition Map (Motion-active gates Switch-on)"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Switch",
@@ -7177,7 +7177,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "addTrigger Variable with typed variable + comparator"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Variable", variable: "myVar", comparator: "*changed*"],
             confirm: true
@@ -7235,7 +7235,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Variable"],
             confirm: true
@@ -7296,7 +7296,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "addTrigger Variable with conditional A!=B comparison"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Variable",
@@ -7410,7 +7410,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "addTrigger with rawSettings using @N placeholder"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Variable",
@@ -7482,7 +7482,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        script.toolUpdateNativeApp([
+        script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Variable",
@@ -7558,7 +7558,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Variable",
@@ -7593,7 +7593,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Supplying both a variable RHS (compareToVariable) and a constant RHS (value) is
         // ambiguous; before the fix the static helper wrote BOTH xVar_<N> and state_<N>,
         // contradicting the doc's "mutually exclusive" claim. The reject must fire before
-        // any write -- the IllegalArgumentException is caught by toolUpdateNativeApp's
+        // any write -- the IllegalArgumentException is caught by toolSetRule's
         // backup-and-catch wrapper and surfaced as [success:false, error:...].
         given:
         enableHubAdminWrite()
@@ -7631,7 +7631,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Variable",
@@ -7686,7 +7686,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Variable",
@@ -7744,7 +7744,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Variable",
@@ -7804,7 +7804,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableHubAdminWrite()
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [discover: true],
             confirm: true
@@ -7879,7 +7879,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "switch", action: "on", deviceIds: [8]],
             confirm: true
@@ -7915,7 +7915,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Both-ways pending (orchestrator).
         when:
         def tools = script.getAllToolDefinitions()
-        def updateNativeApp = tools.find { it.name == "hub_update_native_app" }
+        def updateNativeApp = tools.find { it.name == "hub_set_rule" }
         def schemaText = updateNativeApp?.inputSchema?.toString() ?: ""
 
         then: "the addAction property description carries the self-bakes truth-up"
@@ -8007,7 +8007,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "switch", action: "on", deviceIds: [8]],
             confirm: true
@@ -8060,7 +8060,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "switch", action: "on", deviceIds: [8]],
             confirm: true
@@ -8120,7 +8120,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "log", message: "hello"],
             confirm: true
@@ -8204,7 +8204,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -8283,7 +8283,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -8339,7 +8339,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "attribute is supplied but comparator is missing"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Custom Attribute",
@@ -8385,7 +8385,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "comparator is supplied but attribute is missing"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Custom Attribute",
@@ -8519,7 +8519,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Custom Attribute",
@@ -8596,7 +8596,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Contact",
@@ -8685,7 +8685,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -8776,7 +8776,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -8865,7 +8865,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -8952,7 +8952,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable",
@@ -9027,7 +9027,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable",
@@ -9107,7 +9107,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -9195,7 +9195,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -9293,7 +9293,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable",
@@ -9357,7 +9357,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -9373,7 +9373,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
 
         then: "the walker rejects the ambiguous combination -- success=false with a mutual-exclusivity error"
-        // The IllegalArgumentException from the walker is caught by toolUpdateNativeApp's
+        // The IllegalArgumentException from the walker is caught by toolSetRule's
         // backup-and-catch wrapper and surfaced as a structured [success:false, error:...]
         // map (with backup/restoreHint), not the JSON-RPC isError envelope.
         result.success == false
@@ -9427,7 +9427,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"S2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -9441,7 +9441,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
 
         then: "the walker rejects the missing comparator -- success=false with a comparator error"
-        // IllegalArgumentException from the walker is caught by toolUpdateNativeApp's
+        // IllegalArgumentException from the walker is caught by toolSetRule's
         // backup-and-catch wrapper and surfaced as a structured [success:false, error:...] map.
         result.success == false
         result.error.toString().toLowerCase().contains("requires 'comparator'")
@@ -9505,7 +9505,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Custom Attribute",
@@ -9587,7 +9587,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Custom Attribute",
@@ -9650,7 +9650,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Switch",
@@ -9713,7 +9713,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Switch",
@@ -9780,7 +9780,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Switch",
@@ -9929,7 +9929,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("read-only mode")
         ex.message.contains("triggers")
-        ex.message.contains("hub_manage_native_rules_and_apps")
+        ex.message.contains("hub_manage_rule_machine")
     }
 
     // ---------- runCommand parameter slot-allocation fix ----------
@@ -10018,7 +10018,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "runCommand",
@@ -10143,7 +10143,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "runCommand",
@@ -10228,7 +10228,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "runCommand",
@@ -10403,7 +10403,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "addTrigger is called with atTime but no explicit time field"
-        script.toolUpdateNativeApp([
+        script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Certain Time (and optional date)",
@@ -10490,7 +10490,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        script.toolUpdateNativeApp([
+        script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
             confirm: true
@@ -10595,7 +10595,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "addTrigger with Switch capability and state=on"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
             confirm: true
@@ -10649,7 +10649,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "addTrigger with two device IDs"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8, 9]],
             confirm: true
@@ -10700,7 +10700,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "addTrigger with state=on -- hub silently ignores the write"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
             confirm: true
@@ -10794,7 +10794,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Mode", state: "Night"],
             confirm: true
@@ -10810,7 +10810,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         tstateWritten.isEmpty()
 
         and: "result indicates success and trigger was indexed"
-        // toolUpdateNativeApp does not surface capability on the addTrigger path
+        // toolSetRule does not surface capability on the addTrigger path
         // (only addAction does).  Assert on the fields that ARE returned.
         result?.success == true
         result?.triggerIndex == 1
@@ -10879,7 +10879,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Mode", modeIds: [3, 5]],
             confirm: true
@@ -10919,14 +10919,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Mode", state: "NotAMode"],
             confirm: true
         ])
 
         then: "result carries success=false and the error message names the bad mode + valid options"
-        // toolUpdateNativeApp catches IllegalArgumentException from _rmAddTrigger and
+        // toolSetRule catches IllegalArgumentException from _rmAddTrigger and
         // returns it as [success:false, error:"..."] rather than re-throwing. The error
         // message must identify the unrecognized name and list the valid alternatives.
         result?.success == false
@@ -10983,7 +10983,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        script.toolUpdateNativeApp([
+        script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Mode", state: "Home"],
             confirm: true
@@ -11083,7 +11083,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "addRequiredExpression with Custom Attribute + comparator writes RelrDev_1 via writeST -> _rmWriteSubPageField"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Custom Attribute",
@@ -11166,7 +11166,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "addRequiredExpression with Switch condition writes rDev_1 as a List via writeST -> _rmWriteSubPageField"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Switch",
@@ -11248,7 +11248,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when: "addRequiredExpression with comparator -- hub silently ignores the RelrDev_1 write"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Custom Attribute",
@@ -11295,7 +11295,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeTrigger: [index: 1], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeTrigger: [index: 1], confirm: true])
 
         then: "success on the first verification check -- no retries needed"
         result.success == true
@@ -11320,7 +11320,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeTrigger: [index: 5], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeTrigger: [index: 5], confirm: true])
 
         then: "returns success: false with a descriptive error listing existing indices"
         result.success == false
@@ -11363,7 +11363,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeTrigger: [index: 1], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeTrigger: [index: 1], confirm: true])
 
         then: "success after one retry -- race-recovery path"
         result.success == true
@@ -11393,7 +11393,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, removeTrigger: [index: 1], confirm: true])
+        def result = script.toolSetRule([appId: 100, removeTrigger: [index: 1], confirm: true])
 
         then: "returns success: false after retry budget exhausted"
         result.success == false
@@ -11442,7 +11442,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             modifyTrigger: [index: 1, mods: [state: "on"]],
             confirm: true
@@ -11493,7 +11493,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             modifyTrigger: [index: 7, mods: [state: "active"]],
             confirm: true
@@ -11522,7 +11522,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             modifyTrigger: [index: 1, mods: [state: "on", capability: "Motion"]],
             confirm: true
@@ -11547,7 +11547,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             modifyTrigger: [index: 1, mods: [:]],
             confirm: true
@@ -11581,7 +11581,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             modifyTrigger: [index: 1, mods: [state: "08:00"]],
             confirm: true
@@ -11610,16 +11610,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // executeTool) for both useGateways=true and useGateways=false.
     // ============================================================
 
-    // ---------- hub_create_native_app dispatch ----------
+    // ---------- hub_set_rule dispatch ----------
 
     @spock.lang.Unroll
-    def "hub_create_native_app via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('hub_create_native_app', [name: "BAT-RM-demo"])
+        def response = mcpDriver.callTool('hub_set_rule', [name: "BAT-RM-demo"])
 
         then:
         response.error.code == -32602
@@ -11630,13 +11630,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_native_app via dispatch returns -32602 envelope when name is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule via dispatch returns -32602 envelope when name is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('hub_create_native_app', [confirm: true])
+        def response = mcpDriver.callTool('hub_set_rule', [confirm: true])
 
         then:
         response.error.code == -32602
@@ -11647,7 +11647,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_create_native_app via dispatch discovers RM parent, creates child, returns new appId (useGateways=#useGateways)"() {
+    def "hub_set_rule via dispatch discovers RM parent, creates child, returns new appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -11664,7 +11664,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('hub_create_native_app', [name: "BAT-RM-demo", confirm: true])
+        def response = mcpDriver.callTool('hub_set_rule', [name: "BAT-RM-demo", confirm: true])
 
         then:
         response.error == null
@@ -11681,16 +11681,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // ---------- hub_update_native_app dispatch ----------
+    // ---------- hub_set_rule dispatch ----------
 
     @spock.lang.Unroll
-    def "hub_update_native_app via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
+    def "hub_set_rule via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
 
         when:
-        def response = mcpDriver.callTool('hub_update_native_app', [appId: 100, settings: [a: 1]])
+        def response = mcpDriver.callTool('hub_set_rule', [appId: 100, settings: [a: 1]])
 
         then:
         response.error.code == -32602
@@ -11701,7 +11701,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_native_app via dispatch emits 3-field capability contract for multi-device inputs (useGateways=#useGateways)"() {
+    def "hub_set_rule via dispatch emits 3-field capability contract for multi-device inputs (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -11719,7 +11719,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('hub_update_native_app', [appId: 100, settings: [tDev0: [8, 9]], confirm: true])
+        def response = mcpDriver.callTool('hub_set_rule', [appId: 100, settings: [tDev0: [8, 9]], confirm: true])
 
         then:
         response.error == null
@@ -11737,7 +11737,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_native_app via dispatch surfaces success:false when the hub rejects the write (useGateways=#useGateways)"() {
+    def "hub_set_rule via dispatch surfaces success:false when the hub rejects the write (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableHubAdminWrite()
@@ -11751,7 +11751,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('hub_update_native_app', [appId: 100, settings: [origLabel: "x"], confirm: true])
+        def response = mcpDriver.callTool('hub_set_rule', [appId: 100, settings: [origLabel: "x"], confirm: true])
 
         then: 'the rejected write surfaces as failure through the full dispatch envelope, not as success'
         response.error == null
@@ -12097,7 +12097,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "counter", value: 42],
             confirm: true
@@ -12152,7 +12152,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "variable", variable: "myVar", value: 10],
             confirm: true
@@ -12218,7 +12218,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "dest", sourceVariable: "source"],
             confirm: true
@@ -12256,13 +12256,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", value: 99],
             confirm: true
         ])
 
-        then: "validation error surfaces in result.error (toolUpdateNativeApp catches IAE from _rmAddAction)"
+        then: "validation error surfaces in result.error (toolSetRule catches IAE from _rmAddAction)"
         result.success == false
         result.error?.contains("requires 'variable'")
     }
@@ -12282,13 +12282,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "counter"],
             confirm: true
         ])
 
-        then: "validation error surfaces in result.error (toolUpdateNativeApp catches IAE from _rmAddAction)"
+        then: "validation error surfaces in result.error (toolSetRule catches IAE from _rmAddAction)"
         result.success == false
         result.error?.contains("requires 'value' (numeric constant) or 'sourceVariable'")
     }
@@ -12309,13 +12309,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "counter", value: 99, sourceVariable: "other"],
             confirm: true
         ])
 
-        then: "mutual-exclusion error surfaces in result.error (toolUpdateNativeApp catches IAE from _rmAddAction)"
+        then: "mutual-exclusion error surfaces in result.error (toolSetRule catches IAE from _rmAddAction)"
         result.success == false
         result.error?.contains("provide 'value' OR 'sourceVariable', not both")
     }
@@ -12339,7 +12339,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "mode", modeName: "AnyMode"],
             confirm: true
@@ -12448,7 +12448,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "runCommand",
@@ -12534,7 +12534,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "runCommand",
@@ -12617,7 +12617,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "runCommand",
@@ -12700,7 +12700,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "runCommand",
@@ -12778,7 +12778,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "runCommand",
@@ -12844,7 +12844,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "runCommand",
@@ -12948,7 +12948,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "runCommand",
@@ -13043,7 +13043,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "runCommand",
@@ -13081,7 +13081,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "unknownTarget", value: 42],
             confirm: true
@@ -13114,7 +13114,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "target", sourceVariable: "ghostSource"],
             confirm: true
@@ -13146,7 +13146,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "anything", value: 1],
             confirm: true
@@ -13193,7 +13193,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "unknownButNotValidated", value: 7],
             confirm: true
@@ -13248,7 +13248,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "dst", sourceVariable: "src"],
             confirm: true
@@ -13302,7 +13302,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "dst", sourceVariable: "src"],
             confirm: true
@@ -13359,7 +13359,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "dst", sourceVariable: "ghostSrc"],
             confirm: true
@@ -13393,7 +13393,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "counter", value: badValue],
             confirm: true
@@ -13449,7 +13449,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "counter", value: 0],
             confirm: true
@@ -13490,7 +13490,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "unvalidated", value: 7],
             confirm: true
@@ -13529,7 +13529,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { req -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "runCommand", command: "setLevel", deviceIds: [],
                         parameters: params],
@@ -13565,7 +13565,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "runCommand", command: "setLevel", deviceIds: [],
                         parameters: [[type: "number"]]],  // no value, no variable
@@ -13598,7 +13598,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "runCommand", command: "cmd", deviceIds: [],
                         parameters: [[type: pType, value: badValue]]],
@@ -13656,7 +13656,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "dst", sourceVariable: "src"],
             confirm: true
@@ -13713,7 +13713,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "setVariable", variable: "dst", sourceVariable: "src"],
             confirm: true
@@ -13762,7 +13762,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "mode", modeName: "Night"],
             confirm: true
@@ -13807,7 +13807,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "mode", modeId: 5],
             confirm: true
@@ -13834,13 +13834,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "mode", modeName: "NoSuchMode"],
             confirm: true
         ])
 
-        then: "validation error surfaces in result.error (toolUpdateNativeApp catches IAE from _rmAddAction)"
+        then: "validation error surfaces in result.error (toolSetRule catches IAE from _rmAddAction)"
         result.success == false
         result.error?.contains("NoSuchMode")
         result.error?.contains("Home")
@@ -13882,7 +13882,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [capability: "mode", modeName: "night"],
             confirm: true
@@ -13985,7 +13985,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Mode", state: "Night"]]],
             confirm: true
@@ -14079,7 +14079,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         when:
         // modeIds: ["99"] -- ID 99 is not in location.modes (proves name resolution is bypassed)
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Mode", modeIds: ["99"]]]],
             confirm: true
@@ -14128,7 +14128,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Mode", state: "Night"]]],
             confirm: true
@@ -14171,7 +14171,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Mode"]]],
             confirm: true
@@ -14279,7 +14279,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -14386,7 +14386,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "caller submits the maintainer's exact repro shape (clock 08:00 to clock 20:00)"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -14473,7 +14473,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -14534,7 +14534,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "start.type='sunrise' but the offset field (startSunriseOffset<N>) never appears"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -14606,7 +14606,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "end.type='sunset' but endSunriseOffset<N> never appears"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -14716,7 +14716,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable",
@@ -14771,7 +14771,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable", variable: "myVar", comparator: "=", value: 1
@@ -14828,7 +14828,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable", variable: "unknownVar", comparator: "=", value: 1
@@ -14935,7 +14935,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"HumiditySensor"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Custom Attribute",
@@ -14992,7 +14992,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Custom Attribute", deviceIds: [8],
@@ -15039,7 +15039,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "start.time is absent for clock type"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -15085,7 +15085,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "end.offset is absent for sunrise type"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -15190,7 +15190,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -15302,7 +15302,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -15359,7 +15359,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "start is not a Map"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -15404,7 +15404,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -15449,7 +15449,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -15509,7 +15509,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable", variable: "myVar", comparator: "=", value: 1
@@ -15576,7 +15576,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable", variable: "myVar", comparator: "=", value: 1
@@ -15639,7 +15639,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Custom Attribute", deviceIds: [8],
@@ -15746,7 +15746,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature",
@@ -15806,7 +15806,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature",
@@ -15893,7 +15893,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature",
@@ -15962,7 +15962,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"T2"}' }
 
         when: "compareToDevice with no state or value"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature",
@@ -16014,7 +16014,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "variable field is absent"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable",
@@ -16059,7 +16059,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "comparator field is absent"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable",
@@ -16106,7 +16106,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S"}' }
 
         when: "attribute present but comparator absent"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Custom Attribute",
@@ -16153,7 +16153,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "comparator present but attribute absent"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Custom Attribute",
@@ -16199,7 +16199,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature",
@@ -16245,7 +16245,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature",
@@ -16325,7 +16325,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Mode",
@@ -16453,7 +16453,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"HumiditySensor"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -16540,7 +16540,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -16631,7 +16631,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -16735,7 +16735,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -16838,7 +16838,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"Sensor2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -16904,7 +16904,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -16961,7 +16961,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17016,7 +17016,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17075,7 +17075,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17145,7 +17145,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17234,7 +17234,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17302,7 +17302,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17359,7 +17359,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17405,7 +17405,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17456,7 +17456,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17508,7 +17508,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17567,7 +17567,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17636,7 +17636,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Mode", state: "Night"]]],
             confirm: true
@@ -17687,7 +17687,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17749,7 +17749,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17818,7 +17818,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17891,7 +17891,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"Sensor"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -17954,7 +17954,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Mode", state: "Night"]]],
             confirm: true
@@ -17971,10 +17971,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- W-addRE-propagation ----------
     //
     // Verifies that when _rmWalkConditionReveal throws from inside addRequiredExpression,
-    // the outer toolUpdateNativeApp propagates the inner failure fields (success=false,
+    // the outer toolSetRule propagates the inner failure fields (success=false,
     // error, etc.) rather than wrapping them in a generic envelope or re-throwing bare.
 
-    def "addRequiredExpression: outer toolUpdateNativeApp propagates inner failure fields on STPage walk error"() {
+    def "addRequiredExpression: outer toolSetRule propagates inner failure fields on STPage walk error"() {
         // When the walker fails (e.g. modes picker not revealed), the outer call must
         // surface success=false and error in the returned map, not an unhandled exception.
         // Both-ways pending (orchestrator).
@@ -18008,7 +18008,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Mode", state: "Night"]]],
             confirm: true
@@ -18080,7 +18080,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"Ref"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [
                 operator: "AND",
@@ -18172,7 +18172,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Mode", state: "Day", not: true]]],
             confirm: true
@@ -18257,7 +18257,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -18341,7 +18341,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable", variable: "myVar", comparator: "=", value: 5, not: true
@@ -18423,7 +18423,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"Sensor"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Custom Attribute", deviceIds: [8],
@@ -18518,7 +18518,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature", deviceIds: [8], comparator: ">",
@@ -18595,7 +18595,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Mode", state: "Day",
@@ -18674,7 +18674,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable", variable: "myVar", comparator: "=", value: 5,
@@ -18756,7 +18756,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"Sensor"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Custom Attribute", deviceIds: [8],
@@ -18843,7 +18843,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -18935,7 +18935,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature", deviceIds: [8], comparator: ">",
@@ -19021,7 +19021,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "elseIf",
@@ -19088,7 +19088,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "repeatWhile",
@@ -19155,7 +19155,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "waitExpression",
@@ -19247,7 +19247,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/73') { params -> '{"id":"73","name":"Sensor"}' }
 
         when: "caller passes singular deviceId: 73 instead of deviceIds: [73]"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Custom Attribute",
@@ -19328,7 +19328,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/73') { params -> '{"id":"73","name":"Sensor"}' }
 
         when: "caller passes singular deviceId: 73 instead of deviceIds: [73]"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -19387,7 +19387,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/73') { params -> '{"id":"73","name":"MotionSensor"}' }
 
         when: "addAction ifThen with subExpression carrying singular deviceId"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -19456,7 +19456,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // condition Map carries the singular non-existent deviceId that must
         // be normalized then caught by _rmValidateDeviceIdsExist on the
         // trigger.condition path.
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Switch",
@@ -19542,7 +19542,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"MotionSensor"}' }
 
         when: "caller passes BOTH deviceId: 5 AND deviceIds: [99]; deviceIds must win"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Motion",
@@ -19587,7 +19587,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/9999') { params -> '' }
 
         when: "singular deviceId: 9999 for a device that does not exist"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Switch",
@@ -19670,7 +19670,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/73') { params -> '{"id":"73","name":"MotionSensor"}' }
 
         when: "singular deviceId inside nested subExpression.conditions"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 subExpression: [conditions: [[
@@ -19758,7 +19758,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Mode", state: "Night"]]],
             confirm: true
@@ -19807,7 +19807,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -19900,7 +19900,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Between two times",
@@ -19968,7 +19968,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"RefSensor"}' }
 
         when: "one condition with compareToDevice (static schema, RHS-type toggle never appears)"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature",
@@ -20040,7 +20040,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // reason='silent_rejection' (the schema didn't grow / shrink after the
         // write -- characteristic of a static fixture). The hint's count must
         // reflect distinct condIdx values, not entry count.
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Switch",
@@ -20070,7 +20070,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- W-spec-addRE-note-text: count-aware Required Expression note ----------
     //
-    // toolUpdateNativeApp's addRequiredExpression dispatcher emits "Required
+    // toolSetRule's addRequiredExpression dispatcher emits "Required
     // Expression added with N condition(s); updateRule fired." with a count-
     // aware ternary on condition/conditions. Pin both forms so a regression
     // that drops the discrimination is caught.
@@ -20126,7 +20126,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"Motion"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[capability: "Motion", deviceIds: [8], state: "active"]]],
             confirm: true
@@ -20204,7 +20204,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"MotionB"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [
                 conditions: [
@@ -20224,14 +20224,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- W-spec-subscriptionSettle: count-aware helper output (precursor) ----------
     //
-    // The subscription-settle WARN message inside toolUpdateNativeApp's
+    // The subscription-settle WARN message inside toolSetRule's
     // button-handler dispatcher uses two count-aware phrasings for "trigger
     // is" / "triggers are". The helper _rmCheckSubscriptionSettle determines
     // the count via tDev<N> setting introspection. Pin both forms via the
     // helper output: triggerCount=1 (singular path) and triggerCount=2 (plural).
     // Both-ways pending (orchestrator).
     def "subscriptionSettle WARN message: singular 'trigger is' when triggerCount=1"() {
-        // Drive the count-aware trigVerb ternary inside toolUpdateNativeApp's
+        // Drive the count-aware trigVerb ternary inside toolSetRule's
         // button-handler post-updateRule branch via a real statusJson stub
         // returning one tDev entry + zero subscriptions.
         // _rmCheckSubscriptionSettle reports unsettled=true twice (initial +
@@ -20261,7 +20261,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, button: "updateRule", confirm: true])
+        def result = script.toolSetRule([appId: 100, button: "updateRule", confirm: true])
 
         then: "WARN string says 'trigger is' singular (count-aware, not the stringified-word ternary)"
         result.subscriptionSettle?.contains("rule has 1 trigger but")
@@ -20271,7 +20271,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "subscriptionSettle WARN message: plural 'triggers are' when triggerCount=2"() {
         // Plural-side regression pin for the trigVerb ternary in
-        // toolUpdateNativeApp's button-handler post-updateRule branch.
+        // toolSetRule's button-handler post-updateRule branch.
         // Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
@@ -20299,7 +20299,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([appId: 100, button: "updateRule", confirm: true])
+        def result = script.toolSetRule([appId: 100, button: "updateRule", confirm: true])
 
         then: "WARN string says 'triggers are' plural"
         result.subscriptionSettle?.contains("rule has 2 triggers but")
@@ -20372,7 +20372,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/73') { params -> '{"id":"73","name":"MotionSensor"}' }
 
         when: "trigger with conditional whose condition uses singular deviceId: 73"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Switch",
@@ -20471,7 +20471,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature",
@@ -20530,7 +20530,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature",
@@ -20587,7 +20587,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
         when: "offset is requested but the field is not in the schema"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature",
@@ -20672,7 +20672,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Switch", deviceIds: [8], state: "on"
@@ -20777,7 +20777,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         sharedLocation.modes = [[id: "3", name: "Night"]]
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -20849,7 +20849,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable", variable: "myVar", comparator: "=", value: 42
@@ -20912,7 +20912,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "comparator '=' supplied but neither state nor value"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable", variable: "myVar", comparator: "="
@@ -20970,7 +20970,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "Variable + comparator '*changed*' supplied, no state, no value"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable", variable: "myVar", comparator: "*changed*"
@@ -21014,7 +21014,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/9')  { params -> '{"id":"9","name":"S2"}' }
 
         when: "expression.conditions contains a nested subExpression entry"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -21088,7 +21088,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         sharedLocation.modes = [[id: "3", name: "Night"]]
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Mode", state: "Night"
@@ -21165,7 +21165,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         sharedLocation.modes = [[id: "3", name: "Night"]]
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Mode", state: "Night"
@@ -21189,20 +21189,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- discrete-event vocabulary -- Tamper detected/clear (now in the guide) ----------
 
-    def "hub_update_native_app reference aligns Tamper with detected/clear vocabulary (in the guide)"() {
+    def "hub_set_rule reference aligns Tamper with detected/clear vocabulary (in the guide)"() {
         // Tamper actually emits 'detected'/'clear'; the wrong forms 'tampered' / 'not detected'
         // would fail the live walker's option validation and mislead agents. The exhaustive
-        // discrete-event vocabulary now lives in the update_native_app_reference guide (moved
+        // discrete-event vocabulary now lives in the set_rule_reference guide (moved
         // there to keep the inline description lean -- issue #181; reachable inline via guide:true).
         // So: the inline description must never surface the WRONG forms, and the guide must carry
         // the RIGHT ones. CO2 vocabulary is intentionally NOT pinned -- CarbonDioxideMeasurement
         // is numeric ppm (comparator + value), not a discrete enum.
         when:
         def tools = script.getAllToolDefinitions()
-        def updateNativeApp = tools.find { it.name == "hub_update_native_app" }
+        def updateNativeApp = tools.find { it.name == "hub_set_rule" }
         def schemaText = updateNativeApp?.inputSchema?.toString() ?: ""
         def fullText = (updateNativeApp?.description ?: "") + " " + schemaText
-        def guide = (script.toolGetToolGuide("update_native_app_reference")?.content ?: "").toString()
+        def guide = (script.toolGetToolGuide("set_rule_reference")?.content ?: "").toString()
 
         then: "neither the inline description nor the guide surfaces the wrong vocabulary"
         !fullText.contains("'tampered'")
@@ -21259,7 +21259,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable", variable: "myVar", comparator: "=", value: 42
@@ -21345,7 +21345,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature",
@@ -21431,7 +21431,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Switch", deviceIds: [8], state: "on"
@@ -21499,7 +21499,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
             confirm: true
@@ -21529,7 +21529,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.repairHints?.any { it?.toString()?.contains("updateRule click was rejected") }
 
         and: "note text reflects the FAILED outcome (consumer-visible response field)"
-        // Load-bearing discriminator: the note ternary in toolUpdateNativeApp's
+        // Load-bearing discriminator: the note ternary in toolSetRule's
         // addTrigger dispatcher selects between "FAILED -- subscriptions may
         // not be live" (failure branch) and "fired (subscriptions populated)"
         // (success branch). A typo regression on either branch would pass the
@@ -21566,7 +21566,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
             confirm: true
@@ -21603,7 +21603,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- bulk addTriggers/addActions trailing-updateRule failure surfaces dedicated slots ----------
 
     @spock.lang.Unroll
-    def "hub_update_native_app bulk #shape trailing-updateRule failure surfaces dedicated slots"() {
+    def "hub_set_rule bulk #shape trailing-updateRule failure surfaces dedicated slots"() {
         // Sibling pattern from the patches trailing-updateRule failure spec and
         // the addLocalVariable / addRequiredExpression counterparts. When the
         // post-bulk updateRule click is rejected, the per-item adds landed but
@@ -21656,7 +21656,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"S2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp(args + [appId: 100, confirm: true])
+        def result = script.toolSetRule(args + [appId: 100, confirm: true])
 
         then: "trailing updateRule click was attempted -- precondition"
         // Without this, an earlier-throw regression (per-item add throws before
@@ -21704,7 +21704,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_native_app bulk #shape trailing-updateRule SUCCESS leaves updateRuleFailed + subscriptionsNotLive falsy"() {
+    def "hub_set_rule bulk #shape trailing-updateRule SUCCESS leaves updateRuleFailed + subscriptionsNotLive falsy"() {
         // Negative pin paired with the bulk-path failure spec above. A regression
         // that initializes updateRuleFailed=true or subscriptionsNotLive=true at
         // the wrong default (so callers see them true even on success) would
@@ -21742,7 +21742,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"S2"}' }
 
         when:
-        def result = script.toolUpdateNativeApp(args + [appId: 100, confirm: true])
+        def result = script.toolSetRule(args + [appId: 100, confirm: true])
 
         then: "trailing updateRule click happened -- precondition"
         updateRuleClicked == true
@@ -21780,7 +21780,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_native_app bulk #shape per-item partial with updateRule SUCCESS still flips partial:true (W7/W11)"() {
+    def "hub_set_rule bulk #shape per-item partial with updateRule SUCCESS still flips partial:true (W7/W11)"() {
         // W7: pins the partial OR-branch (`itemsPartial || updateRuleFailed`) on the
         // SUCCESS path of the trailing updateRule. Sibling-coverage gap: the failure
         // @Unroll above always flips partial:true via updateRuleFailed; the success
@@ -21834,7 +21834,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99999') { params -> "" }
 
         when:
-        def result = script.toolUpdateNativeApp(args + [appId: 100, confirm: true])
+        def result = script.toolSetRule(args + [appId: 100, confirm: true])
 
         then: "trailing updateRule click succeeded -- precondition"
         // Without this, an earlier-throw regression would silently make the rest
@@ -21919,7 +21919,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/73') { params -> '{"id":"73","name":"MotionSensor"}' }
 
         when: "trigger.condition uses singular integer deviceId"
-        script.toolUpdateNativeApp([
+        script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Switch",
@@ -21996,7 +21996,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"MotionSensor2"}' }
 
         when: "trigger.condition uses multi-device deviceIds list directly (no normalize needed)"
-        script.toolUpdateNativeApp([
+        script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Switch",
@@ -22034,7 +22034,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // _rmValidateDeviceIdsExist queries /device/fullJson/<id>. The pre-validation
         // throws IllegalArgumentException BEFORE any wizard write fires, so no
         // selectTriggers schema is needed -- the throw propagates up to the
-        // toolUpdateNativeApp catch and surfaces as result.success=false.
+        // toolSetRule catch and surfaces as result.success=false.
         // Both-ways pending (orchestrator).
         given:
         enableHubAdminWrite()
@@ -22051,7 +22051,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99999') { params -> '' }  // empty -- not on hub
 
         when: "trigger.condition uses singular deviceId pointing at a non-existent device"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addTrigger: [
                 capability: "Switch",
@@ -22146,7 +22146,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         sharedLocation.modes = [[id: "3", name: "Night"]]
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Mode", state: "Night"
@@ -22184,7 +22184,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "patches: trailing updateRule failure surfaces updateRuleFailed + patchesNotLive + repairHints"() {
         // Sibling pattern from the F2 addRequiredExpression propagation
         // dispatcher and its addTrigger counterpart (both inside
-        // toolUpdateNativeApp). When the post-patch updateRule
+        // toolSetRule). When the post-patch updateRule
         // click is rejected the patches landed but never bake; envelope MUST carry
         // dedicated slots (updateRuleFailed / patchesNotLive / updateRuleError),
         // flip success=false, and append a recovery repairHint.
@@ -22232,7 +22232,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [[addRequiredExpression: [conditions: [[
                 capability: "Switch", deviceIds: [8], state: "on"
@@ -22311,7 +22311,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [[addRequiredExpression: [conditions: [[
                 capability: "Switch", deviceIds: [8], state: "on"
@@ -22376,7 +22376,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addLocalVariable: [name: "counter", type: "Number", value: 42],
             confirm: true
@@ -22436,7 +22436,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addLocalVariable: [name: "counter", type: "Number", value: 42],
             confirm: true
@@ -22462,7 +22462,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !hints.any { it?.toString()?.contains("updateRule click was rejected") }
     }
 
-    def "hub_update_native_app addLocalVariable inner-helper failure: outer envelope surfaces inner.partial / error / hubRenderError / merged repairHints (B2 propagation contract)"() {
+    def "hub_set_rule addLocalVariable inner-helper failure: outer envelope surfaces inner.partial / error / hubRenderError / merged repairHints (B2 propagation contract)"() {
         // B2 propagation pin (C-W2). _rmAddLocalVariable's commit-verification path
         // returns {success:false, partial:true, hubRenderError:true, error:<msg>,
         // repairHints:[<inner hints>]} when state.allLocalVars never picks up the
@@ -22514,7 +22514,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addLocalVariable: [name: "counter", type: "Number", value: 42],
             confirm: true
@@ -22637,7 +22637,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Switch", deviceIds: [8], state: "on"
@@ -22695,7 +22695,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"S1"}' }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Switch", deviceIds: [8], state: "on"
@@ -22761,7 +22761,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        script.toolUpdateNativeApp([
+        script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable", variable: "myVar", comparator: "=", value: 42
@@ -22830,7 +22830,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "caller passes ASCII '!='"
-        script.toolUpdateNativeApp([
+        script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Variable", variable: "myVar", comparator: "!=", value: 42
@@ -22894,7 +22894,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        script.toolUpdateNativeApp([
+        script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -22957,7 +22957,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"HumiditySensor"}' }
 
         when:
-        script.toolUpdateNativeApp([
+        script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -23040,7 +23040,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "patches bundle with addRequiredExpression Mode condition"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [[addRequiredExpression: [conditions: [[
                 capability: "Mode", state: "Night"
@@ -23070,7 +23070,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.patches[0]?.op == "addRequiredExpression" || result.patches[0]?.success != false
     }
 
-    def "hub_update_native_app patches with inner addRequiredExpression returning partial:true -- outer envelope partial:true even when trailing updateRule succeeds (B1 inner-op detection)"() {
+    def "hub_set_rule patches with inner addRequiredExpression returning partial:true -- outer envelope partial:true even when trailing updateRule succeeds (B1 inner-op detection)"() {
         // B1 inner-op-partial detection pin (C-W3). The B1 fix adds the clause
         // `patchResults.any { it instanceof Map && (it.partial == true) }` to the
         // outer patches envelope's partial formula. Existing patches specs cover
@@ -23150,7 +23150,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
         when: "patches bundle with addRequiredExpression in compareToDevice fallback path"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [[addRequiredExpression: [conditions: [[
                 capability: "Temperature",
@@ -23245,7 +23245,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"S1"}' }
 
         when: "caller passes comparator with no state, no value"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: cap, deviceIds: [8], comparator: ">"
@@ -23332,7 +23332,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"Sensor1"}' }
 
         when: "caller passes the valid state value (no comparator)"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: cap, deviceIds: [8], state: validState
@@ -23416,7 +23416,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"CO2-Sensor"}' }
 
         when: "caller passes comparator + numeric value (the valid CO2 shape)"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Carbon dioxide sensor", deviceIds: [8], comparator: ">", value: 800
@@ -23503,7 +23503,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"Leak1"}' }
 
         when: "caller passes addAction(ifThen) with discrete-event cap + comparator + no state"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -23663,7 +23663,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp(args + [appId: 100, confirm: true])
+        def result = script.toolSetRule(args + [appId: 100, confirm: true])
 
         then: "trailing updateRule click was attempted -- precondition"
         // Without this, an earlier-throw regression (per-item helper fails before
@@ -23784,7 +23784,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp(args + [appId: 100, confirm: true])
+        def result = script.toolSetRule(args + [appId: 100, confirm: true])
 
         then: "trailing updateRule click happened -- precondition"
         updateRuleClicked == true
@@ -23882,7 +23882,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [[moveAction: [index: 1, direction: "down"]]],
             confirm: true
@@ -23929,7 +23929,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [[removeAction: [index: 1]]],
             confirm: true
@@ -24042,7 +24042,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]],
             confirm: true
@@ -24158,7 +24158,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]],
             confirm: true
@@ -24240,7 +24240,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             modifyTrigger: [index: 1, mods: [state: "off"]],
             confirm: true
@@ -24303,7 +24303,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [[clearActions: true]],
             confirm: true
@@ -24355,7 +24355,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [[replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]]]],
             confirm: true
@@ -24409,7 +24409,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [[clearActions: true]],
             confirm: true
@@ -24481,7 +24481,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [[replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]]]],
             confirm: true
@@ -24547,7 +24547,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/88888') { params -> "" }
 
         when: "bogus deviceId is nested inside subExpression.conditions[]"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 subExpression: [conditions: [[
@@ -24601,7 +24601,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when: "a non-Map sits at the nested conditions[1].subExpression.conditions[0] slot"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [
                 // Pass operator to bypass the early "2 conditions require
@@ -24703,7 +24703,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when: "addAction ifThen with a Mode condition on static-schema doActPage"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -24755,7 +24755,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // the I6 SUCCESS row does not assert `partial != true`). P2 class-fix
     // enforcement.
 
-    def "hub_update_native_app modifyTrigger inner-helper settingsSkipped: outer partial:true bubbles even when trailing updateRule succeeds (C3 contract)"() {
+    def "hub_set_rule modifyTrigger inner-helper settingsSkipped: outer partial:true bubbles even when trailing updateRule succeeds (C3 contract)"() {
         // Drive _rmModifyTrigger down its silent_rejection path by withholding
         // every per-write detection signal on selectTriggers:
         //   schemaShifted   -- keys equal pre/post + value field stays unset
@@ -24814,7 +24814,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             modifyTrigger: [index: 1, mods: [state: "off"]],
             confirm: true
@@ -24880,7 +24880,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when: "valid deviceId nested inside subExpression.conditions[]"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 subExpression: [conditions: [[
@@ -24960,7 +24960,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addAction: [
                 capability: "ifThen",
@@ -25057,7 +25057,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             addActions: [[capability: "switch", action: "on", deviceIds: [8]]],
             confirm: true
@@ -25166,7 +25166,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
         when: "patches bundle with addRequiredExpression in compareToDevice fallback path"
-        def result = script.toolUpdateNativeApp([
+        def result = script.toolSetRule([
             appId: 100,
             patches: [[addRequiredExpression: [conditions: [[
                 capability: "Temperature",
@@ -25201,5 +25201,156 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // partial-pin above vacuously satisfied via some other source.
         result.patches?.size() == 1
         result.patches[0]?.partial == true
+    }
+
+    // ========================================================================
+    // Issue #137 — new-tool coverage for the create+edit upsert split:
+    // hub_set_native_app (generic) and hub_set_rule's create-with-bundle path.
+    // ========================================================================
+
+    def "hub_set_native_app create branch (no appId) builds a shell via _createNativeAppShell"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
+        hubGet.register('/installedapp/configure/json/980') { params -> ruleConfigJson(980, "", [[name: "origLabel", type: "text"]]) }
+        hubGet.register('/installedapp/statusJson/980') { params -> statusJson(980) }
+        def createCalls = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            createCalls << path
+            [status: 302, location: "/installedapp/configure/980", data: ""]
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when: "omit appId -> generic create branch"
+        def result = script.toolSetNativeApp([name: "BAT-generic-app", confirm: true])
+
+        then: "createchild fired and the label was set; result carries the new appId"
+        createCalls.any { it == "/installedapp/createchild/hubitat/Rule-5.1/parent/21" }
+        posts.find { it.path == "/installedapp/update/json" }?.body?.get("settings[origLabel]") == "BAT-generic-app"
+        result.appId == 980
+        result.name == "BAT-generic-app"
+    }
+
+    def "hub_set_native_app edit branch (appId present) writes settings via the shared edit engine"() {
+        given:
+        enableHubAdminWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when: "appId present + settings -> edit branch (settings fall-through)"
+        def result = script.toolSetNativeApp([appId: 100, settings: [origLabel: "renamed"], confirm: true])
+
+        then: "settings POSTed for the existing app via the shared engine"
+        def updatePost = posts.find { it.path == "/installedapp/update/json" }
+        updatePost.body["settings[origLabel]"] == "renamed"
+        updatePost.body.id == "100"
+        result.appId == 100
+    }
+
+    def "hub_set_native_app requires confirm=true"() {
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolSetNativeApp([name: "x"])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "hub_set_native_app schema is LEAN -- generic params only, no RM trigger/action sugar"() {
+        when:
+        def def_ = script.getAllToolDefinitions().find { it.name == 'hub_set_native_app' }
+        def props = def_.inputSchema.properties.keySet()
+
+        then: "exactly the generic upsert params"
+        props == (['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute', 'confirm'] as Set)
+
+        and: "NONE of the FAT RM authoring params leak into the generic tool"
+        ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression',
+         'patches', 'replaceActions', 'removeAction', 'clearActions', 'moveAction',
+         'removeTrigger', 'modifyTrigger', 'walkStep', 'addLocalVariable', 'guide'].every { !props.contains(it) }
+    }
+
+    def "hub_set_native_app dispatch-envelope through the native gateway routes to create"() {
+        given:
+        settingsMap.useGateways = true
+        enableHubAdminWrite()
+        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
+        hubGet.register('/installedapp/configure/json/981') { params -> ruleConfigJson(981, "", [[name: "origLabel", type: "text"]]) }
+        hubGet.register('/installedapp/statusJson/981') { params -> statusJson(981) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapp/configure/981", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_native_app', [name: "BAT-gw-app", confirm: true])
+
+        then:
+        result instanceof Map
+        result.isError != true
+        result.appId == 981
+    }
+
+    def "hub_set_rule create-with-bundle gathers addTrigger/addActions into the create args in one call"() {
+        given: "stub the (public) shell builder so this pins toolSetRule's gather logic, not the wizard"
+        enableHubAdminWrite()
+        def capturedArgs = null
+        script.metaClass._createNativeAppShell = { args ->
+            capturedArgs = args
+            [success: true, appId: 982, appType: args.appType, name: args.name]
+        }
+
+        when: "no appId + a bundled addTrigger + addActions -> create branch gathers them"
+        def result = script.toolSetRule([
+            name: "BAT-bundle-rule",
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+            addActions: [[capability: "log", message: "hi"]],
+            confirm: true
+        ])
+
+        then: "the create branch fired, forcing appType=rule_machine"
+        capturedArgs != null
+        capturedArgs.appType == "rule_machine"
+        capturedArgs.name == "BAT-bundle-rule"
+        result.appId == 982
+
+        and: "the bundled single addTrigger + bulk addActions were folded into triggers/actions"
+        capturedArgs.triggers?.size() == 1
+        capturedArgs.triggers[0].capability == "Switch"
+        capturedArgs.actions?.size() == 1
+        capturedArgs.actions[0].capability == "log"
+    }
+
+    def "hub_set_rule with appId present routes to the edit engine, NOT create"() {
+        given:
+        enableHubAdminWrite()
+        def shellCalled = false
+        script.metaClass._createNativeAppShell = { args -> shellCalled = true; [:] }
+        def editArgs = null
+        script.metaClass._applyNativeAppEdit = { args -> editArgs = args; [success: true, appId: args.appId] }
+
+        when: "appId present -> edit branch"
+        def result = script.toolSetRule([appId: 555, settings: [origLabel: "x"], confirm: true])
+
+        then: "the edit engine ran with the appId; the create shell did not"
+        !shellCalled
+        editArgs?.appId == 555
+        result.appId == 555
     }
 }

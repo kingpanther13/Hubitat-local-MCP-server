@@ -420,12 +420,12 @@ class TestRunner:
         assert "version" in data, "Health response missing version"
 
     @test("infrastructure")
-    def test_update_native_app_guide_param(self) -> None:
-        # guide:true returns the hub_update_native_app capability reference inline (no
+    def test_set_rule_guide_param(self) -> None:
+        # guide:true returns the hub_set_rule capability reference inline (no
         # separate hub_get_tool_guide call) and makes NO rule change -- a pure static
         # early-return alongside the discover-mode short-circuit. Pins the new param.
-        result = self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_update_native_app", "args": {"guide": True},
+        result = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule", "args": {"guide": True},
         })
         blob = str(result)
         assert "addTrigger" in blob and "walkStep" in blob, \

@@ -66,7 +66,7 @@ Tools use exactly one verb from the table below. The table is the canonical list
 
 **Don't introduce new verbs without a justification stronger than "I felt like it."** If an existing verb fits, use it. The `set` vs `update` distinction is intentional: `set_X_<attr>` assigns one specific value or state; `set_X` replaces wholesale; `update_X` mutates a subset of fields in place. Author judgement applies per-tool.
 
-Rule-engine action subtypes (`cancelTimers`, `cancelDelay`, etc. inside `custom_*` and `create_native_app` arguments) are separate from MCP tool names and not constrained by this vocabulary.
+Rule-engine action subtypes (`cancelTimers`, `cancelDelay`, etc. inside `custom_*` and `hub_set_rule` arguments) are separate from MCP tool names and not constrained by this vocabulary.
 
 ### Parameter naming
 
@@ -152,7 +152,7 @@ PR #202 (merged 2026-05-19) established the annotation-hints baseline on every s
 
 ## The custom MCP rule engine is legacy
 
-`hubitat-mcp-rule.groovy` (the MCP child app, surfaced through the `custom_*` tools) is **legacy**. It still ships and still gets bug fixes, but it is **closed to new feature work** — Hubitat's native Rule Machine is the supported path now and exposes equivalent functionality through `create_native_app` / `update_native_app` / `delete_native_app` and the rest of the `manage_native_rules_and_apps` group. New rule-related capabilities should land on the parent app's native-RM tools, not on the child app. If a feature request lands on the child app, propose it for the native side instead.
+`hubitat-mcp-rule.groovy` (the MCP child app, surfaced through the `custom_*` tools) is **legacy**. It still ships and still gets bug fixes, but it is **closed to new feature work** — Hubitat's native Rule Machine is the supported path now and exposes equivalent functionality through `hub_set_rule` (in the `hub_manage_rule_machine` gateway) plus `hub_set_native_app` / `hub_delete_native_app` and the rest of the `hub_manage_native_rules_and_apps` group. New rule-related capabilities should land on the parent app's native-RM tools, not on the child app. If a feature request lands on the child app, propose it for the native side instead.
 
 ## PR workflow
 

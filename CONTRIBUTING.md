@@ -100,7 +100,7 @@ If your PR changes tool behaviour, add or update the matching BAT scenarios in t
 ## Things to avoid
 
 - **Don't edit version strings, `packageManifest.json` `releaseNotes` / `dateReleased`, `README.md`'s `## Version History`, or `CHANGELOG.md`.** All four are bot-managed; the `pr_guard.py` CI check flags any of them. Communicate user-facing changes through your PR's `## Release Notes` section instead — see [docs/release-automation-design.md](docs/release-automation-design.md).
-- **Don't add new feature work to `hubitat-mcp-rule.groovy` (the child app).** The custom rule engine surfaced through `custom_*` tools is legacy — bug fixes are accepted, new features should go on the native Rule Machine surface (`create_native_app` / `update_native_app` / `delete_native_app` and the `manage_native_rules_and_apps` group).
+- **Don't add new feature work to `hubitat-mcp-rule.groovy` (the child app).** The custom rule engine surfaced through `custom_*` tools is legacy — bug fixes are accepted, new features should go on the native Rule Machine surface (`hub_set_rule` in the `hub_manage_rule_machine` gateway for RM rule authoring, plus `hub_set_native_app` / `hub_delete_native_app` in the `hub_manage_native_rules_and_apps` group).
 - **Don't force-push, delete branches, bypass hooks (`--no-verify` / `--no-gpg-sign`), or edit other contributors' PR descriptions** without asking the maintainer first.
 
 ## License

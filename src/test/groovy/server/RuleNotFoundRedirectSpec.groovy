@@ -108,8 +108,8 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         ex.message.contains('hub_get_custom_rule')
         ex.message.contains('hub_export_custom_rule')
         ex.message.contains('hub_clone_custom_rule')
-        // read-verb phrasing: should NOT contain write-verb pointer to hub_update_native_app
-        !ex.message.contains('hub_update_native_app')
+        // read-verb phrasing: should NOT contain write-verb pointer to hub_set_rule
+        !ex.message.contains('hub_set_rule')
     }
 
     def "hub_get_custom_rule (b2) RM rule -- type string Rule Machine 5.1 also matches"() {
@@ -297,8 +297,8 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         ex.message.contains('hub_get_custom_rule')
         ex.message.contains('hub_export_custom_rule')
         ex.message.contains('hub_clone_custom_rule')
-        // read-verb phrasing: should NOT contain write-verb pointer to hub_update_native_app
-        !ex.message.contains('hub_update_native_app')
+        // read-verb phrasing: should NOT contain write-verb pointer to hub_set_rule
+        !ex.message.contains('hub_set_rule')
     }
 
     def "hub_export_custom_rule (c) id not found anywhere -- generic not found"() {
@@ -331,7 +331,7 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Rule not found: 300')
         ex.message.contains('hub_get_app_config(appId=300)')
-        ex.message.contains('hub_update_native_app')
+        ex.message.contains('hub_set_rule')
         ex.message.contains('hub_update_custom_rule')
         // write-verb phrasing: hub_get_custom_rule appears only in read-verb output (lists get/export/clone tools);
         // its absence here confirms we are not emitting the read-verb hint by mistake.
