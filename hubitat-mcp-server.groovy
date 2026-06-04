@@ -76,6 +76,9 @@ def mainPage() {
             if (settings.enableWrite == false) {
                 paragraph "<i>Write tools are OFF — the MCP client sees only read tools.</i>"
             }
+            href name: "advancedOverrides", page: "advancedOverridesPage",
+                 title: "Advanced: Per-tool Overrides",
+                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only)."
         }
 
         section("Developer Mode") {
@@ -178,9 +181,6 @@ def mainPage() {
             input "loopGuardWindowSec", "number", title: "Loop Guard: Window (seconds)",
                   description: "Sliding time window for the execution count (default: 60)",
                   defaultValue: 60, range: "10..300", required: false
-            href name: "advancedOverrides", page: "advancedOverridesPage",
-                 title: "Advanced: Per-tool Overrides",
-                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only)."
         }
     }
 }
