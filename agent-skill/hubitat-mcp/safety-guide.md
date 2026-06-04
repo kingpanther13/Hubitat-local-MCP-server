@@ -25,15 +25,30 @@ Always confirm device identity before acting on critical systems.
 
 ## Gateway Calling Convention (v0.8.0+)
 
-Many safety-critical tools are now accessed via gateways (e.g., `hub_manage_destructive_ops`, `hub_manage_code`). The gateway does **not** bypass any safety checks — all Hub Admin Read/Write gates, backup requirements, and confirm flags are enforced in the handler functions. When calling a tool through a gateway, the same pre-flight checklists apply.
+Many safety-critical tools are now accessed via gateways (e.g., `hub_manage_destructive_ops`, `hub_manage_code`). The gateway does **not** bypass any safety checks — the Read/Write master gates, backup requirements, and confirm flags are all enforced. A gateway name routes back through `executeTool()`, which re-applies the central master gate to each sub-tool and then runs the handler. When calling a tool through a gateway, the same pre-flight checklists apply.
 
 Example: To reboot the hub, call `hub_manage_destructive_ops(tool="hub_reboot", args={"confirm": true})` — the same backup and confirmation requirements apply as if `hub_reboot` were called directly.
 
 ---
 
-## Hub Admin Write - Pre-Flight Checklist
+## Permission Model
 
-ALL Hub Admin Write tools require these steps in order:
+Every MCP tool is gated by two universal masters, **Read** and **Write**, both **ON by default**:
+
+- **Read** master exposes every read-only / non-destructive tool. With it OFF, those tools vanish from the client and a cached call is rejected with "Read tools are disabled…".
+- **Write** master exposes every state-changing tool (device control, modes, variables, rooms, files, native rules, hub admin). With it OFF, those tools vanish and a cached call is rejected with "Write tools are disabled…".
+
+Both are enforced centrally at dispatch — no tool slips past. Turning a master OFF removes that entire class; only an explicit OFF blocks (the default-unset state is ON).
+
+**Destructive write tools require more.** Beyond the Write master, the destructive/sensitive tools (reboot, shutdown, delete-device, file write/delete, native-rule CRUD, etc.) still demand `confirm=true` **and** a hub backup within 24h — see the pre-flight checklist below.
+
+**Advanced per-tool / per-gateway overrides (deny-only).** Under *Advanced: Per-tool Overrides*, individual tools or whole gateways can be disabled below the masters. A disabled tool drops from `tools/list` and `hub_search_tools` everywhere it appears (including a tool shared across gateways, and every tool inside a disabled gateway), and a cached call returns a distinct error: "…is disabled in Advanced settings (Per-tool Overrides)…". A disabled tool still appears in `hub_get_tool_guide` documentation. These overrides can only turn things OFF — they never re-enable something a master already hid.
+
+---
+
+## Destructive Write - Pre-Flight Checklist
+
+ALL destructive write tools (`confirm`+backup tier) require these steps in order:
 
 1. **Verify backup**: `hub_create_backup` was called within the last 24 hours
 2. **Inform user**: Explain what you are about to do and its effects
@@ -135,7 +150,7 @@ Defaults: 30 executions within 60 seconds. Configurable in app settings.
 
 - `hub_write_file` auto-backs up existing file before overwriting
 - `hub_delete_file` auto-backs up file before deletion
-- Both require Hub Admin Write + confirm
+- Both require the Write master ON + confirm + a recent backup
 - File names must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
 - Files persist on hub even if MCP is uninstalled
 
@@ -173,4 +188,4 @@ If MCP itself is broken:
 
 Every tool now carries four annotation hints in its definition: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`. These are UX / risk signals to the MCP client — they help a client decide how to render the tool, whether to confirm before calling, and how to interpret retries.
 
-**Annotations are NOT a security boundary.** They don't make the model resist prompt injection or substitute for the existing Hub Admin Read / Hub Admin Write gates and `confirm` parameter checks. The gates remain the authoritative safety surface; annotations are advisory metadata.
+**Annotations are NOT a security boundary.** They don't make the model resist prompt injection or substitute for the universal Read / Write master gates and `confirm` parameter checks. The annotation is the tool's read/write *declaration*; the masters are the *enforcement*. The gates remain the authoritative safety surface; annotations are advisory metadata.

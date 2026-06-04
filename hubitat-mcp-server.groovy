@@ -33,6 +33,7 @@ preferences {
     page(name: "mainPage")
     page(name: "confirmDeletePage")
     page(name: "confirmRegenerateTokenPage")
+    page(name: "advancedOverridesPage")
 }
 
 def mainPage() {
@@ -64,29 +65,20 @@ def mainPage() {
             }
         }
 
-        section("Hub Admin Access") {
-            paragraph "<b>Hub Admin Tools</b> provide read and write access to hub configuration, installed apps/drivers, Z-Wave/Zigbee radios, and hub management operations."
-            paragraph "<i>These tools use the hub's internal API and may require Hub Security credentials if Hub Security is enabled.</i>"
-            input "enableHubAdminRead", "bool", title: "Enable Hub Admin Read Tools",
-                  description: "Allows MCP to read hub details, installed apps/drivers, Z-Wave/Zigbee info, and hub health metrics",
-                  defaultValue: false, submitOnChange: true
-            input "enableHubAdminWrite", "bool", title: "Enable Hub Admin Write Tools",
-                  description: "Allows MCP to reboot, shutdown, create backups, and run Z-Wave repair",
-                  defaultValue: false, submitOnChange: true
-            if (settings.enableHubAdminWrite) {
-                paragraph "<b style='color: red;'>⚠ WARNING: Hub Admin Write tools can reboot, shut down, or modify your hub. " +
-                          "A backup is MANDATORY before any write operation. The AI assistant is instructed to create a backup " +
-                          "before every write operation and will refuse to proceed without one.</b>"
+        section("Tool Access (Read / Write masters)") {
+            paragraph "<b>Read</b> exposes every read-only / non-destructive MCP tool. <b>Write</b> exposes every tool that changes hub or user state. Both default ON; turn one OFF to remove that entire class of tools from the MCP client and reject any cached call. Fine-grained per-tool control lives under <i>Advanced: Per-tool Overrides</i> below."
+            input "enableRead", "bool", title: "Enable Read Tools",
+                  description: "Expose all read-only tools (list/get/search/diagnostics). Turn OFF for a write-only or fully-locked client.",
+                  defaultValue: true, submitOnChange: true
+            input "enableWrite", "bool", title: "Enable Write Tools",
+                  description: "Expose all state-changing tools (device control, modes, variables, rooms, files, native rules, hub admin). Destructive tools additionally require confirm=true + a recent backup.",
+                  defaultValue: true, submitOnChange: true
+            if (settings.enableWrite == false) {
+                paragraph "<i>Write tools are OFF — the MCP client sees only read tools.</i>"
             }
-        }
-
-        section("Built-in App Integration (beta)") {
-            paragraph "<b>Built-in App Tools</b> let your AI list, run, pause, resume, create, update, and delete Hubitat's built-in apps including Rule Machine rules. Required for native Rule Machine CRUD via your AI."
-            paragraph "<i>Creating, editing, and deleting rules and apps (hub_set_rule / hub_set_native_app / hub_delete_native_app) ALSO requires Hub Admin Write -- both toggles must be on. Note: the separate Custom Rule Engine toggle below controls a legacy MCP-managed rule surface -- bug fixes only, no new features.</i>"
-            paragraph "<i><b>Beta status:</b> native rule CRUD is in active beta. Most rule patterns work cleanly: time/mode/event triggers, Run Custom Action with string and number params, nested IF/THEN, switch/dimmer/lock/log/delay/repeat/exitRule actions. Known cosmetic edge-cases under investigation: Custom Attribute conditions inside IF actions may not fully bake the attribute name + value (rule still creates structurally; the IF clause renders incomplete); Custom Attribute conditions in Required Expression and IF action contexts now throw a clear error if 'comparator' is omitted -- both 'attribute' and 'comparator' are required together; clearActions / replaceActions now commit the delete synchronously in the common case (full page-form submit), with a thin defensive verify-retry that only surfaces in the rare state.editAct / firmware-lag residual (response includes verifyHint to disambiguate that case). These should be mostly invisible during normal use -- if you hit any of these (or anything else), please run the <code>hub_report_issue</code> tool or open one directly at <a href='https://github.com/kingpanther13/Hubitat-local-MCP-server/issues' target='_blank'>GitHub Issues</a> and we'll try to fix it.</i>"
-            input "enableBuiltinApp", "bool", title: "Enable Built-in App Tools (read + write, beta)",
-                  description: "Allows MCP to list all installed apps, find apps using a device, list/trigger/pause/resume Rule Machine rules, and create/update/delete native Rule Machine rules and other classic apps. Create/update/delete additionally requires Hub Admin Write.",
-                  defaultValue: false, submitOnChange: true
+            href name: "advancedOverrides", page: "advancedOverridesPage",
+                 title: "Advanced: Per-tool Overrides",
+                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only)."
         }
 
         section("Developer Mode") {
@@ -160,19 +152,19 @@ def mainPage() {
             // mismatch (child apps exist but the new toggle is off/null).
             def existingRuleCount = getChildApps()?.size() ?: 0
             def customEngineExplicitlyOn = settings.enableCustomRuleEngine == true
-            def builtinAppEnabled = settings.enableBuiltinApp == true
+            def readEnabled = settings.enableRead != false
             if (existingRuleCount > 0 && !customEngineExplicitlyOn) {
-                def readonlyNote = builtinAppEnabled ? " your AI can still SEE these rules (<code>hub_get_custom_rule</code>) and toggle them enabled/disabled, but cannot create, modify structure, or delete." : " With Built-in App Tools also OFF, all custom_* tools are hidden from your AI."
+                def readonlyNote = readEnabled ? " your AI can still SEE these rules (<code>hub_get_custom_rule</code>) and toggle them enabled/disabled, but cannot create, modify structure, or delete." : " With the Read master also OFF, all custom_* tools are hidden from your AI."
                 paragraph "<b>NOTICE: ${existingRuleCount} existing custom MCP rule(s)</b><br>" +
                           "Your ${existingRuleCount} custom MCP rule(s) still fire and work normally. The Custom Rule Engine setting used to be ON by default; it now defaults OFF because the custom MCP rule engine is legacy -- it will continue to receive bug fixes but new feature work goes to native Rule Machine.<br>" +
                           "<b>Current state (toggle OFF):</b>${readonlyNote} Recommended: leave OFF if you have migrated to native Rule Machine. Turn ON only if you actively use your AI to fully manage these rules.<br>" +
                           "For new rule creation, prefer <code>hub_manage_rule_machine</code> hub_set_rule -- those rules are visible in Hubitat's Rule Machine app list and web UI."
             }
             input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine (legacy)",
-                  description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Built-in App Tools ON = read-only mode: hub_get_custom_rule (list/get/diagnostics modes), hub_update_custom_rule(enabled only), hub_test_custom_rule are visible; create/delete/export/import/clone are hidden. OFF + Built-in App Tools OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (Built-in App Tools toggle) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
+                  description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Read master ON = read-only mode: hub_get_custom_rule (list/get/diagnostics modes), hub_update_custom_rule(enabled only), hub_test_custom_rule are visible; create/delete/export/import/clone are hidden. OFF + Read master OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (governed by the Read/Write masters) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
                   defaultValue: false, submitOnChange: true
             input "useGateways", "bool", title: "Consolidate tools behind category gateways",
-                  description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and hub_search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other toggles (Built-in App Tools, Custom Rule Engine) also add or remove entries from tools/list independently of this setting.",
+                  description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and hub_search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other settings (the Read/Write masters, the Custom Rule Engine, and Advanced per-tool/per-gateway overrides) also add or remove entries from tools/list independently of this setting.",
                   defaultValue: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
@@ -272,6 +264,38 @@ def confirmRegenerateTokenPage() {
     }
 }
 
+// #114 Advanced sub-page: deny-only per-tool / per-gateway overrides applied BELOW
+// the Read/Write masters. Option lists are generated from the live tool surface so
+// they never drift. The two list settings (disabled_tools / disabled_gateways) feed
+// getHiddenToolNames() (catalog + search) and the executeTool dispatch guard.
+def advancedOverridesPage() {
+    dynamicPage(name: "advancedOverridesPage", title: "Advanced: Per-tool Overrides") {
+        section {
+            paragraph "Deny-only fine-grained control. These selections are applied <b>below</b> the Read/Write masters: they can only turn things OFF, never re-enable something a master already hid. A disabled tool disappears from tools/list and hub_search_tools everywhere it appears (including shared tools in multiple gateways) and returns a clear error if a cached client still calls it; it remains documented in hub_get_tool_guide."
+        }
+        section("Disable whole gateways") {
+            def gwNames = getGatewayConfig().keySet().sort()
+            input "disabled_gateways", "enum", title: "Gateways to disable",
+                  description: "Every tool inside a disabled gateway is hidden (including tools shared with other gateways).",
+                  options: gwNames, multiple: true, required: false, submitOnChange: true
+        }
+        section("Disable individual tools") {
+            def gwConfig = getGatewayConfig()
+            def toolNames = getAllToolDefinitions()*.name.findAll { !gwConfig.containsKey(it) }.sort()
+            input "disabled_tools", "enum", title: "Tools to disable",
+                  description: "Each tool is listed once; disabling it removes it from every gateway it belongs to.",
+                  options: toolNames, multiple: true, required: false, submitOnChange: true
+        }
+        section {
+            def dt = (settings.disabled_tools ?: []).size()
+            def dg = (settings.disabled_gateways ?: []).size()
+            paragraph "Currently disabling <b>${dt}</b> tool(s) and <b>${dg}</b> gateway(s)."
+            input "resetOverridesBtn", "button", title: "Reset all overrides"
+            href name: "backToMainFromAdvanced", page: "mainPage", title: "Back"
+        }
+    }
+}
+
 def appButtonHandler(btn) {
     if (btn == "confirmDeleteBtn" && state.ruleToDelete) {
         def childApp = getChildAppById(state.ruleToDelete)
@@ -290,6 +314,10 @@ def appButtonHandler(btn) {
         state.remove("accessToken")
         createAccessToken()
         mcpLog("warn", "server", "MCP access token regenerated via UI; endpoint URLs changed, clients must re-copy the new URL")
+    } else if (btn == "resetOverridesBtn") {
+        app.removeSetting("disabled_tools")
+        app.removeSetting("disabled_gateways")
+        mcpLog("info", "server", "Advanced per-tool overrides reset (disabled_tools + disabled_gateways cleared)")
     }
 }
 
@@ -1152,7 +1180,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_code: [
-            description: "Install, update, and delete hub apps, drivers, and libraries. All operations modify hub code and require Hub Admin Write. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
+            description: "Install, update, and delete hub apps, drivers, and libraries. All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
             tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_restore_backup", "hub_create_library", "hub_update_library"],
             summaries: [
                 hub_create_app: "Install new app. PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
@@ -1201,10 +1229,10 @@ def getGatewayConfig() {
             tools: ["hub_get_metrics", "hub_get_memory_history", "hub_call_gc", "hub_get_device_health", "hub_get_radio_details", "hub_call_zwave_repair", "hub_list_captured_states", "hub_delete_captured_state"],
             summaries: [
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history. Read-only by default; recordSnapshot=true also persists a snapshot. Args: recordSnapshot, trendPoints",
-                hub_get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Hub Admin Read",
-                hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires Hub Admin Read",
+                hub_get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Read master",
+                hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires the Write master",
                 hub_get_device_health: "Check device staleness, ICMP-ping arbitrary IPs (router, NAS, server), and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), identifyHub",
-                hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count). Args: radio (zwave|zigbee, omit for both). Requires Hub Admin Read",
+                hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count). Args: radio (zwave|zigbee, omit for both). Requires Read master",
                 hub_call_zwave_repair: "Z-Wave network repair (⚠️ DISRUPTIVE, 5-30 min, devices unresponsive). Args: confirm=true",
                 hub_list_captured_states: "List saved device state snapshots",
                 hub_delete_captured_state: "Delete a captured state by stateId, or ALL captured states when stateId is omitted. Args: stateId (optional)"
@@ -1279,7 +1307,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_native_rules_and_apps: [
-            description: "Native classic-app CRUD + Rule Machine runtime control. WHEN TO USE: creating or editing any NON-Rule-Machine classic SmartApp (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule, etc.) via hub_set_native_app, plus delete/clone/export/import of ANY classic app by appId, plus RMUtils runtime control of RM rules (list/run/pause/resume/setBoolean/health). TO CREATE OR EDIT A RULE MACHINE RULE (triggers/actions/conditions) -- 'create a rule machine rule', 'make a Hubitat rule' -- use the dedicated hub_manage_rule_machine gateway's hub_set_rule tool instead; that is the right path for default rule-authoring requests. The custom_* MCP rule engine (separate surface) is only for sandbox MCP-managed rules not visible in Hubitat's UI -- uncommon outside power-user / testing scenarios. Two surfaces here: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (hub_set_native_app create+edit, hub_delete_native_app, plus clone/copy/duplicate and export/import, by appId). Writes snapshot before every change; restore via the unified hub_list_backups (in hub_read_apps_code) + hub_restore_backup (in hub_manage_code) tools. Completely separate from the MCP custom rule engine (custom_* tools). Requires Built-in App Tools enabled; CRUD additionally requires Hub Admin Write. Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via hub_get_app_config(appId=N) and inspect persisted settings before retrying.",
+            description: "Native classic-app CRUD + Rule Machine runtime control. WHEN TO USE: creating or editing any NON-Rule-Machine classic SmartApp (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule, etc.) via hub_set_native_app, plus delete/clone/export/import of ANY classic app by appId, plus RMUtils runtime control of RM rules (list/run/pause/resume/setBoolean/health). TO CREATE OR EDIT A RULE MACHINE RULE (triggers/actions/conditions) -- 'create a rule machine rule', 'make a Hubitat rule' -- use the dedicated hub_manage_rule_machine gateway's hub_set_rule tool instead; that is the right path for default rule-authoring requests. The custom_* MCP rule engine (separate surface) is only for sandbox MCP-managed rules not visible in Hubitat's UI -- uncommon outside power-user / testing scenarios. Two surfaces here: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (hub_set_native_app create+edit, hub_delete_native_app, plus clone/copy/duplicate and export/import, by appId). Writes snapshot before every change; restore via the unified hub_list_backups (in hub_read_apps_code) + hub_restore_backup (in hub_manage_code) tools. Completely separate from the MCP custom rule engine (custom_* tools). Reads require the Read master; CRUD requires the Write master (destructive CRUD additionally requires confirm=true + a recent backup). Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via hub_get_app_config(appId=N) and inspect persisted settings before retrying.",
             tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
@@ -1313,7 +1341,7 @@ def getGatewayConfig() {
                 hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Args: settings (map of key→value), confirm=true. Allowlist-gated."
             ],
             searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableHubAdminRead enableBuiltinApp enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation"
+                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation"
             ]
         ],
         hub_read_devices: [
@@ -1434,6 +1462,54 @@ def getGatewayConfig() {
 //     "every leaf classified" spec test forces the decision to be made
 //     in code review rather than left implicit.
 
+// Single source of truth for the legacy custom-rule engine's visibility mode.
+// "full"     -- engine ON; all custom_* tools shown.
+// "readonly" -- engine OFF + Read master ON; read custom_* shown, write custom_* hidden.
+// "off"      -- engine OFF + Read master OFF; all custom_* hidden.
+// (Pre-#113 the "readonly" trigger was the Built-in App toggle; with that toggle
+// removed it is the Read master -- if the client can read at all, it can read existing
+// custom rules.) Consumed by getHiddenToolNames(), executeTool, and toolSearchTools.
+def getCustomEngineMode() {
+    if (settings.enableCustomRuleEngine == true) return "full"
+    return (settings.enableRead != false) ? "readonly" : "off"
+}
+
+// #114 effective deny set: explicitly-disabled tools UNION every tool of each
+// disabled gateway (so shared tools disabled via a gateway are gone everywhere).
+def getEffectiveDisabledTools() {
+    def out = [] as Set
+    (settings.disabled_tools ?: []).each { out << (it as String) }
+    def gwConfig = getGatewayConfig()
+    (settings.disabled_gateways ?: []).each { gw ->
+        gwConfig[gw]?.tools?.each { out << (it as String) }
+    }
+    return out
+}
+
+// Single source of truth for which tool NAMES are hidden from the catalog
+// (getToolDefinitions) AND the search corpus (toolSearchTools). Combines the two
+// universal masters, the legacy custom-engine mode, and the #114 advanced overrides.
+// A name in this set disappears from every surface, so the two consumers cannot drift.
+def getHiddenToolNames() {
+    def hide = [] as Set
+    def readOnly = getReadOnlyToolNames()
+    // Masters default ON: only an explicit `== false` hides a class.
+    if (settings.enableRead == false) hide.addAll(readOnly)
+    if (settings.enableWrite == false) {
+        getAllToolDefinitions().each { if (!readOnly.contains(it.name)) hide << (it.name as String) }
+    }
+    // Legacy custom-rule engine visibility.
+    def mode = getCustomEngineMode()
+    if (mode == "off") {
+        ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each { hide << it }
+    } else if (mode == "readonly") {
+        ["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each { hide << it }
+    }
+    // #114 advanced per-tool / per-gateway overrides (deny-only).
+    hide.addAll(getEffectiveDisabledTools())
+    return hide
+}
+
 def getReadOnlyToolNames() {
     return [
         // Device introspection
@@ -1498,7 +1574,7 @@ def annotationsForLeaf(String toolName, Set readOnlyNames) {
 // Aggregates annotations for a gateway entry from its currently-visible
 // sub-tools. Read-only iff every visible sub-tool is read-only; otherwise
 // write+destructive. Callers pass `visibleSubTools` so feature-toggle hiding
-// (Built-in App Tools off, custom engine readonly) propagates into the
+// (a Read/Write master OFF, custom engine readonly, or an Advanced override) propagates into the
 // gateway label.
 def annotationsForGateway(List visibleSubTools, Set readOnlyNames) {
     if (!visibleSubTools) {
@@ -1522,10 +1598,17 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     }
 
     if (!toolName) {
-        // Catalog mode: return full schemas for all tools in this gateway.
+        // Catalog mode: return full schemas for the VISIBLE tools in this gateway.
+        // Filter config.tools through getHiddenToolNames() -- the same single source
+        // getToolDefinitions() and toolSearchTools() use -- so a sub-tool hidden by a
+        // Read/Write master or by an Advanced #114 override never leaks (with its full
+        // schema) on this surface either. The dispatch path (toolName set) is already
+        // gated centrally in executeTool on re-entry; this closes the catalog surface.
         // Strip [[FLAT_TRIM]] marker tokens but KEEP the content -- gateway catalog
         // mode is the disclosure surface where full descriptions belong (size cap
         // does not apply per-tool here, only the per-response cap).
+        def hidden = getHiddenToolNames()
+        def visibleSubTools = config.tools.findAll { !hidden.contains(it) }
         def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
             .collectEntries { [(it.name): it] }
 
@@ -1533,7 +1616,7 @@ def handleGateway(gatewayName, toolName, toolArgs) {
             gateway: gatewayName,
             mode: "catalog",
             message: "Call again with tool='<name>' and args={...} to execute a tool.",
-            tools: config.tools.collect { name ->
+            tools: visibleSubTools.collect { name ->
                 def d = defMap[name]
                 def entry = [name: name, description: d?.description, inputSchema: d?.inputSchema]
                 // Forward outputSchema when the tool declares one (PR1C). The flat
@@ -1706,53 +1789,12 @@ def applyDescriptionTransform(List tools, boolean dropContent) {
 // hides hub_search_tools, whose only purpose is finding gateway-hidden tools. Null/unset
 // useGateways preserves gateway behavior so existing installs are unaffected on update.
 def getToolDefinitions() {
-    def builtinAppOn = settings.enableBuiltinApp == true
-    def customEngineOn = settings.enableCustomRuleEngine == true
-    // customEngineMode: "full" | "readonly" | "off"
-    // "full"     -- engine ON; all custom_* shown
-    // "readonly" -- engine OFF + builtinApp ON; read subset shown, write subset hidden
-    // "off"      -- engine OFF + builtinApp OFF; all custom_* hidden
-    def customEngineMode = customEngineOn ? "full" : (builtinAppOn ? "readonly" : "off")
-    // Single source of truth: hideByName lists every tool the current toggle
-    // combination should hide. It drives BOTH flat-mode base-tool filtering
-    // AND gateway-mode sub-tool catalog filtering (see visibleSubTools below).
-    // No parallel hideGatewaySubTools list -- a name in hideByName disappears
-    // from every surface it could appear on, so the two lists cannot drift.
-    def hideByName = [] as Set
-
-    if (!builtinAppOn) {
-        // All 12 of these tools require enableBuiltinApp.
-        //   hub_manage_native_rules_and_apps: ALL 10 of its sub-tools require it → that
-        //     gateway empties out and drops entirely.
-        //   hub_manage_rule_machine: ALL of its sub-tools (hub_set_rule, the RMUtils
-        //     runtime tools, hub_get_rule_health, cross-listed hub_delete_native_app)
-        //     require it too → that gateway also empties out and drops.
-        //   hub_read_apps_code: hub_list_device_dependents requires it; the
-        //     others (hub_list_apps, hub_get_app_config, hub_list_app_pages) only need
-        //     Hub Admin Read and stay visible. hub_list_apps stays visible because its
-        //     scope='types' path works with Hub Admin Read alone; the Built-in App Tools
-        //     requirement for scope='instances' is enforced at call time by
-        //     toolListInstalledApps.
-        ["hub_list_device_dependents", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_rule", "hub_set_native_app", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"].each {
-            hideByName << it
-        }
-    }
-    if (customEngineMode == "off") {
-        // Both toggles off: hide all custom_* tools everywhere they could appear
-        // (base tools in flat mode, sub-tools of hub_manage_custom_rules and hub_read_rules
-        // in gateway mode).
-        ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each {
-            hideByName << it
-        }
-    } else if (customEngineMode == "readonly") {
-        // Engine OFF but builtinApp ON: hide write/structural custom_* tools,
-        // keep the read tools. hub_get_custom_rule (which now also serves list +
-        // diagnostics modes) is a read tool and stays visible -- not added here.
-        ["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each {
-            hideByName << it
-        }
-    }
-    // customEngineMode == "full": nothing added to hideByName for custom_* tools
+    // Single source of truth for hidden tools: the two universal masters, the
+    // legacy custom-engine mode, and the #114 advanced overrides. Drives BOTH
+    // flat-mode base-tool filtering AND gateway-mode sub-tool catalog filtering
+    // (see visibleSubTools below); toolSearchTools consumes the same set so the
+    // catalog and the search corpus cannot drift.
+    def hideByName = getHiddenToolNames()
 
     // Hoist annotation source-of-truth once per call.
     def readOnlyNames = getReadOnlyToolNames()
@@ -2247,7 +2289,7 @@ Verify rule after creation.""",
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, free memory, internal temperature, database size, MCP server stats, and current security/toggle settings. Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Hub Admin Read is enabled; otherwise they are omitted.",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, free memory, internal temperature, database size, MCP server stats, and current security/toggle settings. Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Read master is enabled; otherwise they are omitted.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2280,19 +2322,18 @@ Verify rule after creation.""",
                     mcpLogEntries: [type: "integer", description: "Buffered MCP log entry count"],
                     mcpCapturedStates: [type: "integer", description: "Captured device state count"],
                     hubSecurityConfigured: [type: "boolean", description: "Whether hub security is configured"],
-                    hubAdminReadEnabled: [type: "boolean", description: "Hub Admin Read toggle state"],
-                    hubAdminWriteEnabled: [type: "boolean", description: "Hub Admin Write toggle state"],
-                    builtinAppEnabled: [type: "boolean", description: "Built-in app toggle state"],
+                    readEnabled: [type: "boolean", description: "Read master toggle state (default ON)"],
+                    writeEnabled: [type: "boolean", description: "Write master toggle state (default ON)"],
                     customRuleEngineEnabled: [type: "boolean", description: "Custom rule engine toggle state"],
                     developerModeEnabled: [type: "boolean", description: "Developer Mode toggle state"],
-                    name: [type: "string", description: "Hub name (Hub Admin Read only)"],
-                    localIP: [type: "string", description: "Hub local IP (Hub Admin Read only)"],
-                    timeZone: [type: "string", description: "Time zone ID (Hub Admin Read only)"],
-                    latitude: [type: "number", description: "Latitude (Hub Admin Read only)"],
-                    longitude: [type: "number", description: "Longitude (Hub Admin Read only)"],
-                    zipCode: [type: "string", description: "Zip code (Hub Admin Read only)"],
-                    hubData: [type: "object", description: "Hub data map (Hub Admin Read only)"],
-                    hubAdminReadRequired: [type: "string", description: "Present when Hub Admin Read is disabled; PII excluded"],
+                    name: [type: "string", description: "Hub name (Read master only)"],
+                    localIP: [type: "string", description: "Hub local IP (Read master only)"],
+                    timeZone: [type: "string", description: "Time zone ID (Read master only)"],
+                    latitude: [type: "number", description: "Latitude (Read master only)"],
+                    longitude: [type: "number", description: "Longitude (Read master only)"],
+                    zipCode: [type: "string", description: "Zip code (Read master only)"],
+                    hubData: [type: "object", description: "Hub data map (Read master only)"],
+                    readDisabledNote: [type: "string", description: "Present when the Read master is disabled; PII excluded"],
                     identifyHubTriggered: [type: "boolean", description: "Present when identifyHub requested; LED blink result"],
                     identifyHubError: [type: "string", description: "Present when identifyHub blink failed"]
                 ]
@@ -2524,7 +2565,7 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_delete_variable",
-            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (drives Settings → Hub Variables wizard; also deletes the connector device if one exists) or a rule_engine variable (rewrites state). Throws if the name resolves to neither.\n\nGated on requireHubAdminWrite + recent backup. Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found — deletion would silently break those rules (null lookups → false conditions, literal `%varname%` left in substitutions). To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.",
+            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (drives Settings → Hub Variables wizard; also deletes the connector device if one exists) or a rule_engine variable (rewrites state). Throws if the name resolves to neither.\n\nGated on the Write master + confirm=true + a recent backup. Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found — deletion would silently break those rules (null lookups → false conditions, literal `%varname%` left in substitutions). To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2554,7 +2595,7 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters) in place. Use this to self-administer the MCP app without the Hubitat UI. Gated on enableDeveloperMode + requireHubAdminWrite + a recent backup; every successful write is logged at WARN for audit. Allowlisted keys only: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableHubAdminRead, enableBuiltinApp, enableCustomRuleEngine, useGateways — any other key is rejected. After changing any enable* toggle or useGateways, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema. Deliberately NOT allowlisted: enableHubAdminWrite (would disable the tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), and selectedDevices (different wire format, has its own tool).",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters) in place. Use this to self-administer the MCP app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit. Allowlisted keys only: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways — any other key is rejected. After changing any enable* toggle or useGateways, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema. Deliberately NOT allowlisted: enableWrite (would disable the tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), selectedDevices (different wire format, has its own tool), and disabled_tools/disabled_gateways (could self-disable this tool).",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2906,19 +2947,19 @@ def _getAllToolDefinitions_part4() {
             name: "hub_list_apps",
             description: """List apps on the hub. scope selects what kind of "apps" to return.
 
-scope='instances' (default) — running app INSTANCES (built-in + user) with parent/child tree. Requires Built-in App Tools enabled.
+scope='instances' (default) — running app INSTANCES (built-in + user) with parent/child tree. Requires the Read master.
   Each app entry returns: id, name, type, disabled, user (true=user-installed Groovy app, false=built-in), hidden, parentId (null for top-level), hasChildren, childCount.
   Use filter to narrow results: 'all' (default), 'builtin' (Hubitat native apps), 'user' (custom Groovy apps), 'disabled' (paused/disabled), 'parents' (apps with children like Rule Machine, Room Lighting, Groups and Scenes), 'children' (individual rules, scenes, etc.).
   filter, includeHidden, and cursor apply to this mode.
 
-scope='types' — installed app CODE LIBRARY / available app TYPES (the app code installed on the hub, not running instances). Requires Hub Admin Read.
+scope='types' — installed app CODE LIBRARY / available app TYPES (the app code installed on the hub, not running instances). Requires Read master.
   filter and includeHidden are ignored in this mode.
 
 Pass cursor (opaque string from a prior call's nextCursor) to page through the list at 50 per page when the full response would exceed the hub's 128KB JSON-RPC cap.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree (Built-in App Tools). 'types' = installed app code library / available app types (Hub Admin Read).", default: "instances"],
+                    scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree (Read master). 'types' = installed app code library / available app types (Read master).", default: "instances"],
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: filter apps by category. Default: all"],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit to get the full list in a single response (subject to the universal 120KB response-size guard -- oversized responses come back as a response_too_large envelope). Pass the nextCursor value from a prior call to fetch the next page (page size 50). Empty string starts at the first page."]
@@ -2952,7 +2993,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
         ],
         [
             name: "hub_list_drivers",
-            description: "List all installed drivers on the hub. Requires Hub Admin Read.",
+            description: "List all installed drivers on the hub. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2975,7 +3016,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
         ],
         [
             name: "hub_get_radio_details",
-            description: "Get Z-Wave and/or Zigbee radio info (firmware, home/PAN ID, channel, device nodes). radio='zwave' or 'zigbee' for one radio; omit to return both. Requires Hub Admin Read.",
+            description: "Get Z-Wave and/or Zigbee radio info (firmware, home/PAN ID, channel, device nodes). radio='zwave' or 'zigbee' for one radio; omit to return both. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3002,7 +3043,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
         // ==================== MONITORING TOOLS ====================
         [
             name: "hub_get_performance_stats",
-            description: "Get device and/or app performance stats from the hub's logs page. Shows method call counts, % busy, state size, events, states, hub actions, pending events per device/app. Requires Hub Admin Read.",
+            description: "Get device and/or app performance stats from the hub's logs page. Shows method call counts, % busy, state size, events, states, hub actions, pending events per device/app. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3041,7 +3082,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
         ],
         [
             name: "hub_get_jobs",
-            description: "Get scheduled jobs, running jobs, and hub actions from the hub's logs page. Shows what's scheduled to run and when. Requires Hub Admin Read.",
+            description: "Get scheduled jobs, running jobs, and hub actions from the hub's logs page. Shows what's scheduled to run and when. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -3074,7 +3115,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
         ],
         [
             name: "hub_get_logs",
-            description: "Get Hubitat system logs, most recent first. Filter pipeline (in order): scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit. Default 100 entries, max 500. Requires Hub Admin Read.",
+            description: "Get Hubitat system logs, most recent first. Filter pipeline (in order): scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit. Default 100 entries, max 500. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3119,7 +3160,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
         ],
         [
             name: "hub_get_metrics",
-            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. The trend reflects ONLY previously-recorded snapshots — the hub does not auto-sample, so it can be sparse or stale (and resets if the CSV is cleared) unless recordSnapshot=true is called periodically. Read-only by default; pass recordSnapshot=true to ALSO append the current snapshot to the performance-history CSV in the hub File Manager (the only write side-effect). Requires Hub Admin Read.",
+            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. The trend reflects ONLY previously-recorded snapshots — the hub does not auto-sample, so it can be sparse or stale (and resets if the CSV is cleared) unless recordSnapshot=true is called periodically. Read-only by default; pass recordSnapshot=true to ALSO append the current snapshot to the performance-history CSV in the hub File Manager (the only write side-effect). Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3204,7 +3245,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
         ],
         [
             name: "hub_get_memory_history",
-            description: "Get the hub's free-memory and CPU-load history (the platform's own timestamped ring buffer, each entry with freeMemoryKB and cpuLoad5min). Use to diagnose memory leaks or load trends over time. For a single current snapshot plus temp/DB-size, use hub_get_metrics instead. Requires Hub Admin Read.",
+            description: "Get the hub's free-memory and CPU-load history (the platform's own timestamped ring buffer, each entry with freeMemoryKB and cpuLoad5min). Use to diagnose memory leaks or load trends over time. For a single current snapshot plus temp/DB-size, use hub_get_metrics instead. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3241,7 +3282,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
         ],
         [
             name: "hub_call_gc",
-            description: "Force JVM garbage collection to reclaim memory. Returns before/after free memory and delta. Non-destructive but may cause a brief pause. Requires Hub Admin Read.",
+            description: "Force JVM garbage collection to reclaim memory. Returns before/after free memory and delta. Non-destructive but may cause a brief pause. Requires the Write master.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -3268,9 +3309,9 @@ def _getAllToolDefinitions_part5() {
     return [
         [
             name: "hub_create_backup",
-            description: """Create a full hub backup. REQUIRED before any Hub Admin Write operation (24h validity).
+            description: """Create a full hub backup. REQUIRED before any Write master operation (24h validity).
 
-Requires Hub Admin Write + confirm. This is the only write tool that doesn't require a prior backup.""",
+Requires Write master + confirm. This is the only write tool that doesn't require a prior backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3295,7 +3336,7 @@ Requires Hub Admin Write + confirm. This is the only write tool that doesn't req
             description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop).
 
 PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true
-Requires Hub Admin Write.""",
+Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3320,7 +3361,7 @@ Requires Hub Admin Write.""",
             description: """⚠️ EXTREME: Powers OFF the hub (requires physical restart). NOT a reboot.
 
 PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automatically 3) Get explicit confirmation 4) Set confirm=true
-Requires Hub Admin Write.""",
+Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3347,7 +3388,7 @@ Requires Hub Admin Write.""",
 WARNING: During repair, Z-Wave automations will be unreliable. Locks, garage doors, and security devices on Z-Wave may not respond. Schedule during off-peak hours when critical Z-Wave devices are not actively needed.
 
 PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user about duration/impact and which devices will be affected 3) Get explicit confirmation 4) Set confirm=true
-Requires Hub Admin Write.""",
+Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3375,7 +3416,7 @@ Requires Hub Admin Write.""",
             description: """⚠️ MOST DESTRUCTIVE: Permanently delete a device. NO UNDO. For ghost/orphaned/stuck devices only.
 
 PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zigbee → exclusion first 5) Get confirmation
-Device + history lost, automations break. Requires Hub Admin Write.""",
+Device + history lost, automations break. Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3407,7 +3448,7 @@ Device + history lost, automations break. Requires Hub Admin Write.""",
         // Virtual Device Management
         [
             name: "hub_manage_virtual_device",
-            description: """Create or delete MCP-managed virtual devices. Requires Hub Admin Write + confirm.
+            description: """Create or delete MCP-managed virtual devices. Requires Write master + confirm.
 
 action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId. The two are mutually exclusive -- supplying both (including a blank/whitespace deviceType alongside customDriver) is an error. Create response shape: {success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, attributes}}. Built-in deviceType not-found surfaces as a platform error (isError); customDriver not-found surfaces as an input error (-32602) with a hub_list_drivers hint.
 action="delete": Provide deviceNetworkId of device to delete. Use hub_list_devices(filter='virtual') to find DNIs. Delete response: {success, deviceId, deviceNetworkId, deviceLabel, message}.""",
@@ -3464,7 +3505,7 @@ action="delete": Provide deviceNetworkId of device to delete. Use hub_list_devic
             name: "hub_update_device",
             description: """Update device properties: label, name, deviceNetworkId, room, enabled, dataValues, preferences.
 
-Only modify devices user explicitly requested. Room/enabled require Hub Admin Write. Call `hub_get_tool_guide(section='update_device')` for preferences format.""",
+Only modify devices user explicitly requested. Room/enabled require Write master. Call `hub_get_tool_guide(section='update_device')` for preferences format.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3557,7 +3598,7 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
         ],
         [
             name: "hub_create_room",
-            description: "Create a new room on the hub, optionally assigning devices to it at creation. Use when a needed room does not yet exist; to only move devices into an existing room, use hub_update_room/room-assignment flows instead. Write operation: requires Hub Admin Write, a backup taken within the last 24h, and confirm=true. Returns the new room's ID and assigned device count.",
+            description: "Create a new room on the hub, optionally assigning devices to it at creation. Use when a needed room does not yet exist; to only move devices into an existing room, use hub_update_room/room-assignment flows instead. Write operation: requires Write master, a backup taken within the last 24h, and confirm=true. Returns the new room's ID and assigned device count.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3586,7 +3627,7 @@ Only modify devices user explicitly requested. Room/enabled require Hub Admin Wr
             description: """⚠️ DESTRUCTIVE: Permanently deletes a room. Devices become unassigned (not deleted).
 
 PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true
-Requires Hub Admin Write.""",
+Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3616,7 +3657,7 @@ def _getAllToolDefinitions_part6() {
     return [
         [
             name: "hub_update_room",
-            description: "Rename a room. Device assignments preserved. Automations/dashboards referencing room by name may need updating. Requires Hub Admin Write + confirm + backup <24h.",
+            description: "Rename a room. Device assignments preserved. Automations/dashboards referencing room by name may need updating. Requires Write master + confirm + backup <24h.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3644,7 +3685,7 @@ def _getAllToolDefinitions_part6() {
         // Hub Admin App/Driver Source Read Tools
         [
             name: "hub_get_source",
-            description: "Get the Groovy source of an installed app, driver, or library. Pass type and id. Supports chunked reading (offset/length); large files are auto-saved to the File Manager for use with the matching update tool's sourceFile mode. Requires Hub Admin Read.",
+            description: "Get the Groovy source of an installed app, driver, or library. Pass type and id. Supports chunked reading (offset/length); large files are auto-saved to the File Manager for use with the matching update tool's sourceFile mode. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3693,7 +3734,7 @@ Three source modes (mutually exclusive):
 
 After installing the code, create a running instance with a SECOND call: hub_create_app(installAsUserApp: <newAppId>, confirm: true). Mutually exclusive with code-install args.
 
-Verifies install succeeded: if the hub accepted the request but the app failed to compile, hub_create_app returns success=false with the error. Requires Hub Admin Write + confirm + backup <24h. Returns new app ID.""",
+Verifies install succeeded: if the hub accepted the request but the app failed to compile, hub_create_app returns success=false with the error. Requires Write master + confirm + backup <24h. Returns new app ID.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3735,7 +3776,7 @@ Three source modes (mutually exclusive per item):
 
 For >1 driver: USE BULK mode (single round-trip, not N separate calls): installs=[{source|sourceFile|importUrl}, ...]. Cannot mix bulk and single-driver fields.
 
-Verifies install succeeded: if the hub accepted the request but the driver failed to compile, hub_create_driver returns success=false with the error. Requires Hub Admin Write + confirm + backup <24h. Returns new driver ID(s).""",
+Verifies install succeeded: if the hub accepted the request but the driver failed to compile, hub_create_driver returns success=false with the error. Requires Write master + confirm + backup <24h. Returns new driver ID(s).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3794,7 +3835,7 @@ Four source modes (mutually exclusive):
 - importUrl -- hub fetches the URL directly (mirrors UI's "Import Code from Website" then Save flow)
 - resave -- recompile without changes (on-hub only, no source touched)
 
-Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h.
+Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
 
 Self-update guard: refuses to overwrite the MCP server's own app source unless Developer Mode is on (a bad self-update bricks the MCP loop). Optional expectedVersion arg enables optimistic locking. Optional triggerUpdated arg fires updated() on a named instance after save (UI Save does NOT do this -- opt-in only).""",
             inputSchema: [
@@ -3845,7 +3886,7 @@ Four source modes (mutually exclusive per item):
 
 For >1 driver: USE BULK mode (single round-trip): updates=[{driverId, source|sourceFile|importUrl|resave, optional expectedVersion}, ...]. Cannot mix bulk and single-driver fields. Continue-on-error.
 
-Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h.""",
+Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3910,7 +3951,7 @@ Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h
 
 Pre-flight by type: apps -- remove app instances via the Hubitat UI first; drivers -- switch any devices to a different driver first; libraries -- ensure no apps/drivers still #include it (deleting an included library causes compile errors).
 
-Tell the user the item name/ID, warn it's permanent, get confirmation. Requires Hub Admin Write + confirm + backup <24h.""",
+Tell the user the item name/ID, warn it's permanent, get confirmation. Requires Write master + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3947,7 +3988,7 @@ Three source modes (mutually exclusive):
 - sourceFile -- File Manager filename (upload first via curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload)
 - importUrl -- hub fetches the URL directly
 
-Library source must include a library() definition block with 4 required fields: name, namespace, author, description. The hub does NOT compile-check libraries at install time -- syntax errors only surface later when an app or driver tries to #include the library. Requires Hub Admin Write + confirm + backup <24h. Returns new libraryId.""",
+Library source must include a library() definition block with 4 required fields: name, namespace, author, description. The hub does NOT compile-check libraries at install time -- syntax errors only surface later when an app or driver tries to #include the library. Requires Write master + confirm + backup <24h. Returns new libraryId.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3985,7 +4026,7 @@ Four source modes (mutually exclusive):
 - importUrl -- hub fetches the URL directly
 - resave -- recompile without changes (on-hub only)
 
-Auto-backs up before modifying. Requires Hub Admin Write + confirm + backup <24h.""",
+Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4092,7 +4133,7 @@ def _getAllToolDefinitions_part7() {
     return [
         [
             name: "hub_restore_backup",
-            description: "⚠️ Restore app/driver to backed-up version. Tell user first. If item was DELETED, use hub_create_app/hub_create_driver/hub_create_library instead. Library backups return a clear error directing you to hub_update_library. Requires Hub Admin Write + confirm.",
+            description: "⚠️ Restore app/driver to backed-up version. Tell user first. If item was DELETED, use hub_create_app/hub_create_driver/hub_create_library instead. Library backups return a clear error directing you to hub_update_library. Requires Write master + confirm.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4177,7 +4218,7 @@ def _getAllToolDefinitions_part7() {
         ],
         [
             name: "hub_write_file",
-            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery). Requires Hub Admin Write and confirm=true — confirm the write with the user before calling. Returns the file name, chars written, and download URL.",
+            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery). Requires Write master and confirm=true — confirm the write with the user before calling. Returns the file name, chars written, and download URL.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4203,7 +4244,7 @@ def _getAllToolDefinitions_part7() {
         ],
         [
             name: "hub_delete_file",
-            description: "⚠️ Permanently delete a file from the hub's File Manager. The file is auto-backed up before deletion (see backupFile/undoHint in the result for recovery), but the original is removed. Tell the user and get approval first. Requires Hub Admin Write and confirm=true.",
+            description: "⚠️ Permanently delete a file from the hub's File Manager. The file is auto-backed up before deletion (see backupFile/undoHint in the result for recovery), but the original is removed. Tell the user and get approval first. Requires Write master and confirm=true.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4229,7 +4270,7 @@ def _getAllToolDefinitions_part7() {
         // Installed Apps Integration (built-in + user app visibility)
         [
             name: "hub_list_device_dependents",
-            description: """List all apps that reference a specific device (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.). Requires Built-in App Tools enabled.
+            description: """List all apps that reference a specific device (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.). Requires the Read master.
 
 Answers \"which apps would break or change behavior if I disable/delete this device?\" — critical before device cleanup, troubleshooting, or reassignment.
 
@@ -4274,7 +4315,7 @@ Use to: understand what an existing automation actually does, audit rules for be
 
 Workflow: (1) Get the appId from hub_list_apps (scope='instances', all apps), hub_list_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not hub_get_custom_rule, which only handles MCP-native rules), or hub_list_apps (scope='instances') with filter=parents to explore app hierarchy. (2) Call hub_get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call hub_list_app_pages first to discover available page names (the pageName param lists the common HPM / RM / Room Lighting pages).
 
-Requires Hub Admin Read.""",
+Requires Read master.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4342,7 +4383,7 @@ Unknown app types return the primary page only, plus a note directing you to con
 
 Use this before hub_get_app_config on multi-page apps to avoid guessing page names.
 
-Requires Hub Admin Read.""",
+Requires Read master.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4388,7 +4429,7 @@ If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-ap
 
 Set includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan-app / orphan-driver signals; optional packageFilter narrows which packages are analyzed). Off by default (adds 1-2 hub calls). Drift is heID-presence-only -- post-install source edits are NOT surfaced. Call `hub_get_tool_guide(section='builtin_app_tools')` for the full drift-signal taxonomy, response-field reference, and under-count caveats.
 
-Requires Hub Admin Read. HPM itself must be installed.""",
+Requires Read master. HPM itself must be installed.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4445,7 +4486,7 @@ Requires Hub Admin Read. HPM itself must be installed.""",
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
         [
             name: "hub_list_rules",
-            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Returns rule IDs and labels. Requires Built-in App Tools enabled. Call `hub_get_tool_guide(section='builtin_app_tools')` for details and platform limitations on RM rule internals.",
+            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Returns rule IDs and labels. Requires the Read master. Call `hub_get_tool_guide(section='builtin_app_tools')` for details and platform limitations on RM rule internals.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4476,7 +4517,7 @@ Requires Hub Admin Read. HPM itself must be installed.""",
         ],
         [
             name: "hub_call_rule",
-            description: "Trigger a Rule Machine rule. Not destructive (invokes existing user-configured automation). Requires Built-in App Tools enabled. Call `hub_get_tool_guide(section='builtin_app_tools')` for action semantics.",
+            description: "Trigger a Rule Machine rule. Not destructive (invokes existing user-configured automation). Requires the Write master. Call `hub_get_tool_guide(section='builtin_app_tools')` for action semantics.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4505,7 +4546,7 @@ def _getAllToolDefinitions_part8() {
     return [
         [
             name: "hub_set_rule_paused",
-            description: "Pause or resume a Rule Machine rule (paused rules don't fire on triggers). value=true pauses, value=false resumes (idempotent on the hub). Requires Built-in App Tools enabled.",
+            description: "Pause or resume a Rule Machine rule (paused rules don't fire on triggers). value=true pauses, value=false resumes (idempotent on the hub). Requires the Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4530,7 +4571,7 @@ def _getAllToolDefinitions_part8() {
         ],
         [
             name: "hub_set_rule_private_boolean",
-            description: "Set a Rule Machine rule's private boolean to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires Built-in App Tools enabled. Call `hub_get_tool_guide(section='builtin_app_tools')` for pattern and coercion policy.",
+            description: "Set a Rule Machine rule's private boolean to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires the Write master. Call `hub_get_tool_guide(section='builtin_app_tools')` for pattern and coercion policy.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4569,7 +4610,7 @@ This tool is GENERIC and has NO trigger/action authoring sugar. For full Rule Ma
 
 BEFORE EVERY edit-write a full snapshot is saved to File Manager; the response carries backup.backupKey for hub_restore_backup (in hub_manage_code) if a write goes wrong.
 
-Requires Built-in App Tools + Hub Admin Write + confirm=true + recent hub backup.""",
+Requires the Write master + confirm=true + recent hub backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4580,7 +4621,7 @@ Requires Built-in App Tools + Hub Admin Write + confirm=true + recent hub backup
                     button: [type: "string", description: "Page-transition button name to click (discover via hub_get_app_config)."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
-                    confirm: [type: "boolean", description: "Must be true. Safety gate for Hub Admin Write operations."]
+                    confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
             ],
@@ -4620,7 +4661,7 @@ For NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scen
 
 Full capability reference — trigger/action/expression families, extended condition shapes, the raw settings/button wizard flow, and walkStep — is one call away: pass guide:true to get it back inline (no separate tool call), or see hub_get_tool_guide(section='set_rule_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
 
-Requires Built-in App Tools + Hub Admin Write + confirm=true + recent hub backup.""",
+Requires the Write master + confirm=true + recent hub backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4849,7 +4890,7 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
         ],
         [
             name: "hub_clone_native_app",
-            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner system app. Lower-overhead alternative to rebuilding via the wizard — clone an existing rule that has the shape you want, then surgically edit fields via hub_set_rule (RM rules) or hub_set_native_app (other classic apps). Preserves the full rule shape (state.actNdx, conditions, expressions, IF/THEN/ELSE positional arrays). Drives the appCloner's 4-step wizard (cloneRuleButton → confirmation → importRule sub-page → importNow); the actual clone fires in tens of seconds for typical rules. Returns newAppId on success. Requires Built-in App Tools enabled + Hub Admin Write + confirm=true.""",
+            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner system app. Lower-overhead alternative to rebuilding via the wizard — clone an existing rule that has the shape you want, then surgically edit fields via hub_set_rule (RM rules) or hub_set_native_app (other classic apps). Preserves the full rule shape (state.actNdx, conditions, expressions, IF/THEN/ELSE positional arrays). Drives the appCloner's 4-step wizard (cloneRuleButton → confirmation → importRule sub-page → importNow); the actual clone fires in tens of seconds for typical rules. Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4876,7 +4917,7 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
         ],
         [
             name: "hub_export_native_app",
-            description: """Export any classic native automation app to its canonical JSON shape via Hubitat's first-party appCloner. The exported JSON is the same format Hubitat's UI 'Export' button produces — a self-contained document with appReplacements + deviceReplacements + the full rule state — that round-trips cleanly through hub_import_native_app. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer. Pass saveAs to also write the JSON to the hub's File Manager (e.g. for HPM-style distribution). Requires Built-in App Tools enabled.""",
+            description: """Export any classic native automation app to its canonical JSON shape via Hubitat's first-party appCloner. The exported JSON is the same format Hubitat's UI 'Export' button produces — a self-contained document with appReplacements + deviceReplacements + the full rule state — that round-trips cleanly through hub_import_native_app. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer. Pass saveAs to also write the JSON to the hub's File Manager (e.g. for HPM-style distribution). Requires the Write master (it instantiates a cloner app and persists, so it is a write operation; no confirm/backup required).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4904,7 +4945,7 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
         ],
         [
             name: "hub_import_native_app",
-            description: """Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Pair with hub_export_native_app for round-trip edits or backup/restore workflows. Pass jsonContent (the exported JSON string) OR fromFile (a File Manager filename written by hub_export_native_app). The cloner needs an existing rule under the target parent to seed itself — pass parentHintAppId (any existing rule id under the same parent app you want the imported rule to land under, e.g. another RM rule for an RM import). Requires Built-in App Tools enabled + Hub Admin Write + confirm=true.""",
+            description: """Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Pair with hub_export_native_app for round-trip edits or backup/restore workflows. Pass jsonContent (the exported JSON string) OR fromFile (a File Manager filename written by hub_export_native_app). The cloner needs an existing rule under the target parent to seed itself — pass parentHintAppId (any existing rule id under the same parent app you want the imported rule to land under, e.g. another RM rule for an RM import). Requires the Write master + confirm=true (+ a recent backup).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4984,7 +5025,7 @@ force=true: hard delete via /installedapp/forcedelete/quiet — the same path th
 
 BEFORE DELETE: full snapshot saved to File Manager. Response includes backup.backupKey; call hub_restore_backup (in hub_manage_code) with that key to recreate the app with all its settings re-applied.
 
-Requires Hub Admin Write + confirm=true + recent hub backup.""",
+Requires Write master + confirm=true + recent hub backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -5064,15 +5105,36 @@ Requires Hub Admin Write + confirm=true + recent hub backup.""",
 
 
 def executeTool(toolName, args) {
+    // ---- Universal Read/Write master gate (issue #113) ----
+    // Gateway NAMES are not leaf tools: they route to handleGateway (see switch
+    // below) which re-enters executeTool per sub-tool, so the sub-tool is gated on
+    // re-entry. Classifying a gateway name here would misfire (a hub_read_* gateway
+    // is not in getReadOnlyToolNames()). Masters default ON -- only an explicit
+    // `== false` blocks (null/unset => allowed).
+    def isGatewayName = getGatewayConfig().containsKey(toolName)
+    if (!isGatewayName) {
+        if (getReadOnlyToolNames().contains(toolName)) {
+            if (settings.enableRead == false) {
+                throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName}.")
+            }
+        } else if (settings.enableWrite == false) {
+            throw new IllegalArgumentException("Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${toolName}.")
+        }
+    }
+
+    // ---- Advanced per-tool/per-gateway overrides (issue #114) ----
+    if (isGatewayName) {
+        if ((settings.disabled_gateways ?: []).contains(toolName)) {
+            throw new IllegalArgumentException("${toolName} is disabled in Advanced settings (Per-tool Overrides). Re-enable it in MCP Rule Server app settings.")
+        }
+    } else if (getEffectiveDisabledTools().contains(toolName)) {
+        throw new IllegalArgumentException("${toolName} is disabled in Advanced settings (Per-tool Overrides). Re-enable it in MCP Rule Server app settings.")
+    }
+
     // Custom Rule Engine gate. The tools also disappear from tools/list
     // (see getToolDefinitions), but a stale client cache could still call
-    // them -- fail clearly here. Three modes:
-    //   "full"     -- engine ON; all custom_* allowed
-    //   "readonly" -- engine OFF + builtinApp ON; read tools + update(enabled) allowed
-    //   "off"      -- engine OFF + builtinApp OFF; all custom_* blocked
-    def customEngineOn = settings.enableCustomRuleEngine == true
-    def builtinAppOn   = settings.enableBuiltinApp == true
-    def customEngineMode = customEngineOn ? "full" : (builtinAppOn ? "readonly" : "off")
+    // them -- fail clearly here. See getCustomEngineMode() for the three modes.
+    def customEngineMode = getCustomEngineMode()
     def customReadonlyTools = ["hub_get_custom_rule", "hub_test_custom_rule",
                                "hub_update_custom_rule"] as Set
     // Legacy custom-rule tools are named hub_<verb>_custom_rule (the `custom`
@@ -5086,7 +5148,7 @@ def executeTool(toolName, args) {
     // the gateway ends with `_custom_rules`, so endsWith cleanly excludes it.
     if (toolName?.endsWith("_custom_rule")) {
         if (customEngineMode == "off") {
-            throw new IllegalArgumentException("${toolName} is not available. Both 'Enable Custom Rule Engine' and 'Enable Built-in App Tools' are OFF. To use the legacy custom-rule tools (hub_*_custom_rule), turn on Custom Rule Engine. To use native Hubitat Rule Machine rules (recommended), turn on Built-in App Tools instead.")
+            throw new IllegalArgumentException("${toolName} is not available. 'Enable Custom Rule Engine' is OFF and the Read master is OFF. Turn on Custom Rule Engine to use the legacy custom-rule tools (hub_*_custom_rule), or use native Hubitat Rule Machine via hub_manage_native_rules_and_apps.")
         }
         if (customEngineMode == "readonly" && !customReadonlyTools.contains(toolName)) {
             throw new IllegalArgumentException("${toolName} is not available in read-only mode. The Custom Rule Engine toggle is OFF. Turn it ON in MCP Rule Server settings to use create/delete/export/import/clone operations. NOTE: the custom MCP rule engine is legacy -- for new rule work prefer hub_manage_native_rules_and_apps.")
@@ -5164,7 +5226,7 @@ def executeTool(toolName, args) {
         // Version Check
         case "hub_get_update_status": return toolCheckForUpdate(args)
 
-        // Hub Admin Read Tools (hub_get_details + hub_get_health merged into hub_get_info)
+        // Read master Tools (hub_get_details + hub_get_health merged into hub_get_info)
         case "hub_list_apps": return (args?.scope == "types") ? toolListHubApps(args) : toolListInstalledApps(args)
         case "hub_list_drivers": return toolListHubDrivers(args)
         case "hub_get_radio_details": return toolGetRadioDetails(args)
@@ -5178,7 +5240,7 @@ def executeTool(toolName, args) {
         case "hub_get_memory_history": return toolGetMemoryHistory(args)
         case "hub_call_gc": return toolForceGarbageCollection(args)
 
-        // Hub Admin Write Tools
+        // Write master Tools
         case "hub_create_backup": return toolCreateHubBackup(args)
         case "hub_reboot": return toolRebootHub(args)
         case "hub_shutdown": return toolShutdownHub(args)
@@ -5279,12 +5341,12 @@ def executeTool(toolName, args) {
             // a hint pointing at the real sub-tools instead.
             if (settings.useGateways == false) {
                 // Filter the hint against the live flat catalog so we don't recommend tools
-                // that other toggles (Built-in App / Custom Rule Engine) have also hidden.
+                // that other settings (Read/Write masters or Custom Rule Engine) have also hidden.
                 def visibleNames = getToolDefinitions()*.name as Set
                 def subTools = (getGatewayConfig()[toolName]?.tools ?: []).findAll { visibleNames.contains(it) }
                 def hint = subTools
                     ? "Call the underlying tool directly: ${subTools.join(', ')}. Refresh tools/list to see the flat catalog."
-                    : "All sub-tools of this gateway are also disabled by other server toggles (Built-in App Tools / Custom Rule Engine). Enable those toggles or refresh tools/list."
+                    : "All sub-tools of this gateway are also disabled by other server toggles (Read/Write masters or Custom Rule Engine). Enable those toggles or refresh tools/list."
                 return [
                     isError: true,
                     error: "Gateway tool '${toolName}' is disabled — useGateways is OFF in this server's preferences.",
@@ -6390,10 +6452,10 @@ def toolTestRule(ruleId) {
  * @return        redirect hint String, or null if no redirect applies
  */
 private String findRuleAppRedirect(ruleId, String verb) {
-    // Soft gate: only enrich the error when Built-in App Tools are enabled.
-    // Prevents leaking that an app exists at this id (or its type) when the
-    // operator has intentionally restricted built-in app visibility.
-    if (!settings.enableBuiltinApp) return null
+    // Soft gate: only enrich the error when the Read master is on. Prevents
+    // leaking that an app exists at this id (or its type) when the operator has
+    // intentionally restricted read access.
+    if (settings.enableRead == false) return null
 
     // Type-string fragments that identify rule-like built-in apps. Matched case-insensitively
     // as substrings of the app's type field. "visual rule" (singular) covers both
@@ -6457,7 +6519,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
                 "Use `hub_read_apps_code -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
                 "`hub_delete_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
                 "Use `hub_manage_native_rules_and_apps -> hub_delete_native_app(appId=${idStr}, confirm=true)` to delete it programmatically " +
-                "(requires Built-in App Tools + Hub Admin Write)."
+                "(requires the Write master)."
         } else if (verb == "test") {
             // hub_call_rule routes through RMUtils and is RM-only. Point non-RM rule-likes at hub_get_app_config instead.
             if (isRmRule) {
@@ -6465,7 +6527,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
                     "Use `hub_read_apps_code -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
                     "`hub_test_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
                     "Use `hub_manage_native_rules_and_apps -> hub_call_rule(ruleId=${idStr})` to trigger it " +
-                    "(requires Built-in App Tools)."
+                    "(requires the Read master)."
             } else {
                 return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                     "Use `hub_read_apps_code -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
@@ -6480,7 +6542,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
                 "Use `hub_read_apps_code -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
                 "`hub_update_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
                 "Use `hub_manage_rule_machine -> hub_set_rule(appId=${idStr})` to modify it programmatically " +
-                "(requires Built-in App Tools + Hub Admin Write)."
+                "(requires the Write master)."
         }
     } catch (Exception e) {
         mcpLog("error", "rules", "findRuleAppRedirect lookup failed for id ${idStr}: ${e.message ?: e.toString()}")
@@ -6863,14 +6925,13 @@ def toolGetHubInfo(args = null) {
 
     // Settings visibility (always available)
     info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
-    info.hubAdminReadEnabled = settings.enableHubAdminRead ?: false
-    info.hubAdminWriteEnabled = settings.enableHubAdminWrite ?: false
-    info.builtinAppEnabled = settings.enableBuiltinApp ?: false
+    info.readEnabled = settings.enableRead != false
+    info.writeEnabled = settings.enableWrite != false
     info.customRuleEngineEnabled = settings.enableCustomRuleEngine == true
     info.developerModeEnabled = settings.enableDeveloperMode ?: false
 
-    // PII/location data requires Hub Admin Read
-    if (settings.enableHubAdminRead) {
+    // PII/location data requires the Read master (default ON)
+    if (settings.enableRead != false) {
         info.name = hub?.name
         info.localIP = hub?.localIP
         info.timeZone = location.timeZone?.ID
@@ -6879,7 +6940,7 @@ def toolGetHubInfo(args = null) {
         info.zipCode = location.zipCode
         try { info.hubData = hub?.data } catch (Exception e) { info.hubData = null }
     } else {
-        info.hubAdminReadRequired = "Hub Admin Read is not enabled. The following personally identifiable data is excluded: hub name, local IP, time zone, latitude, longitude, zip code, and hub data. Enable 'Enable Hub Admin Read Tools' in MCP Rule Server app settings to include this data."
+        info.readDisabledNote = "The Read master is OFF. The following personally identifiable data is excluded: hub name, local IP, time zone, latitude, longitude, zip code, and hub data. Enable 'Read Tools' in MCP Rule Server app settings to include this data."
     }
 
     if (args?.identifyHub == true) {
@@ -7174,7 +7235,7 @@ def _findHubVariablesAppId() {
  * manually under Settings > Hub Variables.
  */
 def toolCreateVariable(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
     def name = args.name?.toString()?.trim()
     _validateHubVarName(name)
     def type = _validateHubVarType(args.type?.toString())
@@ -7288,7 +7349,7 @@ def toolCreateVariable(args) {
  * Defaults to "Variable" (the neutral option that exists for every type).
  */
 def toolCreateConnector(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
     def name = args.name?.toString()?.trim()
     if (!name) throw new IllegalArgumentException("Variable name is required")
     def requestedType = args.connectorType?.toString()?.trim()
@@ -7358,7 +7419,7 @@ def toolCreateConnector(args) {
  * The hub variable itself is NOT deleted; only the connector linkage.
  */
 def toolRemoveConnector(args) {
-    requireHubAdminWrite(args?.confirm as Boolean)
+    requireDestructiveConfirm(args?.confirm as Boolean)
     def name = args?.name?.toString()?.trim()
     if (!name) throw new IllegalArgumentException("Variable name is required")
 
@@ -7435,7 +7496,7 @@ def toolSetVariable(name, value) {
 }
 
 def toolDeleteHubVariable(args) {
-    requireHubAdminWrite(args?.confirm as Boolean)
+    requireDestructiveConfirm(args?.confirm as Boolean)
     def varName = args?.name?.toString()?.trim()
     if (!varName) throw new IllegalArgumentException("name is required")
     def force = args?.force == true
@@ -7572,12 +7633,12 @@ def toolDeleteHubVariable(args) {
 def toolUpdateMcpSettings(args) {
     // IllegalArgumentException (not IllegalStateException) so the dispatcher routes this
     // through the clean -32602 Invalid params branch in handleToolsCall — same exception
-    // type all other gates throw (requireHubAdminWrite, requireBuiltinApp). Toggle-off
-    // is a config refusal, not an unexpected runtime error worth a stack trace + ERROR log.
+    // type the other gates throw (requireDestructiveConfirm, the central master gate).
+    // Toggle-off is a config refusal, not an unexpected runtime error worth a stack trace.
     if (!settings.enableDeveloperMode) {
         throw new IllegalArgumentException("Developer Mode tools are disabled. Enable 'Developer Mode Tools' in MCP rule app settings to use hub_update_mcp_settings.")
     }
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
 
     if (!args.settings || !(args.settings instanceof Map) || args.settings.isEmpty()) {
         throw new IllegalArgumentException("settings must be a non-empty map of {settingName: newValue}")
@@ -7586,20 +7647,20 @@ def toolUpdateMcpSettings(args) {
     // Allowlist of settings that can be modified via this tool, with their Hubitat input
     // type (matches the input "<key>", "<type>", ... declarations in the mainPage section).
     // useGateways is allowlisted: it only reshapes tools/list (gateway vs flat) — same class
-    // as enableBuiltinApp/enableCustomRuleEngine, no write-path or lockout risk; clients must
-    // reconnect afterward to pick up the new tool surface.
+    // as enableCustomRuleEngine, no write-path or lockout risk; clients must reconnect
+    // afterward to pick up the new tool surface.
     // Excluded:
-    //   enableHubAdminWrite  — would footgun: could disable own write path mid-session
+    //   enableWrite          — would footgun: could disable own write path mid-session
     //   enableDeveloperMode  — lockout protection (must remain UI-only to disable)
     //   selectedDevices      — capability multi-select, separate tool planned (Developer Mode follow-up)
+    //   disabled_tools / disabled_gateways — could self-disable this tool; UI-only (Advanced page)
     def allowedSettings = [
         "mcpLogLevel":            "enum",
         "debugLogging":           "bool",
         "maxCapturedStates":      "number",
         "loopGuardMax":           "number",
         "loopGuardWindowSec":     "number",
-        "enableHubAdminRead":     "bool",
-        "enableBuiltinApp":       "bool",
+        "enableRead":             "bool",
         "enableCustomRuleEngine": "bool",
         "useGateways":            "bool"
     ]
@@ -8907,40 +8968,18 @@ def hubInternalPostJson(String path, String jsonBody, int timeout = 420, boolean
 }
 
 /**
- * Check if Hub Admin Read access is enabled. Throws if not.
+ * Destructive-tier confirmation gate: confirm=true + a hub backup within 24h.
+ * Orthogonal to the Read/Write masters (the Write master is enforced centrally in
+ * executeTool). Applied only to the destructive/sensitive write tools that required
+ * it before the #113 master collapse -- ordinary writes need only the Write master.
  */
-def requireHubAdminRead() {
-    if (!settings.enableHubAdminRead) {
-        throw new IllegalArgumentException("Hub Admin Read access is disabled. Enable 'Enable Hub Admin Read Tools' in MCP Rule Server app settings to use this tool.")
-    }
-}
-
-/**
- * Check if Built-in App Tools (read + write) is enabled. Throws if not.
- * Gates installed-app enumeration, device-in-use-by lookup, Rule Machine
- * interop (RMUtils-based list/run/pause/resume/setBoolean), AND native
- * classic SmartApp CRUD (hub_set_rule / hub_set_native_app /
- * hub_delete_native_app). The CRUD tools additionally require Hub Admin Write.
- */
-def requireBuiltinApp() {
-    if (!settings.enableBuiltinApp) {
-        throw new IllegalArgumentException("Built-in App Tools are disabled. Enable 'Enable Built-in App Tools (read + write)' in MCP Rule Server app settings to use this tool.")
-    }
-}
-
-/**
- * Check if Hub Admin Write access is enabled and a recent backup exists. Throws if not.
- */
-def requireHubAdminWrite(Boolean confirmParam) {
-    if (!settings.enableHubAdminWrite) {
-        throw new IllegalArgumentException("Hub Admin Write access is disabled. Enable 'Enable Hub Admin Write Tools' in MCP Rule Server app settings to use this tool.")
-    }
+def requireDestructiveConfirm(Boolean confirmParam) {
     if (!confirmParam) {
         throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with hub_create_backup first? Review the tool description for the mandatory pre-flight checklist, or call hub_get_tool_guide for the tool's full reference.")
     }
     // Check for recent hub backup (within 24 hours)
     if (!state.lastBackupTimestamp || (now() - state.lastBackupTimestamp) > 86400000) {
-        throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours. You MUST call hub_create_backup FIRST and verify it succeeds before using any Hub Admin Write tool. Last backup: ${state.lastBackupTimestamp ? formatTimestamp(state.lastBackupTimestamp) : 'Never'}")
+        throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours. You MUST call hub_create_backup FIRST and verify it succeeds before using this tool. Last backup: ${state.lastBackupTimestamp ? formatTimestamp(state.lastBackupTimestamp) : 'Never'}")
     }
 }
 
@@ -9019,7 +9058,7 @@ def backupItemSource(String type, String id) {
 /**
  * Lists all item backups stored in the hub's local File Manager.
  * Metadata is in atomicState.itemBackupManifest; actual source files are in File Manager.
- * Does not require Hub Admin Read/Write — always available.
+ * Does not require Read master/Write — always available.
  */
 def toolListItemBackups(args = null) {
     def manifest = atomicState.itemBackupManifest ?: [:]
@@ -9080,7 +9119,7 @@ def toolListItemBackups(args = null) {
 /**
  * Retrieves the full source code from a specific item backup.
  * Reads the file from the hub's local File Manager using downloadHubFile().
- * Does not require Hub Admin Read/Write.
+ * Does not require Read master/Write.
  */
 def toolGetItemBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', or 'library_42')")
@@ -9151,10 +9190,10 @@ def toolGetItemBackup(args) {
  * Restores an app or driver to its backed-up source code.
  * Reads the backup from File Manager and calls hub_update_app or hub_update_driver.
  * Both the read (downloadHubFile) and write (hubInternalPostForm) are local — no cloud involvement.
- * Requires Hub Admin Write access.
+ * Requires Write master access.
  */
 def toolRestoreItemBackup(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
 
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', 'library_42', or 'rm-rule_<id>_<ts>')")
 
@@ -9508,10 +9547,10 @@ def toolReadFile(args) {
 /**
  * Writes or creates a file in the hub's local File Manager.
  * If the file already exists, automatically creates a backup copy first.
- * Requires Hub Admin Write access.
+ * Requires Write master access.
  */
 def toolWriteFile(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
     if (args.content == null) throw new IllegalArgumentException("content is required")
 
@@ -9572,10 +9611,10 @@ def toolWriteFile(args) {
 /**
  * Deletes a file from the hub's local File Manager.
  * Automatically creates a backup copy before deletion.
- * Requires Hub Admin Write access.
+ * Requires Write master access.
  */
 def toolDeleteFile(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
 
     // Skip auto-backup for files that are already backups (prevent infinite backup chains)
@@ -10095,7 +10134,7 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
         hubName: privacyMode == "public" ? "<hub-name>" : hubName,
         hubModel: hubModel,
         hubFirmware: hubFirmware,
-        timeZone: timeZone,
+        timeZone: privacyMode == "public" ? "<time-zone>" : timeZone,
         logLevel: getConfiguredLogLevel(),
         customMcpRuleCount: getChildApps()?.size() ?: 0,
         nativeRm: _bugReportNativeRmStatus(),
@@ -10299,7 +10338,6 @@ _Add any other context, screenshots, or transcripts when filing._
 // ==================== HUB ADMIN READ TOOL IMPLEMENTATIONS ====================
 
 def toolListHubApps(args) {
-    requireHubAdminRead()
 
     def cursor = args?.cursor
     def result = [:]
@@ -10349,7 +10387,6 @@ def toolListHubApps(args) {
 }
 
 def toolListHubDrivers(args) {
-    requireHubAdminRead()
 
     def cursor = args?.cursor
     def result = [:]
@@ -10394,7 +10431,6 @@ def toolListHubDrivers(args) {
 }
 
 def toolGetZwaveDetails(args) {
-    requireHubAdminRead()
 
     def hub = location.hub
     def result = [:]
@@ -10441,7 +10477,6 @@ def toolGetZwaveDetails(args) {
 }
 
 def toolGetZigbeeDetails(args) {
-    requireHubAdminRead()
 
     def hub = location.hub
     def result = [:]
@@ -10491,7 +10526,6 @@ def toolGetZigbeeDetails(args) {
 // ==================== MONITORING TOOL IMPLEMENTATIONS ====================
 
 def toolGetHubLogs(args) {
-    requireHubAdminRead()
 
     def maxLimit = 500
     def limit = Math.min(args.limit ?: 100, maxLimit)
@@ -11034,7 +11068,6 @@ def toolGetDeviceHistory(args) {
 
 // Shared helper: fetch /logs/json from hub internal API
 def fetchLogsJson() {
-    requireHubAdminRead()
     def responseText = hubInternalGet("/logs/json", null, 30)
     if (!responseText) throw new RuntimeException("No data returned from /logs/json")
     return new groovy.json.JsonSlurper().parseText(responseText)
@@ -11172,7 +11205,6 @@ def toolGetHubJobs(args) {
 }
 
 def toolGetHubPerformance(args) {
-    requireHubAdminRead()
 
     def recordSnapshot = args.recordSnapshot == true
     def trendPoints = Math.min(args.trendPoints ?: 10, 50)
@@ -11283,7 +11315,6 @@ def toolGetHubPerformance(args) {
 }
 
 def toolGetMemoryHistory(args) {
-    requireHubAdminRead()
 
     def limit = args.limit != null ? args.limit : 100
 
@@ -11379,7 +11410,6 @@ def toolGetMemoryHistory(args) {
 }
 
 def toolForceGarbageCollection(args) {
-    requireHubAdminRead()
 
     // Read free memory before GC
     def beforeKB = null
@@ -11618,9 +11648,8 @@ def runPingChecks(List rawHosts, Integer count) {
 // ==================== HUB ADMIN WRITE TOOL IMPLEMENTATIONS ====================
 
 def toolCreateHubBackup(args) {
-    if (!settings.enableHubAdminWrite) {
-        throw new IllegalArgumentException("Hub Admin Write access is disabled. Enable 'Enable Hub Admin Write Tools' in MCP Rule Server app settings.")
-    }
+    // The Write master is enforced centrally in executeTool; this tool creates the
+    // backup itself, so it cannot require a pre-existing recent one (no requireDestructiveConfirm).
     if (!args.confirm) {
         throw new IllegalArgumentException("You must set confirm=true to create a backup.")
     }
@@ -11648,14 +11677,14 @@ def toolCreateHubBackup(args) {
         return [
             success: false,
             error: "Backup failed: ${e.message}",
-            note: "The backup could not be created. Do NOT proceed with any Hub Admin Write operations. " +
+            note: "The backup could not be created. Do NOT proceed with any Write master operations. " +
                   "Check Hub Security credentials if Hub Security is enabled, or try creating a backup manually from the Hubitat web UI."
         ]
     }
 }
 
 def toolRebootHub(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
 
     mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP")
 
@@ -11679,7 +11708,7 @@ def toolRebootHub(args) {
 }
 
 def toolShutdownHub(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
 
     mcpLog("warn", "hub-admin", "Hub SHUTDOWN initiated by MCP -- hub will NOT restart automatically")
 
@@ -11703,7 +11732,7 @@ def toolShutdownHub(args) {
 }
 
 def toolZwaveRepair(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
 
     mcpLog("info", "hub-admin", "Z-Wave repair initiated by MCP")
 
@@ -11731,7 +11760,6 @@ def toolZwaveRepair(args) {
 // ==================== HUB ADMIN APP/DRIVER MANAGEMENT ====================
 
 def toolGetItemSource(String type, String idParam, args) {
-    requireHubAdminRead()
     def itemId = args[idParam]
     if (!itemId) throw new IllegalArgumentException("${idParam} is required")
 
@@ -11937,7 +11965,6 @@ private List _extractEmbeddedActions(String html) {
  * error rather than malformed data.
  */
 def toolGetAppConfig(args) {
-    requireHubAdminRead()
 
     if (args?.appId == null || args.appId.toString().trim() == "") {
         throw new IllegalArgumentException("appId is required")
@@ -12156,11 +12183,10 @@ def toolGetAppConfig(args) {
  * response contains only the primary page and a note about finding additional
  * pages via the app source or Web UI navigation.
  *
- * Gate: requireHubAdminRead() -- read-only, reads app metadata.
+ * Gate: Read master (central) -- read-only, reads app metadata.
  * Args: appId (required, numeric string or integer)
  */
 def toolListAppPages(args) {
-    requireHubAdminRead()
 
     if (args?.appId == null || args.appId.toString().trim() == "") {
         throw new IllegalArgumentException("appId is required")
@@ -12281,7 +12307,7 @@ def toolInstallApp(args) {
     if (args.installs != null) {
         throw new IllegalArgumentException("Bulk mode ('installs' array) is not supported for hub_create_app. Apps do not cluster the way drivers do; install each app individually.")
     }
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
 
     // installAsUserApp mode: create a running instance from already-installed code.
     // Closes the "hub_create_app installs code but not an instance" gap. Mutually
@@ -12318,7 +12344,7 @@ def toolInstallDriver(args) {
 }
 
 private Map toolInstallItem(String type, args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
 
     def idField = (type == "app") ? "appId" : "driverId"
 
@@ -12383,7 +12409,7 @@ private Map toolInstallItem(String type, args) {
     return toolInstallItemSingle(type, args)
 }
 
-// Caller must have already invoked requireHubAdminWrite -- gate fires once per call, not per bulk item.
+// Caller must have already invoked requireDestructiveConfirm -- gate fires once per call, not per bulk item.
 private Map toolInstallItemSingle(String type, args) {
     def idField = (type == "app") ? "appId" : "driverId"
 
@@ -12521,11 +12547,11 @@ private Map toolInstallItemSingle(String type, args) {
 }
 
 def toolUpdateItemCode(String type, String idParam, args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
     return toolUpdateItemCodeInner(type, idParam, args)
 }
 
-// Caller must have already invoked requireHubAdminWrite -- gate fires once per call, not per bulk item.
+// Caller must have already invoked requireDestructiveConfirm -- gate fires once per call, not per bulk item.
 private Map toolUpdateItemCodeInner(String type, String idParam, args) {
     def itemId = args[idParam]
     if (!itemId) throw new IllegalArgumentException("${idParam} is required")
@@ -12773,7 +12799,7 @@ def toolUpdateAppCode(args) {
 }
 
 def toolUpdateDriverCode(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
 
     // Bulk mode validation: updates array and single-driver fields are mutually exclusive
     if (args.updates != null) {
@@ -12865,7 +12891,7 @@ def toolDeleteItem(args) {
  * Backs up source code before deletion, then deletes and verifies.
  */
 private Map _deleteItemViaEndpoint(String type, String idParam, String deletePath, args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
     def itemId = args[idParam]
     if (!itemId) throw new IllegalArgumentException("${idParam} is required")
 
@@ -12998,7 +13024,6 @@ private Map backupLibrarySource(String libraryId) {
  * Hub endpoint: GET /library/list/single/data/<id> returns [{id, source, version, ...}]
  */
 def toolGetLibrarySource(args) {
-    requireHubAdminRead()
     def libraryId = args.libraryId
     if (!libraryId) throw new IllegalArgumentException("libraryId is required")
     if (!libraryId.toString().isInteger() || libraryId.toString().toInteger() <= 0) throw new IllegalArgumentException("libraryId must be a positive integer (got: '${libraryId}')")
@@ -13085,7 +13110,7 @@ def toolGetLibrarySource(args) {
  * Returns: {success, message, id, version}
  */
 def toolInstallLibrary(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
 
     // Resolve source: exactly one of sourceFile / source / importUrl
     def sourceCode = null
@@ -13230,7 +13255,7 @@ def toolInstallLibrary(args) {
  * Backs up current source before modifying.
  */
 def toolUpdateLibraryCode(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
     def libraryId = args.libraryId
     if (!libraryId) throw new IllegalArgumentException("libraryId is required")
     if (!libraryId.toString().isInteger() || libraryId.toString().toInteger() <= 0) throw new IllegalArgumentException("libraryId must be a positive integer (got: '${libraryId}')")
@@ -13373,7 +13398,7 @@ def toolUpdateLibraryCode(args) {
  * Returns: {success, message: null}
  */
 def toolDeleteLibrary(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
     def libraryId = args.libraryId
     if (!libraryId) throw new IllegalArgumentException("libraryId is required")
     if (!libraryId.toString().isInteger() || libraryId.toString().toInteger() <= 0) throw new IllegalArgumentException("libraryId must be a positive integer (got: '${libraryId}')")
@@ -13456,7 +13481,7 @@ def toolDeleteLibrary(args) {
 // ==================== DEVICE ADMIN TOOL IMPLEMENTATIONS ====================
 
 def toolDeleteDevice(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
     if (!args.deviceId) throw new IllegalArgumentException("deviceId is required")
 
     def deviceId = args.deviceId.toString()
@@ -13736,7 +13761,7 @@ private Map resolveDriverSpec(args) {
 }
 
 def toolCreateVirtualDevice(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
 
     def deviceLabel = args.deviceLabel
     def dni = args.deviceNetworkId
@@ -13912,7 +13937,7 @@ def toolListVirtualDevices(args) {
 }
 
 def toolDeleteVirtualDevice(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
 
     def dni = args.deviceNetworkId
     if (!dni) throw new IllegalArgumentException("deviceNetworkId is required")
@@ -14047,10 +14072,10 @@ def toolUpdateDevice(args) {
         }
     }
 
-    // Room (internal API — requires Hub Admin Write)
+    // Room (internal API — write; Write master enforced centrally in executeTool)
     if (args.room != null) {
-        if (!settings.enableHubAdminWrite) {
-            errors << [property: "room", error: "Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings"]
+        if (settings.enableWrite == false) {
+            errors << [property: "room", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
         } else {
             try {
                 mcpLog("debug", "device", "hub_update_device room: starting room assignment for device ${deviceId}")
@@ -14242,11 +14267,11 @@ def toolUpdateDevice(args) {
         }
     }
 
-    // Enable/Disable (internal API — requires Hub Admin Write)
+    // Enable/Disable (internal API — write; Write master enforced centrally in executeTool)
     // Hubitat's /device/disable endpoint requires POST with body params, not GET with query params
     if (args.enabled != null) {
-        if (!settings.enableHubAdminWrite) {
-            errors << [property: "enabled", error: "Requires 'Enable Hub Admin Write Tools' to be turned on in MCP Rule Server app settings"]
+        if (settings.enableWrite == false) {
+            errors << [property: "enabled", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
         } else {
             try {
                 def disableValue = args.enabled ? "false" : "true"
@@ -14365,7 +14390,7 @@ def toolGetRoom(String roomIdentifier) {
 }
 
 def toolCreateRoom(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
     if (!args.name?.trim()) {
         throw new IllegalArgumentException("Room name is required")
     }
@@ -14414,7 +14439,7 @@ def toolCreateRoom(args) {
 }
 
 def toolDeleteRoom(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
     if (!args.room?.trim()) {
         throw new IllegalArgumentException("Room name or ID is required")
     }
@@ -14486,7 +14511,7 @@ def toolDeleteRoom(args) {
 }
 
 def toolRenameRoom(args) {
-    requireHubAdminWrite(args.confirm)
+    requireDestructiveConfirm(args.confirm)
     if (!args.room?.trim()) {
         throw new IllegalArgumentException("Room name or ID is required")
     }
@@ -14555,7 +14580,6 @@ def toolRenameRoom(args) {
  * installed-package metadata.
  */
 def toolListInstalledApps(args) {
-    requireBuiltinApp()
     def filter = args?.filter ?: "all"
     def includeHidden = args?.includeHidden == true
     def cursor = args?.cursor
@@ -14662,7 +14686,6 @@ def toolListInstalledApps(args) {
  * Backed by /device/fullJson/<id> which exposes appsUsing — the same data the Hubitat device page shows.
  */
 def toolGetDeviceInUseBy(args) {
-    requireBuiltinApp()
     if (!args?.deviceId) throw new IllegalArgumentException("deviceId is required")
     def deviceId = args.deviceId.toString().trim()
     // /device/fullJson/<id> returns a parseable non-empty body even for unknown ids
@@ -14743,7 +14766,7 @@ def toolGetDeviceInUseBy(args) {
         return result
     } catch (Exception e) {
         mcpLogError("installed-apps", "hub_list_device_dependents failed for device ${deviceId}", e)
-        return [success: false, error: "Failed: ${e.message}", note: "Verify the device ID is valid and Built-in App Tools is enabled."]
+        return [success: false, error: "Failed: ${e.message}", note: "Verify the device ID is valid and the Read master is enabled."]
     }
 }
 
@@ -14903,10 +14926,9 @@ private Map _hpmFetchManifests(String hpmAppId) {
 
 /**
  * Project HPM's tracked packages into a normalized list.
- * Gate: requireHubAdminRead() -- reads internal app state via statusJson.
+ * Gate: Read master (central) -- reads internal app state via statusJson.
  */
 def toolListHpmPackages(args) {
-    requireHubAdminRead()
 
     def hpmAppId
     if (args?.hpmAppId != null && args.hpmAppId.toString().trim() != "") {
@@ -15059,10 +15081,9 @@ def toolListHpmPackages(args) {
  * Cross-reference HPM-tracked packages against the hub's Apps Code and Drivers Code registries.
  * Surfaces missing-required components (required=true with heID null) and orphan signals
  * (heID present but code definition absent from the registry). Covers both apps and drivers.
- * Gate: requireHubAdminRead() -- reads internal app state + Apps Code + Drivers Code registries.
+ * Gate: Read master (central) -- reads internal app state + Apps Code + Drivers Code registries.
  */
 def toolGetHpmDrift(args) {
-    requireHubAdminRead()
 
     def hpmAppId
     if (args?.hpmAppId != null && args.hpmAppId.toString().trim() != "") {
@@ -15418,7 +15439,6 @@ def toolGetHpmDrift(args) {
  * treat as a quiet "RM not installed".
  */
 def toolListRmRules(args) {
-    requireBuiltinApp()
     def combined = [:]
     def v4Error = null
     def v5Error = null
@@ -15610,7 +15630,6 @@ private void registerRmRule(Map combined, def r, String version) {
  * Not destructive — invokes existing user-configured automation.
  */
 def toolRunRmRule(args) {
-    requireBuiltinApp()
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
     def ruleId = normalizeRuleId(args.ruleId)
     def action = args?.action ?: "rule"
@@ -15714,7 +15733,6 @@ private Object _rmGetStateEditAct(Integer appId) {
  * hub_set_rule_paused tool (verb-pair merge of the former pause/resume tools).
  */
 def toolSetRulePaused(args) {
-    requireBuiltinApp()
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
     if (args?.value == null) throw new IllegalArgumentException("value (boolean) is required: true=pause, false=resume")
     Boolean paused
@@ -15745,7 +15763,6 @@ def toolSetRulePaused(args) {
  * worse than the friction of requiring explicit true/false.
  */
 def toolSetRmRuleBoolean(args) {
-    requireBuiltinApp()
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
     if (args?.value == null) throw new IllegalArgumentException("value (boolean) is required")
     // Accept Boolean or the canonical lowercase strings 'true'/'false' only. Reject other
@@ -16457,7 +16474,7 @@ String _rmNormalizeComparator(Object raw) {
 private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec")
     // Discover mode -- return static schema without touching the hub.
-    // No capability field required; no Hub Admin Write gate; no backup.
+    // No capability field required; no Write master gate; no backup.
     if (triggerSpec.discover == true) {
         return _rmTriggerSchemaForDiscover()
     }
@@ -19084,7 +19101,7 @@ private void _rmInitSelectActionsPage(Integer appId) {
 private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false) {
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
     // Discover mode -- return static schema without touching the hub.
-    // No capability field required; no Hub Admin Write gate; no backup.
+    // No capability field required; no Write master gate; no backup.
     if (actionSpec.discover == true) {
         return _rmActionSchemaForDiscover()
     }
@@ -22290,8 +22307,7 @@ def toolSetNativeApp(args) {
  * child is force-deleted so the user doesn't accumulate broken shells.
  */
 def _createNativeAppShell(args) {
-    requireBuiltinApp()
-    requireHubAdminWrite(args?.confirm as Boolean)
+    requireDestructiveConfirm(args?.confirm as Boolean)
     def appType = args?.appType?.toString()?.trim() ?: "rule_machine"
     def reg = _appTypeRegistry()[appType]
     if (!reg) {
@@ -24020,8 +24036,9 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
 def _applyNativeAppEdit(args) {
     // Discover mode short-circuit: {addTrigger: {discover: true}} or
     // {addAction: {discover: true}} returns static schema with no hub
-    // interaction -- bypass ALL gates (Built-in App, Hub Admin Write,
-    // backup snapshot). Pure static data; no hub dependency whatsoever.
+    // interaction -- bypass the in-handler requireDestructiveConfirm gate (confirm
+    // + backup snapshot). The Write master still gates this write centrally in
+    // executeTool. Pure static data; no hub dependency whatsoever.
     if (args?.addTrigger instanceof Map && args.addTrigger.discover == true) {
         return _rmAddTrigger(0, args.addTrigger as Map)
     }
@@ -24034,8 +24051,7 @@ def _applyNativeAppEdit(args) {
     if (args?.guide == true) {
         return toolGetToolGuide('set_rule_reference')
     }
-    requireBuiltinApp()
-    requireHubAdminWrite(args?.confirm as Boolean)
+    requireDestructiveConfirm(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
     def appId = normalizeRuleId(args.appId)
     def settingsMap = args?.settings instanceof Map ? args.settings : null
@@ -25319,8 +25335,7 @@ def _applyNativeAppEdit(args) {
  * Button Controllers, Basic Rules, Notifier, etc.
  */
 def toolDeleteNativeApp(args) {
-    requireBuiltinApp()
-    requireHubAdminWrite(args?.confirm as Boolean)
+    requireDestructiveConfirm(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
     def appId = normalizeRuleId(args.appId)
     def force = args?.force == true
@@ -25376,7 +25391,6 @@ def toolDeleteNativeApp(args) {
  * shape that hub_set_rule embeds as `health` on every response.
  */
 def toolCheckRuleHealth(args) {
-    requireBuiltinApp()
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")
     def appId = normalizeRuleId(args.appId)
     return _rmCheckRuleHealth(appId)
@@ -25684,8 +25698,7 @@ private Integer _appClonerDiscoverNewChild(Integer parentAppId, Set<String> preC
  * hub_clone_native_app — wraps the appCloner's Clone path.
  */
 def toolCloneNativeApp(args) {
-    requireBuiltinApp()
-    requireHubAdminWrite(args?.confirm as Boolean)
+    requireDestructiveConfirm(args?.confirm as Boolean)
     def _srcRaw = (args?.sourceAppId != null) ? args.sourceAppId : args?.appId
     if (_srcRaw == null) throw new IllegalArgumentException("sourceAppId (or appId) is required")
     def sourceAppId = normalizeRuleId(_srcRaw)
@@ -25783,7 +25796,6 @@ def toolCloneNativeApp(args) {
  * work (the filecontent is session-keyed, only present in the same request).
  */
 def toolExportNativeApp(args) {
-    requireBuiltinApp()
     def _srcRaw = (args?.sourceAppId != null) ? args.sourceAppId : args?.appId
     if (_srcRaw == null) throw new IllegalArgumentException("sourceAppId (or appId) is required")
     def sourceAppId = normalizeRuleId(_srcRaw)
@@ -25923,8 +25935,7 @@ private String _appClonerExtractJsonFromResponse(String responseBody) {
  * then drives the same importRule -> importNow commit as clone.
  */
 def toolImportNativeApp(args) {
-    requireBuiltinApp()
-    requireHubAdminWrite(args?.confirm as Boolean)
+    requireDestructiveConfirm(args?.confirm as Boolean)
     if (args?.parentHintAppId == null) {
         throw new IllegalArgumentException("parentHintAppId is required (any existing rule's id under the target parent — used to seed the cloner)")
     }
@@ -26318,29 +26329,14 @@ def toolSearchTools(args) {
         atomicState.toolSearchTokens = docTokensAll
     }
 
-    // Apply the same visibility filter that getToolDefinitions() uses so that
-    // hub_search_tools never surfaces tools the LLM cannot actually invoke.
-    //   "off"      -- engine OFF + builtinApp OFF; all custom_* hidden
-    //   "readonly" -- engine OFF + builtinApp ON; write subset hidden
-    //   "full"     -- engine ON; all custom_* visible
-    def customEngineOn = settings.enableCustomRuleEngine == true
-    def builtinAppOn   = settings.enableBuiltinApp == true
-    def customEngineMode = customEngineOn ? "full" : (builtinAppOn ? "readonly" : "off")
-    def searchHideByName = [] as Set
+    // Apply the SAME visibility filter that getToolDefinitions() uses so that
+    // hub_search_tools never surfaces tools the LLM cannot actually invoke. Both
+    // consume getHiddenToolNames() -- the single source of truth covering the
+    // Read/Write masters, the custom-engine mode, and the #114 advanced overrides --
+    // so the catalog and the search corpus cannot drift (this also closes the
+    // pre-#113 gap where built-in-app-gated tools leaked into search).
+    def searchHideByName = getHiddenToolNames()
     def searchHideGwSubTools = [:].withDefault { [] as Set }
-    if (customEngineMode == "off") {
-        ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule",
-         "hub_delete_custom_rule", "hub_test_custom_rule",
-         "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each {
-            searchHideByName << it
-        }
-    } else if (customEngineMode == "readonly") {
-        ["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule",
-         "hub_import_custom_rule", "hub_clone_custom_rule"].each {
-            searchHideByName << it
-        }
-        // hub_get_custom_rule (list/get/diagnostics modes) stays visible in readonly mode
-    }
     // Filter corpus to only tools the current toggle state allows. Co-filter the cached
     // full-corpus tokens in the SAME pass so docTokens[k] stays aligned with visibleCorpus[k]
     // (docTokensAll[i] is the tokenization of corpus[i]; selecting both by the same surviving
@@ -26551,9 +26547,9 @@ def getToolGuideSections() {
 - Wrong device could control critical systems (HVAC, locks, security)
 - User trust depends on AI only controlling what they explicitly authorized''',
 
-        hub_admin_write: '''## Hub Admin Write Tools - Pre-Flight Checklist
+        hub_admin_write: '''## Destructive Write Tools - Pre-Flight Checklist
 
-All Hub Admin Write tools require these steps:
+All Write master tools require these steps:
 1. Backup check: Ensure hub_create_backup was called within the last 24 hours
 2. Inform user: Tell them what you're about to do
 3. Get confirmation: Wait for explicit "yes", "confirm", or "proceed"
@@ -26611,7 +26607,7 @@ MCP-managed virtual devices:
 
         update_device: '''## hub_update_device Properties
 
-| Property | Requires Hub Admin Write |
+| Property | Requires Write master |
 |----------|-------------------------|
 | label | No |
 | name | No |
@@ -26680,7 +26676,7 @@ NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* too
 
 ### Hub Backups
 - hub_create_backup creates full hub database backup
-- Required within 24 hours before any Hub Admin Write operation
+- Required within 24 hours before any Write master operation
 - Only write tool that doesn't require a prior backup
 
 ### Source Code Backups (Automatic)
@@ -26732,9 +26728,9 @@ Files stored at http://<HUB_IP>/local/<filename>
 - Add hoursBack for up to 7 days of history; omit deviceId for location-level events (mode/HSM/hub variable)
 - Use the attribute filter to reduce data volume''',
 
-        builtin_app_tools: '''## Built-in App Tools
+        builtin_app_tools: '''## Installed-App & Native-Rule Tools
 
-Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways have mixed gate requirements. hub_list_apps with scope='instances' and hub_list_device_dependents require the "Enable Built-in App Tools (read + write)" toggle (requireBuiltinApp); hub_list_apps with scope='types' requires only Hub Admin Read. hub_get_app_config and hub_list_app_pages require Hub Admin Read (requireHubAdminRead). The hub_read_apps_code tool (hub_list_hpm_packages, with optional includeDrift) requires Hub Admin Read. All hub_manage_native_rules_and_apps tools require the "Enable Built-in App Tools" toggle; the CRUD tools (hub_set_native_app / hub_delete_native_app here, plus hub_set_rule in hub_manage_rule_machine) ALSO require Hub Admin Write. If the user sees "Built-in App Tools are disabled" or "Hub Admin Read is disabled" errors, direct them to the MCP Rule Server app settings page.
+Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways are gated by the two universal masters. The read tools (hub_list_apps any scope, hub_list_device_dependents, hub_get_app_config, hub_list_app_pages, hub_list_hpm_packages with optional includeDrift) require the Read master (ON by default). The hub_manage_native_rules_and_apps write tools require the Write master; the destructive CRUD tools (hub_set_rule / hub_set_native_app / hub_delete_native_app) ALSO require confirm=true + a recent backup (requireDestructiveConfirm). If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the Read/Write toggles on the MCP Rule Server app settings page.
 
 **hub_read_apps_code (4 tools):**
 
@@ -26750,18 +26746,18 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ha
   - Returns appsUsing array with each app's id, name (type like "Room Lights" or "Rule-5.1"), label (user-visible), trueLabel (HTML-stripped), disabled
   - Answers "if I delete this device, which automations break?"
 
-- **hub_get_app_config** — read an installed app's configuration page (Hub Admin Read required)
+- **hub_get_app_config** — read an installed app's configuration page (Read master required)
   - Returns app identity (label, type, disabled), config page sections/inputs/values, and child apps
   - Multi-page apps expose sub-pages via pageName. For HPM: use pageName="prefPkgUninstall" for the FULL installed-package list; pageName="prefPkgModify" returns only the subset with optional components; pageName="prefOptions" is the main-menu navigation (no package data). RM 5.x and Room Lighting use a single mainPage (no pageName needed). Call hub_list_app_pages first to discover available page names for any multi-page app.
   - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
   - Workflow: hub_list_apps (scope='instances'; or hub_list_rules for RM rules specifically -- note that hub_get_custom_rule handles only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then hub_get_app_config to inspect. For multi-page apps, consider hub_list_app_pages first.
 
-- **hub_list_app_pages** — discover what pageNames a given app accepts (Hub Admin Read required)
+- **hub_list_app_pages** — discover what pageNames a given app accepts (Read master required)
   - Input: appId
   - Returns curated page directory for known app types (HPM, RM 5.x, Room Lighting, Mode Manager) plus an introspected primary page for unknown app types
   - Cuts the page-name guessing cycle for multi-page apps. Especially useful for HPM which exposes multiple sub-pages (prefPkgUninstall / prefPkgModify / prefPkgInstall / prefPkgMatchUp) for different operations.
 
-**hub_read_apps_code (2 tools) — HPM package state introspection (Hub Admin Read required):**
+**hub_read_apps_code (2 tools) — HPM package state introspection (Read master required):**
 
 - **hub_list_hpm_packages** — return all packages tracked by Hubitat Package Manager with full component inventory
   - If hpmAppId is omitted, HPM is auto-discovered by scanning installed apps for type="Hubitat Package Manager"
@@ -26778,7 +26774,7 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ha
 
 **hub_manage_native_rules_and_apps (12 tools) — read, trigger, AND full CRUD on native RM rules:**
 
-RMUtils-based control surface (Built-in App Tools gate only):
+RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
 - **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)
 - **hub_call_rule** — trigger an existing RM rule
   - action="rule" (default): full evaluation (triggers + conditions + actions)
@@ -26787,7 +26783,7 @@ RMUtils-based control surface (Built-in App Tools gate only):
 - **hub_set_rule_paused** — pause (value=true) or resume (value=false) a rule; reversible
 - **hub_set_rule_private_boolean** — set private boolean (Boolean or lowercase "true"/"false" only)
 
-Native CRUD (hub admin-layer, additionally requires Hub Admin Write):
+Native CRUD (hub admin-layer, additionally requires the Write master):
 - **hub_set_native_app** — create or edit any NON-RM classic SmartApp (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule). Omit appId to create (appType enum: rule_machine / button_controller / groups_scenes / notifier / visual_rule; name); provide appId to edit via settings/button. Returns appId on create. (In the hub_manage_native_rules_and_apps gateway.)
 - **hub_set_rule** — create or edit a Rule Machine rule. Omit appId to create (name; optionally bundle addTriggers=[...] / addActions=[...] to populate in one call); provide appId to edit via the structured shortcuts (addTrigger / addAction / addRequiredExpression / walkStep / ...). (In the hub_manage_rule_machine gateway.)
 - **hub_set_rule** (edit detail) — edit an existing Rule Machine rule (appId required). Two raw modes (settings (Map) OR button (String)) plus 14 structured shortcuts (addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, patches, walkStep). Args: appId + one of those shortcut keys, plus optional pageName, stateAttribute, confirm. Auto-backs-up before writing; emits the multiple=true 3-field capability contract automatically. removeTrigger={index:N} deletes a trigger; modifyTrigger={index:N, mods:{state:'...'}} changes the state field of an existing trigger (capability/deviceIds changes require removeTrigger + addTrigger).

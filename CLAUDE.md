@@ -79,7 +79,7 @@ Name parameters unambiguously. `device_id`, not `id`. `user_id`, not `user`. Whe
 3. **Tools always called in sequence.** If callers always invoke A then B with no useful intermediate point, merge them. Anthropic's verified guidance: `get_customer_context` over three separate lookups; `schedule_event` over `list_users` + `list_events` + `create_event` — *writing-tools-for-agents*.
 4. **Overlapping noun + return shape.** Tools that only differ in a filter or projection should merge with an optional parameter. Recent example: PR #208 proposes a 103→95 tool reduction along these lines.
 5. **Single-action edge verbs.** Don't add a new verb for a single-action tool when an existing verb fits. `clear`/`remove` fold into `delete`; `rename` into `update`; `run`/`force` into `call`; `install` into `create`.
-6. **Anti-consolidation guardrails.** Don't merge tools whose error modes, safety gates, or payload shapes are fundamentally different (a Hub Admin Write tool with a no-gate read tool). Don't merge a time-critical tool with one whose schema would inflate context on every call. When in doubt, leave them separate.
+6. **Anti-consolidation guardrails.** Don't merge tools whose error modes, safety gates, or payload shapes are fundamentally different (a write tool that demands `confirm`+backup with a no-confirm read tool). Don't merge a time-critical tool with one whose schema would inflate context on every call. When in doubt, leave them separate.
 
 ### Annotations — all four hints, every new tool
 
@@ -92,7 +92,19 @@ Every new MCP tool MUST set all four annotation hints explicitly:
 
 Defaults for unannotated tools are deliberately cautious (non-read-only, potentially destructive, non-idempotent, open-world). Explicit annotations are safer than implicit defaults. Source: MCP blog *Tool Annotations as Risk Vocabulary* (2026-03-16); baseline already shipped via PR #202 (merged 2026-05-19).
 
-**Annotations are UX/risk hints, NOT a security boundary.** The MCP blog is explicit: *"They don't make the model resist prompt injection… annotations alone are not a control."* Safety in this project still requires the existing Hub Admin Read / Hub Admin Write gates and `confirm` parameter checks. Annotations are advisory metadata to the client, nothing more.
+**Annotations are UX/risk hints, NOT a security boundary.** The MCP blog is explicit: *"They don't make the model resist prompt injection… annotations alone are not a control."* Safety in this project still requires the universal Read / Write master gates and `confirm` parameter checks. Annotations are advisory metadata to the client, nothing more. The annotation is the *declaration* of a tool's read/write nature; the masters are the *enforcement* of it (see Permission model below).
+
+### Permission model
+
+Every MCP tool is gated. The layers, from broadest to narrowest:
+
+- **Two universal masters — Read and Write (both default ON).** `enableRead` exposes every read-only / non-destructive tool (those in `getReadOnlyToolNames()`); `enableWrite` exposes every other (state-changing) tool. Only an explicit `== false` hides/blocks a class — null/unset means ON. Enforcement is **central**: a single classification-driven gate at the top of `executeTool()` (the dispatch chokepoint) rejects a blocked call ("Read tools are disabled…" / "Write tools are disabled…"). Gateway *names* are not classified here — they re-enter `executeTool()` per sub-tool, so each sub-tool is gated on re-entry. `getReadOnlyToolNames()` is the read/write partition; every leaf tool falls under exactly one master (guarded by a completeness spec). The annotation `readOnlyHint` is the per-tool *declaration*; the masters are the *enforcement*.
+- **Destructive confirmation (orthogonal to the masters).** The destructive/sensitive write tools additionally call `requireDestructiveConfirm(confirm)` — `confirm=true` plus a hub backup within 24h. This is the same set that required it before, now independent of any toggle (the Write master gates them centrally first).
+- **Developer Mode + Custom Rule Engine — additional layered gates.** `enableDeveloperMode` gates self-admin (`hub_update_mcp_settings`) and is deliberately UI-only to disable (lockout protection). The legacy Custom Rule Engine toggle drives `getCustomEngineMode()`: `full` (engine ON, all `custom_*` shown) / `readonly` (engine OFF + Read master ON: read `custom_*` shown, write `custom_*` hidden) / `off` (engine OFF + Read master OFF: all `custom_*` hidden).
+- **Gateway mode — catalog *shape*, not a permission.** `useGateways` folds leaf tools under `hub_read_*` / `hub_manage_*` gateways vs. a flat `tools/list`; it changes how tools are surfaced, not whether they're allowed. The `hub_read_*` (pure-read) / `hub_manage_*` (write-bearing) split (see Tool naming) still holds — it lets a client enable read gateways while disabling write ones, complementing the Read/Write masters.
+- **#114 advanced per-tool / per-gateway overrides (deny-only).** `disabled_tools` / `disabled_gateways` (set under *Advanced: Per-tool Overrides*) feed `getEffectiveDisabledTools()` → `getHiddenToolNames()`. They apply *below* the masters — they can only turn things OFF, never re-enable. A disabled tool disappears from `tools/list` and `hub_search_tools` everywhere it appears (including a tool shared across gateways, and tools inside a disabled gateway), and a cached call returns a **distinct** error: "…is disabled in Advanced settings (Per-tool Overrides)…". It stays documented in `hub_get_tool_guide`.
+
+`getHiddenToolNames()` is the single source of truth consumed by both `getToolDefinitions()` (catalog) and `toolSearchTools()` (search corpus), so the two surfaces cannot drift.
 
 ### Tool descriptions
 

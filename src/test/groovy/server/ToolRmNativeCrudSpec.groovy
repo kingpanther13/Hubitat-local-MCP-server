@@ -19,8 +19,8 @@ import spock.lang.Shared
  * _rmRestoreFromBackup helper. The cross-tool restore path is exercised
  * here too to guard the dispatch + replay shape.
  *
- * Every write tool runs through requireHubAdminWrite, so golden-path tests seed:
- *   settingsMap.enableHubAdminWrite = true
+ * Every write tool runs through requireDestructiveConfirm, so golden-path tests seed:
+ *   settingsMap.enableWrite = true
  *   stateMap.lastBackupTimestamp    = 1234567890000L   (matches fixed now())
  *   args.confirm                    = true
  *
@@ -63,16 +63,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         sharedLocation.timeZone = TimeZone.getTimeZone("UTC")
     }
 
-    private void enableHubAdminWrite() {
-        settingsMap.enableHubAdminWrite = true
-        settingsMap.enableBuiltinApp = true
-        settingsMap.enableHubAdminRead = true
+    private void enableWrite() {
+        settingsMap.enableWrite = true
+        settingsMap.enableRead = true
         stateMap.lastBackupTimestamp = 1234567890000L
     }
 
     private void enableReadOnly() {
-        settingsMap.enableBuiltinApp = true
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
     }
 
     // Minimal RM parent discovery response (/hub2/appsList tree with a
@@ -143,7 +141,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "create_rm_rule requires confirm=true"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolSetRule([name: "BAT-RM-demo"])
@@ -155,7 +153,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "create_rm_rule throws when name is missing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolSetRule([confirm: true])
@@ -167,7 +165,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "create_rm_rule discovers RM parent, creates child, sets label, clicks updateRule"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
         hubGet.register('/installedapp/configure/json/974') { params -> ruleConfigJson(974, "", [[name: "origLabel", type: "text"]]) }
         hubGet.register('/installedapp/statusJson/974') { params -> statusJson(974) }
@@ -210,7 +208,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "create_rm_rule force-deletes orphan when setup fails after createchild succeeds"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
         hubGet.register('/installedapp/configure/json/975') { params -> throw new RuntimeException("boom — config page broken") }
 
@@ -234,7 +232,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_set_rule caches RM parent id in state.parentAppIds.rule_machine"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def appsListCalls = 0
         hubGet.register('/hub2/appsList') { params ->
             appsListCalls++
@@ -263,7 +261,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "update_rm_rule requires confirm=true"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolSetRule([appId: 100, settings: [a: 1]])
@@ -290,7 +288,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "update_rm_rule requires settings, button, or addTrigger"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolSetRule([appId: 100, confirm: true])
@@ -304,7 +302,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "update_rm_rule emits the 3-field capability contract for multi-device inputs"() {
         given: "a rule with a multi-device capability input"
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params ->
             ruleConfigJson(100, "r", [[name: "tDev0", type: "capability.switch", multiple: true]])
         }
@@ -341,7 +339,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "update_rm_rule retries once when multiple flag flips to false after the write"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params ->
             ruleConfigJson(100, "r", [[name: "tDev0", type: "capability.switch", multiple: true]])
         }
@@ -376,7 +374,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "update_rm_rule surfaces error + restoreHint when page.error is non-null after write"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params ->
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true],
@@ -403,7 +401,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "update_rm_rule button mode clicks without writing settings"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -428,7 +426,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "delete_rm_rule snapshots, then force-deletes when force=true"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/200') { params -> ruleConfigJson(200, "to-delete") }
         hubGet.register('/installedapp/statusJson/200') { params -> statusJson(200) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -455,7 +453,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "delete_rm_rule soft-delete surfaces hubMessage on refusal"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/201') { params -> ruleConfigJson(201, "blocked") }
         hubGet.register('/installedapp/statusJson/201') { params -> statusJson(201) }
         hubGet.register('/installedapp/delete/201') { params ->
@@ -506,7 +504,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_restore_backup dispatches rm-rule entries through the rule restore path (in-place when rule exists)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def snapshot = [
             schemaVersion: 1,
             ruleId: 300,
@@ -560,7 +558,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_restore_backup recreates the rule with a fresh id when the original was deleted"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def snapshot = [
             schemaVersion: 1,
             ruleId: 400,
@@ -610,7 +608,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_restore_backup uses rule_machine default when snapshot has no appType field (legacy snapshot)"() {
         given: 'a legacy rm-rule snapshot captured before the appType field was added'
-        enableHubAdminWrite()
+        enableWrite()
         def snapshot = [
             schemaVersion: 1,
             ruleId: 350,
@@ -661,7 +659,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_restore_backup surfaces success:false when settings replay throws mid-flow"() {
         given: 'rule still exists in-place; _rmUpdateAppSettings will throw mid-replay'
-        enableHubAdminWrite()
+        enableWrite()
         def snapshot = [
             schemaVersion: 1,
             ruleId: 360,
@@ -714,7 +712,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "_rmBuildSettingsBody emits deviceList sidecar on capability writes"() {
         given: "a rule with a capability.switch input"
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params ->
             ruleConfigJson(100, "r", [[name: "tDev0", type: "capability.switch", multiple: true]])
         }
@@ -739,7 +737,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "_rmUpdateAppSettings throws when the hub rejects the settings write (status >= 400) rather than reporting success (issue #105 PR2a #4)"() {
         given: 'a rule whose settings POST the hub will reject with a 4xx (e.g. a stale version token)'
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params ->
             ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
         }
@@ -762,7 +760,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_set_rule surfaces success:false when the hub rejects the settings write (issue #105 PR2a #4)"() {
         given: 'a settings update the hub will reject with a 4xx'
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params ->
             ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
         }
@@ -784,7 +782,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "the sticky-flag RETRY settings write is also 4xx-guarded -- a rejected retry surfaces as failure (issue #105 PR2a #4)"() {
         given: 'the post-write verify flags divergence (statusJson #2 poisoned), forcing a retry POST that the hub then rejects'
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params ->
             ruleConfigJson(100, "r", [[name: "tDev0", type: "capability.switch", multiple: true]])
         }
@@ -819,7 +817,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "_rmClickAppButton emits bracket-form settings[btn]=clicked + form-context fields"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -846,7 +844,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction waitEvents click for anotherWait carries stateAttribute=anotherWait"() {
         given: "a rule with selectActions schema and waitEvents action subtype"
-        enableHubAdminWrite()
+        enableWrite()
         // doActPage schema progresses across writes — the test stub returns
         // a schema that contains tCapab-1, tCapab-2 (after first hasAll), etc.
         // We just need to verify ONE shape: the anotherWait click body.
@@ -883,7 +881,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression sub-page writes use pageBreadcrumbs=[] (not [\"mainPage\"]) on STPage"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // STPage schema after useST=true is set; cond enum is the in-flight
         // wizard picker. addRequiredExpression's _rmWriteSubPageField path
         // must use pageBreadcrumbs=[] for STPage writes per the live UI
@@ -928,7 +926,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression sub-expression open writes cond=b VALUE not literal label"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def stPageInputs = [
             [name: "cond", type: "enum", options: ["": "Click to set", "a": "--> New Condition", "b": "--> ( sub-expression"]],
             [name: "doneST", type: "button"]
@@ -1003,7 +1001,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // N click (selectActions) -> actType=condActs -> actSubType=getIfThen
         // -> actionCancel (doActPage) -> nav doActPage->selectActions.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         // mainPage returns a baked RE paragraph so the post-commit check passes.
         hubGet.register('/installedapp/configure/json/100') {
@@ -1094,7 +1092,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // _action_previous=Done) appears in the POST log BEFORE the selectActions
         // N click.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         hubGet.register('/installedapp/configure/json/100') {
             ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
@@ -1159,7 +1157,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // must still return success=true (the RE itself committed successfully).
         // A warn mcpLog must fire so the operator can diagnose ghost IF/THEN wrap risk.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         hubGet.register('/installedapp/configure/json/100') {
             ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
@@ -1219,7 +1217,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger writes isCondTrig.<N>=false finalize for non-conditional triggers"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
             ruleConfigJson(100, "r", [
@@ -1258,7 +1256,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "_rmValidateDeviceIdsExist rejects unknown device IDs in addTrigger before any write"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         // Bogus device ID — /device/fullJson/99999 returns empty
@@ -1289,7 +1287,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "patches batch outer success rolls up inner sub-item success"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
@@ -1324,7 +1322,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "patches dispatches every supported sub-operation and reports unrecognized ops as failures"() {
         given: 'minimal rule with no inputs; patch batch exercises all recognized op keys'
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params -> ruleConfigJson(100, "r", []) }
@@ -1379,7 +1377,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addLocalVariable golden path: walks moreVar, writes hbVar/varType/varValue, retries verify"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // selectActions schema progresses through the moreVar wizard. Initially
         // moreVar button visible; after click, hbVar+varType+varValue inputs.
         def selActsAfter = [
@@ -1427,7 +1425,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addLocalVariable Boolean coercion writes 'true'/'false' STRING (not Groovy primitive)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def selActsAfter = [
             [name: "hbVar", type: "text"],
             [name: "varType", type: "enum"],
@@ -1471,7 +1469,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // settings[varValue]. Boolean coercion is owned by the dedicated
         // spec above; this one walks the type matrix.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def selActsAfter = [
             [name: "hbVar", type: "text"],
             [name: "varType", type: "enum", options: ["Number", "Decimal", "String", "Boolean", "DateTime"]],
@@ -1529,7 +1527,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "removeAction throws when delAct click is silently no-oped (action still present after all retries)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // statusJson ALWAYS returns the same indices across all 4 retry attempts =>
         // the deletion never propagates => all retries exhaust => IllegalStateException.
         // pauseExecution is a no-op on the AppExecutor mock so the test runs at full speed.
@@ -1554,7 +1552,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "removeAction succeeds immediately when deletion propagates on the first post-click fetch"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // After the delAct POST fires, the first post-click statusJson fetch
         // sees action 1 gone => _rmDeleteAction returns success on attempt 0
         // without any pauseExecution retry. pauseExecution is a no-op on the
@@ -1626,7 +1624,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "removeAction succeeds on second check when deletion propagates after first retry (race recovery)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // After the delAct POST fires, the first post-click statusJson fetch
         // still shows action 1 (async dispatch race). The second post-click
         // fetch (after 100ms pauseExecution no-op) sees it gone => success on
@@ -1676,7 +1674,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "removeAction succeeds on third check when deletion propagates after second retry (last-chance recovery)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def delActFired = false
         def verificationFetches = 0
         def deletionConfirmed = false
@@ -1721,7 +1719,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // asyncCommitLikely envelope. This is the common-case path.
     def "clearActions commits synchronously: first verification sees the rule empty (== [], no retry, no asyncCommit envelope)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def trashActsWritten = false
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
@@ -1804,7 +1802,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // extraSettings (trashActs) must NOT warn -- only non-button absent inputs do.
     def "full-form submit warns (not silently blanks) on a non-button input absent from configPage settings"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def trashActsWritten = false
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
@@ -1870,7 +1868,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // submit committed nothing, so it must not read as a delayed/partial success.
     def "clearActions hub-400 on the full-form submit surfaces success:false (not asyncCommitLikely)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
             [name: "cancelTrash", type: "button"],
@@ -1921,7 +1919,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // still commits. Pins the only full-form envelope field with conditional emission.
     def "full-form submit omits the version token when configPage has no app.version"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def trashActsWritten = false
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
@@ -1976,7 +1974,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // and the key is absent entirely when nothing was blanked.
     def "full-form submit returns blankedInputs naming non-button inputs it blanked"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def schema = [
             "actType.1": [type: "enum"],
             "cancelTrash": [type: "button"],
@@ -2010,7 +2008,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // replaceActions.* stage instead.
     def "replaceActions:[] normalizes to the clearActions path (clear-only stage, no replaceActions stage / pendingActionsToAdd)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def trashActsWritten = false
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
@@ -2059,7 +2057,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // synchronous-success spec but drives via patches[[clearActions:true]].
     def "patches clearActions commits synchronously: full-form submit, seeded value preserved, clean per-patch result"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def trashActsWritten = false
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
@@ -2126,7 +2124,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // normalization fix.
     def "patches replaceActions:[] normalizes to the clearActions path (clear-only op, no replaceActions add half)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def trashActsWritten = false
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
@@ -2167,7 +2165,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "clearActions succeeds on second check when trashActs propagation lags (race-recovery path)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def trashActsWritten = false
         def verificationFetches = 0
         def selectActionsSchema = [
@@ -2212,7 +2210,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "clearActions throws after 4 retry attempts when actions never disappear (10s budget exhausted)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def trashActsWritten = false
         def verificationFetches = 0
         def selectActionsSchema = [
@@ -2253,7 +2251,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "clearActions throws when trashActs never enters schema after trashAll click"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // selectActions schema never gains trashActs even after the trashAll click
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
@@ -2280,7 +2278,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // Both-ways pending (orchestrator).
     def "clearActions error text says 'if the action really did get clobbered' singular for one stuck action"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
             [name: "trashActs", type: "enum", multiple: true]
@@ -2308,7 +2306,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // Both-ways pending (orchestrator).
     def "clearActions error text says 'if the actions really did get clobbered' plural for two stuck actions"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
             [name: "actType.2", type: "enum", options: ["switchActs"]],
@@ -2344,7 +2342,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // + `actionsRequestedForRemoval` + `actionsStillPresent` + `safeRecovery`.
     def "clearActions retry-window expired emits asyncCommitLikely structured response with safeRecovery"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def trashActsWritten = false
         def allLogs = []
         // Capture both warn and error mcpLog emissions so we can pin the
@@ -2441,7 +2439,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // + `pendingActionsToAdd` + `clearActionsResult.asyncCommitLikely`.
     def "replaceActions skips the add half when inner clearActions returns asyncCommitLikely"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def allLogs = []
         script.metaClass.mcpLog = { String level, String component, String msg ->
             allLogs << [level: level, component: component, msg: msg]
@@ -2542,7 +2540,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // failures, OR accidentally running the add half on a hard-fail.
     def "replaceActions hard-fail clearActions stays in legacy error shape and never runs the add half"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // selectActions schema never gains trashActs -- _rmClearActions throws
         // IllegalStateException WITHOUT the [asyncCommitLikely] marker.
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
@@ -2593,7 +2591,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // logic accidentally firing on the success path of clearActions.
     def "replaceActions clean clearActions still adds the replacement specs (no async-commit short-circuit)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
             [name: "trashActs", type: "enum", multiple: true]
@@ -2649,7 +2647,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // spec is the discriminator.
     def "removeAction retry-window exhaustion stays in legacy error shape (no asyncCommitLikely envelope)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def delActFired = false
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
@@ -2706,7 +2704,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // that emits [] or omits the field entirely.
     def "clearActions asyncCommitLikely: pre-write snapshot fetch failure leaves actionsRequestedForRemoval=null"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
             [name: "trashActs", type: "enum", multiple: true]
@@ -2754,7 +2752,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // snapshot. Mirror of the snapshot-failure spec on the opposite slot.
     def "clearActions asyncCommitLikely: post-catch fetch failure leaves actionsStillPresent=null"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
             [name: "actType.2", type: "enum", options: ["switchActs"]],
@@ -2819,7 +2817,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // false.
     def "clearActions asyncCommitLikely: _rmGetStateEditAct fetch failure defaults possibleStateEditAct to false"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def debugLogs = []
         script.metaClass.mcpLog = { String level, String component, String msg ->
             if (level == "debug") debugLogs << [level: level, component: component, msg: msg]
@@ -2881,7 +2879,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "replaceActions atomically clears then bulk-adds, rolling per-item failures into addedResults"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def selectActionsSchema = [
             [name: "actType.1", type: "enum", options: ["switchActs"]],
             [name: "trashActs", type: "enum", multiple: true]
@@ -2940,7 +2938,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addActions happy path: three specs each call _rmAddAction and updateRule fires once"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def doActPageSchema = [
             [name: "actType.1", type: "enum"],
             [name: "actSubType.1", type: "enum"],
@@ -2984,7 +2982,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addActions partial failure: bogus deviceId fails inline, other specs succeed"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
@@ -3019,7 +3017,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addActions mixed-type path: switch and log specs in one call"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def doActSchema = [
             [name: "actType.1", type: "enum"],
             [name: "actSubType.1", type: "enum"],
@@ -3057,7 +3055,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "moveAction rejects unknown direction at the dispatcher"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -3081,7 +3079,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // statusJson.actions map (tier-1 path) drives ordering for both before and
         // after fetches -- exercises the lexical-sort fix from _rmCollectActionIndices.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def clickFired = false
         def beforeActionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
         def afterActionsMap  = ["2": "Delay", "1": "Switch On", "3": "Switch Off"]
@@ -3146,7 +3144,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Before: actions in display order [1, 2, 3]. Move index 2 up.
         // After:  actions in display order [2, 1, 3]. Position shifts from 1 to 0.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def clickFired = false
         def beforeActionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
         def afterActionsMap  = ["2": "Delay", "1": "Switch On", "3": "Switch Off"]
@@ -3208,7 +3206,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // IllegalStateException immediately with a descriptive message
         // naming the stuck index and listing recovery options.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3249,7 +3247,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // descriptive message rather than proceeding to the click and
         // silently producing a position-unchanged result.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3289,7 +3287,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // a clean delete. Uses a single-retry success scenario (delAct fires,
         // first post-click fetch sees action gone).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def delActFired = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3343,7 +3341,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the delete committed post-response, leaving 3 IFs / 2 END-IFs.
         // Post-fix: pre-flight refuses before any HTTP click goes out.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3374,7 +3372,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Symmetric to the END-IF case: removing the outer IF (action 9)
         // would leave two END-IFs dangling. Pre-flight should refuse.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3400,7 +3398,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Deleting it doesn't touch the IF/END-IF balance, so pre-flight
         // should pass through and the normal delete path should run.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def delActFired = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3430,7 +3428,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Removing the dangling outer IF (action 9) would FIX the imbalance.
         // Pre-flight must allow this because projected-issues <= current-issues.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def delActFired = false
         // Already-imbalanced rule: drop action 12 (inner END-IF) from the
         // well-formed set so 3 IFs (9, 10, 13) and only 2 END-IFs (15, 16) remain.
@@ -3462,7 +3460,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // orphaned closer. Pre-flight should refuse before the doActPage
         // wizard even opens.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3492,7 +3490,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction(stopRepeat) refuses when no Repeat is open on the stack"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3519,7 +3517,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // ifThen wizard then needs full doActPage stubbing that's out of
         // scope here, so we assert the pre-flight didn't fire.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3553,7 +3551,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Caller passes a list with 2 IFs and 1 END-IF — pre-flight refuses
         // before clearActions runs, so the original rule is preserved.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3594,7 +3592,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // positive (the trashAll button click DID fire, meaning pre-flight
         // passed and control reached clearActions).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3627,7 +3625,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "patches[replaceActions=...] refuses an imbalanced patch spec before any clearActions click"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3662,7 +3660,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "removeAction refuses deleting a Repeat opener that would leave its End-Repeat orphaned"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3690,7 +3688,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "removeAction refuses deleting an End-Repeat that would leave its Repeat unclosed"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3718,7 +3716,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "removeAction allows deleting an ELSE-IF in an IF / ELSE-IF / END-IF rule (no balance change)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def delActFired = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3750,7 +3748,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction(elseIf) refuses when no IF is open on the stack"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3779,7 +3777,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction(else) refuses when no IF is open on the stack"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3816,7 +3814,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // a leaf (returns null pair), so the projected sequence is just
         // [ifThen] which is imbalanced — pre-flight refuses.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3851,7 +3849,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_set_rule attaches health.structuralIssues field on every mutation response"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def delActFired = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -3887,7 +3885,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "walkStep introspect returns schema for a page without mutating"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
             ruleConfigJson(100, "r", [
@@ -3930,7 +3928,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // with name=<btnName>, settings[btnName]=clicked, stateAttribute (when
         // supplied), pageBreadcrumbs=["mainPage"], currentPage=<page>.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [
@@ -3977,7 +3975,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Without the second marker the target sub-page renders with
         // state.<paramKey>=null and the schema appears empty.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
             JsonOutput.toJson([
@@ -4050,7 +4048,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // ("Every Hour at :15") into the parent's row — forward-nav markers
         // alone leave the row as "?".
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         // Sub-page schema with one settable field so the Done body carries a
         // real settings[X] entry (the helper requires at least one field to
@@ -4127,7 +4125,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // success:false, NOT be swallowed. Goes RED if _rmSubmitSubPageDone reverts to
         // wrapping its Done POST in an internal try/catch (the swallow regression).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/periodic') { params ->
             JsonOutput.toJson([
@@ -4186,7 +4184,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // isCondTrig.<N>=false finalize lives on the addTrigger commit path
         // (covered at :1122), not on walkStep done.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
             JsonOutput.toJson([
@@ -4238,7 +4236,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTriggers bulk shortcut returns partial: true when one inner spec fails"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
             ruleConfigJson(100, "r", [
@@ -4524,7 +4522,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "hub_clone_native_app requires confirm=true"() {
-        given: enableHubAdminWrite()
+        given: enableWrite()
 
         when: script.toolCloneNativeApp([sourceAppId: 100])
 
@@ -4534,7 +4532,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "hub_clone_native_app throws when sourceAppId is missing"() {
-        given: enableHubAdminWrite()
+        given: enableWrite()
 
         when: script.toolCloneNativeApp([confirm: true])
 
@@ -4545,7 +4543,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_clone_native_app throws when source app config fetch returns empty"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/999') { params -> "" }
 
         when: script.toolCloneNativeApp([sourceAppId: 999, confirm: true])
@@ -4558,7 +4556,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_clone_native_app drives the full appCloner wizard and returns the new appId"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
         // OAuth follow-up render. _appClonerInit now throws if this 404s — the
         // cloner state machine relies on it to seed state.cloneSource.
@@ -4617,7 +4615,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // — divergent from the rest of the file's error contract and
         // invisible to LLM callers that branch on isError.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
         hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context page</html>' }
         hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 0) }
@@ -4649,7 +4647,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_clone_native_app rename writes settings[newName<sourceId>] before importNow"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Src", [], 21) }
         hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
         hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 0) }
@@ -4687,7 +4685,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_export_native_app pulls JSON from the cloner's form-refresh response"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fakeJson = '{"deviceReplacements":{},"appReplacements":{"100":{"appLabel":"Source Rule"}}}'
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
         hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
@@ -4723,7 +4721,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_export_native_app saveAs uploads to File Manager"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fakeJson = '{"deviceReplacements":{},"appReplacements":{"100":{"appLabel":"X"}}}'
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "X", [], 21) }
         hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
@@ -4757,7 +4755,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "hub_import_native_app requires parentHintAppId + confirm"() {
-        given: enableHubAdminWrite()
+        given: enableWrite()
 
         when:
         script.toolImportNativeApp([jsonContent: '{"appReplacements":{"100":{}}}'])
@@ -4768,7 +4766,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "hub_import_native_app rejects non-JSON content"() {
-        given: enableHubAdminWrite()
+        given: enableWrite()
 
         when:
         script.toolImportNativeApp([jsonContent: 'not-json', parentHintAppId: 100, confirm: true])
@@ -4779,7 +4777,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "hub_import_native_app rejects JSON without appReplacements"() {
-        given: enableHubAdminWrite()
+        given: enableWrite()
 
         when:
         script.toolImportNativeApp([jsonContent: '{"foo":"bar"}', parentHintAppId: 100, confirm: true])
@@ -4795,7 +4793,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Anthropic's input_schema validator HTTP-400s on top-level
         // anyOf/oneOf/allOf (first surfaced via Haiku 4.5), so the runtime
         // throw in toolImportNativeApp is now the sole guard for this case.
-        given: enableHubAdminWrite()
+        given: enableWrite()
 
         when:
         script.toolImportNativeApp([parentHintAppId: 100, confirm: true])
@@ -4807,7 +4805,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_import_native_app drives the cloner with settings[ruleUpload]= and finds the new appId"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def importJson = '{"deviceReplacements":{},"appReplacements":{"42":{"appLabel":"Source Rule","appTypeName":"Rule-5.1"}}}'
         // parentHint = an existing rule under parent 21
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "ExistingRule", [], 21) }
@@ -4874,7 +4872,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // branch on isError saw nothing actionable. Mirrors the clone test
         // immediately above — same contract, same enforcement.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def importJson = '{"deviceReplacements":{},"appReplacements":{"42":{"appLabel":"Source Rule","appTypeName":"Rule-5.1"}}}'
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "ExistingRule", [], 21) }
         hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
@@ -4907,7 +4905,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_import_native_app preserves backslash-escapes in settings[ruleUpload] (HTTPBuilder Map encoder mangles them)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Canonical exports embed multi-select enum values as JSON-encoded
         // strings: `"value":"[\"Events\",...]"`. HTTPBuilder's Map auto-encoder
         // strips the leading `\\` from `\\"` sequences in form-urlencoded
@@ -4950,7 +4948,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_export_native_app collapses appCloner's over-escaped multi-select values"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Hubitat appCloner emits `\\"` (2 backslashes + quote) where canonical
         // JSON requires `\"` — the result is malformed and won't round-trip
         // back into import. _appClonerExtractJsonFromResponse collapses the
@@ -4992,7 +4990,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_import_native_app refuses parentHintAppId that has no parent (no diff target -> would silently false-fail)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Top-level app (parentAppId == null) — we can't diff children to spot
         // the new rule, so we'd return success:false even on a successful
         // import. Refuse up front instead.
@@ -5021,7 +5019,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "_appClonerCommitImportRule throws when action_href idx never appears (no silent fallback to 0)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Src", [], 21) }
         hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
         // Empty sections — the regex never finds `_action_href_name|importRule|N`.
@@ -5055,7 +5053,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "_rmWriteSettingOnPage routes a no-shift write to skipped with reason=silent_rejection"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // selectTriggers schema is identical before and after the write —
         // RM 5.1 returns 200 but the field never landed. The verification
         // logic should detect: schema unchanged + value not landed +
@@ -5107,7 +5105,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger surfaces verificationFetchFailed=true when post-commit mainPage fetch errors"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // The verificationFetchFailed flag is set inside _rmAddTrigger when
         // the post-commit "did the trigger bake?" mainPage fetch throws.
         // To exercise it: stub selectTriggers normally so the writes go
@@ -5165,7 +5163,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "_rmValidateDeviceIdsExist applies to addAction.deviceIds (not just addTrigger)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         // Bogus device — /device/fullJson/77777 returns 404-equivalent (empty body)
@@ -5195,7 +5193,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "_rmValidateDeviceIdsExist applies to addRequiredExpression.conditions[].deviceIds"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -5238,7 +5236,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // would surface as "Unknown tool" — that's the failure we're guarding.
         // We don't exercise the full underlying tool* impls; their behaviour
         // is covered elsewhere and would require setting up child apps,
-        // requireHubAdminWrite, and the rule-engine state machine.
+        // requireDestructiveConfirm, and the rule-engine state machine.
 
         when: "every renamed tool name is dispatched"
         // Top-level executeTool has cases for all 8 renames.
@@ -5303,7 +5301,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // problem in the snapshot pipeline would silently leave callers
         // with a half-mutated rule and no restore point.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         // Force the backup to fail at the uploadHubFile step — _rmBackupRuleSnapshot
@@ -5361,10 +5359,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addTrigger discover=true does not require Hub Admin Write"() {
-        given: "enableHubAdminWrite is NOT set -- only Built-in App enabled"
+        given: "enableWrite is NOT set -- only Built-in App enabled"
         enableReadOnly()
-        // Confirm that enableHubAdminWrite is absent/false
-        settingsMap.remove("enableHubAdminWrite")
+        // Confirm that enableWrite is absent/false
+        settingsMap.remove("enableWrite")
 
         when:
         def result = script.toolSetRule([addTrigger: [discover: true]])
@@ -5375,9 +5373,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction discover=true does not require Hub Admin Write"() {
-        given: "enableHubAdminWrite is NOT set -- only Built-in App enabled"
+        given: "enableWrite is NOT set -- only Built-in App enabled"
         enableReadOnly()
-        settingsMap.remove("enableHubAdminWrite")
+        settingsMap.remove("enableWrite")
 
         when:
         def result = script.toolSetRule([addAction: [discover: true]])
@@ -5388,7 +5386,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addTrigger discover=true does not call _rmBackupRuleSnapshot"() {
-        given: "discover bypasses backup -- no enableBuiltinApp needed either"
+        given: "discover bypasses backup -- no master/confirm gate needed either"
         def backupCalls = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> backupCalls << fn }
 
@@ -5400,7 +5398,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction discover=true does not call _rmBackupRuleSnapshot"() {
-        given: "discover bypasses backup -- no enableBuiltinApp needed either"
+        given: "discover bypasses backup -- no master/confirm gate needed either"
         def backupCalls = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> backupCalls << fn }
 
@@ -5411,11 +5409,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         backupCalls.isEmpty()
     }
 
-    def "addTrigger discover=true works with enableBuiltinApp=false"() {
-        given: "all feature gates disabled -- discover is gate-free"
-        settingsMap.remove("enableBuiltinApp")
-        settingsMap.remove("enableHubAdminWrite")
-        settingsMap.remove("enableHubAdminRead")
+    def "addTrigger discover=true works with the masters unset"() {
+        given: "no master seeds -- discover is gate-free (called directly, not via executeTool)"
+        settingsMap.remove("enableWrite")
+        settingsMap.remove("enableRead")
 
         when:
         def result = script.toolSetRule([addTrigger: [discover: true]])
@@ -5470,7 +5467,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Matrix case 1: all settings land, trigger bakes, no broken label.
         // success decouples from partial and reflects only "did API write happen."
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -5503,7 +5500,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // "Define Triggers" -- trigger skeleton written but row didn't commit.
         // Contract: success=true (something happened), partial=true (needs repair).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -5537,7 +5534,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // (label contains *BROKEN*). Contract: success=true (something written),
         // partial=true (needs repair).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -5576,7 +5573,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // state -- surface as partial=true so the LLM sees it without a separate
         // hub_get_rule_health call.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -5632,7 +5629,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Uses a static schema (no render shift) so applied stays empty; the
         // test verifies that err alone drives success=false.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -5680,7 +5677,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // routes to skipped. The flow navigates normally but nothing accumulates
         // in applied.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -5870,7 +5867,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Periodic Seconds writes everyNSecs1 count enum directly (no toggle)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when:
@@ -5892,7 +5889,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Periodic Minutes writes toggle=true BEFORE count, count into everyNC1 not the toggle"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when:
@@ -5924,7 +5921,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Periodic Weekly writes selectDoWC1 day-of-week multi-enum and startingWC1 time"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when:
@@ -5946,7 +5943,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // specific-months sub-mode is NOT supported (order-sensitive on the live
         // hub), so months is not routed and selectMonthC1 is not written.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when:
@@ -5974,7 +5971,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // deferred. selectMonthC1 IS in the periodic fixture schema, so a
         // regression that re-added the routing would write a real value here.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when:
@@ -5995,7 +5992,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // reveals the day-of-week + X-suffixed cadence. "On the Second Monday
         // of every month at 8:00 AM".
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when:
@@ -6021,7 +6018,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Periodic Monthly dayOfMonth + weekOfMonth is rejected as success=false (mutually exclusive)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -6053,7 +6050,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // X-suffixed reveal field); yearlyMonthC1 alone never completes.
         // "On the First Monday of December at 8:00 AM".
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when:
@@ -6083,7 +6080,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // that added an every-N-months entry to the Yearly map (routing to either
         // field) would write a real value here and fail this guard.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when:
@@ -6105,7 +6102,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Periodic Cron String writes cronStr1 (not the non-existent cronString1)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when:
@@ -6132,7 +6129,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // path), NOT a propagated -32602. The validation still fires before the
         // trigger editor opens, so no wizard write POST is sent.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -6168,7 +6165,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Periodic Minutes accepts a count that IS in the restricted enum"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when: "30 is in the allowed set"
@@ -6185,7 +6182,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Periodic Minutes selectedMinutes routes to selectMinutesC1 (at-specific-minutes mode)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when: "the alternative 'at specific minutes' mode is used instead of everyN"
@@ -6205,7 +6202,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Periodic Minutes fractional everyN #everyN truncates to the in-enum integer and is accepted"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when: "a fractional everyN whose floor IS in the restricted enum"
@@ -6227,7 +6224,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Periodic #freq non-numeric everyN is rejected as success=false naming the allowed set"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -6263,7 +6260,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // alternative specific-hours mode). pn=1 here, so these pin the
         // byte-identical single-trigger names.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when: "Hourly everyN mode with a start time"
@@ -6310,7 +6307,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Seconds/Minutes restriction onto Hourly -- which would reject everyN:7 with
         // success=false instead of writing it.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when:
@@ -6329,7 +6326,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addTrigger Periodic Daily weekdaysOnly writes everyWeekDay1, selectedDaysOfMonth writes selectDoMC1"() {
         // Covers the Daily ${pn}-suffixed alt-mode fields. pn=1.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = registerPeriodicHubSurface(100)
 
         when: "Daily everyN with weekdaysOnly toggle"
@@ -6378,7 +6375,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // capability and conditional-toggle at suffix 2 -- not stomping suffix 1
         // and not deadlocking on a stale wizard accumulator.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         def posts = []
@@ -6437,7 +6434,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // everyNDoMC2, everyNDC2, startingDC2). Writing suffix-1 names would
         // clobber trigger 1's periodic config (the original collision bug).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         def posts = []
@@ -6516,7 +6513,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // dispatcher must refuse to write the periodic sub-page and surface a
         // partial with a repair hint, NOT a guaranteed clobber.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         def posts = []
@@ -6580,7 +6577,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // guard goes RED if the malformed-n catch does not feed periodicUnsafeFallback
         // (the half-applied-guard regression).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         def posts = []
@@ -6644,7 +6641,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // _rmSubmitSubPageDone's `hrefParams.n as Integer` re-cast throws on "1x" and
         // surfaces as success=false. This guard goes RED if the normalization is dropped.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         def posts = []
@@ -6696,7 +6693,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // trigger still commits via hasAll. Goes RED if the periodic try/catch is removed (the
         // throw would then propagate and hard-fail the add as success:false).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         def posts = []
@@ -6743,7 +6740,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // shared helper's throw-on-failure for the STPage/walkStep callers. Goes RED if the
         // helper reverts to wrapping the Done POST in its own try/catch (the swallow bug).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def stPageInputs = [
             [name: "cond", type: "enum", options: ["": "Click to set", "a": "--> New Condition"]],
             [name: "rCapab_1", type: "enum", options: ["Switch"]],
@@ -6783,7 +6780,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Single addTrigger should fire updateRule automatically so subscriptions
         // populate without a separate tool call. Mirrors the addAction pattern.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -6820,7 +6817,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // must NOT fire updateRule -- the extra hub round-trip is wasteful and
         // misleading. Uses a static (non-shifting) schema so applied stays empty.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -6868,7 +6865,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Uses triggerNotBaked scenario (mainPage shows "Define Triggers") to
         // produce partial=true.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -6908,7 +6905,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // bulk path (it lives only in the addTrigger wrapper). Two-trigger bulk:
         // updateRule count must be exactly 1.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def updateRuleCount = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -6951,7 +6948,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // `conditional` -- updateRule fires for conditional triggers just as for
         // plain ones. This test pins that behavior.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -6997,7 +6994,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // outer trigger writes tCapab/tDev/tstate at idx+1, finally writing
         // isCondTrig.<idx+1>=true + condTrig.<idx+1>=<conditionId> to bind.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -7146,7 +7143,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // typed `variable` field the request fails with a clear message,
         // pointing the caller at hub_list_variables.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -7209,7 +7206,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // clear error pointing at hub_list_variables instead of letting the
         // wizard silently commit a half-baked broken trigger.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -7256,7 +7253,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // All four typed fields must land for the rule to render correctly
         // in Hubitat. Verified live on firmware 2.5.0.135 (2026-05-17).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -7379,7 +7376,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // expansion the literal `@N` is written verbatim and the wizard
         // silently skips it (key not in the live schema).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -7444,7 +7441,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // hub it would silently no-op. Pin the order so the order
         // dependency is captured.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -7521,7 +7518,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // isVar_<N>/xVarR_<N> alone so the wizard renders "A > 50" rather
         // than "A > <empty variable>".
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -7596,7 +7593,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // any write -- the IllegalArgumentException is caught by toolSetRule's
         // backup-and-catch wrapper and surfaced as [success:false, error:...].
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -7656,7 +7653,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The condition can't be built without a hub variable name on the
         // left-hand side, so refuse early with a hub_list_variables pointer.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -7708,7 +7705,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // _rmBuildCondition's rawSettings substitution so it doesn't get
         // dropped in a future refactor.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -7801,7 +7798,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the wizard. Pin its presence so future refactors of the schema
         // don't silently drop the entry.
         given: 'discover-mode short-circuits before any hub mutation'
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def result = script.toolSetRule([
@@ -7850,7 +7847,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Matrix case 1: all settings land, action bakes.
         // success=!err && !applied.isEmpty() => true; partial=false.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -7978,7 +7975,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Matrix case 2: settings land (applied non-empty) but mainPage still shows
         // "Define Actions". Contract: success=true, partial=true.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -8024,7 +8021,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // configPage.error field. err != null -> success=false. Uses a static
         // doActPage schema so writes silently reject; err alone drives success=false.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -8077,7 +8074,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // writes beyond actType/actSubType; a static doActPage schema with no
         // render shift causes both to route to skipped rather than applied.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -8174,7 +8171,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // name causes compareCond_1 to silently reject and the condition to render
         // as "wickFilterLife null" (broken). RelrDev_1 must land in settingsApplied.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -8232,7 +8229,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // state='on'), neither RelrDev_N nor compareCond_N must be written. The write
         // only fires inside the `if (cond.comparator != null)` guard.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -8312,7 +8309,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression: Custom Attribute attribute-without-comparator fails with differentiating error"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -8358,7 +8355,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression: Custom Attribute comparator-without-attribute fails with differentiating error"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -8443,7 +8440,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // same sequential write order that makes the Custom Attribute path correct on
         // the real hub.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCustomAttrWritten = false
         def relrWritten = false
         def posts = []
@@ -8550,7 +8547,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // For enum capabilities, state_1 appears immediately after rDev_<N> so
         // write order is irrelevant to the Contact/Switch/Motion paths.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -8624,7 +8621,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // to reveal the right-hand variable picker, discovers its firmware-assigned name
         // from the live schema, validates the variable, and writes it.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def isVarWritten = false
         def daSeq = 0
         def posts = []
@@ -8717,7 +8714,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // appends an api_unavailable sentinel for the RHS picker so the skip flows into
         // settingsSkipped and flips partial. Mirrors the LHS variable-validation fallback.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def isVarWritten = false
         def daSeq = 0
         def posts = []
@@ -8806,7 +8803,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Guard that the discovery regex resolves a non-xVarR firmware field name. The
         // walker must NOT hardcode xVarR_<N>; it discovers whatever the live schema reveals.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def isVarWritten = false
         def daSeq = 0
         def posts = []
@@ -8891,7 +8888,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Parity guard: the same Variable-vs-Variable RHS must work on the STPage
         // (required-expression) walker path, not just doActPage.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def isVarWritten = false
         def stSeq = 0
         def posts = []
@@ -8976,7 +8973,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // where the new compareToVariable branch always fires and renders "A > B" when the
         // caller asked for "A > 50".
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def stSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -9059,7 +9056,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // name silently would render the condition as a numeric default. The walker must fail
         // loud rather than commit a misleading "A > 0".
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def daSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -9135,7 +9132,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // compareToVariable name, the walker must reject before writing -- a name not in the
         // enum would not resolve on the hub and the condition would render broken.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def isVarWritten = false
         def daSeq = 0
         def posts = []
@@ -9231,7 +9228,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // writing silently-unvalidated. (The LHS variable-validation empty-options path on
         // STPage is pinned separately; this is the RHS compareToVariable picker.)
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def isVarWritten = false
         def stSeq = 0
         def posts = []
@@ -9320,7 +9317,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Negative guard: supplying both a variable RHS (compareToVariable) and a
         // constant RHS (value) is ambiguous -- the walker must reject it before any write.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -9391,7 +9388,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // half-written condition (rCapab/rDev but no operator/RHS) that silently passes
         // through hasAll. The walker must reject it before touching the hub.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -9461,7 +9458,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Both fields land in settingsApplied, settingsSkipped is empty (no not_in_schema),
         // and partial is false BECAUSE there is no skip -- not because one was suppressed.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def trigSeq = 0
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -9546,7 +9543,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // skips with not_in_schema; mainPage still renders so triggerNotBaked stays false,
         // isolating the not_in_schema skip as the sole driver of partial.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def trigSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -9613,7 +9610,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // is genuine degradation and MUST flip partial -- only the shared walker
         // informational sentinels are exempt from the trigger partial gate.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // tDev1 stays in the schema and never reflects the written value, and the schema
         // never advances -> _rmWriteSettingOnPage routes tDev1 to silent_rejection.
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -9674,7 +9671,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // not_in_schema still flips partial (see the inverse pin above). Here isCondTrig.1 is
         // absent so its finalize write skips, but the trigger otherwise bakes cleanly.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def trigSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -9741,7 +9738,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // partial. This guard goes RED if the exemption drops its value==false discriminator
         // (i.e. reverts to a by-key match that would wrongly exempt the =true construction skip).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def trigSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -9805,11 +9802,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "custom_* visibility: full mode (engine ON) shows all 8 custom_* tools"() {
         // When enableCustomRuleEngine=true, all 8 custom_* tools must be present
-        // in getToolDefinitions() regardless of enableBuiltinApp state.
+        // in getToolDefinitions() regardless of the Read master state.
         // (list + diagnostics folded into hub_get_custom_rule.)
         given:
         settingsMap.enableCustomRuleEngine = true
-        settingsMap.enableBuiltinApp = false
         settingsMap.useGateways = false     // flat mode -- all tools visible by individual name
 
         when:
@@ -9822,13 +9818,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
          "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].every { names.contains(it) }
     }
 
-    def "custom_* visibility: read-only mode (engine OFF + builtinApp ON) shows read subset only"() {
-        // When enableCustomRuleEngine=false AND enableBuiltinApp=true, only the 3 read
+    def "custom_* visibility: read-only mode (engine OFF + Read master ON) shows read subset only"() {
+        // When enableCustomRuleEngine=false AND the Read master is ON, only the 3 read
         // tools should be visible; the 5 write/structural tools must be hidden.
         // (list + diagnostics folded into hub_get_custom_rule, which stays visible.)
         given:
         settingsMap.enableCustomRuleEngine = false
-        settingsMap.enableBuiltinApp = true
+        settingsMap.enableRead = true
         settingsMap.useGateways = false
 
         when:
@@ -9844,11 +9840,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
          "hub_import_custom_rule", "hub_clone_custom_rule"].every { !names.contains(it) }
     }
 
-    def "custom_* visibility: full-hide mode (engine OFF + builtinApp OFF) hides all 8 custom_* tools"() {
-        // When both toggles are off, no custom_* tools should appear.
+    def "custom_* visibility: full-hide mode (engine OFF + Read master OFF) hides all 8 custom_* tools"() {
+        // When the engine is OFF and the Read master is OFF (customEngineMode=off),
+        // no custom_* tools should appear.
         given:
         settingsMap.enableCustomRuleEngine = false
-        settingsMap.enableBuiltinApp = false
+        settingsMap.enableRead = false
         settingsMap.useGateways = false
 
         when:
@@ -9942,7 +9939,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         //   post-click: cpType2.1 revealed only
         //   post cpType2.1 write: uVar2.1 + cpVal2.1 revealed (gated reveal)
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def moreParamsClicks = 0
         def writtenFields = [:]
@@ -10047,7 +10044,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         //   click 2: cpType3.1 appears; cpType3.1 write reveals uVar3.1 + cpVal3.1
         // Two moreParams clicks total; cpType1.1 never appears.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def moreParamsClicks = 0
         def writtenFields = [:]
@@ -10173,7 +10170,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // A runCommand with an empty parameters list (or no parameters key)
         // should not write any cpType/cpVal fields and must not click moreParams.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def moreParamsClicks = 0
         def writtenFields = []
@@ -10248,13 +10245,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "executeTool rejects write tool hub_create_custom_rule when customEngineMode is readonly"() {
-        // Engine OFF + builtinApp ON => readonly mode. Write tools (create/delete/
+        // Engine OFF + Read master ON => readonly mode. Write tools (create/delete/
         // export/import/clone) must be blocked at the executeTool dispatch gate,
         // not just inside toolCreateRule. This ensures the gate fires even when
         // the tool is reached via the top-level switch directly.
         given:
         settingsMap.enableCustomRuleEngine = false
-        settingsMap.enableBuiltinApp = true
+        settingsMap.enableRead = true
 
         when:
         script.executeTool("hub_create_custom_rule", [name: "x",
@@ -10268,14 +10265,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "hub_search_tools filters write custom_* tools in readonly mode"() {
-        // Engine OFF + builtinApp ON => readonly mode. hub_search_tools must not
+        // Engine OFF + Read master ON => readonly mode. hub_search_tools must not
         // surface write/structural custom_* tools (create/delete/export/import/clone)
         // even though they live in the cached full corpus. Read-subset tools
         // (hub_get_custom_rule, hub_update_custom_rule, hub_test_custom_rule) must
         // still appear in results.
         given:
         settingsMap.enableCustomRuleEngine = false
-        settingsMap.enableBuiltinApp = true
+        settingsMap.enableRead = true
         // stateMap is cleared by setup() so corpus rebuilds fresh this test
 
         when:
@@ -10294,11 +10291,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "hub_search_tools filters all custom_* tools in off mode"() {
-        // Engine OFF + builtinApp OFF => off mode. hub_search_tools must not surface
+        // Engine OFF + Read master OFF => off mode. hub_search_tools must not surface
         // ANY custom_* tools -- the full set of 8 must be excluded from scoring.
         given:
         settingsMap.enableCustomRuleEngine = false
-        settingsMap.enableBuiltinApp = false
+        settingsMap.enableRead = false
 
         when: "searching for a query that would normally surface hub_get_custom_rule (list mode)"
         def result = script.toolSearchTools([query: "custom list rules", maxResults: 10])
@@ -10313,40 +10310,40 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "executeTool rejects hub_create_custom_rule when customEngineMode is off"() {
-        // Engine OFF + builtinApp OFF => off mode. All custom_* tools must be
-        // blocked at the executeTool gate with a message that names both toggles
-        // and points to the recommended alternative (Built-in App Tools).
+        // Engine OFF + Read master OFF => off mode. All custom_* tools must be
+        // blocked at the executeTool gate with a message that names both the engine
+        // and the Read master and points to the native Rule Machine alternative.
         given:
         settingsMap.enableCustomRuleEngine = false
-        settingsMap.enableBuiltinApp = false
+        settingsMap.enableRead = false
 
         when:
         script.executeTool("hub_create_custom_rule", [name: "x",
             triggers: [[type: "time", time: "00:00"]],
             actions: [[type: "log", message: "y"]]])
 
-        then: "off-mode gate fires with both-toggles-off message"
+        then: "off-mode gate fires naming the engine + Read master and the native alternative"
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("Both")
         ex.message.contains("Custom Rule Engine")
-        ex.message.contains("Built-in App Tools")
+        ex.message.contains("Read master")
+        ex.message.contains("hub_manage_native_rules_and_apps")
     }
 
     def "executeTool rejects hub_get_custom_rule in off mode (read tools also blocked)"() {
-        // In off mode even read-only custom_* tools are blocked -- the entire
-        // engine is off. This is different from readonly mode where the read
-        // subset is allowed.
+        // In off mode (engine OFF + Read master OFF) even read-only custom_* tools are
+        // blocked -- the entire engine is off. This is different from readonly mode where
+        // the read subset is allowed. With Read OFF, hub_get_custom_rule (a read tool) is
+        // stopped at the central master gate before the custom-engine gate is reached.
         given:
         settingsMap.enableCustomRuleEngine = false
-        settingsMap.enableBuiltinApp = false
+        settingsMap.enableRead = false
 
         when:
         script.executeTool("hub_get_custom_rule", [:])
 
-        then: "read tool also blocked in full-off mode"
+        then: "read tool blocked by the Read master in full-off mode"
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("Both")
-        ex.message.contains("Custom Rule Engine")
+        ex.message.contains("Read tools are disabled")
     }
 
     // -----------------------------------------------------------------------
@@ -10368,7 +10365,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The schema includes tCapab1 (with "Certain Time" option), time1, and atTime1
         // so _rmWriteSettingOnPage doesn't skip them as "not in schema".
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -10450,7 +10447,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // second selectActions->mainPage nav fires, leaving the app in mainPage
         // context so browser STPage visits don't see a conflicting editAct context.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         hubGet.register('/installedapp/configure/json/100') {
             ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
@@ -10535,7 +10532,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger does not report tstate as skipped when value lands in settings but not in configPage schema -- settingsLanded case"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Switch trigger.  The selectTriggers mock returns the SAME schema on all
         // fetches (schemaShifted=false, valueLanded=false, renderShifted=false) but
         // settings["tstate1"]="on" is always present in the response.
@@ -10611,7 +10608,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger does not report tDev as skipped when device IDs land in settings as a List -- settingsLanded list-normalization case"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Verify the list-normalization branch of settingsLanded: when settings
         // returns a List (Hubitat stores multi-select as a JSON array) and the
         // written value was also a List, the sorted-comma-join normalization must
@@ -10662,7 +10659,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger still reports true silent rejection in settingsSkipped when value absent from both schema AND settings"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Regression guard for settingsLanded: when the value does NOT land in
         // settings (genuine write failure), the field must stay in settingsSkipped.
         // The fix must NOT over-promote writes that genuinely failed.
@@ -10721,7 +10718,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Mode + state name resolves to mode ID and writes modesX<N>"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Location has three modes.  The test uses "Night" which resolves to id "3".
         sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
 
@@ -10829,7 +10826,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Mode + modeIds list writes modesX<N> directly without name resolution"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Pass IDs directly -- location.modes is NOT consulted (no name resolution).
         // Even if location.modes is empty, the write should succeed.
         sharedLocation.modes = []  // would cause NPE/error if consulted
@@ -10894,7 +10891,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Mode with unknown state name throws with clear error listing valid modes"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
 
         // Minimal selectTriggers setup so the pre-moreCond fetch doesn't fail.
@@ -10938,7 +10935,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger Mode never writes tstate<N> regardless of the state value passed"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Verify the exclusive-or invariant: Mode always takes the modesX path
         // and NEVER falls through to the tstate path.  Even a "valid-looking"
         // state string like "on" must not produce a tstate write.
@@ -11014,7 +11011,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "_rmWriteSubPageField settingsLanded: RelrDev_1 routes to applied when value in settings but not echoed in schema (STPage wizard-consumed)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // STPage mock: STATIC schema (same keys + same paragraph on every fetch)
         // so schemaShifted=false, valueLanded=false, renderShifted=false.
         // settings["RelrDev_1"]="!=" is present on all fetches, so settingsLanded
@@ -11109,7 +11106,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "_rmWriteSubPageField settingsLanded list-normalization: rDev_1 routes to applied when device IDs land in settings as a List"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Verify the List-normalization branch of settingsLanded in _rmWriteSubPageField.
         // settings["rDev_1"] is a List (Hubitat stores multi-select as a JSON array).
         // The written value is also a List ([8]).  The sorted-comma-join normalization
@@ -11186,7 +11183,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "_rmWriteSubPageField settingsLanded regression: RelrDev_1 stays in settingsSkipped when value absent from both schema AND settings"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Regression guard: when the value does NOT land in settings (genuine write
         // failure), _rmWriteSubPageField must still return persisted=false, and writeST
         // must route the field to settingsSkipped.  The fix must NOT over-promote
@@ -11269,7 +11266,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "removeTrigger happy-path: deleteCon click fires, trigger disappears on first check"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def deleteConFired = false
         def verificationFetches = 0
         def deletionConfirmed = false
@@ -11308,7 +11305,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "removeTrigger returns success: false when triggerIdx not present in rule"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params ->
             // only trigger 2 exists; caller asks to remove index 5
@@ -11334,7 +11331,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "removeTrigger retry path: trigger disappears on second check after race recovery"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def deleteConFired = false
         def verificationFetches = 0
         def deletionConfirmed = false
@@ -11375,7 +11372,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "removeTrigger exhausts retries and returns success: false with diagnostic message"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def deleteConFired = false
         def verificationFetches = 0
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
@@ -11409,7 +11406,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyTrigger happy-path: editCond click fires, tstate written, hasAll commits"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def posts = []
         // selectTriggers schema exposes tstate1 after editCond opens the wizard
         def selectTriggersSchema = [
@@ -11481,7 +11478,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyTrigger returns success: false when triggerIdx not present"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params ->
             // only trigger 2 exists
@@ -11511,7 +11508,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyTrigger returns success: false on unsupported mods fields (capability or deviceIds) with workaround hint"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params ->
             statusJson(100, [[name: "tCapab1", value: "Switch"]])
@@ -11536,7 +11533,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyTrigger throws when mods is empty (no state field)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params ->
             statusJson(100, [[name: "tCapab1", value: "Switch"]])
@@ -11560,7 +11557,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyTrigger returns success: false when trigger has no state field in schema (Time/Periodic trigger)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // selectTriggers schema does NOT include tstate1 -- simulating a Time or
         // Periodic trigger whose wizard page only exposes scheduling fields.
         def selectTriggersSchema = [
@@ -11616,7 +11613,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_set_rule via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_set_rule', [name: "BAT-RM-demo"])
@@ -11633,7 +11630,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_set_rule via dispatch returns -32602 envelope when name is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_set_rule', [confirm: true])
@@ -11650,7 +11647,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_set_rule via dispatch discovers RM parent, creates child, returns new appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
         hubGet.register('/installedapp/configure/json/974') { params -> ruleConfigJson(974, "", [[name: "origLabel", type: "text"]]) }
         hubGet.register('/installedapp/statusJson/974') { params -> statusJson(974) }
@@ -11687,7 +11684,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_set_rule via dispatch returns -32602 envelope when confirm is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_set_rule', [appId: 100, settings: [a: 1]])
@@ -11704,7 +11701,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_set_rule via dispatch emits 3-field capability contract for multi-device inputs (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params ->
             ruleConfigJson(100, "r", [[name: "tDev0", type: "capability.switch", multiple: true]])
         }
@@ -11740,7 +11737,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_set_rule via dispatch surfaces success:false when the hub rejects the write (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params ->
             ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
         }
@@ -11768,7 +11765,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_delete_native_app via dispatch force-deletes with snapshot when force=true (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/200') { params -> ruleConfigJson(200, "to-delete") }
         hubGet.register('/installedapp/statusJson/200') { params -> statusJson(200) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -11800,7 +11797,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_clone_native_app via dispatch returns -32602 envelope when sourceAppId is missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_clone_native_app', [confirm: true])
@@ -11817,7 +11814,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_clone_native_app via dispatch drives the full appCloner wizard and returns the new appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
         hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context page</html>' }
         hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 0) }
@@ -11860,7 +11857,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_export_native_app via dispatch pulls JSON from the cloner's form-refresh response (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def fakeJson = '{"deviceReplacements":{},"appReplacements":{"100":{"appLabel":"Source Rule"}}}'
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
         hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
@@ -11903,7 +11900,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_import_native_app via dispatch returns -32602 envelope on non-JSON content (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_import_native_app', [jsonContent: 'not-json', parentHintAppId: 100, confirm: true])
@@ -11921,7 +11918,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_import_native_app via dispatch returns -32602 envelope on JSON without appReplacements (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_import_native_app', [jsonContent: '{"foo":"bar"}', parentHintAppId: 100, confirm: true])
@@ -11938,7 +11935,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_import_native_app via dispatch drives the cloner with settings[ruleUpload] and finds the new appId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def importJson = '{"deviceReplacements":{},"appReplacements":{"42":{"appLabel":"Source Rule","appTypeName":"Rule-5.1"}}}'
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "ExistingRule", [], 21) }
         hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
@@ -12063,7 +12060,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction setVariable constant form writes modeActs/getSetVariable fields"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def writtenFields = [:]
 
@@ -12121,7 +12118,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // capability='variable' is an alias for 'setVariable'. Both must route
         // to the same modeActs/getSetVariable code path.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def actSubTypeWritten = null
 
@@ -12174,7 +12171,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // reveal step, the post-write re-introspect finds no xVar<digits>.1 field and
         // must throw (fail-loud guard), which surfaces as result.success==false.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         def fetchSeq = 0
 
@@ -12243,7 +12240,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction setVariable rejects missing variable field"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -12269,7 +12266,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction setVariable rejects missing value and sourceVariable"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -12296,7 +12293,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction setVariable rejects when both value and sourceVariable are provided"() {
         // Providing both is ambiguous; enforce mutual exclusion.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -12325,7 +12322,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // include a clear 'Available modes:' message -- production code is already
         // correct (location?.modes ?: []); this spec pins that behavior.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -12363,7 +12360,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Stub models the full three-stage reveal so the P-discovery and uVar logic
         // are exercised; a green run proves the orchestration matches real RM 5.1.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def writtenFields = [:]
         def moreParamsFired = false
@@ -12478,7 +12475,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Literal value path: moreParams click -> cpType2.1 revealed -> write cpType + cpVal.
         // uVar is not set; xVar is not written. cpType1.1 never appears.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def writtenFields = [:]
         def moreParamsFired = false
@@ -12561,7 +12558,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Both-ways pending (orchestrator): mutate the `if (!(p instanceof Map)) return` early-return
         // to a throw and confirm this spec goes RED on the scalar contract.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def writtenFields = [:]
         def moreParamsFired = false
@@ -12640,7 +12637,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // If the requested variable name is not in the xVar<P>.N enum options,
         // the tool must fail with a clear error rather than silently dropping the write.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def moreParamsFired = false
         def uVar2Written = false
 
@@ -12722,7 +12719,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // subsequent schema fetch (firmware gap, unsupported command, etc.), the tool
         // must throw rather than silently falling through to a rejected write.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def moreParamsFired = false
         def uVar2Written = false
 
@@ -12802,7 +12799,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // land in applied (render-hash shifts per GET), pinning "action initiated, param
         // skipped" distinctly from "action never started."
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def moreParamsFired = false
 
@@ -12873,7 +12870,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         //
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         def writtenFields = [:]
         def moreParamsFired = 0
@@ -12983,7 +12980,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // CODE fix: when xVar<P>.N is revealed but its options are null or non-enumerable,
         // the tool must throw rather than writing an unvalidated variable name.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def moreParamsFired = false
         def uVar2Written = false
 
@@ -13065,7 +13062,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // upfront via getAllGlobalVars so the caller gets a clear error instead of partial=true
         // with no explanation.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -13098,7 +13095,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The hub also silently rejects an unknown variable name in xVar (sourceVariable).
         // Both target and source must be validated against the hub variable enum.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -13130,7 +13127,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // every variable name is invalid. The code must distinguish this from an API failure
         // (null sentinel) and fail loud with a clear message rather than skipping validation.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -13163,7 +13160,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // failing the call -- the caller's intent is applied and the hub enforces correctness.
         // The warn log distinguishes the skip from a normal validation pass.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def mcpLogCalls = []
         script.metaClass.mcpLog = { String level, String component, String msg ->
             mcpLogCalls << [level: level, component: component, msg: msg]
@@ -13215,7 +13212,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Both-ways pending (orchestrator): stub re-routes numOp.1 to applied to prove the
         // old reveal-miss path is still reachable when numOp lands correctly.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
 
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -13266,7 +13263,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the tool must throw rather than writing an unvalidated variable name -- an unvalidated
         // write would produce a silently-broken action with no source variable persisted.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
 
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -13319,7 +13316,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // xVar3.<N> field, the tool must fail with a clear error rather than silently dropping
         // the write or writing an unrecognised value.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
 
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -13380,7 +13377,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Reject early so the caller gets a clear message rather than a broken rule.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -13417,7 +13414,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The numeric-type guard must use instanceof Number, not a truthiness test.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         script.metaClass.getAllGlobalVars = { -> ["counter": [name: "counter", type: "Number", value: 0]] }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -13466,7 +13463,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // sentinel entry is pushed to skipped so partial=true surfaces to the caller.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.getAllGlobalVars = { -> throw new RuntimeException("API unavailable") }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -13516,7 +13513,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the pre-validation loop must reject it before any hub writes are attempted.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -13552,7 +13549,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // bake a half-formed action with a type but no actual parameter content.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -13585,7 +13582,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // a string produces a silently-broken action. Reject early with a clear message.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -13623,7 +13620,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // not the reveal-miss -- which would wrongly suggest RM/firmware is the cause.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "Number", value: 0], "src": [name: "src", type: "Number", value: 0]] }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -13675,7 +13672,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // rather than silently picking the first match and producing a confusing write.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "Number", value: 0], "src": [name: "src", type: "Number", value: 0]] }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -13732,7 +13729,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Writing the name literal to mode.<N> produces 'Mode: null' in RM render.
         // The fix resolves modeName to an integer ID via location.modes first.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"], [id: "1", name: "Home"]]
         def fetchSeq = 0
         def writtenFields = [:]
@@ -13776,7 +13773,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction mode with modeId bypasses name resolution and writes ID directly"() {
         // Existing modeId path must not be broken by the modeName-resolution fix.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // location.modes left empty -- modeId path must not consult it
         sharedLocation.modes = []
         def fetchSeq = 0
@@ -13820,7 +13817,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction mode with unknown modeName fails fast with available modes list"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"]]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -13852,7 +13849,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Day(id=1) is listed FIRST so a first-entry-bias bug would return '1', not '3';
         // the assertion then fails, making this a discriminating regression guard.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
         def fetchSeq = 0
         def writtenFields = [:]
@@ -13916,7 +13913,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // sees rCapab_1='Mode' in the POST body. Firmware field name: modes<cIdx>.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
         def rCapabWritten = false
         def writtenFields = [:]
@@ -14012,7 +14009,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // path bypasses _rmResolveModeIds entirely (no name lookup, no KeyError on "99").
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // ID "99" intentionally absent from modes list -- proves the bypass path doesn't consult it.
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
         def rCapabWritten = false
@@ -14098,7 +14095,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // gap or schema version mismatch), the walker must cancel and throw rather
         // than silently writing nothing. Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -14143,7 +14140,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Mode condition: fail-loud when neither state nor modeIds is provided"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -14197,7 +14194,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Consequence-gated: each field appears only after the preceding write lands.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def startingWritten = false
         def startingAWritten = false
@@ -14327,7 +14324,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // is the reason-code string.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -14445,7 +14442,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Confirms the walker throws rather than silently skipping when the
         // expected reveal does not materialise. Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -14495,7 +14492,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // startFieldHint fix (non-clock types say "'offset' field (firmware-assigned)").
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Track rCapab write so the STPage stub can reveal starting1 progressively.
         def rCapabWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -14560,7 +14557,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // end-value reveal fails, the error must mention "'offset' field".
         // Mirrors the start-side spec above. Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def startingWritten = false
         def endingWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -14639,7 +14636,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Consequence-gated: lVar_1 appears only after rCapab_1='Variable' lands.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def varPickerWritten = false
         def relrWritten = false
@@ -14743,7 +14740,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Variable: fail-loud when variable picker not revealed"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -14788,7 +14785,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Validates the name against the live schema enum; unknown name must throw.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -14856,7 +14853,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // probe matrix remains the primary signal for the silent-drop class of bugs.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCustomAttrWritten = false
         def relrWritten = false
         def writtenFields = [:]
@@ -14960,7 +14957,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Custom Attribute: fail-loud when RelrDev not revealed after rCustomAttr"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -15012,7 +15009,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // start.type='clock' requires start.time; the walker validates before any hub writes.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -15058,7 +15055,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // end.type='sunrise' requires end.offset; validated before hub writes.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -15106,7 +15103,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Anchor date 2000-01-01 is always winter in Eastern TZ, so offset is always -0500.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.timeZone = TimeZone.getTimeZone("US/Eastern")  // EST = -0500 for Jan anchor
         def rCapabWritten = false
         def startingWritten = false
@@ -15219,7 +15216,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // This spec documents what the stub encodes; live firmware shape verified separately.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def startingWritten = false
         def endingWritten = false
@@ -15333,7 +15330,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Validation before any hub write: start/end must both be Maps.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -15378,7 +15375,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // start.type must be 'clock', 'sunrise', or 'sunset'.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -15423,7 +15420,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // end.type must be 'clock', 'sunrise', or 'sunset'.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -15471,7 +15468,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When it never appears, the walker must cancel and throw.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -15527,7 +15524,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When it never appears, the walker must cancel and throw.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def varPickerWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -15595,7 +15592,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The value field (state_<N>) must be gated on RelrDev_<N> write.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCustomAttrWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -15665,7 +15662,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Consequence-gated: rhsType_1 appears only after RelrDev_1 is written.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def relrWritten = false
         def rhsTypeWritten = false
         def writtenFields = [:]
@@ -15774,7 +15771,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The walker does a direct fetch after rCapab/rDev writes and fails loud if
         // RelrDev_<N> is absent. Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -15828,7 +15825,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // skipped so the caller can detect the degraded write. result.partial must be true.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def relrWritten = false
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -15928,7 +15925,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // must report fallbackApplied=false (condition will be incomplete).
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -15988,7 +15985,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Variable condition validation: 'variable' is required.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -16033,7 +16030,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Variable condition validation: 'comparator' is required.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -16079,7 +16076,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Attribute branch: attribute!=null && comparator==null.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -16127,7 +16124,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The second Custom Attribute validation: comparator!=null && attribute==null.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -16173,7 +16170,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // compareToDevice.deviceId is required.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -16219,7 +16216,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // compareToDevice.attribute is required.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -16266,7 +16263,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Both names are resolved via location.modes, both IDs written to modes<N>.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
         def rCapabWritten = false
         def writtenFields = [:]
@@ -16393,7 +16390,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // primary signal for the silent-drop class of bugs.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCustomAttrWritten = false
         def relrWritten = false
         def writtenFields = [:]
@@ -16489,7 +16486,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Consequence-gated: modes1 appears only after rCapab_1='Mode' POST lands.
         // Firmware field name: modes<cIdx> (e.g. modes1). Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
         def rCapabWritten = false
         def writtenFields = [:]
@@ -16571,7 +16568,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // after lVar_1; state_1 only after RelrDev_1.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def varPickerWritten = false
         def relrWritten = false
@@ -16668,7 +16665,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Consequence-gated: each field only appears after the preceding one is committed.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def startingWritten = false
         def startingAWritten = false
@@ -16773,7 +16770,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // which then reveals the reference device and attribute pickers.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def relrWritten = false
         def rhsTypeWritten = false
         def writtenFields = [:]
@@ -16875,7 +16872,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // cancel and throw so the caller gets a diagnostic rather than a silent no-op.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -16924,7 +16921,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // and the available options -- same contract as the STPage Variable path.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -16984,7 +16981,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Attribute path. The static stub simulates firmware that doesn't reveal RelrDev.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -17039,7 +17036,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // in the response with a restoreHint pointing at doActPage cancelCapab.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
         def cancelCapabCalled = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -17098,7 +17095,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // attempting name->ID resolution via location.modes.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
         def rCapabWritten = false
         def writtenFields = [:]
@@ -17169,7 +17166,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // literal state_<N> and pushes a sentinel to skipped. result.partial must be true.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def actTypeWritten  = false
         def actSubTypeWritten = false
         def rCapabWritten   = false
@@ -17270,7 +17267,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // is absent from the schema after rCapab/rDev writes, the walker must fail loud.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -17331,7 +17328,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Parity with addRequiredExpression Mode "neither provided" spec.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -17378,7 +17375,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the wizard walk begins. Parity with addRequiredExpression validation path.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -17429,7 +17426,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Parity with addRequiredExpression validation path.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -17480,7 +17477,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // start-type-reveal step. Parity with the addRequiredExpression static-schema guard.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -17534,7 +17531,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // Both-ways pending (orchestrator).
     def "addAction ifThen: fail-loud when Between two times location.timeZone is null on doActPage"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.timeZone = null   // simulate unconfigured hub timezone
         def cancelCapabClicks = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -17599,7 +17596,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // Both-ways pending (orchestrator).
     def "addRequiredExpression Mode: walker cancel succeeds -- outer catch does not issue a second cancelCapab"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
         def cancelCapabClicks = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -17658,7 +17655,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // appear, the walker must cancel and throw. Parity with addRequiredExpression guard.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -17709,7 +17706,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Parity with addRequiredExpression Variable RelrDev fail-loud spec.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -17771,7 +17768,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Parity with addRequiredExpression Variable state_N fail-loud spec.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def lVarWritten = false    // gate for RelrDev reveal: appears after picker write
         def relrDevWritten = false // gate for state reveal: intentionally never flipped
@@ -17840,7 +17837,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Parity with addRequiredExpression Custom Attribute state_N fail-loud spec.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def rCustomAttrWritten = false  // gate for RelrDev reveal: appears after rCustomAttr write
         // relrDevWritten not needed: state_1 intentionally absent regardless of RelrDev
@@ -17920,7 +17917,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Parity with addAction ifThen wizardStuck spec.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -17979,7 +17976,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // surface success=false and error in the returned map, not an unhandled exception.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -18030,7 +18027,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the repairHints string should say '2 conditions' not '1 condition' or '2 condition(s)'.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -18120,7 +18117,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Mode: cond.not=true writes not<N> to STPage"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
         def rCapabWritten = false
         def writtenFields = [:]
@@ -18189,7 +18186,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Between two times: cond.not=true writes not<N> to STPage"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def startingWritten = false
         def startingAWritten = false
@@ -18278,7 +18275,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Variable: cond.not=true writes not<N> to STPage"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def lVarWritten = false
         def relrDevWritten = false
@@ -18359,7 +18356,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Custom Attribute: cond.not=true writes not<N> to STPage"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def rCustomAttrWritten = false  // gates RelrDev+state reveal
         def writtenFields = [:]
@@ -18444,7 +18441,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the walker must write not1=true after the full sequence.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def relrWritten = false
         def rhsTypeWritten = false
@@ -18543,7 +18540,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Mode: rawSettings fields written alongside modes picker"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"]]
         def rCapabWritten = false
         def writtenFields = [:]
@@ -18613,7 +18610,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Variable: rawSettings fields written alongside comparator chain"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def lVarWritten = false
         def relrDevWritten = false
@@ -18692,7 +18689,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Custom Attribute: rawSettings fields written alongside comparator chain"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def rCustomAttrWritten = false  // gates RelrDev+state reveal: appears after rCustomAttr_1 write
         def writtenFields = [:]
@@ -18775,7 +18772,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Between two times: rawSettings fields written alongside clock sequence"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def startingWritten = false
         def startingAWritten = false
@@ -18863,7 +18860,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression compareToDevice: rawSettings fields written alongside device-compare sequence"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def relrWritten = false
         def rhsTypeWritten = false
@@ -18968,7 +18965,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // under test sits BEHIND the pre-flight; this seed simulates a real
         // caller building up ifThen -> elseIf incrementally.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"]]
         def rCapabWritten = false
         def writtenFields = [:]
@@ -19041,7 +19038,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction repeatWhile: Mode condition writes modes picker -- walker fires on repeatWhile subtype"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"]]
         def rCapabWritten = false
         def writtenFields = [:]
@@ -19108,7 +19105,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction waitExpression: Mode condition writes modes picker -- walker fires on waitExpression subtype"() {
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"]]
         def rCapabWritten = false
         def writtenFields = [:]
@@ -19184,7 +19181,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When the caller passes deviceId: 73 instead of deviceIds: [73], the
         // dispatcher normalizes it to [73] so rDev_1 is written correctly.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def rCustomAttrWritten = false
         def writtenFields = [:]
@@ -19270,7 +19267,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Both-ways pending (orchestrator).
         // Same normalization as STPage path but exercised via addAction ifThen expression.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def rCustomAttrWritten = false
         def writtenFields = [:]
@@ -19371,7 +19368,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // Both-ways pending (orchestrator).
     def "addAction ifThen: recursive normExprCondList walks subExpression without crashing the dispatcher"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -19423,7 +19420,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // Both-ways pending (orchestrator).
     def "addTrigger: singular non-existent deviceId in trigger.condition fails the existence check"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -19483,7 +19480,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Both-ways pending (orchestrator).
         // Precedence: if both deviceId: 5 and deviceIds: [99] are given, deviceIds wins.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -19570,7 +19567,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression: singular deviceId for nonexistent device triggers pre-validation throw"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -19614,7 +19611,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression: singular deviceId inside nested subExpression.conditions is normalized"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -19710,7 +19707,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Mode: static-schema (all fields always visible) succeeds via revealedAny fallback"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "2", name: "Night"]]
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -19779,7 +19776,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: fail-loud when location.timeZone is null"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.timeZone = null   // simulate unconfigured hub timezone
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -19832,7 +19829,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: clock time ISO datetime uses hub timezone offset (non-UTC zone)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Use a fixed-offset zone (UTC+10) to avoid DST ambiguity in the assertion.
         sharedLocation.timeZone = TimeZone.getTimeZone("GMT+10")
         def startingWritten = false
@@ -19926,7 +19923,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression: repairHints says '1 condition' (singular) for exactly one degraded condition"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -20002,7 +19999,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression: repairHints says '1 condition' when one condition produces multiple skipped entries"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -20078,7 +20075,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression note says '1 condition' singular for one condition"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -20140,7 +20137,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression note says '2 conditions' plural for two conditions"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWrittenForSlot = [1: false, 2: false]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -20238,7 +20235,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // post-retry), so the WARN string fires.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -20274,7 +20271,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // toolSetRule's button-handler post-updateRule branch.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -20314,7 +20311,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addTrigger: singular deviceId in trigger.condition is normalized before wizard write"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -20402,7 +20399,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_clone_native_app via dispatch returns -32602 when source config fetch returns empty (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/999') { params -> "" }
 
         when:
@@ -20435,7 +20432,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // commit a compareToDevice condition with no reference device.
         // Production fix: was `if (refDevReveal.input)` (silent no-op); now mandatory.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -20494,7 +20491,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Same shape as the refDev fail-loud spec, but exercises the refAttr reveal
         // branch one step further down the wizard.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -20551,7 +20548,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // appear the walker logs warn + pushes a sentinel with reason='offset_field_not_revealed'.
         // Does NOT fail the call (offset is genuinely optional per the spec shape).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -20620,7 +20617,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // commit path reaches its trailing updateRule); the only delta is the
         // updateRule-click injection that throws.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleAttempted = false
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -20715,7 +20712,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // reveals modes<N>); when the post-fetch in revealStep throws, the walker has no
         // try/catch around it.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def cancelCapabClicks = 0
         // doActFetchesAfterRCapab counts doActPage fetches that happen AFTER rCapab_1 has
         // been POSTed. The throw fires on the SECOND such fetch -- the sequence around
@@ -20816,7 +20813,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // populates the enum, or probe-timing race), the walker MUST signal degradation
         // via the variable-validation sentinel rather than silently accept the name.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -20879,7 +20876,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // default (0). Mirrors the _rmBuildCondition (selectTriggers) fail-loud
         // for the Variable-comparator-missing-RHS case.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -20935,7 +20932,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // condition and break the entire "fire when myVar changes" idiom.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -20996,7 +20993,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the pre-pass with a clear message rather than letting the walker emit a generic
         // 'capability is required' error.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -21054,7 +21051,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // leftover field was matched rather than a freshly-revealed one. Does NOT set
         // partial=true on its own.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -21118,7 +21115,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // condition partial=true.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def rCapabWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -21226,7 +21223,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // sentinel.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -21295,7 +21292,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // sentinel) would surface here.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -21389,7 +21386,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // appends the repairHint regardless of failure.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -21477,7 +21474,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // trailing updateRule click.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleAttempted = false
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -21546,7 +21543,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Uses the same proven helpers as the failure spec above for symmetry.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -21622,7 +21619,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // "addTriggersList non-empty" ship green.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleAttempted = false
         def fetchSeq = 0
         def doActFetchSeq = 0
@@ -21712,7 +21709,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Three-row rotation matches the failure-pin coverage.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         def fetchSeq = 0
         def doActFetchSeq = 0
@@ -21799,7 +21796,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // (or vice versa) was previously invisible.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         def fetchSeq = 0
         def doActSeq = 0
@@ -21879,7 +21876,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // trigger needs tCapab2/tDev2/tstate2/isCondTrig.2/condTrig.2.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -21957,7 +21954,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the _rmBuildSettingsBody CSV builder) would surface here.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -22037,7 +22034,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // toolSetRule catch and surfaces as result.success=false.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -22094,7 +22091,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // structurally (sibling-pattern fidelity per N.13).
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def cancelCapabClicks = 0
         def rCapabWritten = false
         def stFetchesAfterRCapab = 0
@@ -22190,7 +22187,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // flip success=false, and append a recovery repairHint.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleAttempted = false
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -22272,7 +22269,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // unconditionally appending the repairHint would surface here.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -22347,7 +22344,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // re-evaluates against the new variable until updateRule fires.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleAttempted = false
         def selActsAfter = [
             [name: "hbVar", type: "text"],
@@ -22408,7 +22405,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Negative pin paired with the failure spec above.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         def selActsAfter = [
             [name: "hbVar", type: "text"],
@@ -22482,7 +22479,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // succeeds in this scenario -- the inner failed, not the trailing click.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         def selActsAfter = [
             [name: "hbVar", type: "text"],
@@ -22579,7 +22576,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the FINAL verification fetch.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         // doneSTClicked: flips true when the STPage walk's final back-nav clicks
         // doneST. The mainPage fetch handler uses this to throw ONLY after the
@@ -22659,7 +22656,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the row needs removeAction-then-retry style recovery.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def fetchSeq = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -22722,7 +22719,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // over all three so a regex narrowing on any branch surfaces here.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -22791,7 +22788,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // raw '!=' string and RM would reject it as not in the option list.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -22850,7 +22847,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // mapping must apply on the doActPage walker path (Variable branch).
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Open ifThen needed for the structural-balance pre-flight to allow this addAction.
         // Wait -- this is a fresh ifThen, not elseIf/else/endIf -- pre-flight allows openers.
         def writtenFields = [:]
@@ -22913,7 +22910,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Third F9 site: doActPage walker Custom Attribute branch. Same contract.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -22984,7 +22981,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // _rmAddRequiredExpression class-fix). Same diff as F1.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
         def writtenFields = [:]
         def fetchSeq = 0
@@ -23092,7 +23089,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // surfaces it on the outer envelope.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -23212,7 +23209,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // gets actionable recovery.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -23294,7 +23291,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // negative pin matches the positive pin's coverage breadth.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -23374,7 +23371,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // CO2 to the map "for symmetry" would silently break real callers.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -23466,7 +23463,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // representative discrete-event capability (Water sensor).
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -23546,7 +23543,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     @spock.lang.Unroll
     def "mutation-dispatcher #shape: trailing-updateRule failure surfaces updateRuleFailed + subscriptionsNotLive (I6)"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleAttempted = false
         def fetchSeq = 0
         // Seed pre-mutation state: 2 actions for removeAction/moveAction/clearActions/
@@ -23704,7 +23701,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // here. Mirror of the per-dispatcher SUCCESS pins (addTrigger, bulk, etc.).
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         def fetchSeq = 0
         // See the failure spec's `given:` for the fixture-toggle rationale --
@@ -23851,7 +23848,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the move itself succeeds.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def clickFired = false
         def beforeActionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
         def afterActionsMap  = ["2": "Delay", "1": "Switch On", "3": "Switch Off"]
@@ -23912,7 +23909,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // leave the rich slots null.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def delActFired = false
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params ->
@@ -23974,7 +23971,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // both robust and exercises the contract end-to-end.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         def cleared = false
         def actionCommitted = false
@@ -24099,7 +24096,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // OR-clause spec uses (post-commit mainPage fetch throws).
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         def cleared = false
         def actionCommitted = false
@@ -24197,7 +24194,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // inner-only hint should fire because updateRuleFailed stays false.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         def hasAllClicked = false
         def selectTrigFetchSeq = 0
@@ -24275,7 +24272,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // path. Then stub the cancelTrash click to also throw so the inner
         // catch fires both warn-logs.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def warnLogs = []
         script.metaClass.mcpLog = { String level, String component, String msg ->
             if (level == "warn") warnLogs << [level: level, component: component, msg: msg]
@@ -24329,7 +24326,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // its own clearActions step in the same recovery pattern; the warn-log
         // substring differs by the patch-op qualifier.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def warnLogs = []
         script.metaClass.mcpLog = { String level, String component, String msg ->
             if (level == "warn") warnLogs << [level: level, component: component, msg: msg]
@@ -24381,7 +24378,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // be stripped from the per-patch error string before it reaches callers.
     def "patches[clearActions] retry-window expiration does not leak the [asyncCommitLikely] marker into per-patch error"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def warnLogs = []
         script.metaClass.mcpLog = { String level, String component, String msg ->
             if (level == "warn") warnLogs << [level: level, component: component, msg: msg]
@@ -24451,7 +24448,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // shortcut) and must also strip the marker + skip cancelTrash on async.
     def "patches[replaceActions] retry-window expiration does not leak the [asyncCommitLikely] marker into per-patch error"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def warnLogs = []
         script.metaClass.mcpLog = { String level, String component, String msg ->
             if (level == "warn") warnLogs << [level: level, component: component, msg: msg]
@@ -24533,7 +24530,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // discriminator -- it distinguishes the recursive validator from any
         // flat fallback. Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -24590,7 +24587,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // subExpression.conditions[0] is not a Map".
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -24649,7 +24646,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // entry flipped partial:true; post-fix it must stay falsy.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "2", name: "Night"]]
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -24783,7 +24780,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         //
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
@@ -24866,7 +24863,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the hub" error -- validator does not throw false positives.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -24921,7 +24918,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The dispatcher MUST see both sentinel classes and flip partial:true.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         sharedLocation.modes = [[id: "2", name: "Night"]]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -25007,7 +25004,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // _rmAddAction returns {success:true, partial:true}. Trailing updateRule
         // click then lands clean. Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         def actionCommitted = false
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
@@ -25108,7 +25105,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // {success:true, partial:true}. Trailing updateRule click lands clean.
         // Both-ways pending (orchestrator).
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def updateRuleClicked = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -25210,7 +25207,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_set_native_app create branch (no appId) builds a shell via _createNativeAppShell"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
         hubGet.register('/installedapp/configure/json/980') { params -> ruleConfigJson(980, "", [[name: "origLabel", type: "text"]]) }
         hubGet.register('/installedapp/statusJson/980') { params -> statusJson(980) }
@@ -25237,7 +25234,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_set_native_app edit branch (appId present) writes settings via the shared edit engine"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params ->
             ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
         }
@@ -25261,7 +25258,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_set_native_app requires confirm=true"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolSetNativeApp([name: "x"])
@@ -25273,7 +25270,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_set_native_app create routes a NON-rule_machine appType to its registry parent"() {
         given: "a Notifications parent on the hub (notifier appType)"
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/hub2/appsList') { params ->
             JsonOutput.toJson([apps: [
                 [data: [id: 42, name: "Notifications", type: "Notifications", user: false, hidden: false], children: []]
@@ -25301,7 +25298,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_set_native_app rejects RM authoring params with a pointer to hub_set_rule"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when: "a hand-crafted call smuggles an RM-only param past the lean schema"
         script.toolSetNativeApp([appId: 100, addTrigger: [capability: "Switch"], confirm: true])
@@ -25315,7 +25312,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_set_native_app surfaces an unknown appType as a caller-recoverable error"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolSetNativeApp([appType: "bogus_type", name: "x", confirm: true])
@@ -25328,7 +25325,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_set_rule create dispatch-envelope through the rule_machine gateway returns the new appId"() {
         given:
         settingsMap.useGateways = true
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
         hubGet.register('/installedapp/configure/json/991') { params -> ruleConfigJson(991, "", [[name: "origLabel", type: "text"]]) }
         hubGet.register('/installedapp/statusJson/991') { params -> statusJson(991) }
@@ -25366,7 +25363,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_set_native_app dispatch-envelope through the native gateway routes to create"() {
         given:
         settingsMap.useGateways = true
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
         hubGet.register('/installedapp/configure/json/981') { params -> ruleConfigJson(981, "", [[name: "origLabel", type: "text"]]) }
         hubGet.register('/installedapp/statusJson/981') { params -> statusJson(981) }
@@ -25388,7 +25385,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_set_rule create-with-bundle gathers addTrigger/addActions into the create args in one call"() {
         given: "stub the (public) shell builder so this pins toolSetRule's gather logic, not the wizard"
-        enableHubAdminWrite()
+        enableWrite()
         def capturedArgs = null
         script.metaClass._createNativeAppShell = { args ->
             capturedArgs = args
@@ -25418,7 +25415,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "hub_set_rule with appId present routes to the edit engine, NOT create"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def shellCalled = false
         script.metaClass._createNativeAppShell = { args -> shellCalled = true; [:] }
         def editArgs = null

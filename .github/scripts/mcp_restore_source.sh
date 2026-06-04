@@ -95,7 +95,7 @@ verify_restored_to_pre_len() {
   local rpc resp text current_len ok
   while [ $elapsed -lt $POST_RESTORE_VERIFY_TIMEOUT ]; do
     rpc=$(jq -nc --arg id "$CLASS_ID" \
-      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{appId:$id,offset:0,length:1}}}')
+      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:1}}}')
     resp=$(curl -sS --max-time 30 -X POST "$MCP_URL" \
       -H "Content-Type: application/json" \
       --data-binary "$rpc" || true)

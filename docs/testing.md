@@ -149,7 +149,7 @@ Two distinct production paths produce different envelope shapes — assert the r
 ## Adding a new server tool spec
 
 1. Create `src/test/groovy/server/Tool<Name>Spec.groovy` extending `support.ToolSpecBase`.
-2. In `given:`, seed any device/child-app fixtures and settings flags the tool reads. Example: `settingsMap.enableHubAdminRead = true`, `childDevicesList << myMockDevice`.
+2. In `given:`, seed any device/child-app fixtures and settings flags the tool reads. Example: `settingsMap.enableRead = true`, `childDevicesList << myMockDevice`.
 3. Stub `hubGet.register(path) { ... }` for every internal endpoint the tool calls.
 4. **Add direct-call tests** that call `script.tool<Name>(args)` in `when:` and assert on the return value AND any state mutations or mock interactions. Always include at least one error-path test alongside the golden path.
 5. **Add dispatch-counterpart tests** that drive `mcpDriver.callTool('<tool_name>', args)` for the happy path and for each error condition the tool can produce. Use `@Unroll where: useGateways << [true, false]` so the dispatch feature runs under both routing modes. Assert envelope shape (`response.jsonrpc`, `response.id == mcpDriver.lastSentId`) plus the layer-specific shape from the error-path table above.
@@ -253,7 +253,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
     def "list_rm_rules returns mocked rule list"() {
         given:
-        settingsMap.enableBuiltinAppTools = true  // PR #79's opt-in gate
+        settingsMap.enableRead = true  // Read master (default ON; explicit for clarity)
 
         when:
         def result = script.handleGateway('manage_rule_machine', 'list_rm_rules', [:])

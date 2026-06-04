@@ -124,7 +124,7 @@ jobs:
 
       - name: Configure test environment (capture pre-state + enable toggles)
         if: steps.gate.outputs.available == 'true'
-        # Captures enableCustomRuleEngine / enableHubAdminRead / enableBuiltinApp
+        # Captures enableCustomRuleEngine / enableRead
         # to $RUNNER_TEMP/mcp_pre_state.json, then enables all three so the
         # tests can exercise the rule engine + hub admin read paths regardless
         # of the test hub's prior toggle state. Refuses if Developer Mode
@@ -184,6 +184,16 @@ jobs:
         # source=... write reliably 504s before the hub receives it).
         continue-on-error: true
         run: bash .github/scripts/mcp_deploy_source.sh hubitat-mcp-server.groovy
+
+      # Authoritative deploy gate (NOT continue-on-error). The deploy step above
+      # tolerates the cloud 5xx the hub returns while it recompiles mid-self-update
+      # (a false error), but that tolerance also masks a genuinely un-landed deploy,
+      # which would silently run the tests on STALE hub code. This step re-fetches
+      # the hub's full source and byte-compares it to this PR's source: a no-op
+      # (already identical) passes, a real mismatch fails the job loudly. (#236/#234)
+      - name: Verify deployed source matches this PR
+        if: steps.gate.outputs.available == 'true'
+        run: bash .github/scripts/mcp_verify_deploy.sh hubitat-mcp-server.groovy
 
       - name: Run E2E tests
         if: steps.gate.outputs.available == 'true'

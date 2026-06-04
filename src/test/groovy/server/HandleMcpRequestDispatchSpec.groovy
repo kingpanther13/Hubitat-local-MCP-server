@@ -145,7 +145,6 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
     def "tools/list with useGateways=false returns the full flat catalog in a single response (no pagination)"() {
         given: 'feature toggles on so the JSON-RPC envelope returns the full flat catalog'
         settingsMap.useGateways = false
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
         mcpDriver.pushBody([jsonrpc: '2.0', id: 51, method: 'tools/list', params: [:]])
 
@@ -342,8 +341,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
     def "size guard surfaces the inner sub-tool name + gateway hint when called through a manage_* gateway (#174)"() {
         given: 'a stubbed sub-tool (hub_get_app_config) that returns a huge config'
-        settingsMap.enableBuiltinApp = true
-        settingsMap.enableHubAdminRead = true
+        settingsMap.enableRead = true
         // useGateways=true so hub_read_apps_code actually dispatches (PR #187/#191's
         // flat-mode matrix would otherwise short-circuit gateway calls with isError).
         settingsMap.useGateways = true
@@ -388,7 +386,6 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // MCP clients take. addTrigger/addAction {discover:true} ride the same exemption.
         given: 'gateway mode + builtin app on so the rule machine gateway dispatches'
         settingsMap.useGateways = true
-        settingsMap.enableBuiltinApp = true
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 210, method: 'tools/call',
             params: [name: 'hub_manage_rule_machine', arguments: [tool: 'hub_set_rule', args: [guide: true]]]
@@ -856,7 +853,6 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // here instead of silently on a user's hub.
         given:
         settingsMap.useGateways = false
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
 
         when:
@@ -878,7 +874,6 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // gateway entries (which proxy many tools) carry no single outputSchema.
         given:
         settingsMap.useGateways = true
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
         mcpDriver.pushBody([jsonrpc: '2.0', id: 71, method: 'tools/list', params: [:]])
 
@@ -905,7 +900,6 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // instead of the catalog and can no longer discover any tool in that gateway.
         // The largest today (hub_manage_native_rules_and_apps) is ~76KB; pin all 19.
         given:
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
 
         when:

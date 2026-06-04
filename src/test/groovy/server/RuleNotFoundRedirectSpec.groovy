@@ -19,7 +19,7 @@ import support.ToolSpecBase
  *   (c) Id not found anywhere            -> generic "not found" (no redirect)
  *   (d) Id is a non-rule-like built-in   -> no redirect (avoid false positives)
  *   (e) /hub2/appsList fetch fails       -> graceful fallback, no secondary exception
- *   (f) enableBuiltinApp disabled        -> no redirect, no info-leak (gate-off scenario)
+ *   (f) Read master disabled             -> no redirect, no info-leak (gate-off scenario)
  *
  * Shared helper scenarios (a/c/d/e/f) are tested once against toolGetRule since
  * they exercise the shared findRuleAppRedirect helper. Per-tool tests cover
@@ -93,7 +93,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_get_custom_rule (b) RM rule id (type=Rule-5.1) -- read-verb redirect in exception"() {
         given: 'hub has appId 832 as a Rule Machine 5.1 rule'
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(832, 'Rule-5.1')
         }
@@ -114,7 +113,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_get_custom_rule (b2) RM rule -- type string Rule Machine 5.1 also matches"() {
         given: 'type string "Rule Machine 5.1" matches via "rule machine" fragment'
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(900, 'Rule Machine 5.1')
         }
@@ -130,7 +128,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_get_custom_rule (b3) Room Lighting type string -- read-verb redirect"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(101, 'Room Lights')
         }
@@ -145,7 +142,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_get_custom_rule (c) id not found anywhere -- generic not found, no redirect"() {
         given: 'hub appsList has no app with this id'
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> appsListJsonEmpty() }
 
         when:
@@ -159,7 +155,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_get_custom_rule (d) non-rule-like built-in app -- no redirect"() {
         given: 'hub has appId 50 as Groups and Scenes (not rule-like)'
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(50, 'Groups and Scenes')
         }
@@ -175,7 +170,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_get_custom_rule (e) appsList fetch throws -- graceful fallback, generic not found"() {
         given: 'appsList endpoint is not registered (will throw IllegalStateException from mock)'
-        settingsMap.enableBuiltinApp = true
         // HubInternalGetMock throws IllegalStateException for unregistered paths;
         // findRuleAppRedirect must catch this and return null.
         // Do NOT register /hub2/appsList here -- the mock's default throws.
@@ -191,7 +185,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_get_custom_rule (e2) appsList returns empty string -- graceful fallback"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> '' }
 
         when:
@@ -205,7 +198,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_get_custom_rule (e3) appsList returns non-JSON -- graceful fallback"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> 'not valid json' }
 
         when:
@@ -217,9 +209,11 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
         !ex.message.contains('hub_get_app_config')
     }
 
-    def "hub_get_custom_rule (f) enableBuiltinApp disabled -- no redirect even if id is a built-in rule"() {
-        given: 'Built-in App Tools gate is OFF (default); helper must short-circuit without calling appsList'
-        // settingsMap.enableBuiltinApp is intentionally absent (falsy) -- this is the gate-off scenario
+    def "hub_get_custom_rule (f) Read master disabled -- no redirect even if id is a built-in rule"() {
+        given: 'Read master is OFF; findRuleAppRedirect must short-circuit without calling appsList'
+        // The redirect is a soft enrichment gated on the Read master: with Read OFF the
+        // helper returns null so no app existence / type is leaked. This is the gate-off scenario.
+        settingsMap.enableRead = false
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(832, 'Rule-5.1')
         }
@@ -237,7 +231,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "findRuleAppRedirect type '#typeName' fires redirect via fragment match"() {
         given: 'each rule-like type string should trigger a redirect via fragment matching -- the only detection path'
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(200, typeName)
         }
@@ -264,7 +257,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "findRuleAppRedirect nested child app -- DFS descends into children"() {
         given: 'target app is nested under a parent (Room Lighting child instance pattern on live hub)'
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJsonNested(999, 'Room Lights', 201, 'Room Lights')
         }
@@ -282,7 +274,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_export_custom_rule (b) RM rule id -- read-verb redirect in exception"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(500, 'Rule-5.0')
         }
@@ -303,7 +294,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_export_custom_rule (c) id not found anywhere -- generic not found"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> appsListJsonEmpty() }
 
         when:
@@ -319,7 +309,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_update_custom_rule (b) RM rule id -- write-verb redirect in exception"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(300, 'Rule-5.1')
         }
@@ -340,7 +329,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_update_custom_rule (c) id not found anywhere -- generic not found"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> appsListJsonEmpty() }
 
         when:
@@ -367,7 +355,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_delete_custom_rule (b) RM rule id -- write-verb redirect in exception"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(400, 'Rule-5.1')
         }
@@ -385,7 +372,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_delete_custom_rule (c) id not found anywhere -- generic not found"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> appsListJsonEmpty() }
 
         when:
@@ -401,7 +387,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_test_custom_rule (b) RM rule id -- test-verb redirect includes hub_call_rule"() {
         given: 'ruleApp51 is RM-specific -- hub_call_rule hint should appear'
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(600, 'Rule-5.1')
         }
@@ -419,7 +404,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_test_custom_rule (b2) non-RM rule-like id -- test-verb redirect omits hub_call_rule"() {
         given: 'roomLightsApp is not RM -- hub_call_rule (RMUtils) would fail; hint must not appear'
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(601, 'Room Lights')
         }
@@ -436,7 +420,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_test_custom_rule (c) id not found anywhere -- generic not found"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> appsListJsonEmpty() }
 
         when:
@@ -452,7 +435,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_clone_custom_rule (b) RM rule id -- redirect propagates from toolExportRule"() {
         given: 'clone delegates to toolExportRule which checks the redirect'
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ ->
             appsListJson(700, 'Rule-5.1')
         }
@@ -471,7 +453,6 @@ class RuleNotFoundRedirectSpec extends ToolSpecBase {
 
     def "hub_clone_custom_rule (c) id not found anywhere -- generic not found"() {
         given:
-        settingsMap.enableBuiltinApp = true
         hubGet.register('/hub2/appsList') { _ -> appsListJsonEmpty() }
 
         when:

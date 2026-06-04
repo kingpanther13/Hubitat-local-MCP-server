@@ -12,7 +12,7 @@ You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server.
 1. **Safety first** - Never control a device without confirming the correct match. Critical systems (locks, HVAC, garage doors) require extra care.
 2. **Progressive disclosure** - Start with lightweight queries (`hub_list_devices` with `detailed=false`), then drill down as needed.
 3. **Inform before acting** - Tell the user what you plan to do before executing write operations.
-4. **Respect access gates** - Hub Admin Read/Write tools are gated for a reason. Follow pre-flight checklists.
+4. **Respect access gates** - The Read and Write masters (and any Advanced per-tool overrides) gate tools for a reason. Follow pre-flight checklists.
 
 ## Tool Naming Conventions
 
@@ -138,17 +138,19 @@ Mark test/throwaway rules with `testRule: true` to skip backup on deletion.
 
 ## Room Management
 
-5 tools via `hub_manage_rooms` gateway: `hub_list_rooms`, `hub_get_room`, `hub_create_room`, `hub_delete_room`, `hub_update_room`. Room creation/deletion/renaming requires Hub Admin Write. The read-only pair (`hub_list_rooms`, `hub_get_room`) is also surfaced via the pure-read `hub_read_rooms` gateway (2 tools).
+5 tools via `hub_manage_rooms` gateway: `hub_list_rooms`, `hub_get_room`, `hub_create_room`, `hub_delete_room`, `hub_update_room`. Room creation/deletion/renaming requires the Write master + confirm. The read-only pair (`hub_list_rooms`, `hub_get_room`) is also surfaced via the pure-read `hub_read_rooms` gateway (2 tools).
 
 ## Hub Administration
 
-Core hub admin tools (always visible): `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`
+Every tool is gated by two universal masters — **Read** and **Write**, both ON by default. Read tools are blocked when the Read master is OFF ("Read tools are disabled…"); all other (write) tools are blocked when the Write master is OFF ("Write tools are disabled…"). Destructive write tools additionally require `confirm=true` + a backup within 24h. Individual tools or whole gateways can also be disabled below the masters under **Advanced: Per-tool Overrides** (deny-only) — a disabled tool drops from `tools/list`/`hub_search_tools` and returns "…is disabled in Advanced settings (Per-tool Overrides)…" if still called.
+
+Core hub admin tools: `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`
 
 Additional hub admin tools are accessed via gateways:
 
 ### Via `hub_manage_destructive_ops` gateway (3 tools)
 
-Destructive write operations (require Hub Admin Write): `hub_reboot`, `hub_shutdown`, `hub_delete_device`
+Destructive write operations (require the Write master + confirm + backup): `hub_reboot`, `hub_shutdown`, `hub_delete_device`
 
 ### Via `hub_read_apps_code` gateway (9 tools — read-only)
 
@@ -162,7 +164,7 @@ Destructive write operations (require Hub Admin Write): `hub_reboot`, `hub_shutd
 - `hub_create_driver` supports bulk mode via an `installs` array of `{source|sourceFile}` objects. Continue-on-error; top-level `success: true` only if all items pass. Cannot combine with single-driver fields. Returns per-item `driverId`. Practical limit ~10-20 drivers/call. (`hub_create_app` is single-item only -- apps are typically one-of-a-kind installs.)
 - `hub_update_driver` supports bulk mode via an `updates` array of `{driverId, sourceFile}` objects. Continue-on-error; top-level `success: true` only if all items pass. Cannot combine with single-driver fields.
 
-### Pre-flight checklist for ALL write operations
+### Pre-flight checklist for destructive write operations (the confirm+backup tier)
 
 1. A hub backup must exist within the last 24 hours (`hub_create_backup`)
 2. Tell the user what you are about to do
@@ -193,8 +195,8 @@ Via `hub_manage_logs` gateway (6 tools):
 
 Via `hub_manage_diagnostics` gateway (8 tools):
 - `hub_get_metrics` - Retrieve hub metrics with CSV trend history (read-only by default; `recordSnapshot` defaults to false — also in `hub_read_diagnostics`)
-- `hub_get_memory_history` - Free OS memory and CPU load history with summary stats (Hub Admin Read)
-- `hub_call_gc` - Force JVM GC; returns before/after free memory (Hub Admin Read)
+- `hub_get_memory_history` - Free OS memory and CPU load history with summary stats (Read master)
+- `hub_call_gc` - Force JVM GC; returns before/after free memory (Write master)
 - `hub_get_device_health` - Find stale/offline devices; optional ICMP ping for arbitrary IPs
 - `hub_get_radio_details` - Radio info; `radio`: "zwave" or "zigbee" (omit for both)
 - `hub_call_zwave_repair` - Start Z-Wave network repair (5-30 min)
@@ -204,7 +206,7 @@ Via `hub_manage_diagnostics` gateway (8 tools):
 
 ## File Manager
 
-Via `hub_manage_files` gateway (4 tools): `hub_list_files`, `hub_read_file`, `hub_write_file`, `hub_delete_file`. Write/delete require Hub Admin Write. The read-only pair (`hub_list_files`, `hub_read_file`) is also surfaced via the pure-read `hub_read_files` gateway (2 tools). Files live at `http://<HUB_IP>/local/<filename>`.
+Via `hub_manage_files` gateway (4 tools): `hub_list_files`, `hub_read_file`, `hub_write_file`, `hub_delete_file`. Write/delete require the Write master + confirm + a recent backup. The read-only pair (`hub_list_files`, `hub_read_file`) is also surfaced via the pure-read `hub_read_files` gateway (2 tools). Files live at `http://<HUB_IP>/local/<filename>`.
 
 ## Item Backup System
 
@@ -213,7 +215,7 @@ Source code is automatically backed up before modify/delete operations. Use `hub
 ## System Tools
 
 Core tools (always visible):
-- `hub_get_info` - Comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip) requires Hub Admin Read
+- `hub_get_info` - Comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip) is included whenever the Read master is ON (the default), and omitted only when Read is explicitly OFF
 - `hub_list_modes` / `hub_set_mode` - Location modes (Home, Away, Night, etc.)
 - `hub_get_hsm_status` / `hub_set_hsm` - Home Security Monitor
 
@@ -227,7 +229,7 @@ The read-only subset (`hub_list_variables`, `hub_get_variable`, `hub_list_variab
 
 ## HPM Package Introspection
 
-Via `hub_read_apps_code` gateway (Hub Admin Read required):
+Via `hub_read_apps_code` gateway (gated by the Read master):
 - `hub_list_hpm_packages` - List all HPM-tracked packages with full component inventory. Data-quality issues (non-scalar heID, empty heID, whitespace-padded heID) emit inline `_warning` on each component **because** consumers enumerate components per-package and need the warning co-located. Pass `includeDrift=true` to also cross-reference HPM state against the hub (results nest under a `drift` key); surfaces `missing-required`, `orphan-app`, `orphan-driver` signals, with data-quality issues kept in a separate `dataQualityWarnings[]` aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count.
 
 ## Performance Tips

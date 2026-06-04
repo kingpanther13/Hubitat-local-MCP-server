@@ -232,7 +232,7 @@ The server has 88 tools total. To keep the MCP `tools/list` manageable, **11 cor
 
 | Tool | Description |
 |------|-------------|
-| `hub_get_info` | Comprehensive hub info: hardware, health, MCP stats. PII (name, IP, location) requires Hub Admin Read |
+| `hub_get_info` | Comprehensive hub info: hardware, health, MCP stats. PII (name, IP, location) is included whenever the Read master is ON (the default) |
 | `hub_list_modes` | List location modes |
 | `hub_set_mode` | Change location mode (Home, Away, Night, etc.) |
 | `hub_get_hsm_status` | Get Home Security Monitor status |
@@ -245,7 +245,7 @@ The server has 88 tools total. To keep the MCP `tools/list` manageable, **11 cor
 
 | Tool | Description |
 |------|-------------|
-| `hub_manage_virtual_device` | Create or delete an MCP-managed virtual device (`action`: "create", "delete") -- supports built-in `deviceType` OR `customDriver={namespace, name}` (Hub Admin Write). To list MCP-managed virtual devices with states, use `hub_list_devices` with `filter='virtual'`. |
+| `hub_manage_virtual_device` | Create or delete an MCP-managed virtual device (`action`: "create", "delete") -- supports built-in `deviceType` OR `customDriver={namespace, name}` (Write master). To list MCP-managed virtual devices with states, use `hub_list_devices` with `filter='virtual'`. |
 
 </details>
 
@@ -287,11 +287,11 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 | `hub_list_backups` | List auto-created source code backups |
 | `hub_get_backup` | Get source from a backup |
 | `hub_list_device_dependents` | Find all apps that reference a specific device (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.) |
-| `hub_get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.) — sections, inputs, values. Multi-page apps via `pageName`. Read-only. Hub Admin Read. |
-| `hub_list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before `hub_get_app_config` on multi-page apps to avoid guessing page names. Hub Admin Read. |
-| `hub_list_hpm_packages` | List all packages tracked by HPM — name, version, beta flag, author, and full component inventory (apps, drivers, files with heIDs). Top-level `count` and echoed `hpmAppId`. Auto-discovers HPM's app ID. Pass `includeDrift=true` to also cross-reference HPM-tracked packages against installed apps and drivers (surfacing missing-required components, orphan apps, and orphan drivers under a `drift` key; optional `packageFilter` substring; surfaces `orphanDetection` / `orphanDriverDetection` when registry fetches fail; data-quality warning types: `heid-whitespace-normalized`, `heid-non-scalar-dropped`, `empty-heid`, `skipped-malformed-component` — see `hub_get_tool_guide` for full details). Hub Admin Read. |
+| `hub_get_app_config` | Read an installed app's configuration page (Rule Machine, Room Lighting, Basic Rules, HPM, etc.) — sections, inputs, values. Multi-page apps via `pageName`. Read-only. Read master. |
+| `hub_list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before `hub_get_app_config` on multi-page apps to avoid guessing page names. Read master. |
+| `hub_list_hpm_packages` | List all packages tracked by HPM — name, version, beta flag, author, and full component inventory (apps, drivers, files with heIDs). Top-level `count` and echoed `hpmAppId`. Auto-discovers HPM's app ID. Pass `includeDrift=true` to also cross-reference HPM-tracked packages against installed apps and drivers (surfacing missing-required components, orphan apps, and orphan drivers under a `drift` key; optional `packageFilter` substring; surfaces `orphanDetection` / `orphanDriverDetection` when registry fetches fail; data-quality warning types: `heid-whitespace-normalized`, `heid-non-scalar-dropped`, `empty-heid`, `skipped-malformed-component` — see `hub_get_tool_guide` for full details). Read master. |
 
-`hub_list_device_dependents` requires opt-in **Enable Built-in App Tools** setting. `hub_get_app_config`, `hub_list_app_pages`, and `hub_list_hpm_packages` require Hub Admin Read. HPM itself must be installed on the hub.
+`hub_list_device_dependents`, `hub_get_app_config`, `hub_list_app_pages`, and `hub_list_hpm_packages` are gated by the Read master (ON by default). HPM itself must be installed on the hub.
 
 </details>
 
@@ -317,12 +317,12 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 | `hub_get_jobs` | Scheduled jobs, running jobs, and hub actions |
 | `hub_get_debug_logs` | Retrieve MCP debug log entries. Pass `mode='status'` to get logging system status and capacity instead. |
 | `hub_get_metrics` | Retrieve hub metrics with CSV trend history (read-only by default; does not record a new snapshot) |
-| `hub_get_memory_history` | Free OS memory and CPU load history with summary stats (Hub Admin Read) |
+| `hub_get_memory_history` | Free OS memory and CPU load history with summary stats (Read master) |
 | `hub_get_device_health` | Find stale/offline devices |
 | `hub_get_radio_details` | Radio info — Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. |
 | `hub_list_captured_states` | List saved device state snapshots |
 
-Monitoring tools require Hub Admin Read to be enabled.
+Monitoring tools are gated by the Read master (ON by default).
 
 </details>
 
@@ -424,9 +424,9 @@ Monitoring tools require Hub Admin Read to be enabled.
 |------|-------------|
 | `hub_list_rooms` | List all rooms with IDs, names, and device counts (also in `hub_read_rooms`) |
 | `hub_get_room` | Get room details with assigned devices (also in `hub_read_rooms`) |
-| `hub_create_room` | Create a new room (Hub Admin Write + confirm) |
-| `hub_delete_room` | Permanently delete a room (Hub Admin Write + confirm) |
-| `hub_update_room` | Rename a room (Hub Admin Write + confirm) |
+| `hub_create_room` | Create a new room (Write master + confirm) |
+| `hub_delete_room` | Permanently delete a room (Write master + confirm) |
+| `hub_update_room` | Rename a room (Write master + confirm) |
 
 </details>
 
@@ -439,7 +439,7 @@ Monitoring tools require Hub Admin Read to be enabled.
 | `hub_shutdown` | Power OFF the hub (requires physical restart) |
 | `hub_delete_device` | Permanently delete any device (**no undo**) |
 
-All operations are disruptive. Hub admin tools require Hub Admin Read/Write to be enabled in settings. Write tools enforce a **three-layer safety gate**: Hub Admin Write enabled + hub backup within 24 hours + explicit `confirm=true`.
+All operations are disruptive. These tools are gated by the Write master (ON by default) and enforce a **three-layer safety gate**: Write master enabled + hub backup within 24 hours + explicit `confirm=true`.
 
 </details>
 
@@ -473,7 +473,7 @@ Source code is automatically backed up before any modify/delete operation.
 | `hub_delete_debug_logs` | Clear all MCP debug logs |
 | `hub_set_log_level` | Set MCP log level (debug/info/warn/error) |
 
-Monitoring tools require Hub Admin Read to be enabled.
+Read tools are gated by the Read master; clear/set-level writes by the Write master (both ON by default).
 
 </details>
 
@@ -483,8 +483,8 @@ Monitoring tools require Hub Admin Read to be enabled.
 | Tool | Description |
 |------|-------------|
 | `hub_get_metrics` | Retrieve hub metrics with CSV trend history (read-only by default; pass `recordSnapshot=true` to also record a new snapshot). (also in `hub_read_diagnostics`) |
-| `hub_get_memory_history` | Free OS memory and CPU load history with summary stats (Hub Admin Read) (also in `hub_read_diagnostics`) |
-| `hub_call_gc` | Force JVM garbage collection; returns before/after free memory (Hub Admin Read) |
+| `hub_get_memory_history` | Free OS memory and CPU load history with summary stats (Read master) (also in `hub_read_diagnostics`) |
+| `hub_call_gc` | Force JVM garbage collection; returns before/after free memory (Write master) |
 | `hub_get_device_health` | Find stale/offline devices (also in `hub_read_diagnostics`) |
 | `hub_get_radio_details` | Radio info — Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. (also in `hub_read_diagnostics`) |
 | `hub_call_zwave_repair` | Z-Wave network repair (5-30 min) |
@@ -503,7 +503,7 @@ Monitoring tools require Hub Admin Read to be enabled.
 | `hub_write_file` | Create or update a file (auto-backs up existing) |
 | `hub_delete_file` | Delete a file (auto-backs up first) |
 
-Write/delete require Hub Admin Write + confirm.
+Write/delete require the Write master + confirm + a recent backup.
 
 </details>
 
@@ -518,7 +518,7 @@ Write/delete require Hub Admin Write + confirm.
 | `hub_set_rule_private_boolean` | Set an RM rule's private boolean variable |
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
 
-Requires opt-in **Enable Built-in App Tools** setting.
+Reads (`hub_list_rules`, `hub_get_rule_health`) are gated by the Read master; the run/pause/boolean writes by the Write master (both ON by default).
 
 </details>
 
@@ -539,7 +539,7 @@ Requires opt-in **Enable Built-in App Tools** setting.
 | `hub_import_native_app` | Import previously-exported app JSON into a new instance. Returns the new `appId`. |
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
 
-Requires opt-in **Enable Built-in App Tools** setting. Create/update/delete additionally requires Hub Admin Write.
+Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default.
 
 </details>
 
@@ -694,31 +694,40 @@ Create automations via natural language — the AI translates your request into 
 
 ---
 
-## Hub Admin Tools
+## Permission Model
 
-Both Hub Admin Read and Hub Admin Write access are **disabled by default** and must be explicitly enabled in app settings.
+Every MCP tool is gated by two universal masters — **Read** and **Write** — both **ON by default**. Turn one OFF to remove that entire class of tools from the MCP client and reject any cached call.
 
 <details>
-<summary><b>Enabling Hub Admin Tools</b></summary>
+<summary><b>The Read / Write masters</b></summary>
 
 1. Open **Apps** > **MCP Rule Server** in the Hubitat web UI
-2. Under **Hub Admin Access**, toggle:
-   - **Enable Hub Admin Read Tools** — for read-only hub information
-   - **Enable Hub Admin Write Tools** — for backup, reboot, shutdown, Z-Wave repair, and app/driver management
+2. Under **Tool Access (Read / Write masters)**, toggle:
+   - **Enable Read Tools** — exposes every read-only / non-destructive tool (list/get/search/diagnostics, hub info, app/driver/source reads). With it OFF, those tools vanish from the client and a cached call is rejected with "Read tools are disabled…".
+   - **Enable Write Tools** — exposes every state-changing tool (device control, modes, variables, rooms, files, native rules, hub admin). With it OFF, those tools vanish and a cached call is rejected with "Write tools are disabled…".
 3. If your hub has **Hub Security** enabled, also configure:
    - **Hub Security Username** and **Password** under the Hub Security section
+
+Both masters default ON — only an explicit OFF hides or blocks a class. (This replaces the former separate "Enable Hub Admin Read/Write Tools" and "Enable Built-in App Tools" toggles.)
 
 </details>
 
 <details>
-<summary><b>Safety Gates</b></summary>
+<summary><b>Destructive write safety gate</b></summary>
 
-All Hub Admin Write tools enforce a **three-layer safety gate**:
-1. Hub Admin Write must be **enabled** in settings
+Beyond the Write master, the destructive/sensitive write tools (backup, reboot, shutdown, Z-Wave repair, delete-device, file write/delete, app/driver/native-rule CRUD, etc.) enforce a **three-layer safety gate**:
+1. The **Write master** must be enabled
 2. The AI must pass `confirm=true` explicitly
 3. A full hub **backup must exist within the last 24 hours** (enforced automatically)
 
 Additionally, tools that modify or delete existing apps/drivers automatically back up the item's source code before making changes.
+
+</details>
+
+<details>
+<summary><b>Advanced: Per-tool Overrides (deny-only)</b></summary>
+
+Under **Settings > Advanced: Per-tool Overrides**, you can disable individual tools or whole gateways **below** the masters — these only turn things OFF, never re-enable. A disabled tool (or every tool inside a disabled gateway, including tools shared across gateways) drops from `tools/list` and `hub_search_tools`, and a cached call returns a distinct error: "…is disabled in Advanced settings (Per-tool Overrides)…". A disabled tool stays documented in `hub_get_tool_guide`. Use **Reset all overrides** to clear them.
 
 </details>
 
@@ -1001,13 +1010,13 @@ For easier bug reporting:
   > 4. Validate target rule exists via `getChildAppById()`
 
 - [ ] **File write/append/delete** — `Difficulty: 2 | Effort: S`
-  > *Feasible.* The parent already has `uploadHubFile()`/`downloadHubFile()` wrappers. New action types `file_write`, `file_append`, `file_delete` call parent methods. Append does a read-modify-write cycle (not atomic). Requires Hub Admin Write gate. Variable substitution in content enables dynamic log files.
+  > *Feasible.* The parent already has `uploadHubFile()`/`downloadHubFile()` wrappers. New action types `file_write`, `file_append`, `file_delete` call parent methods. Append does a read-modify-write cycle (not atomic). Requires the Write master gate. Variable substitution in content enables dynamic log files.
   >
   > **Implementation plan:**
   > 1. Add `file_write`, `file_append`, `file_delete` action types
   > 2. Child calls `parent.writeFileFromRule(fileName, content, mode)`
   > 3. Validate filenames against `[A-Za-z0-9._-]` pattern
-  > 4. Apply Hub Admin Write gate for safety
+  > 4. Apply the Write master gate for safety
 
 - [ ] **Music/siren control** — `Difficulty: 2 | Effort: S`
   > *Feasible.* Convenience wrappers around existing `device_command`. Hubitat has `capability.musicPlayer` (play, pause, stop, setVolume, playTrack) and `capability.alarm` (both, siren, strobe, off). The existing `speak` action demonstrates the pattern for TTS with volume. These would be ergonomic action types with built-in validation for the right capabilities.
@@ -1021,7 +1030,7 @@ For easier bug reporting:
   > *Already implemented.* The existing `device_command` action type accepts any device ID, command, and parameters via dynamic invocation (`device."${command}"(*params)`). This is the "any capability + command" feature.
 
 - [ ] **Disable/Enable a device** — `Difficulty: 1 | Effort: S`
-  > *Feasible (partially done).* The `hub_update_device` MCP tool already supports the `enabled` property via the internal `/device/disable` endpoint. A new `set_device_enabled` rule action type wraps the same call. Requires Hub Admin Write. Should warn if the target device is used in active rule triggers.
+  > *Feasible (partially done).* The `hub_update_device` MCP tool already supports the `enabled` property via the internal `/device/disable` endpoint. A new `set_device_enabled` rule action type wraps the same call. Requires the Write master. Should warn if the target device is used in active rule triggers.
   >
   > **Implementation plan:**
   > 1. Add `set_device_enabled` action type with `deviceId` and `enabled` boolean
@@ -1195,7 +1204,7 @@ For easier bug reporting:
   > 5. Create `get_dashboard_layout` / `update_dashboard_layout` tools for layout JSON read/write
   > 6. Create `delete_dashboard` tool: test `/installedapp/remove/{childId}` endpoint
   > 7. Add Dashboard parent app ID and access token to MCP app preferences
-  > 8. Requires Hub Admin Write gate for safety
+  > 8. Requires the Write master gate for safety
   > 9. **Phase 1**: Implement list + read/modify layout (known-working endpoints)
   > 10. **Phase 2**: Implement create/delete (requires empirical testing on hub hardware)
 
@@ -1313,7 +1322,7 @@ For easier bug reporting:
   > *Partially feasible (detection only).* Fetch Z-Wave node table via `/hub/zwaveDetails/json`, cross-reference with the device list, and identify nodes with no matching device or with failed states. Automated removal is not possible — ghost removal requires the hub's web UI Z-Wave Details page.
   >
   > **Implementation plan:**
-  > 1. Create `detect_zwave_ghosts` MCP tool (requires Hub Admin Read)
+  > 1. Create `detect_zwave_ghosts` MCP tool (requires the Read master)
   > 2. Fetch Z-Wave node table and device list
   > 3. Cross-reference: nodes with no deviceId or failed states are ghosts
   > 4. Return report with ghost nodes and recommended manual actions
@@ -1389,7 +1398,7 @@ For easier bug reporting:
   > **Implementation plan:**
   > 1. Test `/device/save` with `id=""` on actual hub hardware
   > 2. Discover built-in driver type IDs for Virtual Switch, Virtual Dimmer, etc.
-  > 3. Create `create_standalone_device` MCP tool (Hub Admin Write required)
+  > 3. Create `create_standalone_device` MCP tool (Write master required)
   > 4. Note: device won't auto-appear in MCP's device list without user selection
   > 5. Fallback: use existing `create_virtual_device` with `isComponent: false`
 

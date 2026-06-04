@@ -35,7 +35,6 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
     private static final String CLOSE_MARKER = '[[/FLAT_TRIM]]'
 
     private void enableEveryToggle() {
-        settingsMap.enableBuiltinApp = true
         settingsMap.enableCustomRuleEngine = true
     }
 

@@ -1316,14 +1316,14 @@ def check_tool_guide_pointers(src_override: str | None = None,
     #    the lint tolerant of prose edits while catching renames.
     key_to_heading_hint = {
         "device_authorization": "Device Authorization",
-        "hub_admin_write": "Hub Admin Write",
+        "hub_admin_write": "Destructive Write",
         "virtual_devices": "Virtual Device",
         "update_device": "update_device",
         "rules": "Rule Structure Reference",
         "backup": "Backup System",
         "file_manager": "File Manager",
         "performance": "Performance Tips",
-        "builtin_app_tools": "Built-in App Tools",
+        "builtin_app_tools": "Installed-App & Native-Rule",
         "set_rule_reference": "`hub_set_rule` capability reference",
         "set_rule_create_reference": "`hub_set_rule` create reference",
     }

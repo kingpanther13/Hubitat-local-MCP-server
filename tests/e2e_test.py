@@ -1204,9 +1204,9 @@ class TestRunner:
     # Preconditions (provided by .github/scripts/mcp_setup_env.sh in CI, or
     # set manually for local runs):
     #   - enableDeveloperMode: true   (UI-only to enable; lockout protection)
-    #   - enableHubAdminWrite: true   (UI-only to enable)
+    #   - enableWrite: true (default ON; only an explicit false disables writes)
     #   - lastBackupTimestamp within 24h
-    #   - enableCustomRuleEngine, enableHubAdminRead, enableBuiltinApp: true
+    #   - enableCustomRuleEngine, enableRead: true (enableRead default ON)
     #
     # T219 (toggle-OFF refusal) is omitted — would require briefly disabling
     # Developer Mode via UI, which CI can't do (toggle excluded from
@@ -1229,16 +1229,16 @@ class TestRunner:
 
     @test("developer_mode")
     def test_t221_update_mcp_settings_allowlist_rejection(self) -> None:
-        """T221: rejects setting outside the allowlist (enableHubAdminWrite is excluded)."""
+        """T221: rejects setting outside the allowlist (enableWrite is excluded -- footgun)."""
         try:
             self.client.call_tool("hub_manage_mcp", {
                 "tool": "hub_update_mcp_settings",
-                "args": {"settings": {"enableHubAdminWrite": False}, "confirm": True},
+                "args": {"settings": {"enableWrite": False}, "confirm": True},
             })
-            assert False, "Expected -32602 rejection for enableHubAdminWrite (footgun)"
+            assert False, "Expected -32602 rejection for enableWrite (footgun)"
         except McpError as e:
             msg = str(e)
-            assert "enableHubAdminWrite" in msg, f"error didn't mention the rejected key: {msg}"
+            assert "enableWrite" in msg, f"error didn't mention the rejected key: {msg}"
             assert "not allowed" in msg, f"error didn't say 'not allowed': {msg}"
             # Should list allowed keys for caller to correct
             assert "Allowed:" in msg or "mcpLogLevel" in msg, f"error didn't list allowed keys: {msg}"
@@ -1254,12 +1254,12 @@ class TestRunner:
             "tool": "hub_update_mcp_settings",
             "args": {"settings": {"debugLogging": True}, "confirm": True},
         })
-        # Mixed batch: one valid (debugLogging=false), one invalid (enableHubAdminWrite).
+        # Mixed batch: one valid (debugLogging=false), one invalid (enableWrite).
         try:
             self.client.call_tool("hub_manage_mcp", {
                 "tool": "hub_update_mcp_settings",
                 "args": {
-                    "settings": {"debugLogging": False, "enableHubAdminWrite": False},
+                    "settings": {"debugLogging": False, "enableWrite": False},
                     "confirm": True,
                 },
             })
@@ -1291,6 +1291,33 @@ class TestRunner:
         restore = self.client.call_tool("hub_manage_mcp", {
             "tool": "hub_update_mcp_settings",
             "args": {"settings": {"enableCustomRuleEngine": True}, "confirm": True},
+        })
+        assert restore.get("success") is True
+
+    @test("developer_mode")
+    def test_t223c_update_mcp_settings_enable_read_allowlisted(self) -> None:
+        """T223c: enableRead is allowlisted (Read master self-toggle) and returns the reconnect hint.
+
+        Under the universal Read/Write masters, enableRead is the read-master
+        toggle and IS allowlisted for self-administration (unlike enableWrite,
+        which would footgun the tool's own write path -- see T221). Flipping it
+        must succeed and emit the same client-reconnect hint as other enable*
+        toggles. Restore enableRead:true so the rest of the suite keeps its
+        read tools.
+        """
+        result = self.client.call_tool("hub_manage_mcp", {
+            "tool": "hub_update_mcp_settings",
+            "args": {"settings": {"enableRead": False}, "confirm": True},
+        })
+        assert result.get("success") is True, f"enableRead flip did not succeed: {result}"
+        assert result.get("updated") == {"enableRead": False}, f"updated field mismatch: {result}"
+        msg = result.get("message") or ""
+        assert "reconnect" in msg.lower(), f"message missing 'reconnect' hint: {msg}"
+        assert "tool schemas" in msg, f"message missing 'tool schemas' phrase: {msg}"
+        # Restore so the rest of the suite keeps its read tools.
+        restore = self.client.call_tool("hub_manage_mcp", {
+            "tool": "hub_update_mcp_settings",
+            "args": {"settings": {"enableRead": True}, "confirm": True},
         })
         assert restore.get("success") is True
 

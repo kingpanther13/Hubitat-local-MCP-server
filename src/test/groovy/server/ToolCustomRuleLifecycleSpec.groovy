@@ -359,9 +359,9 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
     }
 
     def "BUG-15: readonly mode does not block the hub_manage_custom_rules gateway (substring gate must not trip on the gateway name)"() {
-        given: "readonly mode (Custom Rule Engine OFF + Built-in App ON), gateway mode"
+        given: "readonly mode (Custom Rule Engine OFF + Read master ON), gateway mode"
         settingsMap.enableCustomRuleEngine = false
-        settingsMap.enableBuiltinApp = true
+        settingsMap.enableRead = true
         settingsMap.useGateways = true
 
         when: "the GATEWAY is dispatched -- its name 'hub_manage_custom_rules' contains the substring '_custom_rule'"

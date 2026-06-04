@@ -48,37 +48,41 @@ def helperMethod() { return "ok" }
   "private":false,"lastModified":"2026-05-08T00:00:00+0000",
   "source":"library(\\n    name: \\"TestLib\\"\\n)\\n\\ndef helperMethod() { return \\"ok\\" }\\n"}]'''
 
-    private void enableHubAdminRead() {
-        settingsMap.enableHubAdminRead = true
+    private void enableRead() {
+        settingsMap.enableRead = true
     }
 
-    private void enableHubAdminWrite() {
-        settingsMap.enableHubAdminWrite = true
+    private void enableWrite() {
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
     }
 
     // -------- toolGetLibrarySource --------
 
-    def "get_library_source throws when Hub Admin Read is disabled"() {
+    def "get_library_source throws when Read tools are disabled"() {
+        given:
+        settingsMap.enableRead = false
+
         when:
-        script.toolGetLibrarySource([libraryId: '42'])
+        script.executeTool('hub_get_source', [type: 'library', id: '42'])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Read')
+        ex.message.contains('Read tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "get_library_source via dispatch returns -32602 envelope when Hub Admin Read disabled (useGateways=#useGateways)"() {
+    def "get_library_source via dispatch returns -32602 envelope when Read tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableRead = false
 
         when:
         def response = mcpDriver.callTool('hub_get_source', [type: 'library', id: '42'])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Read')
+        response.error.message.contains('Read tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -86,7 +90,7 @@ def helperMethod() { return "ok" }
 
     def "get_library_source throws when libraryId is missing"() {
         given:
-        enableHubAdminRead()
+        enableRead()
 
         when:
         script.toolGetLibrarySource([:])
@@ -100,7 +104,7 @@ def helperMethod() { return "ok" }
     def "get_library_source via dispatch returns -32602 envelope when libraryId missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
 
         when:
         def response = mcpDriver.callTool('hub_get_source', [type: 'library'])
@@ -115,7 +119,7 @@ def helperMethod() { return "ok" }
 
     def "get_library_source returns source and metadata for a known library"() {
         given:
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/library/list/single/data/42') { params ->
             SAMPLE_RESPONSE_JSON
         }
@@ -139,7 +143,7 @@ def helperMethod() { return "ok" }
     def "get_library_source via dispatch returns source and metadata for a known library (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
 
         when:
@@ -165,7 +169,7 @@ def helperMethod() { return "ok" }
 
     def "get_library_source returns error when library not found"() {
         given:
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/library/list/single/data/999') { params -> '[]' }
 
         when:
@@ -181,7 +185,7 @@ def helperMethod() { return "ok" }
     def "get_library_source via dispatch returns success=false envelope when library not found (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/library/list/single/data/999') { params -> '[]' }
 
         when:
@@ -201,7 +205,7 @@ def helperMethod() { return "ok" }
 
     def "get_library_source returns error on empty hub response"() {
         given:
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/library/list/single/data/42') { params -> null }
 
         when:
@@ -216,7 +220,7 @@ def helperMethod() { return "ok" }
     def "get_library_source via dispatch returns success=false envelope on empty hub response (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         hubGet.register('/library/list/single/data/42') { params -> null }
 
         when:
@@ -235,7 +239,7 @@ def helperMethod() { return "ok" }
 
     def "get_library_source saves full source to File Manager and returns chunk when source exceeds 64KB"() {
         given:
-        enableHubAdminRead()
+        enableRead()
         // Build a source string slightly over the 64000-char chunk limit
         def bigSource = 'x' * 65000
         def bigLibJson = groovy.json.JsonOutput.toJson([
@@ -263,7 +267,7 @@ def helperMethod() { return "ok" }
     def "get_library_source via dispatch saves full source to File Manager and returns chunk when source exceeds 64KB (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         def bigSource = 'x' * 65000
         def bigLibJson = groovy.json.JsonOutput.toJson([
             [id: 10, version: 1, name: 'BigLib', namespace: 'ns', source: bigSource]
@@ -294,7 +298,7 @@ def helperMethod() { return "ok" }
 
     def "get_library_source respects offset and length for chunked reading"() {
         given:
-        enableHubAdminRead()
+        enableRead()
         def source = 'A' * 200
         def libJson = groovy.json.JsonOutput.toJson([[id: 5, version: 1, name: 'L', namespace: 'n', source: source]])
         hubGet.register('/library/list/single/data/5') { params -> libJson }
@@ -315,7 +319,7 @@ def helperMethod() { return "ok" }
     def "get_library_source via dispatch respects offset and length for chunked reading (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
         def source = 'A' * 200
         def libJson = groovy.json.JsonOutput.toJson([[id: 5, version: 1, name: 'L', namespace: 'n', source: source]])
         hubGet.register('/library/list/single/data/5') { params -> libJson }
@@ -340,26 +344,30 @@ def helperMethod() { return "ok" }
 
     // -------- toolInstallLibrary --------
 
-    def "hub_create_library throws when Hub Admin Write is disabled"() {
+    def "hub_create_library throws when Write tools are disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolInstallLibrary([source: SAMPLE_SOURCE, confirm: true])
+        script.executeTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_create_library via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_create_library via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = false
 
         when:
         def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Write')
+        response.error.message.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -367,7 +375,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallLibrary([source: SAMPLE_SOURCE])
@@ -381,7 +389,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE])
@@ -396,7 +404,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library throws when neither source nor sourceFile is supplied"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallLibrary([confirm: true])
@@ -411,7 +419,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch returns -32602 envelope when neither source nor sourceFile supplied (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_library', [confirm: true])
@@ -427,7 +435,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library throws when both source and sourceFile are supplied"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolInstallLibrary([source: SAMPLE_SOURCE, sourceFile: 'foo.groovy', confirm: true])
@@ -441,7 +449,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch returns -32602 envelope when both source and sourceFile supplied (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, sourceFile: 'foo.groovy', confirm: true])
@@ -456,7 +464,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library (source mode) POSTs JSON to /library/saveOrUpdateJson and returns libraryId"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def capturedBody = null
         script.metaClass.hubInternalPostJson = { String path, String body ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
@@ -485,7 +493,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch (source mode) POSTs JSON and returns libraryId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def capturedBody = null
         script.metaClass.hubInternalPostJson = { String path, String body ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
@@ -518,7 +526,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library (sourceFile mode) reads source from File Manager and posts it"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'mylib.groovy' ? SAMPLE_SOURCE.getBytes('UTF-8') : null
         }
@@ -545,7 +553,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch (sourceFile mode) reads source from File Manager and posts it (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'mylib.groovy' ? SAMPLE_SOURCE.getBytes('UTF-8') : null
         }
@@ -576,7 +584,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library throws when sourceFile is not found in File Manager"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
@@ -591,7 +599,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch returns -32602 envelope when sourceFile not found in File Manager (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
@@ -607,7 +615,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library reports hub failure when saveOrUpdateJson returns success=false"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: false, message: 'Cannot parse library definition']
         }
@@ -626,7 +634,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch reports failure envelope when saveOrUpdateJson returns success=false (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: false, message: 'Cannot parse library definition']
         }
@@ -649,7 +657,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library reports failure when hub POST throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             throw new RuntimeException('connection refused')
         }
@@ -667,7 +675,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch reports failure envelope when hub POST throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             throw new RuntimeException('connection refused')
         }
@@ -689,7 +697,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library fails closed when post-install verification finds the library absent from the list"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: true, message: '', id: 200, version: 1]
         }
@@ -712,7 +720,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch fails closed envelope when verification finds library absent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: true, message: '', id: 200, version: 1]
         }
@@ -738,7 +746,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library returns success with verified=true when post-install library list includes the new library"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: true, message: '', id: 201, version: 1]
         }
@@ -761,7 +769,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch returns success envelope with verified=true when verify includes new library (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: true, message: '', id: 201, version: 1]
         }
@@ -788,7 +796,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library returns success with verifyError when post-install verification fetch throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: true, message: '', id: 202, version: 1]
         }
@@ -812,7 +820,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch returns success envelope with verifyError when verify fetch throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: true, message: '', id: 202, version: 1]
         }
@@ -839,7 +847,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library fails closed with anti-retry note when verify returns unparseable body"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: true, message: '', id: 203, version: 1]
         }
@@ -859,7 +867,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch fails closed envelope with anti-retry note when verify returns unparseable body (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: true, message: '', id: 203, version: 1]
         }
@@ -883,7 +891,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library fails closed with anti-retry note when hub returns null/empty response"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body -> null }
 
         when:
@@ -902,7 +910,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch fails closed envelope when hub returns null response (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body -> null }
 
         when:
@@ -925,7 +933,7 @@ def helperMethod() { return "ok" }
 
     def "hub_create_library fails closed with anti-retry note when hub response has no id field"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: true, message: 'persisted', version: 5]  // missing id
         }
@@ -946,7 +954,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library via dispatch fails closed envelope when hub response has no id field (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: true, message: 'persisted', version: 5]
         }
@@ -971,26 +979,30 @@ def helperMethod() { return "ok" }
 
     // -------- toolUpdateLibraryCode --------
 
-    def "hub_update_library throws when Hub Admin Write is disabled"() {
+    def "hub_update_library throws when Write tools are disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolUpdateLibraryCode([libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
+        script.executeTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "hub_update_library via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "hub_update_library via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = false
 
         when:
         def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE, confirm: true])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Write')
+        response.error.message.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -998,7 +1010,7 @@ def helperMethod() { return "ok" }
 
     def "hub_update_library throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateLibraryCode([libraryId: '42', source: SAMPLE_SOURCE])
@@ -1012,7 +1024,7 @@ def helperMethod() { return "ok" }
     def "hub_update_library via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', source: SAMPLE_SOURCE])
@@ -1027,7 +1039,7 @@ def helperMethod() { return "ok" }
 
     def "hub_update_library throws when libraryId is missing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateLibraryCode([source: SAMPLE_SOURCE, confirm: true])
@@ -1041,7 +1053,7 @@ def helperMethod() { return "ok" }
     def "hub_update_library via dispatch returns -32602 envelope when libraryId missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_update_library', [source: SAMPLE_SOURCE, confirm: true])
@@ -1056,7 +1068,7 @@ def helperMethod() { return "ok" }
 
     def "hub_update_library throws when none of source, sourceFile, or resave is supplied"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateLibraryCode([libraryId: '42', confirm: true])
@@ -1070,7 +1082,7 @@ def helperMethod() { return "ok" }
     def "hub_update_library via dispatch returns -32602 envelope when none of source/sourceFile/resave (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_update_library', [libraryId: '42', confirm: true])
@@ -1085,7 +1097,7 @@ def helperMethod() { return "ok" }
 
     def "hub_update_library (source mode) backs up, fetches version, POSTs to saveOrUpdateJson"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Backup + version fetch use /library/list/single/data/42
         hubGet.register('/library/list/single/data/42') { params ->
             SAMPLE_RESPONSE_JSON
@@ -1128,7 +1140,7 @@ def helperMethod() { return "ok" }
     def "hub_update_library via dispatch (source mode) backs up fetches version and POSTs (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
@@ -1164,7 +1176,7 @@ def helperMethod() { return "ok" }
 
     def "hub_update_library skips re-uploading backup when an entry exists within the 1-hour dedup window"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Pre-populate manifest with a recent backup (60s ago, well inside 1-hour window).
         // Original baseline must be preserved through rapid edits — second update should NOT
         // overwrite the existing backup file.
@@ -1206,7 +1218,7 @@ def helperMethod() { return "ok" }
     def "hub_update_library via dispatch skips re-uploading backup when entry exists within 1-hour dedup window (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         atomicStateMap.itemBackupManifest = [
             'library_42': [
                 type: 'library', id: '42',
@@ -1243,7 +1255,7 @@ def helperMethod() { return "ok" }
 
     def "hub_update_library (sourceFile mode) reads source from File Manager"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.downloadHubFile = { String fileName ->
@@ -1269,7 +1281,7 @@ def helperMethod() { return "ok" }
     def "hub_update_library via dispatch (sourceFile mode) reads source from File Manager (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.downloadHubFile = { String fileName ->
@@ -1299,7 +1311,7 @@ def helperMethod() { return "ok" }
 
     def "hub_update_library (sourceFile mode) throws when File Manager file is absent"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
@@ -1314,7 +1326,7 @@ def helperMethod() { return "ok" }
     def "hub_update_library via dispatch returns -32602 envelope when sourceFile absent (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.downloadHubFile = { String fileName -> null }
 
         when:
@@ -1330,7 +1342,7 @@ def helperMethod() { return "ok" }
 
     def "hub_update_library (resave mode) fetches source and version, then re-saves without external source"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def capturedBody = null
@@ -1353,7 +1365,7 @@ def helperMethod() { return "ok" }
     def "hub_update_library via dispatch (resave mode) fetches source and version then re-saves (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def capturedBody = null
@@ -1380,7 +1392,7 @@ def helperMethod() { return "ok" }
 
     def "hub_update_library throws when resave mode cannot fetch the library"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/library/list/single/data/999') { params -> '[]' }
 
         when:
@@ -1395,7 +1407,7 @@ def helperMethod() { return "ok" }
     def "hub_update_library via dispatch returns -32602 envelope when resave mode cannot fetch library (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/library/list/single/data/999') { params -> '[]' }
 
         when:
@@ -1411,7 +1423,7 @@ def helperMethod() { return "ok" }
 
     def "hub_update_library reports hub failure when saveOrUpdateJson returns success=false"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.hubInternalPostJson = { String path, String body ->
@@ -1431,7 +1443,7 @@ def helperMethod() { return "ok" }
     def "hub_update_library via dispatch reports failure envelope when saveOrUpdateJson returns success=false (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.hubInternalPostJson = { String path, String body ->
@@ -1455,7 +1467,7 @@ def helperMethod() { return "ok" }
 
     def "hub_update_library throws when pre-update backup fails"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Backup GET throws -- update must abort (fail-closed, matching apps/drivers update path)
         hubGet.register('/library/list/single/data/42') { params ->
             throw new RuntimeException('storage unavailable')
@@ -1472,7 +1484,7 @@ def helperMethod() { return "ok" }
     def "hub_update_library via dispatch surfaces error envelope when pre-update backup fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/library/list/single/data/42') { params ->
             throw new RuntimeException('storage unavailable')
         }
@@ -1489,26 +1501,30 @@ def helperMethod() { return "ok" }
 
     // -------- toolDeleteLibrary --------
 
-    def "delete_library throws when Hub Admin Write is disabled"() {
+    def "delete_library throws when Write tools are disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolDeleteLibrary([libraryId: '42', confirm: true])
+        script.executeTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "delete_library via dispatch returns -32602 envelope when Hub Admin Write disabled (useGateways=#useGateways)"() {
+    def "delete_library via dispatch returns -32602 envelope when Write tools disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = false
 
         when:
         def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Write')
+        response.error.message.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -1516,7 +1532,7 @@ def helperMethod() { return "ok" }
 
     def "delete_library throws when confirm is not provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolDeleteLibrary([libraryId: '42'])
@@ -1530,7 +1546,7 @@ def helperMethod() { return "ok" }
     def "delete_library via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42'])
@@ -1545,7 +1561,7 @@ def helperMethod() { return "ok" }
 
     def "delete_library throws when libraryId is missing"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolDeleteLibrary([confirm: true])
@@ -1559,7 +1575,7 @@ def helperMethod() { return "ok" }
     def "delete_library via dispatch returns -32602 envelope when libraryId missing (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_delete_item', [type: 'library', confirm: true])
@@ -1574,7 +1590,7 @@ def helperMethod() { return "ok" }
 
     def "delete_library backs up source then deletes and reports backup file"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content ->
             uploads << name
@@ -1599,7 +1615,7 @@ def helperMethod() { return "ok" }
     def "delete_library via dispatch backs up source then deletes and reports backup file (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
@@ -1624,7 +1640,7 @@ def helperMethod() { return "ok" }
 
     def "delete_library skips re-uploading backup when an entry exists within the 1-hour dedup window"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         // Pre-populate manifest with a recent backup (60s ago).
         atomicStateMap.itemBackupManifest = [
             'library_42': [
@@ -1661,7 +1677,7 @@ def helperMethod() { return "ok" }
     def "delete_library via dispatch skips re-uploading backup when entry exists within 1-hour dedup window (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         atomicStateMap.itemBackupManifest = [
             'library_42': [
                 type: 'library', id: '42',
@@ -1695,7 +1711,7 @@ def helperMethod() { return "ok" }
 
     def "delete_library proceeds with backupWarning when pre-delete backup fails"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/library/list/single/data/42') { params ->
             throw new RuntimeException('source unavailable')
         }
@@ -1716,7 +1732,7 @@ def helperMethod() { return "ok" }
     def "delete_library via dispatch proceeds with backupWarning envelope when pre-delete backup fails (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         hubGet.register('/library/list/single/data/42') { params ->
             throw new RuntimeException('source unavailable')
         }
@@ -1739,7 +1755,7 @@ def helperMethod() { return "ok" }
 
     def "delete_library reports failure when hub returns success=false"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         hubGet.register('/library/edit/deleteJson/42') { params ->
@@ -1761,7 +1777,7 @@ def helperMethod() { return "ok" }
     def "delete_library via dispatch reports failure envelope when hub returns success=false (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         hubGet.register('/library/edit/deleteJson/42') { params ->
@@ -1786,7 +1802,7 @@ def helperMethod() { return "ok" }
 
     def "delete_library reports failure when hub delete endpoint throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         hubGet.register('/library/edit/deleteJson/42') { params ->
@@ -1806,7 +1822,7 @@ def helperMethod() { return "ok" }
     def "delete_library via dispatch reports failure envelope when hub delete endpoint throws (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         hubGet.register('/library/edit/deleteJson/42') { params ->
@@ -1832,7 +1848,7 @@ def helperMethod() { return "ok" }
         given:
         // Empty response -- responseText is falsy in Groovy, so the JSON-parse block is skipped.
         // success stays false and the generic "check the Hubitat web UI" path fires.
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         hubGet.register('/library/edit/deleteJson/42') { params -> '' }
@@ -1851,7 +1867,7 @@ def helperMethod() { return "ok" }
     def "delete_library via dispatch reports failure envelope when hub delete returns empty response (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         hubGet.register('/library/edit/deleteJson/42') { params -> '' }
@@ -1876,7 +1892,7 @@ def helperMethod() { return "ok" }
         given:
         // Non-JSON (e.g. a login-redirect page) -- JsonSlurper throws, caught and returned
         // as the parse-failure path with "Delete response was not valid JSON".
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         hubGet.register('/library/edit/deleteJson/42') { params ->
@@ -1897,7 +1913,7 @@ def helperMethod() { return "ok" }
     def "delete_library via dispatch reports failure envelope when hub delete returns non-JSON body (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         hubGet.register('/library/edit/deleteJson/42') { params ->
@@ -1929,7 +1945,7 @@ def helperMethod() { return "ok" }
     @spock.lang.Unroll
     def "get_library_source rejects invalid libraryId: #description"() {
         given:
-        enableHubAdminRead()
+        enableRead()
 
         when:
         script.toolGetLibrarySource([libraryId: badId])
@@ -1950,7 +1966,7 @@ def helperMethod() { return "ok" }
     def "get_library_source via dispatch returns -32602 envelope for invalid libraryId '#badId' (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminRead()
+        enableRead()
 
         when:
         def response = mcpDriver.callTool('hub_get_source', [type: 'library', id: badId])
@@ -1974,7 +1990,7 @@ def helperMethod() { return "ok" }
     @spock.lang.Unroll
     def "hub_update_library rejects invalid libraryId: #description"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolUpdateLibraryCode([libraryId: badId, source: SAMPLE_SOURCE, confirm: true])
@@ -1995,7 +2011,7 @@ def helperMethod() { return "ok" }
     def "hub_update_library via dispatch returns -32602 envelope for invalid libraryId '#badId' (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_update_library', [libraryId: badId, source: SAMPLE_SOURCE, confirm: true])
@@ -2019,7 +2035,7 @@ def helperMethod() { return "ok" }
     @spock.lang.Unroll
     def "delete_library rejects invalid libraryId: #description"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolDeleteLibrary([libraryId: badId, confirm: true])
@@ -2040,7 +2056,7 @@ def helperMethod() { return "ok" }
     def "delete_library via dispatch returns -32602 envelope for invalid libraryId '#badId' (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: badId, confirm: true])

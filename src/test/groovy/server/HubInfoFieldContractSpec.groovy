@@ -189,20 +189,60 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         result.developerModeEnabled == false
     }
 
-    def "getHubInfo does NOT throw when Hub Admin Read is disabled and surfaces hubAdminReadRequired"() {
+    def "getHubInfo includes readEnabled/writeEnabled=true by default (masters unset)"() {
         given:
         sharedLocation.hub = new TestHub()
-        // enableHubAdminRead not set -- toolGetHubInfo gates only PII (unlike the
-        // removed toolGetHubDetails which threw via requireHubAdminRead()); it
-        // surfaces a hubAdminReadRequired notice and still returns the toggle fields.
+        // enableRead/enableWrite unset -- both masters default ON.
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        result.containsKey('readEnabled')
+        result.readEnabled == true
+        result.containsKey('writeEnabled')
+        result.writeEnabled == true
+        // The legacy field names are gone.
+        !result.containsKey('hubAdminReadEnabled')
+        !result.containsKey('hubAdminWriteEnabled')
+        !result.containsKey('builtinAppEnabled')
+    }
+
+    def "getHubInfo includes the PII keys by default (Read master ON when unset)"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        // enableRead unset -- the PII block runs by default, so the PII keys are
+        // present (values come from the stubs) and no read-disabled note is emitted.
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        result.containsKey('name')
+        result.containsKey('localIP')
+        result.containsKey('timeZone')
+        !result.containsKey('readDisabledNote')
+    }
+
+    def "getHubInfo does NOT throw when Read master is OFF; excludes PII and surfaces readDisabledNote"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        settingsMap.enableRead = false
+        // toolGetHubInfo gates only PII when the Read master is off (the tool itself
+        // is reachable via the central gate only when Read is on; called directly here
+        // it surfaces a readDisabledNote and still returns the toggle fields). PII is
+        // included by default and excluded ONLY when enableRead == false.
 
         when:
         def result = script.toolGetHubInfo()
 
         then:
         noExceptionThrown()
-        result.containsKey('hubAdminReadRequired')
-        result.hubAdminReadRequired.contains('Hub Admin Read')
+        result.containsKey('readDisabledNote')
+        result.readDisabledNote.contains('Read master')
+        !result.containsKey('name')
+        !result.containsKey('localIP')
         result.containsKey('customRuleEngineEnabled')
+        result.readEnabled == false
     }
 }

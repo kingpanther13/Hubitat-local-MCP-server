@@ -24,8 +24,8 @@ import support.ToolSpecBase
  *   .supportedAttributes / .currentValue(attr) are readable (TestDevice satisfies this).
  *   Throw to simulate addChildDevice errors (UnknownDeviceTypeException shape, etc.).
  *
- * requireHubAdminWrite seeding:
- *   settingsMap.enableHubAdminWrite = true
+ * requireDestructiveConfirm seeding (confirm + 24h backup; the Write master gates
+ * centrally at executeTool and defaults ON, so it needs no seed here):
  *   stateMap.lastBackupTimestamp    = 1234567890000L  (matches HarnessSpec fixed now())
  *   args.confirm                    = true
  */
@@ -70,17 +70,20 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         } as Closure)
     }
 
-    private void enableHubAdminWrite() {
-        settingsMap.enableHubAdminWrite = true
+    private void enableWrite() {
+        settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches HarnessSpec fixed now()
     }
 
     // -------- Safety gate --------
 
-    def "create fails when Hub Admin Write is disabled"() {
-        // Default settingsMap seeds only [selectedDevices:[]] -- gate is off without enableHubAdminWrite()
+    def "create fails when the Write master is disabled"() {
+        given:
+        settingsMap.enableWrite = false
+
         when:
-        script.toolCreateVirtualDevice([
+        script.executeTool('hub_manage_virtual_device', [
+            action: 'create',
             deviceType: 'Virtual Switch',
             deviceLabel: 'Test',
             confirm: true
@@ -88,13 +91,14 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Hub Admin Write')
+        ex.message.contains('Write tools are disabled')
     }
 
     @spock.lang.Unroll
-    def "via dispatch: create fails when Hub Admin Write is disabled (useGateways=#useGateways)"() {
+    def "via dispatch: create fails when the Write master is disabled (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        settingsMap.enableWrite = false
 
         when:
         def response = mcpDriver.callTool('hub_manage_virtual_device', [
@@ -106,7 +110,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
         then:
         response.error.code == -32602
-        response.error.message.contains('Hub Admin Write')
+        response.error.message.contains('Write tools are disabled')
 
         where:
         useGateways << [true, false]
@@ -116,7 +120,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "create rejects when both deviceType and customDriver are provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolManageVirtualDevice([
@@ -136,7 +140,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create rejects when both deviceType and customDriver are provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_manage_virtual_device', [
@@ -157,7 +161,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "create rejects when neither deviceType nor customDriver is provided"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolManageVirtualDevice([
@@ -175,7 +179,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create rejects when neither deviceType nor customDriver is provided (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_manage_virtual_device', [
@@ -194,7 +198,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "dispatch rejects create with missing deviceLabel"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolManageVirtualDevice([
@@ -213,7 +217,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: rejects create with missing deviceLabel (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_manage_virtual_device', [
@@ -234,7 +238,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "create with customDriver not a Map throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolCreateVirtualDevice([
@@ -252,7 +256,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create with customDriver not a Map returns -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_manage_virtual_device', [
@@ -272,7 +276,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "create with customDriver missing namespace throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolCreateVirtualDevice([
@@ -291,7 +295,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create with customDriver missing namespace returns -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_manage_virtual_device', [
@@ -312,7 +316,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "create with customDriver missing name throws"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolCreateVirtualDevice([
@@ -331,7 +335,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create with customDriver missing name returns -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_manage_virtual_device', [
@@ -356,7 +360,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create with customDriver delegates to addChildDevice with correct namespace and name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def capturedArgs = [:]
         def capturedDataValues = [:]
         def fakeDevice = Mock(ChildDeviceWrapper) {
@@ -410,7 +414,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "create with customDriver delegates to addChildDevice with correct namespace and name"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def capturedArgs = [:]
         def capturedDataValues = [:]
         // ChildDeviceWrapper mock satisfies the HubitatAppScript castToType check in addChildDevice.
@@ -466,7 +470,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create succeeds even when updateDataValue throws -- warn fires and driverNamespace is still correct (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def mcpLogCalls = []
         script.metaClass.mcpLog = { String level, String component, String msg ->
             mcpLogCalls << [level: level, component: component, msg: msg]
@@ -513,7 +517,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         // so it is unaffected by the persistence failure.
         // A mcpLog("warn", ...) must fire so operators can diagnose the fallback condition.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def mcpLogCalls = []
         script.metaClass.mcpLog = { String level, String component, String msg ->
             mcpLogCalls << [level: level, component: component, msg: msg]
@@ -555,7 +559,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "create with customDriver: UnknownDeviceTypeException translates to hub_list_drivers hint"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
             throw new Exception("UnknownDeviceTypeException: Driver not found")
         }
@@ -577,7 +581,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create with customDriver UnknownDeviceTypeException returns -32602 with hub_list_drivers hint (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
             throw new Exception("UnknownDeviceTypeException: Driver not found")
         }
@@ -601,7 +605,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "create with customDriver: not-found error (message 'not found') also translates"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
             throw new Exception("driver not found")
         }
@@ -623,7 +627,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create with customDriver not-found error also translates (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
             throw new Exception("driver not found")
         }
@@ -649,7 +653,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         // Invariant: any addChildDevice exception on the customDriver path surfaces as IllegalArgumentException
         // with the hub_list_drivers hint regardless of the exception class or message text.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
             throw new Exception("some unexpected hub error that does not mention not-found")
         }
@@ -671,7 +675,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create with customDriver any hub exception surfaces hub_list_drivers hint fail-closed (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
             throw new Exception("some unexpected hub error that does not mention not-found")
         }
@@ -699,7 +703,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create with built-in deviceType still works after dual-path refactor (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def capturedArgs = [:]
         def capturedDataValues = [:]
         def fakeDevice = Mock(ChildDeviceWrapper) {
@@ -750,7 +754,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "create with built-in deviceType still works after dual-path refactor"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def capturedArgs = [:]
         def capturedDataValues = [:]
         def fakeDevice = Mock(ChildDeviceWrapper) {
@@ -796,7 +800,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "create with unsupported built-in deviceType throws descriptive error"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolCreateVirtualDevice([
@@ -815,7 +819,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create with unsupported built-in deviceType returns -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_manage_virtual_device', [
@@ -839,7 +843,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         // NOT IllegalArgumentException. The distinction preserves the semantic that caller-fixable
         // errors (wrong args) become IAE, while platform/firmware gaps become RuntimeException.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
             throw new Exception("UnknownDeviceTypeException")
         }
@@ -861,7 +865,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create with built-in deviceType UnknownDeviceTypeException becomes isError with firmware hint (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props ->
             throw new Exception("UnknownDeviceTypeException")
         }
@@ -1359,7 +1363,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         // original exception as .cause. If the Hubitat sandbox strips cause chains, .cause would be
         // null; this spec detects that regression.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def originalEx = new Exception("root cause message")
         childDeviceFactoryStub = { ns, name, dni, hubId, props -> throw originalEx }
 
@@ -1383,7 +1387,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         // "(Hub reported: ...)" suffix at toolCreateVirtualDevice line 11302.
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def originalEx = new Exception("root cause message")
         childDeviceFactoryStub = { ns, name, dni, hubId, props -> throw originalEx }
 
@@ -1407,7 +1411,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "create with built-in: RuntimeException preserves cause chain"() {
         // Mirrors the customDriver cause-chain probe for the built-in path RuntimeException.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def originalEx = new Exception("UnknownDeviceTypeException: not found")
         childDeviceFactoryStub = { ns, name, dni, hubId, props -> throw originalEx }
 
@@ -1430,7 +1434,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         // Parallel assertion: root-cause text is woven into the isError message via "(Hub reported: ...)".
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def originalEx = new Exception("UnknownDeviceTypeException: not found")
         childDeviceFactoryStub = { ns, name, dni, hubId, props -> throw originalEx }
 
@@ -1459,7 +1463,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         // After trim '  ' becomes '' which is falsy -- but that alone would drop to the
         // "both provided" false branch and silently take customDriver. The guard must reject explicitly.
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolManageVirtualDevice([
@@ -1479,7 +1483,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create blank-after-trim deviceType with customDriver present triggers mutex error (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_manage_virtual_device', [
@@ -1502,7 +1506,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         // A blank-after-trim deviceType with no customDriver should surface the "either required" error,
         // not a cryptic null/empty failure from deeper in the chain.
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolManageVirtualDevice([
@@ -1521,7 +1525,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create blank-after-trim deviceType without customDriver triggers missing-arg error (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_manage_virtual_device', [
@@ -1541,7 +1545,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "create: whitespace-only customDriver namespace throws descriptive error"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolCreateVirtualDevice([
@@ -1560,7 +1564,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create whitespace-only customDriver namespace returns -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_manage_virtual_device', [
@@ -1581,7 +1585,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "create: whitespace-only customDriver name throws descriptive error"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         script.toolCreateVirtualDevice([
@@ -1600,7 +1604,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create whitespace-only customDriver name returns -32602 (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
 
         when:
         def response = mcpDriver.callTool('hub_manage_virtual_device', [
@@ -1624,7 +1628,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
         // non-blank so it gets passed through to the hub (which will reject it with a clear error);
         // a whitespace-only String gets caught here before reaching the hub.
         given:
-        enableHubAdminWrite()
+        enableWrite()
         def capturedNs = null
         def fakeDevice = Mock(ChildDeviceWrapper) {
             getId() >> '55'
@@ -1660,7 +1664,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create non-String numeric customDriver namespace coerces then succeeds (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         def capturedNs = null
         def fakeDevice = Mock(ChildDeviceWrapper) {
             getId() >> '55'
@@ -1702,7 +1706,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
 
     def "create: addChildDevice returning null throws RuntimeException with partial-registration guidance"() {
         given:
-        enableHubAdminWrite()
+        enableWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props -> null }
 
         when:
@@ -1722,7 +1726,7 @@ class ToolManageVirtualDeviceSpec extends ToolSpecBase {
     def "via dispatch: create addChildDevice returning null becomes isError with partial-registration guidance (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
-        enableHubAdminWrite()
+        enableWrite()
         childDeviceFactoryStub = { ns, name, dni, hubId, props -> null }
 
         when:
