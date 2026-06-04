@@ -784,10 +784,19 @@ class TestRunner:
         # create path sets the label generically. Before the fix the label stayed
         # the default type name (e.g. "Button Controller-5.1") and the documented
         # `name` param was silently ignored for these types.
-        created = self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_set_native_app",
-            "args": {"appType": "button_controller", "name": f"{PREFIX}BtnLabel", "confirm": True},
-        })
+        try:
+            created = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appType": "button_controller", "name": f"{PREFIX}BtnLabel", "confirm": True},
+            })
+        except (McpToolError, McpError) as exc:
+            # Some hubs (incl. the CI test hub) don't have the Button Controller
+            # built-in app installed, so this non-RM type can't be created here --
+            # an environment limitation, not a code failure. Skip rather than fail.
+            if "parent not found" in str(exc) or "not found on this hub" in str(exc):
+                print("    [skip] test_set_native_app_nonrm_label: Button Controller app not installed on this hub")
+                return
+            raise
         app_id = created.get("appId")
         assert app_id, f"hub_set_native_app button_controller create did not return appId: {created}"
         self.created_native_app_ids.append(str(app_id))
@@ -860,14 +869,31 @@ class TestRunner:
         first = self._set_rule(app_id, {"addAction": {"capability": "log", "message": "three"}})
         idx = first.get("actionIndex")
         assert idx is not None, f"addAction did not return an actionIndex (contract regression): {first}"
-        # moveAction now re-polls for a late move-arrow commit before concluding
-        # the position did not shift -- _set_rule would raise if it hard-failed a
-        # successful-but-slow move (the false-negative this guards against).
-        moved = self._set_rule(app_id, {"moveAction": {"index": 1, "direction": "down"}})
-        assert moved.get("success") is not False, f"moveAction should succeed (re-poll absorbs late commit): {moved}"
         self._set_rule(app_id, {"removeAction": {"index": idx}})
         self._set_rule(app_id, {"clearActions": True})
         self._set_rule(app_id, {"replaceActions": [{"capability": "log", "message": "final"}]})
+        self._assert_rule_healthy(app_id)
+        self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_move_action(self) -> None:
+        # hub_set_rule edit -> moveAction (isolated, short). On a slow hub the
+        # move-arrow click can commit late; the tool does one short re-check then
+        # returns a soft asyncCommitLikely envelope instead of a hard
+        # false-negative. Accept either a confirmed shift OR the soft envelope --
+        # call hub_set_rule directly since _set_rule would raise on success=False.
+        app_id = self._create_native_rule("Move")
+        self._set_rule(app_id, {"addActions": [
+            {"capability": "log", "message": "a"},
+            {"capability": "log", "message": "b"},
+            {"capability": "log", "message": "c"},
+        ]})
+        result = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule",
+            "args": {"appId": app_id, "moveAction": {"index": 1, "direction": "down"}, "confirm": True},
+        })
+        assert result.get("success") is True or result.get("asyncCommitLikely") is True, \
+            f"moveAction must confirm the shift OR report asyncCommitLikely (never a hard false-negative): {result}"
         self._assert_rule_healthy(app_id)
         self._delete_native(app_id)
 

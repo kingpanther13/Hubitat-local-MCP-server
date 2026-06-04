@@ -3196,6 +3196,59 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         (result.indicesAfter as List).size() > 0
     }
 
+    def "moveAction: persistent no-shift returns a soft asyncCommitLikely envelope, not a hard throw"() {
+        // On a slow hub the move-arrow click can commit AFTER the post-click
+        // read. _rmMoveAction does ONE short re-check (pauseExecution is a no-op
+        // in the harness) and, if the position still has not shifted, returns a
+        // soft asyncCommitLikely result with a verify-first hint instead of a
+        // hard throw -- a throw on a possibly-late commit is a false-negative
+        // that tempts a double-move, and a long in-handler poll would 504 the
+        // cloud relay. The outer dispatcher folds the soft result into
+        // success/partial and surfaces asyncCommitLikely + verifyHint.
+        given:
+        enableWrite()
+        // statusJson order NEVER changes -> position never shifts on the
+        // immediate read OR the short re-check.
+        def actionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
+        def makeStatus = {
+            JsonOutput.toJson([
+                installedApp: [id: 100],
+                appSettings: [
+                    [name: "actType.1", value: "switchActs"],
+                    [name: "actType.2", value: "delayActs"],
+                    [name: "actType.3", value: "switchActs"]
+                ],
+                eventSubscriptions: [[name: "evt1"]],
+                scheduledJobs: [],
+                appState: [:],
+                actions: actionsMap,
+                childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> makeStatus() }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, moveAction: [index: 1, direction: "down"], confirm: true])
+
+        then: "no hard throw; a soft asyncCommitLikely envelope is returned"
+        result.asyncCommitLikely == true
+        result.success == false
+        result.partial == true
+
+        and: "the verify-first hint surfaces (do-not-blind-retry guidance)"
+        result.verifyHint?.contains("VERIFY before retrying")
+
+        and: "position fields still surface for the caller"
+        result.beforePosition != null
+        result.afterPosition != null
+    }
+
     // ---------- state.editAct pre-flight guard (applies to removeAction AND moveAction) ----------
 
     def "removeAction pre-flight detects stuck state.editAct and throws immediately"() {

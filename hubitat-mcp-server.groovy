@@ -18631,24 +18631,34 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     if (!isBoundary) {
         def expectedShift = direction == "up" ? -1 : 1
         def actualShift = afterPosition - beforePosition
-        // Slow hubs commit the move-arrow click AFTER the immediate re-read
-        // (observed live: the position flips a few seconds post-click, so the
-        // first check still sees the pre-move order). Without this poll, a late
-        // commit is reported as a HARD failure -- a false-negative that tempts
-        // a caller into a second move that double-shifts the action. Mirror
-        // removeAction's bounded retry (~10s budget; immediate-success path
-        // skips all sleeps) before concluding the position did not shift.
+        // The move-arrow click can commit slightly AFTER the immediate re-read
+        // (observed live on a slow hub: the position flips a couple seconds
+        // post-click, so the first check still sees the pre-move order). Do ONE
+        // short re-check to catch a fast-late commit, kept well under the cloud
+        // relay's ~10s window so the call itself does not 504 (a long in-handler
+        // poll would). If it STILL has not shifted, return a SOFT
+        // asyncCommitLikely result (mirroring clearActions/replaceActions)
+        // rather than a hard throw: a late commit reported as a hard failure is
+        // a false-negative that tempts a caller into a second move that
+        // double-shifts the action.
         if (actualShift != expectedShift) {
-            def retryDelaysMs = [1000, 3000, 6000]
-            for (int attempt = 1; attempt < 4 && actualShift != expectedShift; attempt++) {
-                pauseExecution(retryDelaysMs[attempt - 1] as Integer)
-                afterOrderRaw = _rmCollectActionIndices(appId)
-                afterPosition = afterOrderRaw.indexOf(actionIdx)
-                actualShift = afterPosition - beforePosition
-            }
+            pauseExecution(1500)
+            afterOrderRaw = _rmCollectActionIndices(appId)
+            afterPosition = afterOrderRaw.indexOf(actionIdx)
+            actualShift = afterPosition - beforePosition
         }
         if (actualShift != expectedShift) {
-            throw new IllegalStateException("moveAction(${actionIdx}, ${direction}): after the move-arrow click and ~10s of polling, action position still did NOT shift -- state.editAct was clear at pre-flight, so the most likely cause is a DROPPED move-arrow click. Before position: ${beforePosition}, after position: ${afterPosition}, expected shift: ${expectedShift}. Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and inspect the action order. If unchanged -> the click dropped; safe to retry moveAction. If already shifted -> it committed late; do NOT retry (a second move would shift it the other way).")
+            return [
+                success: false,
+                asyncCommitLikely: true,
+                partial: true,
+                index: actionIdx,
+                direction: direction,
+                beforePosition: beforePosition,
+                afterPosition: afterPosition,
+                indicesAfter: afterOrderRaw.sort(),
+                verifyHint: "moveAction(${actionIdx}, ${direction}) could not confirm the position shifted within the verify window -- the move-arrow click may have committed late, or it may have dropped. VERIFY before retrying: call hub_get_app_config(appId=${appId}) and inspect the action order. If it already changed, the move committed (do NOT retry). If unchanged, the click dropped (safe to retry). Do not blind-retry: a second move on an already-moved action shifts it the other way."
+            ]
         }
     }
     return [success: true, index: actionIdx, direction: direction, beforePosition: beforePosition, afterPosition: afterPosition, indicesAfter: afterOrderRaw.sort()]
@@ -24441,9 +24451,20 @@ def _applyNativeAppEdit(args) {
         if (itemsPartial && !updateRuleFailed) {
             repairHints << "One or more inner replaceActions items reported partial. Drill into addedActions[] for per-item settingsSkipped + repairHints. Wait 5s and retry, or use removeAction/clearActions to clean up and re-add the failing spec."
         }
+        // moveAction soft-return: on a slow hub the move-arrow click can commit
+        // AFTER the post-click read; _rmMoveAction does one short re-check and,
+        // if the position still has not shifted, returns success:false +
+        // asyncCommitLikely instead of throwing. Fold that into the outer
+        // success/partial (the addedOk==addedTotal==0 success test would
+        // otherwise report success:true for an unconfirmed move) and surface the
+        // verify-first hint so a caller verifies before retrying.
+        def moveSoftFail = moveResult != null && moveResult.success == false
+        if (moveSoftFail && moveResult.verifyHint) {
+            repairHints << moveResult.verifyHint.toString()
+        }
         return [
-            success: (addedOk == addedTotal) && health.ok && !updateRuleFailed,
-            partial: itemsPartial || updateRuleFailed,
+            success: (addedOk == addedTotal) && health.ok && !updateRuleFailed && !moveSoftFail,
+            partial: itemsPartial || updateRuleFailed || (moveResult?.partial == true),
             appId: appId,
             backup: backup,
             removedIndices: removed ?: null,
@@ -24454,6 +24475,8 @@ def _applyNativeAppEdit(args) {
             beforePosition: moveResult?.beforePosition,
             afterPosition: moveResult?.afterPosition,
             indicesAfter: moveResult?.indicesAfter,
+            asyncCommitLikely: moveResult?.asyncCommitLikely,
+            verifyHint: moveResult?.verifyHint,
             // Surface removeAction's rich return alongside moveAction's; null when
             // this dispatch path was not removeAction. beforeIndices/afterIndices
             // let callers diff the index list without a re-fetch.
@@ -24869,13 +24892,15 @@ def _applyNativeAppEdit(args) {
                         // would need a separate hub_get_app_config to see where the action moved.
                         def mvRes = _rmMoveAction(appId, pm.moveAction.index as Integer, dir)
                         patchResults << [
-                            success: true,
+                            success: mvRes?.success != false,
                             op: "moveAction",
                             index: pm.moveAction.index,
                             direction: dir,
                             beforePosition: mvRes?.beforePosition,
                             afterPosition: mvRes?.afterPosition,
-                            indicesAfter: mvRes?.indicesAfter
+                            indicesAfter: mvRes?.indicesAfter,
+                            asyncCommitLikely: mvRes?.asyncCommitLikely,
+                            verifyHint: mvRes?.verifyHint
                         ]
                     } else {
                         patchResults << [success: false, error: "patches[${pi}] has no recognized operation key. Supported: settings, button, addTrigger(s), addAction(s), addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction.", spec: p]
