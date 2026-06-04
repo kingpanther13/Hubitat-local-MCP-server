@@ -10128,7 +10128,7 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
         hubName: privacyMode == "public" ? "<hub-name>" : hubName,
         hubModel: hubModel,
         hubFirmware: hubFirmware,
-        timeZone: timeZone,
+        timeZone: privacyMode == "public" ? "<time-zone>" : timeZone,
         logLevel: getConfiguredLogLevel(),
         customMcpRuleCount: getChildApps()?.size() ?: 0,
         nativeRm: _bugReportNativeRmStatus(),

@@ -540,6 +540,7 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         then:
         result.privacyMode == 'public'
         result.report.contains('<hub-name>')
+        result.report.contains('<time-zone>')
         !result.report.contains('secret_message_in_log')
         result.report.contains('public mode')
         result.instructions.toLowerCase().contains('if you are an llm')
