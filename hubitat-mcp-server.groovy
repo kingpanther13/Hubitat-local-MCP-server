@@ -4555,7 +4555,7 @@ def _getAllToolDefinitions_part8() {
         // Native classic-app CRUD (hub admin-layer, bypasses SmartApp parent-type check).
         // Generic across native automation app types — RM is the first registered type;
         // Room Lighting / Button Controllers / Basic Rules / Notifier / Groups+Scenes work
-        // for update + delete today (any classic-app appId), and join create as their entries
+        // for edit + delete today (any classic-app appId), and join create as their entries
         // get added to _appTypeRegistry().
         [
             name: "hub_set_native_app",
@@ -15861,7 +15861,7 @@ private Integer normalizeRuleId(def ruleId) {
  * path which namespace + appName + parent type to use for createchild.
  *
  * Adding a new entry here is the only change needed to support a new
- * native app type — the update + delete + backup paths are app-type-
+ * native app type — the edit + delete + backup paths are app-type-
  * agnostic because they operate on appIds against the generic
  * /installedapp/* endpoint family.
  *
@@ -15878,7 +15878,7 @@ private Integer normalizeRuleId(def ruleId) {
  *   - notifier (Notifier), parentType="Notifications"
  *   - visual_rule (Visual Rule Builder), parentType="Visual Rules Builder"
  *
- * Update + delete already work on these today — call hub_set_native_app /
+ * Edit + delete already work on these today — call hub_set_native_app /
  * hub_delete_native_app with the appId of any existing classic-app instance
  * (read appId via hub_list_apps (scope='instances') + hub_get_app_config).
  */
@@ -16053,7 +16053,8 @@ private Set _collectLiveAppIds() {
 
 /**
  * Discover and cache the parent app id for the given native-app type.
- * Required by hub_set_rule: createchild is addressed
+ * Required by _createNativeAppShell (the create path of both hub_set_rule and
+ * hub_set_native_app): createchild is addressed
  * `/installedapp/createchild/<ns>/<appName>/parent/<parentId>`, and the
  * parent id is per-hub.
  *
@@ -22257,7 +22258,17 @@ def toolSetRule(args) {
 
 def toolSetNativeApp(args) {
     // Generic create-or-edit for any classic SmartApp. No RM trigger/action
-    // sugar: the create path makes a shell of args.appType; the edit path is the
+    // sugar. The lean schema doesn't advertise the RM authoring params, but a
+    // hand-crafted call could still pass them -- reject with a pointer to
+    // hub_set_rule rather than silently dropping them (which would return an
+    // empty app as success).
+    def rmOnly = ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression',
+                  'addLocalVariable', 'patches', 'replaceActions', 'removeAction', 'clearActions',
+                  'moveAction', 'removeTrigger', 'modifyTrigger', 'walkStep'].findAll { args instanceof Map && args.containsKey(it) }
+    if (rmOnly) {
+        throw new IllegalArgumentException("hub_set_native_app does not support Rule Machine authoring params (${rmOnly.join(', ')}) -- use hub_set_rule (in the hub_manage_rule_machine gateway) for Rule Machine rules.")
+    }
+    // The create path makes a shell of args.appType; the edit path is the
     // settings/button fall-through of the shared edit engine (the LEAN schema
     // means the RM wizard branches are never reached).
     if (args?.appId == null) {
@@ -26779,7 +26790,7 @@ RMUtils-based control surface (Built-in App Tools gate only):
 Native CRUD (hub admin-layer, additionally requires Hub Admin Write):
 - **hub_set_native_app** — create or edit any NON-RM classic SmartApp (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule). Omit appId to create (appType enum: rule_machine / button_controller / groups_scenes / notifier / visual_rule; name); provide appId to edit via settings/button. Returns appId on create. (In the hub_manage_native_rules_and_apps gateway.)
 - **hub_set_rule** — create or edit a Rule Machine rule. Omit appId to create (name; optionally bundle addTriggers=[...] / addActions=[...] to populate in one call); provide appId to edit via the structured shortcuts (addTrigger / addAction / addRequiredExpression / walkStep / ...). (In the hub_manage_rule_machine gateway.)
-- **hub_set_rule** — modify any classic SmartApp. Two raw modes (settings (Map) OR button (String)) plus 14 structured shortcuts (addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, patches, walkStep). Args: appId + one of those shortcut keys, plus optional pageName, stateAttribute, confirm. Auto-backs-up before writing; emits the multiple=true 3-field capability contract automatically. removeTrigger={index:N} deletes a trigger; modifyTrigger={index:N, mods:{state:'...'}} changes the state field of an existing trigger (capability/deviceIds changes require removeTrigger + addTrigger).
+- **hub_set_rule** (edit detail) — edit an existing Rule Machine rule (appId required). Two raw modes (settings (Map) OR button (String)) plus 14 structured shortcuts (addTrigger, addTriggers, addAction, addActions, addRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, patches, walkStep). Args: appId + one of those shortcut keys, plus optional pageName, stateAttribute, confirm. Auto-backs-up before writing; emits the multiple=true 3-field capability contract automatically. removeTrigger={index:N} deletes a trigger; modifyTrigger={index:N, mods:{state:'...'}} changes the state field of an existing trigger (capability/deviceIds changes require removeTrigger + addTrigger).
 - **hub_delete_native_app** — soft delete (default; refuses if children exist) or force=true. Args: appId, force, confirm. Auto-backs-up before deleting.
 - **hub_clone_native_app** — clone any classic SmartApp via Hubitat's first-party appCloner. Args: sourceAppId, newName (opt), confirm. Returns newAppId. Drives the appCloner's 4-step wizard (cloneRuleButton -> confirmation -> importRule sub-page -> importNow); typical clones complete in tens of seconds.
 - **hub_export_native_app** — export any classic SmartApp to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns jsonContent. Self-contained document with appReplacements + deviceReplacements + full rule state; round-trips through hub_import_native_app.
@@ -26992,7 +27003,7 @@ The action-clear path commits synchronously, but a thin verify-retry guards agai
 
 ### appType options
 
-`appType` (default: `rule_machine`) selects which class of native app to create:
+`appType` selects which class of native app to create. NOTE: this selector belongs to `hub_set_native_app` -- `hub_set_rule` always creates `rule_machine` rules. Default: `rule_machine`.
 
 - `rule_machine` — Rule Machine 5.1 (the only registered type today; verified live).
 - Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in `_appTypeRegistry` to enable creation. `hub_set_native_app` / `hub_delete_native_app` already work on them today via their `appId`.

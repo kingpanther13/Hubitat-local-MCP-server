@@ -25266,8 +25266,87 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         script.toolSetNativeApp([name: "x"])
 
+        then: "pins the confirm gate specifically, not just any IllegalArgumentException"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("SAFETY CHECK FAILED")
+    }
+
+    def "hub_set_native_app create routes a NON-rule_machine appType to its registry parent"() {
+        given: "a Notifications parent on the hub (notifier appType)"
+        enableHubAdminWrite()
+        hubGet.register('/hub2/appsList') { params ->
+            JsonOutput.toJson([apps: [
+                [data: [id: 42, name: "Notifications", type: "Notifications", user: false, hidden: false], children: []]
+            ]])
+        }
+        hubGet.register('/installedapp/configure/json/990') { params -> ruleConfigJson(990, "", [[name: "origLabel", type: "text"]]) }
+        hubGet.register('/installedapp/statusJson/990') { params -> statusJson(990) }
+        def createCalls = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            createCalls << path
+            [status: 302, location: "/installedapp/configure/990", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when: "create a notifier (the generic tool's reason to exist vs hub_set_rule)"
+        def result = script.toolSetNativeApp([appType: "notifier", name: "BAT-notifier", confirm: true])
+
+        then: "createchild used the notifier namespace/appName under the Notifications parent"
+        createCalls.any { it == "/installedapp/createchild/hubitat/Notifier/parent/42" }
+        result.appId == 990
+        result.appType == "notifier"
+    }
+
+    def "hub_set_native_app rejects RM authoring params with a pointer to hub_set_rule"() {
+        given:
+        enableHubAdminWrite()
+
+        when: "a hand-crafted call smuggles an RM-only param past the lean schema"
+        script.toolSetNativeApp([appId: 100, addTrigger: [capability: "Switch"], confirm: true])
+
+        then: "rejected (not silently dropped) with a redirect to hub_set_rule"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("hub_set_native_app does not support")
+        ex.message.contains("hub_set_rule")
+        ex.message.contains("addTrigger")
+    }
+
+    def "hub_set_native_app surfaces an unknown appType as a caller-recoverable error"() {
+        given:
+        enableHubAdminWrite()
+
+        when:
+        script.toolSetNativeApp([appType: "bogus_type", name: "x", confirm: true])
+
         then:
-        thrown(IllegalArgumentException)
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Unknown appType")
+    }
+
+    def "hub_set_rule create dispatch-envelope through the rule_machine gateway returns the new appId"() {
+        given:
+        settingsMap.useGateways = true
+        enableHubAdminWrite()
+        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
+        hubGet.register('/installedapp/configure/json/991') { params -> ruleConfigJson(991, "", [[name: "origLabel", type: "text"]]) }
+        hubGet.register('/installedapp/statusJson/991') { params -> statusJson(991) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapp/configure/991", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when: "create an RM rule through the full gateway dispatch (no appId)"
+        def result = script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', [name: "BAT-gw-rule", confirm: true])
+
+        then:
+        result instanceof Map
+        result.isError != true
+        result.appId == 991
+        result.appType == "rule_machine"
     }
 
     def "hub_set_native_app schema is LEAN -- generic params only, no RM trigger/action sugar"() {
