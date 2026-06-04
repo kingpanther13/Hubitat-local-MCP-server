@@ -1075,12 +1075,12 @@ def getGatewayConfig() {
             summaries: [
                 hub_get_custom_rule: "List custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
                 hub_create_custom_rule: "Create a new MCP custom (sandbox) rule. Args: name, triggers, actions, conditions?, enabled?",
-                hub_update_custom_rule: "Update a custom rule (enabled toggle, or structural changes when the engine toggle is ON). Args: ruleId, enabled?|triggers?|conditions?|actions?",
+                hub_update_custom_rule: "Update a custom rule (enabled toggle, or structural changes when the engine toggle is ON). Args: ruleId, enabled?|name?|triggers?|conditions?|actions?",
                 hub_delete_custom_rule: "Permanently delete a custom rule (auto-backs up first). Args: ruleId, confirm=true",
                 hub_test_custom_rule: "Dry-run a custom rule without executing actions. Args: ruleId",
                 hub_export_custom_rule: "Export a custom rule to JSON and save it to the hub File Manager. Args: ruleId, saveAs? (filename)",
-                hub_import_custom_rule: "Import a custom rule from exported JSON. Args: exportData (JSON string)",
-                hub_clone_custom_rule: "Clone an existing custom rule (starts disabled). Args: ruleId"
+                hub_import_custom_rule: "Import a custom rule from exported JSON (creates a NEW rule, fresh ruleId). Args: exportData (the export OBJECT from hub_export_custom_rule), name? (override), deviceMapping? (remap old->new device IDs for cross-hub import)",
+                hub_clone_custom_rule: "Clone an existing custom rule (starts disabled). Args: ruleId, name? (name for the clone; defaults to 'Copy of <original>')"
             ],
             // BM25 search hints — extra keywords that don't appear in summaries but help discovery
             searchHints: [
@@ -1103,7 +1103,7 @@ def getGatewayConfig() {
                 hub_set_variable: "Set an existing variable's value. Falls back to rule_engine namespace when no hub var matches. Args: name, value",
                 hub_create_variable: "Create a new hub variable. Args: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true",
                 hub_delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if rules reference it]",
-                hub_create_connector: "Create a virtual-device connector for an existing hub variable. Args: name, confirm=true",
+                hub_create_connector: "Create a virtual-device connector for an existing hub variable. For Number/Decimal vars, connectorType picks the device type (Dimmer|Variable|Volume|ColorTemp|Humidity|Illuminance, default Variable). Args: name, connectorType?, confirm=true",
                 hub_delete_connector: "Remove the connector device for a hub variable (variable itself unchanged). Args: name, confirm=true",
                 hub_list_variable_changes: "Recent hub-variable changes since the MCP app last started. Args: name (optional filter), sinceMs (optional), limit (optional)"
             ],
@@ -1124,7 +1124,7 @@ def getGatewayConfig() {
             summaries: [
                 hub_list_rooms: "List all rooms with IDs, names, and device counts",
                 hub_get_room: "Get room details with assigned devices. Args: room (name or ID)",
-                hub_create_room: "Create a new room. Args: name, confirm=true",
+                hub_create_room: "Create a new room, optionally assigning devices at creation. Args: name, deviceIds? (device IDs to assign), confirm=true",
                 hub_delete_room: "Permanently delete a room. Args: room (name or ID), confirm=true",
                 hub_update_room: "Rename a room. Args: room (name or ID), newName, confirm=true"
             ],
@@ -1183,14 +1183,14 @@ def getGatewayConfig() {
             description: "Install, update, and delete hub apps, drivers, and libraries. All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
             tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_restore_backup", "hub_create_library", "hub_update_library"],
             summaries: [
-                hub_create_app: "Install new app. PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
-                hub_create_driver: "Install new driver. PREFER curl-upload + sourceFile. For 1: source|sourceFile. For >1: USE BULK (single round-trip: installs=[{source|sourceFile},...]). confirm=true",
-                hub_update_app: "Modify existing app code (CRITICAL). PREFER curl-upload + sourceFile. Args: appId, source|sourceFile|resave, confirm=true",
-                hub_update_driver: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile},...]). PREFER sourceFile + curl-upload over inline. confirm=true",
+                hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with installAsUserApp=<codeAppId> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",
+                hub_create_driver: "Install new driver. To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. For 1: source|sourceFile|importUrl. For >1: USE BULK (single round-trip: installs=[{source|sourceFile|importUrl},...]). confirm=true",
+                hub_update_app: "Modify existing app code (CRITICAL). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile over inline source. Args: appId, source|sourceFile|importUrl|resave, confirm=true",
+                hub_update_driver: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|importUrl|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile|importUrl},...]). To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. confirm=true",
                 hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), id, confirm=true",
                 hub_restore_backup: "Restore app/driver to backed-up version. Args: backupKey, confirm=true",
-                hub_create_library: "Install new Groovy library (#include namespace.Name). PREFER curl-upload + sourceFile (bypasses agent context); inline source for stubs only. Args: source|sourceFile, confirm=true",
-                hub_update_library: "Modify existing library code. PREFER curl-upload + sourceFile. Args: libraryId, source|sourceFile|resave, confirm=true"
+                hub_create_library: "Install new Groovy library (#include namespace.Name). To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. Args: source|sourceFile|importUrl, confirm=true",
+                hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true"
             ],
             searchHints: [
                 hub_create_app: "add new application integration groovy",
@@ -1208,10 +1208,10 @@ def getGatewayConfig() {
             description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, MCP debug logs, and log level configuration. (Device/location event history: use the core hub_list_device_events tool.)",
             tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_debug_logs", "hub_delete_debug_logs", "hub_set_log_level"],
             summaries: [
-                hub_get_logs: "Get Hubitat system logs, most recent first. Args: level (debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex any/all), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
+                hub_get_logs: "Get Hubitat system logs, most recent first. Args: level (trace/debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex any/all), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
                 hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions",
-                hub_get_debug_logs: "Get MCP internal debug logs (mode='logs', default) or logging status (mode='status'). Args: mode, level, limit",
+                hub_get_debug_logs: "Get MCP internal debug logs (mode='logs', default) or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_delete_debug_logs: "Clear all MCP debug log entries",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
@@ -1253,7 +1253,7 @@ def getGatewayConfig() {
             tools: ["hub_list_files", "hub_read_file", "hub_write_file", "hub_delete_file"],
             summaries: [
                 hub_list_files: "List files in File Manager (names, sizes, URLs)",
-                hub_read_file: "Read file content. Args: fileName, offset, limit",
+                hub_read_file: "Read file content. Args: fileName, offset, length",
                 hub_write_file: "Write file to File Manager. Args: fileName, content, confirm=true",
                 hub_delete_file: "Delete file from File Manager (auto-backs up first to <name>_backup_<ts>, unless it's already a backup). Args: fileName, confirm=true"
             ],
@@ -1271,7 +1271,7 @@ def getGatewayConfig() {
                 hub_get_logs: "Get Hubitat system logs, most recent first. Args: level, source, pattern/patterns, since/until, deviceId|appId, limit",
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events). Args: type, sortBy, limit",
                 hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions",
-                hub_get_debug_logs: "Get MCP internal debug logs (mode='logs') or logging status (mode='status'). Args: mode, level, limit",
+                hub_get_debug_logs: "Get MCP internal debug logs (mode='logs') or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history. Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
                 hub_get_device_health: "Check device staleness, ICMP-ping arbitrary IPs, and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, identifyHub",
@@ -1377,7 +1377,7 @@ def getGatewayConfig() {
             tools: ["hub_list_files", "hub_read_file"],
             summaries: [
                 hub_list_files: "List files in File Manager (names, sizes, URLs)",
-                hub_read_file: "Read file content. Args: fileName, offset, limit"
+                hub_read_file: "Read file content. Args: fileName, offset, length"
             ],
             searchHints: [
                 hub_list_files: "show uploaded stored csv json text data files",
@@ -1403,7 +1403,7 @@ def getGatewayConfig() {
             tools: ["hub_call_device_command", "hub_update_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
             summaries: [
                 hub_call_device_command: "Send a command to a device (verify state after). Args: deviceId, command, parameters?",
-                hub_update_device: "Update a device's label and/or room assignment. Args: deviceId, label?, room?",
+                hub_update_device: "Update a device's properties: label, name, room, deviceNetworkId, enabled (enable/disable), dataValues, preferences. Args: deviceId, label?, name?, room?, deviceNetworkId?, enabled?, dataValues?, preferences?",
                 hub_list_devices: "List devices with current states. Args: detailed?, filter, labelFilter?, capabilityFilter?, format, fields?, limit?, cursor?",
                 hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll until it reaches expectedValue/expectedValues. Args: deviceId, attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?",
