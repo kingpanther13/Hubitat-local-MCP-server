@@ -256,10 +256,15 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         UNSUBSCRIBE_CALL_COUNT.get() == 1
     }
 
-    def "uninstalled() is a no-op for in-use vars when none are tracked (null/empty), without NPE"() {
-        given: 'no tracked registrations'
+    @spock.lang.Unroll
+    def "uninstalled() is a no-op for in-use vars when tracking is #desc, without NPE"() {
+        given: 'no tracked registrations (null key, or an explicit empty list)'
         UNSUBSCRIBE_CALL_COUNT.set(0)
-        atomicStateMap.remove('inUseHubVars')
+        if (val == null) {
+            atomicStateMap.remove('inUseHubVars')
+        } else {
+            atomicStateMap.inUseHubVars = val
+        }
         def removed = []
         script.metaClass.removeInUseGlobalVar = { String n -> removed << n; true }
 
@@ -272,6 +277,11 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
 
         and: 'unsubscribe still fired (best-effort teardown)'
         UNSUBSCRIBE_CALL_COUNT.get() == 1
+
+        where:
+        desc    | val
+        'null'  | null
+        'empty' | []
     }
 
     // -----------------------------------------------------------------------
