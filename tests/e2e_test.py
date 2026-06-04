@@ -284,6 +284,7 @@ class TestRunner:
         # Cleanup tracking
         self.created_device_dnis: list[str] = []
         self.created_rule_ids: list[str] = []
+        self.created_native_app_ids: list[str] = []
         self.created_variable_names: list[str] = []
 
         # Cached helpers
@@ -673,6 +674,103 @@ class TestRunner:
 
     def _last_rule_id(self) -> Optional[str]:
         return self.created_rule_ids[-1] if self.created_rule_ids else None
+
+    # -----------------------------------------------------------------------
+    # GROUP 4b: native_apps (3 tests) -- the issue #137 hub_set_rule /
+    # hub_set_native_app split, exercised end-to-end against the live hub.
+    # These are distinct from rule_crud above, which drives the LEGACY custom
+    # rule engine (custom_* tools); these drive the NATIVE Rule Machine + classic
+    # SmartApp surface that appears in Hubitat's own UI.
+    # -----------------------------------------------------------------------
+
+    def _untrack_native_app(self, app_id) -> None:
+        if str(app_id) in self.created_native_app_ids:
+            self.created_native_app_ids.remove(str(app_id))
+
+    @test("native_apps")
+    def test_set_rule_native_lifecycle(self) -> None:
+        # CREATE a native RM rule in ONE call: hub_set_rule with no appId, bundling
+        # a (device-free) Time trigger + a log action -- the headline new capability.
+        created = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule",
+            "args": {
+                "name": f"{PREFIX}NativeRule",
+                "addTrigger": {
+                    "capability": "Certain Time (and optional date)",
+                    "time": "A specific time", "atTime": "17:00",
+                },
+                "addActions": [{"capability": "log", "message": "E2E native rule fired"}],
+                "confirm": True,
+            },
+        })
+        app_id = created.get("appId")
+        assert app_id, f"hub_set_rule create did not return an appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+
+        # VERIFY: the new rule shows up in the NATIVE RM rule list (RMUtils).
+        rules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+        rule_list = rules if isinstance(rules, list) else rules.get("rules", [])
+        found = any(
+            str(r.get("id")) == str(app_id) or f"{PREFIX}NativeRule" in (r.get("name") or r.get("label") or "")
+            for r in rule_list
+        )
+        assert found, f"created native rule {app_id} not found in hub_list_rules"
+
+        # EDIT: hub_set_rule WITH appId routes to the edit engine -- add a second action.
+        edited = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule",
+            "args": {"appId": app_id, "addAction": {"capability": "log", "message": "second action"}, "confirm": True},
+        })
+        assert edited.get("success") is not False, f"hub_set_rule edit reported failure: {edited}"
+
+        # DELETE via the cross-listed hub_delete_native_app.
+        self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+        })
+        self._untrack_native_app(app_id)
+
+    @test("native_apps")
+    def test_set_native_app_lifecycle(self) -> None:
+        # hub_set_native_app: the GENERIC create-or-edit upsert. Create via the
+        # registry-driven create path, rename via a raw settings write, then delete.
+        created = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app",
+            "args": {"appType": "rule_machine", "name": f"{PREFIX}NativeApp", "confirm": True},
+        })
+        app_id = created.get("appId")
+        assert app_id, f"hub_set_native_app create did not return an appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+
+        # EDIT: generic settings write (rename via origLabel) -- the lean edit path.
+        edited = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app",
+            "args": {"appId": app_id, "settings": {"origLabel": f"{PREFIX}NativeApp_Renamed"}, "confirm": True},
+        })
+        assert edited.get("success") is not False, f"hub_set_native_app edit reported failure: {edited}"
+
+        # VERIFY via the read-only hub_get_app_config.
+        cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
+        label = str(cfg.get("label") or cfg.get("name") or "")
+        assert PREFIX in label, f"created app label missing the {PREFIX} prefix: {label}"
+
+        # DELETE.
+        self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+        })
+        self._untrack_native_app(app_id)
+
+    @test("native_apps")
+    def test_set_native_app_rejects_rm_params(self) -> None:
+        # The lean generic tool must REJECT Rule Machine authoring params with a
+        # pointer to hub_set_rule (rather than silently dropping them). No mutation.
+        try:
+            self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": 1, "addTrigger": {"capability": "Switch"}, "confirm": True},
+            })
+            raise AssertionError("hub_set_native_app should reject RM authoring params")
+        except (McpToolError, McpError) as exc:
+            assert "hub_set_rule" in str(exc), f"rejection should point to hub_set_rule: {exc}"
 
     # -----------------------------------------------------------------------
     # GROUP 5: trigger_types (6 tests)
@@ -1552,6 +1650,35 @@ class TestRunner:
                             print(f"  [WARN] Sweep delete failed for rule '{rname}': {exc}")
         except Exception as exc:
             print(f"  [WARN] Rule sweep failed: {exc}")
+
+        # Layer 4: native RM rules / classic apps (issue #137). Tracked ids first,
+        # then a list-based sweep for anything a failed native_apps test left behind.
+        for app_id in list(self.created_native_app_ids):
+            try:
+                print(f"  Deleting tracked native app {app_id}")
+                self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+                })
+            except Exception as exc:
+                print(f"  [WARN] Failed to delete native app {app_id}: {exc}")
+        self.created_native_app_ids.clear()
+        try:
+            nrules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+            nlist = nrules if isinstance(nrules, list) else nrules.get("rules", [])
+            for r in nlist:
+                rname = r.get("name") or r.get("label") or ""
+                if PREFIX in rname:
+                    rid = str(r.get("id", r.get("appId", "")))
+                    if rid:
+                        try:
+                            print(f"  Sweep: deleting native rule '{rname}' (id={rid})")
+                            self.client.call_tool("hub_manage_rule_machine", {
+                                "tool": "hub_delete_native_app", "args": {"appId": rid, "confirm": True},
+                            })
+                        except Exception as exc:
+                            print(f"  [WARN] Native rule sweep delete failed for '{rname}': {exc}")
+        except Exception as exc:
+            print(f"  [WARN] Native rule sweep failed: {exc}")
 
         print("--- Cleanup complete ---\n")
 
