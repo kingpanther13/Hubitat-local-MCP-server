@@ -29,7 +29,7 @@ mcp_call() {
 }
 
 get_lease_value() {
-  mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"manage_hub_variables","arguments":{"tool":"get_variable","args":{"name":"_TEST_HUB_LEASED_BY"}}}}' \
+  mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"tool":"hub_get_variable","args":{"name":"_TEST_HUB_LEASED_BY"}}}}' \
     | jq -r '.result.content[0].text' \
     | jq -r '.value // ""'
 }
@@ -37,7 +37,7 @@ get_lease_value() {
 set_lease_value() {
   # Arg is the JSON-stringified value (already double-quoted + escaped).
   local value_json="$1"
-  mcp_call "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"manage_hub_variables\",\"arguments\":{\"tool\":\"set_variable\",\"args\":{\"name\":\"_TEST_HUB_LEASED_BY\",\"value\":${value_json}}}}}" >/dev/null
+  mcp_call "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"hub_manage_variables\",\"arguments\":{\"tool\":\"set_variable\",\"args\":{\"name\":\"_TEST_HUB_LEASED_BY\",\"value\":${value_json}}}}}" >/dev/null
 }
 
 CURRENT="$(get_lease_value)"

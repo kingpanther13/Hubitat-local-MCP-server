@@ -131,6 +131,7 @@ Defaults for unannotated tools are deliberately cautious (non-read-only, potenti
 ### Testing & eval
 
 - Every new MCP tool ships with BOTH a direct-call (unit) test AND a dispatch-envelope (integration) test under `src/test/groovy/` (existing CONTRIBUTING.md rule; reaffirmed).
+- **e2e coverage is mandatory for changes and bug fixes, not just new tools.** Any change to tool behaviour, dispatch/gateway routing, the transport/protocol layer, or any bug fix that a live-hub MCP client could observe MUST add or update a `tests/e2e_test.py` scenario in the same PR, alongside the Spock unit/integration tests. The Spock suite proves the logic in isolation against the `hubitat_ci` harness; the `e2e` job proves it against a real hub through the cloud MCP endpoint. A green Spock matrix is necessary but not sufficient — if a client could see the difference, e2e must cover it. When adding or renaming a tool, keep `tests/e2e_test.py` and the e2e deploy scripts under `.github/scripts/` in lockstep with the tool surface — stale tool names there are a silent e2e-only break.
 - If the tool's behaviour affects live-hub flows, add a `tests/BAT-v2.md` scenario in the same PR.
 - Track tool errors during eval. High invalid-parameter rates usually indicate the description or examples are the bug, not the model. Anthropic's example: Claude was appending `2025` to web-search queries until the description was fixed.
 
