@@ -73,26 +73,37 @@ def build() -> str:
 
     with zipfile.ZipFile(OUTPUT_ZIP, "w") as zf:
         for lib in LIBS:
-            _add(zf, lib["dest"], lib["source"].read_bytes())
+            # Read as text + normalize CRLF->LF so the committed ZIP is byte-identical
+            # regardless of the builder's git core.autocrlf / platform.
+            content = lib["source"].read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+            _add(zf, lib["dest"], content)
         _add(zf, "install.txt", manifest.encode())
         _add(zf, "update.txt", manifest.encode())
     return manifest
 
 
 def verify(manifest: str) -> None:
-    """Re-open the built ZIP and assert the layout HPM requires."""
+    """Re-open the built ZIP and verify the layout HPM requires.
+
+    Uses explicit raises (not assert) so the checks still run under ``python -O``.
+    """
     expected = {lib["dest"] for lib in LIBS} | {"install.txt", "update.txt"}
     with zipfile.ZipFile(OUTPUT_ZIP) as zf:
         names = set(zf.namelist())
-        assert names == expected, f"bundle entries {sorted(names)} != expected {sorted(expected)}"
-        got = zf.read("install.txt").decode()
-        assert got == manifest, "install.txt content drifted from the builder"
-        assert zf.read("update.txt").decode() == manifest, "update.txt != install.txt"
+        if names != expected:
+            raise RuntimeError(f"bundle entries {sorted(names)} != expected {sorted(expected)}")
+        if zf.read("install.txt").decode() != manifest:
+            raise RuntimeError("install.txt content drifted from the builder")
+        if zf.read("update.txt").decode() != manifest:
+            raise RuntimeError("update.txt != install.txt")
         lines = manifest.splitlines()
-        assert lines[0] == NAMESPACE, f"manifest line 1 {lines[0]!r} != namespace"
-        assert lines[1] == BUNDLE_NAME, f"manifest line 2 {lines[1]!r} != bundle name"
+        if lines[0] != NAMESPACE:
+            raise RuntimeError(f"manifest line 1 {lines[0]!r} != namespace")
+        if lines[1] != BUNDLE_NAME:
+            raise RuntimeError(f"manifest line 2 {lines[1]!r} != bundle name")
         for lib in LIBS:
-            assert f"library {lib['dest']}" in lines, f"missing library line for {lib['dest']}"
+            if f"library {lib['dest']}" not in lines:
+                raise RuntimeError(f"missing library line for {lib['dest']}")
 
 
 def main() -> int:
