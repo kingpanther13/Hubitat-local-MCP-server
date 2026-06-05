@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B 19-gateway read/write split (11 flat core + 19 gateways = 30 on tools/list, 88 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B 19-gateway read/write split (11 flat core + 19 gateways = 30 on tools/list, 89 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -619,6 +619,16 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 ```
 
 **Expected v0.8.0**: Discovers `hub_read_apps_code` → `hub_list_drivers` then → `hub_get_source` with `type=driver`.
+
+### T44a — Discover hub_list_libraries (hub_read_apps_code)
+
+```json
+{
+  "test_prompt": "List the Groovy libraries installed on the hub."
+}
+```
+
+**Expected v0.8.0**: Discovers `hub_read_apps_code` → `hub_list_libraries`.
 
 ### T45 — Discover hub_list_backups (hub_read_apps_code)
 
@@ -2322,9 +2332,9 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 11 |
 | Gateways on `tools/list` | 19 |
 | Total visible on `tools/list` | 30 |
-| Total distinct tools in codebase | 88 |
+| Total distinct tools in codebase | 89 |
 
-**7 read gateways**: `hub_read_apps_code` (9), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (4), `hub_read_variables` (3)
+**7 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (4), `hub_read_variables` (3)
 
 **12 manage gateways**: `hub_manage_code` (8), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (3), `hub_manage_devices` (6), `hub_manage_diagnostics` (8), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_rooms` (5), `hub_manage_rule_machine` (5), `hub_manage_variables` (8)
 
@@ -2332,7 +2342,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 ### Tool Coverage (non-destructive tools only)
 
-All 88 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 89 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -3074,13 +3084,13 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ```json
 {
-  "setup_prompt": "Disable the 'Consolidate tools behind category gateways' setting in the MCP app preferences so tools/list returns the flat catalog (~88 entries). Note the original value so it can be restored.",
+  "setup_prompt": "Disable the 'Consolidate tools behind category gateways' setting in the MCP app preferences so tools/list returns the flat catalog (~89 entries). Note the original value so it can be restored.",
   "test_prompt": "Invoke the MCP method tools/list with no params. Confirm the response contains a 'tools' array with every flat-mode tool present (hub_list_devices, hub_list_rooms, hub_list_files, hub_list_rules, hub_list_apps, hub_create_custom_rule -- all should appear) AND no 'nextCursor' field. Then invoke tools/list again with cursor='not-a-number' and confirm the response still returns the full catalog with no error and no nextCursor (cursor is silently ignored after the pagination removal).",
   "teardown_prompt": "Re-enable the 'Consolidate tools behind category gateways' setting if it was originally on."
 }
 ```
 
-**Expected**: First call returns a single `tools` array containing the full flat-mode catalog (~88 tools) with NO `nextCursor` field. Every flat-mode tool name appears exactly once. The cursor-with-bad-value follow-up call returns the same full catalog: cursor is now a no-op on `tools/list` (it stays opt-in only on `tools/call` paginated tools).
+**Expected**: First call returns a single `tools` array containing the full flat-mode catalog (~89 tools) with NO `nextCursor` field. Every flat-mode tool name appears exactly once. The cursor-with-bad-value follow-up call returns the same full catalog: cursor is now a no-op on `tools/list` (it stays opt-in only on `tools/call` paginated tools).
 
 **Failure modes**: Response carries a `nextCursor` (pagination was re-introduced or never removed — silent client truncation regression). Tool count substantially less than the expected flat-mode catalog (size-guard hit `-32603` because the catalog grew past the 124,000-byte cap — needs more `[[FLAT_TRIM]]` wraps). Stale `-32602` errors on cursor values (cursor handling not fully removed). Duplicate tool names in the response (catalog assembly regression).
 
@@ -3523,7 +3533,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **11 flat core + 19 gateways (30 on tools/list, 88 total distinct tools)** post installed-apps + RM interop + native CRUD + hub_list_app_pages + poll_until_attribute + library management + HPM package state + the PR1B read/write gateway split (was 23 core + 13 gateways / 36 total / 103 tools before PR1B; 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
+1. **Architecture**: 18 core + 8 gateways (26 total) → **11 flat core + 19 gateways (30 on tools/list, 89 total distinct tools)** post installed-apps + RM interop + native CRUD + hub_list_app_pages + poll_until_attribute + library management + HPM package state + the PR1B read/write gateway split (was 23 core + 13 gateways / 36 total / 103 tools before PR1B; 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
 2. **Merged tools**: `enable_rule`/`disable_rule` → `hub_update_custom_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `hub_manage_virtual_device` (action enum)
 3. **Promoted to core**: `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `hub_manage_diagnostics`, other tools merged into `hub_get_info` (core) or promoted

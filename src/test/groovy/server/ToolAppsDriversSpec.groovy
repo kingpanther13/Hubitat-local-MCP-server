@@ -294,6 +294,168 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    // -------- toolListLibraries --------
+
+    def "hub_list_libraries returns library summaries (source omitted) from the hub API"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            '[{"id": 7, "name": "McpSmokeTestLib", "namespace": "mcp", "version": 1, "source": "library(...)"}, {"id": 9, "name": "OtherLib", "namespace": "foo", "version": 3, "source": "x"}]'
+        }
+
+        when:
+        def result = script.toolListLibraries([:])
+
+        then:
+        result.source == 'hub_api'
+        result.count == 2
+        result.libraries*.name == ['McpSmokeTestLib', 'OtherLib']
+        result.libraries*.id == ['7', '9']
+        result.libraries[0].namespace == 'mcp'
+        result.libraries[0].version == 1
+
+        and: 'full source is omitted to keep the list lean (read it via hub_get_source)'
+        !result.libraries[0].containsKey('source')
+    }
+
+    def "hub_list_libraries reports unavailable when the hub API throws"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            throw new RuntimeException('Connection refused')
+        }
+
+        when:
+        def result = script.toolListLibraries([:])
+
+        then:
+        result.source == 'unavailable'
+        result.libraries == []
+        result.note.contains('Connection refused')
+    }
+
+    @spock.lang.Unroll
+    def "hub_list_libraries via dispatch returns library summaries (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            '[{"id": 7, "name": "McpSmokeTestLib", "namespace": "mcp", "version": 1, "source": "x"}]'
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_libraries', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.source == 'hub_api'
+        inner.count == 1
+        inner.libraries[0].name == 'McpSmokeTestLib'
+        inner.libraries[0].id == '7'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "hub_list_libraries paginates with opt-in cursor (page size 50)"() {
+        given:
+        enableRead()
+        // 60 libraries -> first page caps at 50 and emits a nextCursor; second page returns the rest.
+        def libs = (1..60).collect { i -> [id: i, name: "Lib${i}", namespace: "ns", version: 1] }
+        hubGet.register('/hub2/userLibraries') { params ->
+            groovy.json.JsonOutput.toJson(libs)
+        }
+
+        when: 'first page (cursor="")'
+        def page1 = script.toolListLibraries([cursor: ''])
+
+        then:
+        page1.total == 60
+        page1.count == 50
+        page1.libraries.size() == 50
+        page1.libraries.first().name == 'Lib1'
+        page1.nextCursor != null
+
+        when: 'second page via nextCursor'
+        def page2 = script.toolListLibraries([cursor: page1.nextCursor])
+
+        then:
+        page2.count == 10
+        page2.libraries.size() == 10
+        page2.libraries.last().name == 'Lib60'
+        page2.nextCursor == null
+    }
+
+    def "hub_list_libraries reports hub_api_raw when the hub returns non-array JSON"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            '{"unexpected":"shape"}'
+        }
+
+        when:
+        def result = script.toolListLibraries([:])
+
+        then:
+        result.source == 'hub_api_raw'
+        result.libraries == []
+        result.count == 0
+        result.note.contains('not a JSON array')
+    }
+
+    def "hub_list_libraries reports hub_api_raw when the hub returns non-JSON"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            '<html>not json</html>'
+        }
+
+        when:
+        def result = script.toolListLibraries([:])
+
+        then:
+        result.source == 'hub_api_raw'
+        result.libraries == []
+        result.count == 0
+        result.note.contains('not JSON')
+    }
+
+    def "hub_list_libraries reports unavailable on an empty hub response"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            null
+        }
+
+        when:
+        def result = script.toolListLibraries([:])
+
+        then:
+        result.source == 'unavailable'
+        result.libraries == []
+        result.count == 0
+        result.note.contains('Empty response')
+    }
+
+    def "hub_list_libraries flags library rows that have no id"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            '[{"id": 7, "name": "GoodLib", "namespace": "mcp", "version": 1}, {"name": "NoIdLib", "namespace": "mcp", "version": 1}]'
+        }
+
+        when:
+        def result = script.toolListLibraries([:])
+
+        then:
+        result.source == 'hub_api'
+        result.count == 2
+        result.libraries.find { it.name == 'NoIdLib' }.id == null
+        result.note.contains('no id')
+    }
+
     // -------- toolGetSource (app / driver) --------
 
     def "hub_get_source app throws when Read tools are disabled"() {
