@@ -51,29 +51,48 @@ fresh context can continue. Part of the issue #209 monolith-split effort.
 4. Maintainer will test the **first HPM update on their personal hub**; after confirming, they use the
    dev tool for dev work.
 
-## Restructured tasks (PR-2, this branch)
+## Restructured tasks — now TWO PRs (tool first, then `#include`)
 
-- **T3 — Build `hub_update_package` (dev-mode WRITE tool).** ref → update app + `#include`'d libraries,
-  idempotent via `hub_list_libraries`. Dev-mode gated. Spock unit + dispatch tests; classify as a
-  **write** tool (add to `expectedWrites`, NOT `getReadOnlyToolNames`); `outputSchema`; bump tool count
-  (this branch is at **89** → 90) in `McpToolAnnotationsSpec` (`names.size()`) + docs
-  (README/SKILL/TOOL_GUIDE/tool-reference — `sandbox_lint` enforces the doc count).
-- **T4 — Add the single `#include mcp.McpSmokeTestLib` to `hubitat-mcp-server.groovy` + the shared CI
-  include-resolver.** No CI lane resolves `#include` today. Build one resolver: scan `#include
-  mcp.Name` → read `libraries/<name>.groovy` → strip its `library(...)` decl → append body **before**
-  compile/parse. Wire into `HarnessSpec.compileSharedScript` (~lines 233-240, the `HubitatAppSandbox`
-  call), `ci/groovy24-parse/parse_check.groovy` (before `cu.compile`), and the `ci/groovy2x-spock`
-  scaffold. Add an observable marker — fold `mcpSmokeTestMarker()` into a read tool's output (e.g.
-  `toolGetHubPerformance`/`hub_get_metrics` ~line 11211, or `hub_get_info`). Add a `ResolverSpec` + a
-  marker-assertion spec. KEEP `preferences{}` (lines 32-37) and `mappings{}` (651-665) at file scope —
-  they cannot be `#include`d.
-- **T5 — Prove `#include` compiles/loads on the e2e hub** (the load-bearing validation). Use the dev
-  tool / deploy script to push app(+`#include`) + library from the PR SHA to the leased e2e hub, then
-  assert the app compiled with the include resolving (marker present via the read tool). Blocked by
-  T3, T4.
-- **T6 — e2e: deploy full PR package via the dev tool from PR-SHA URLs; add `libraries/**` to the
-  `hub-e2e.yml` path filter; strengthen `test_list_libraries` to ASSERT `McpSmokeTestLib` present
-  (currently tolerant); assert the compile (the option-(i) won't-break-via-HPM proof).** Blocked by T3.
+**Sequencing decision (2026-06-05):** land `hub_update_package` as its OWN PR first (PR-A), THEN the
+`#include` PR (PR-B) uses the now-on-the-hub tool to deploy. Rationale: the tool can't deploy *itself*
+(it isn't on the hub until the app carrying it is deployed), and PR-A's app has no `#include` so it
+deploys trivially via the existing `hub_update_app`. After PR-A lands, every later PR's e2e (and the
+dev flow) **dogfoods** `hub_update_package` as the deploy mechanism — no library-first bootstrap to
+hand-roll, no chicken-and-egg. (No HARD chicken-and-egg exists — existing `hub_create_library` +
+`hub_update_app` could bootstrap library-first in one PR — but tool-first is cleaner and self-dogfooding.)
+
+**PR-A — `hub_update_package` dev tool (land first):**
+- **T3 — Build `hub_update_package` (dev-mode WRITE tool).** Arg `ref` (branch/SHA) → fetch app at ref,
+  parse ALL `#include mcp.<Name>` directives, install/update EACH library's source idempotently
+  (`hub_list_libraries` → update if present else create), then `hub_update_app(importUrl)`;
+  libraries-first. Source/importUrl push (NOT bundle zip). Dev-mode gated (gate like `hub_manage_mcp`;
+  only present when `enableDeveloperMode` ON). Spock unit + dispatch tests; classify as **write**
+  (`expectedWrites`, NOT `getReadOnlyToolNames`); `outputSchema`; bump tool count (89 → 90) in
+  `McpToolAnnotationsSpec` + docs (`sandbox_lint` enforces) + a BAT-v2 scenario. Settle the
+  `#include mcp.<Name>` → `libraries/<file>.groovy` source-path map (multi-library ready). **e2e
+  validation:** deploy the PR app via the existing `hub_update_app`, then CALL `hub_update_package(ref)`
+  and assert it re-installs cleanly (proves the tool works end to end on a real hub).
+
+**PR-B — `#include` + resolver (stacked on PR-A; e2e deploys via the tool):**
+- **T4 — Add `#include mcp.McpSmokeTestLib` + the shared CI include-resolver.** No CI lane resolves
+  `#include` today. Build one resolver: scan `#include mcp.Name` → read `libraries/<name>.groovy` →
+  strip its `library(...)` decl → append body BEFORE compile/parse. Wire into
+  `HarnessSpec.compileSharedScript` (~233-240), `ci/groovy24-parse/parse_check.groovy` (before
+  `cu.compile`), and the `ci/groovy2x-spock` scaffold. Observable marker: fold `mcpSmokeTestMarker()`
+  into a read tool's output. Add `ResolverSpec` + marker spec. KEEP `preferences{}` (32-37) and
+  `mappings{}` (651-665) at file scope.
+- **T5 — Prove `#include` compiles/loads on the e2e hub** (load-bearing). e2e calls
+  `hub_update_package(ref=PR-SHA)` (on the hub from PR-A) to deploy library-first then the
+  app-with-`#include`, then asserts the app compiled with the include resolving (marker present).
+- **T6 — e2e wiring + assertions.** `hub-e2e.yml` deploys via `hub_update_package`; add `libraries/**`
+  to the path filter; strengthen `test_list_libraries` to ASSERT `McpSmokeTestLib` present; assert the
+  compile (option-(i) won't-break-via-HPM proof).
+
+**Multiple libraries (when modularization proper begins):** the dev tool handles N libraries natively
+(parses every `#include`, installs each source). The HPM/release path puts N libraries in ONE bundle
+`.zip` — `install.txt` lists one `library <ns>.<Name>.groovy` line per lib (level99 ships ~5-7 in a
+single bundle); `tools/build-bundle.py` just grows its `LIBS` list. Both are list-driven; each new
+library is registered in the `#include`→path map (dev tool) and in `LIBS` (bundle build).
 
 ## Technical reference (for a fresh context)
 
