@@ -1338,12 +1338,14 @@ def getGatewayConfig() {
         ],
         hub_manage_mcp: [
             description: "Developer Mode self-administration: tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration, scope, and operational state without manual UI intervention. Requires `enableDeveloperMode` toggle in the MCP rule app settings (default OFF). Each write is logged at WARN level for audit. First gateway under the Developer Mode pattern — additional self-admin tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle.",
-            tools: ["hub_update_mcp_settings"],
+            tools: ["hub_update_mcp_settings", "hub_update_package"],
             summaries: [
-                hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Args: settings (map of key→value), confirm=true. Allowlist-gated."
+                hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Args: settings (map of key→value), confirm=true. Allowlist-gated.",
+                hub_update_package: "Self-deploy the whole package (app + #include'd libraries) at a git ref -- libraries first, app last, abort-before-app on any failure. Args: ref, dryRun?, baseUrl?, confirm=true. Hidden unless Developer Mode is on."
             ],
             searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation"
+                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation",
+                hub_update_package: "deploy package update app and libraries together git ref branch sha include library install update self-update modularization issue 209 dev ci push whole bundle source importUrl"
             ]
         ],
         hub_read_devices: [
@@ -1507,9 +1509,26 @@ def getHiddenToolNames() {
     } else if (mode == "readonly") {
         ["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each { hide << it }
     }
+    // Developer-Mode-only tools: catalog-hidden ENTIRELY when Developer Mode is off
+    // (stricter than the runtime-refusal the older dev tools use), so a low-context
+    // agent can't even see them unless the toggle is explicitly on. getAllToolDefinitions()
+    // still lists them, so dispatch + classification + the canonical tool count are
+    // unaffected -- only the live tools/list + search corpus drop them.
+    if (!settings.enableDeveloperMode) {
+        hide.addAll(getDeveloperModeOnlyToolNames())
+    }
     // #114 advanced per-tool / per-gateway overrides (deny-only).
     hide.addAll(getEffectiveDisabledTools())
     return hide
+}
+
+// Tools that vanish from the catalog (tools/list + search corpus) whenever Developer
+// Mode is off -- not merely runtime-refused. hub_update_package is the first: a self-
+// deploy tool that pushes app+libraries at a git ref, only meaningful (and only safe to
+// expose) during dev work with the toggle on. Returned as String names; getHiddenToolNames
+// folds them into `hide` when settings.enableDeveloperMode is falsy.
+def getDeveloperModeOnlyToolNames() {
+    return ["hub_update_package"] as Set
 }
 
 def getReadOnlyToolNames() {
@@ -2614,6 +2633,46 @@ def _getAllToolDefinitions_part2() {
                     message: [type: "string", description: "Human-readable result, including reconnect note"]
                 ],
                 required: ["success", "updated", "message"]
+            ]
+        ],
+        [
+            name: "hub_update_package",
+            description: """Developer Mode self-deploy: push the WHOLE MCP package (this app + every library it #includes) at a git ref in one call -- the libraries-aware counterpart to hub_update_app(importUrl). Built for low-context dev/CI deploys (issue #209 modularization).
+
+Flow: fetch hubitat-mcp-server.groovy at `ref` -> parse its `#include mcp.<Name>` directives -> install/update each referenced library from libraries/<file>.groovy (idempotent: update if present, else create) -> THEN update the app. Libraries first, app last, so any #include resolves.
+
+Brick-safe by design: if ANYTHING before the app save fails (source fetch, an #include with no known library mapping, any library write), the tool aborts BEFORE touching the app -- the app is left exactly as-is and still updatable via hub_update_app. hub_update_app itself is untouched and always available as the escape hatch. The app leg reuses hub_update_app's exact update path (auto-backup + post-save verify); self-modification is gated by this tool's own enableDeveloperMode check (it deploys by Apps Code CLASS id, so hub_update_app's instance-id-keyed self-update guard does not itself fire here).
+
+Gated on enableDeveloperMode (the tool is hidden from tools/list when Developer Mode is off) + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch+parse+plan with ZERO writes (no confirm/backup needed) and see exactly which libraries would be installed and which app class would be updated.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    ref: [type: "string", description: "Branch, tag, or commit SHA to deploy (e.g. 'main' or a PR head SHA). Source is fetched from the canonical repo raw base at this ref."],
+                    dryRun: [type: "boolean", description: "OPTIONAL. When true, fetch + parse + resolve + report the deploy plan with NO writes (skips the confirm/backup gate). Default false."],
+                    baseUrl: [type: "string", description: "OPTIONAL raw-source base override (no trailing slash); URLs are built as <baseUrl>/<ref>/<path>. Defaults to the canonical repo. Use for forks / CI branches on a different remote."],
+                    confirm: [type: "boolean", description: "REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."]
+                ],
+                required: ["ref"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "True when the deploy (or dry-run plan) completed; false on abort or app-update failure"],
+                    ref: [type: "string", description: "The git ref deployed"],
+                    dryRun: [type: "boolean", description: "True when this was a plan-only run (no writes)"],
+                    aborted: [type: "boolean", description: "True when the deploy stopped before the app save; the app was left untouched"],
+                    partial: [type: "boolean", description: "True when libraries landed but the app-update call did not return cleanly"],
+                    abortReason: [type: "string", description: "Machine-readable abort cause (self_app_unresolved / app_source_fetch_failed / unmapped_include / library_list_failed / library_list_unparseable / library_write_failed / library_unverified / library_write_threw / app_update_threw)"],
+                    appClassId: [type: "string", description: "Resolved Apps Code class id of this MCP server app"],
+                    appUrl: [type: "string", description: "Raw URL the app source was fetched from"],
+                    includes: [type: "array", description: "Parsed #include tokens (namespace.Name)", items: [type: "string"]],
+                    plannedLibraries: [type: "array", description: "dryRun: libraries that would be installed/updated", items: [type: "object"]],
+                    libraries: [type: "array", description: "Per-library results (include, name, namespace, action create|update, libraryId, success, error)", items: [type: "object"]],
+                    app: [type: "object", description: "The hub_update_app result for the app leg"],
+                    message: [type: "string", description: "Human-readable summary"],
+                    error: [type: "string", description: "Failure detail; present on abort / failure"]
+                ],
+                required: ["success"]
             ]
         ],
     ]
@@ -5233,6 +5292,7 @@ def executeTool(toolName, args) {
         case "hub_delete_connector": return toolRemoveConnector(args)
         case "hub_list_variable_changes": return toolGetVariableHistory(args)
         case "hub_update_mcp_settings": return toolUpdateMcpSettings(args)
+        case "hub_update_package": return toolUpdatePackage(args)
         case "hub_get_hsm_status": return toolGetHsmStatus()
         case "hub_set_hsm": return toolSetHsm(args.mode)
 
@@ -13482,6 +13542,256 @@ def toolUpdateLibraryCode(args) {
         mcpLogError("hub-admin", "Library update failed", e)
         return [success: false, error: "Library update failed: ${e.message}"]
     }
+}
+
+// ==================== hub_update_package (Developer Mode package deploy) ====================
+//
+// One-call dev deploy: push the whole MCP package (app + every #include'd library)
+// at a git ref, the way hub_update_app(importUrl) pushes only the app today. The
+// design is built around ONE guarantee (issue #209): a package failure must never
+// cost the main app its ability to update.
+//
+//   1. hub_update_app is untouched -- this tool is pure orchestration ON TOP of it,
+//      so the plain app-update escape hatch is always independently available.
+//   2. Libraries are installed FIRST, the app saved LAST -- the app (which #includes
+//      the libraries) is only saved once every library it needs is confirmed present,
+//      so it is never saved while referencing a missing library.
+//   3. ANY failure (source fetch, unmapped include, library write) aborts BEFORE the
+//      app save -- the parent app is left exactly as it was, last-good and updatable.
+//   4. Fail-closed on every unknown (can't resolve self, can't list libraries, empty
+//      fetch) -- refuse and write nothing.
+//   5. The app leg reuses hub_update_app's exact update path (auto-backup + post-save
+//      verify). Self-modification is gated by this tool's own enableDeveloperMode check
+//      at the top -- NOT by hub_update_app's self-update guard, which keys on the running
+//      INSTANCE id while this tool deploys by Apps Code CLASS id, so that guard never fires
+//      here. The dev-mode gate is what keeps a self-deploy from running unauthenticated.
+
+// Canonical raw-source base for the MCP package. Per-call URLs are "${base}/${ref}/${path}";
+// mirrors packageManifest.json's location (.../Hubitat-local-MCP-server/main/hubitat-mcp-server.groovy).
+// Overridable per call via baseUrl for forks / CI branches on a different remote.
+def getPackageSourceBase() {
+    return "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server"
+}
+
+// Registry of #include directives the package deploy tool knows how to satisfy:
+// include token "namespace.Name" -> [namespace, name, path]. Single source of truth
+// for hub_update_package's library leg; grows as issue #209 splits the monolith. Keep
+// in sync with tools/build-bundle.py's LIBS list (the parallel HPM bundle delivery path).
+def getPackageLibraryRegistry() {
+    return [
+        "mcp.McpSmokeTestLib": [namespace: "mcp", name: "McpSmokeTestLib", path: "libraries/mcp-smoke-test-lib.groovy"]
+    ]
+}
+
+// Parse "#include namespace.Name" directives from Groovy source. Returns an ordered,
+// de-duplicated list of include tokens ("namespace.Name") in first-seen order so the
+// install order is deterministic across runs.
+def _parseIncludeDirectives(String source) {
+    def tokens = []
+    def seen = [] as Set
+    def matcher = (source =~ /(?m)^[ \t]*#include[ \t]+([A-Za-z0-9_]+\.[A-Za-z0-9_]+)[ \t]*$/)
+    while (matcher.find()) {
+        def tok = matcher.group(1)
+        if (!seen.contains(tok)) { seen << tok; tokens << tok }
+    }
+    return tokens
+}
+
+// Resolve the MCP server's own Apps Code CLASS id (distinct from the running INSTANCE
+// id) by matching definition()'s namespace+name against /hub2/userAppTypes -- the same
+// lookup the e2e deploy script does. Returns the id String, or null when it can't be
+// resolved (the caller fails closed and writes nothing).
+def _resolveSelfAppClassId() {
+    try {
+        def responseText = hubInternalGet("/hub2/userAppTypes")
+        if (!responseText) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        if (!(parsed instanceof List)) return null
+        def match = parsed.find { it?.namespace == "mcp" && it?.name == "MCP Rule Server" }
+        return match?.id?.toString()
+    } catch (Exception e) {
+        mcpLog("warn", "developer-mode", "hub_update_package: self app-class lookup failed: ${e.toString()}")
+        return null
+    }
+}
+
+def toolUpdatePackage(args) {
+    // Developer-Mode gate (mirrors toolUpdateMcpSettings): IllegalArgumentException so
+    // the dispatcher routes a toggle-off refusal through the clean -32602 Invalid params
+    // branch rather than a 500. The tool is ALSO catalog-hidden when dev mode is off
+    // (getDeveloperModeOnlyToolNames) -- this is belt-and-suspenders for a direct call.
+    if (!settings.enableDeveloperMode) {
+        throw new IllegalArgumentException("Developer Mode tools are disabled. Enable 'Developer Mode Tools' in MCP rule app settings to use hub_update_package.")
+    }
+
+    def ref = args?.ref
+    if (!(ref instanceof String) || !ref.trim()) {
+        throw new IllegalArgumentException("ref is required: a branch, tag, or commit SHA to deploy (e.g. 'main' or a PR head SHA).")
+    }
+    ref = ref.trim()
+    def dryRun = (args?.dryRun == true)
+
+    // Non-dry-run = a real write: enforce confirm + a <24h backup ONCE here (fail fast,
+    // before any network I/O). The inner library/app calls re-check the same gate and
+    // pass cleanly since the timestamp is already fresh. Dry run writes nothing, so it
+    // skips the gate -- it only fetches + parses + plans.
+    if (!dryRun) {
+        requireDestructiveConfirm(args?.confirm)
+    }
+
+    def base = (args?.baseUrl instanceof String && args.baseUrl.trim())
+        ? args.baseUrl.trim().replaceAll('/+$', '')
+        : getPackageSourceBase()
+    // .toString() throughout: _fetchSourceFromUrl / hub_update_library / hub_update_app
+    // reject a GString importUrl (instanceof String is false for GStringImpl).
+    def appUrl = "${base}/${ref}/hubitat-mcp-server.groovy".toString()
+
+    // Resolve the deploy target (self app-class id) up front. A deploy we can't target
+    // is a no-op we should refuse BEFORE any library write -- fail closed.
+    def appClassId = _resolveSelfAppClassId()
+    if (!appClassId) {
+        return [
+            success: false, aborted: true, abortReason: "self_app_unresolved", ref: ref,
+            error: "Could not resolve the MCP server's own Apps Code class id via /hub2/userAppTypes (namespace=mcp, name='MCP Rule Server'). Nothing was changed; the app remains updatable via hub_update_app."
+        ]
+    }
+
+    // Fetch app source at ref, then parse its #include directives. A fetch failure is a
+    // clean abort -- nothing written.
+    def appSource
+    try {
+        appSource = _fetchSourceFromUrl(appUrl)
+    } catch (Exception e) {
+        return [
+            success: false, aborted: true, abortReason: "app_source_fetch_failed", ref: ref, appUrl: appUrl,
+            error: "Failed to fetch app source at ref '${ref}' (${appUrl}): ${e.message ?: e.toString()}. Nothing was changed."
+        ]
+    }
+
+    def includeTokens = _parseIncludeDirectives(appSource)
+    def registry = getPackageLibraryRegistry()
+
+    // Fail-closed: every parsed #include MUST have a registry mapping. An unmapped
+    // include means we can't fetch its source, so deploying the app would leave it
+    // referencing a library that isn't installed -> compile break. Refuse before any write.
+    def unmapped = includeTokens.findAll { !registry.containsKey(it) }
+    if (unmapped) {
+        return [
+            success: false, aborted: true, abortReason: "unmapped_include", ref: ref, includes: includeTokens,
+            error: "App source references #include(s) with no known library mapping: ${unmapped.join(', ')}. Add them to getPackageLibraryRegistry() (and tools/build-bundle.py LIBS) before deploying. Nothing was changed."
+        ]
+    }
+
+    // Build the deploy plan -- libraries (first), app (last).
+    def plannedLibraries = includeTokens.collect { tok ->
+        def entry = registry[tok]
+        [include: tok, namespace: entry.namespace, name: entry.name, url: "${base}/${ref}/${entry.path}".toString()]
+    }
+
+    if (dryRun) {
+        return [
+            success: true, dryRun: true, ref: ref, appClassId: appClassId, appUrl: appUrl,
+            includes: includeTokens, plannedLibraries: plannedLibraries,
+            message: "Dry run: would install/update ${plannedLibraries.size()} librar${plannedLibraries.size() == 1 ? 'y' : 'ies'} then update app class ${appClassId} to ref ${ref}. No changes made."
+        ]
+    }
+
+    // Snapshot existing libraries once (only when there ARE libraries to install), to
+    // choose update-vs-create per library. Fail closed if the list can't be fetched OR
+    // isn't a JSON array: a blind create could duplicate an existing library, and we must
+    // not advance to the app save on an unknown library state. A no-include deploy skips
+    // this entirely -- it needs no library list.
+    def existingLibs = []
+    if (!plannedLibraries.isEmpty()) {
+        try {
+            def libText = hubInternalGet("/hub2/userLibraries")
+            def libParsed = libText ? new groovy.json.JsonSlurper().parseText(libText) : null
+            if (!(libParsed instanceof List)) {
+                return [
+                    success: false, aborted: true, abortReason: "library_list_unparseable", ref: ref,
+                    error: "The existing-library list (/hub2/userLibraries) was empty or not a JSON array, so create-vs-update can't be planned safely (a blind create could duplicate a library). Nothing was changed; the app remains updatable via hub_update_app."
+                ]
+            }
+            existingLibs = libParsed
+        } catch (Exception e) {
+            return [
+                success: false, aborted: true, abortReason: "library_list_failed", ref: ref,
+                error: "Could not list existing libraries (/hub2/userLibraries) to plan create-vs-update: ${e.message ?: e.toString()}. Nothing was changed; the app remains updatable via hub_update_app."
+            ]
+        }
+    }
+
+    // Libraries FIRST. Abort the WHOLE deploy on the first failure, BEFORE touching the
+    // app, so a library problem never advances to an app save that would reference a
+    // missing/stale library.
+    def libResults = []
+    for (lib in plannedLibraries) {
+        def existing = existingLibs.find { it?.namespace == lib.namespace && it?.name == lib.name }
+        def isUpdate = (existing?.id != null)
+        def r
+        try {
+            r = isUpdate
+                ? toolUpdateLibraryCode([libraryId: existing.id, importUrl: lib.url, confirm: true])
+                : toolInstallLibrary([importUrl: lib.url, confirm: true])
+        } catch (Exception e) {
+            mcpLog("warn", "developer-mode", "hub_update_package: library ${lib.include} ${isUpdate ? 'update' : 'install'} threw: ${e.toString()}")
+            return [
+                success: false, aborted: true, abortReason: "library_write_threw", ref: ref, libraries: libResults,
+                error: "Library ${lib.include} failed to ${isUpdate ? 'update' : 'install'}: ${e.message ?: e.toString()}. App NOT touched -- it remains as-is and updatable via hub_update_app."
+            ]
+        }
+        def ok = (r?.success == true)
+        // verified==false is set by hub_create_library when its post-install verify fetch
+        // fails transiently -- the install was ACCEPTED but never confirmed persisted. Treat
+        // that as a blocker so the app is never saved against an unconfirmed #include target.
+        // (The update path leaves verified unset/null; the existing library already satisfies
+        // the include, so an unconfirmed re-save of newer source is not a brick risk.)
+        def unverified = (r?.verified == false)
+        libResults << [
+            include: lib.include, name: lib.name, namespace: lib.namespace,
+            action: (isUpdate ? "update" : "create"),
+            libraryId: (r?.libraryId?.toString() ?: existing?.id?.toString()),
+            success: ok, verified: r?.verified,
+            error: (ok ? (unverified ? (r?.verifyError ?: "install accepted but not verified persisted") : null) : (r?.error ?: r?.message))
+        ]
+        if (!ok || unverified) {
+            def detail = !ok
+                ? "reported failure: ${r?.error ?: r?.message ?: 'unknown'}"
+                : "was accepted but could not be verified as persisted (${r?.verifyError ?: 'transient verify failure'})"
+            return [
+                success: false, aborted: true, abortReason: (ok ? "library_unverified" : "library_write_failed"), ref: ref, libraries: libResults,
+                error: "Library ${lib.include} ${isUpdate ? 'update' : 'install'} ${detail}. App NOT touched -- it remains as-is and updatable via hub_update_app."
+            ]
+        }
+    }
+
+    // App LAST. Every library is confirmed in place, so any #include resolves. Reuse
+    // hub_update_app's exact update path (auto-backup + post-save verify). We deploy by the
+    // Apps Code CLASS id (appClassId), which is NOT the running instance id, so hub_update_app's
+    // instance-id-keyed self-update guard does not fire here -- self-deploy is instead gated by
+    // this tool's own enableDeveloperMode check at the top.
+    def appResult
+    try {
+        appResult = toolUpdateAppCode([appId: appClassId, importUrl: appUrl, confirm: true])
+    } catch (Exception e) {
+        // A self-update recompiles the running server mid-call, so the response can be
+        // lost even though the save landed. Surface it: libraries are already in place,
+        // and hub_update_app remains available to retry the app leg directly.
+        return [
+            success: false, partial: true, abortReason: "app_update_threw", ref: ref,
+            libraries: libResults, appClassId: appClassId,
+            error: "Libraries installed, but the app update call did not return cleanly (likely the self-update recompile): ${e.message ?: e.toString()}. Verify with hub_get_source; re-run hub_update_app(importUrl) if needed."
+        ]
+    }
+
+    def appOk = (appResult?.success == true)
+    mcpLog(appOk ? "info" : "warn", "developer-mode", "hub_update_package: ref=${ref} libraries=${libResults.size()} appUpdated=${appOk}")
+    return [
+        success: appOk, ref: ref, appClassId: appClassId, includes: includeTokens, libraries: libResults, app: appResult,
+        message: appOk
+            ? "Package deployed: ${libResults.size()} librar${libResults.size() == 1 ? 'y' : 'ies'} + app class ${appClassId} updated to ref ${ref}."
+            : "Libraries installed; app update reported failure -- see app.error. Libraries are in place and hub_update_app remains available to retry."
+    ]
 }
 
 /**

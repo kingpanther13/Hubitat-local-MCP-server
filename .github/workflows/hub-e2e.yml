@@ -23,6 +23,7 @@ on:
       - '.github/scripts/mcp_restore_env.sh'
       - '.github/scripts/mcp_deploy_source.sh'
       - '.github/scripts/mcp_restore_source.sh'
+      - '.github/scripts/mcp_validate_package_tool.sh'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -168,6 +169,10 @@ jobs:
           fi
           URL="https://raw.githubusercontent.com/$REPO/$SHA/hubitat-mcp-server.groovy"
           echo "PR_SOURCE_URL=$URL" >> "$GITHUB_ENV"
+          # Same validated REPO/SHA, split into the (baseUrl, ref) form hub_update_package
+          # takes -- the dev-tool validation step below builds the identical URL on-hub.
+          echo "PR_RAW_BASE=https://raw.githubusercontent.com/$REPO" >> "$GITHUB_ENV"
+          echo "PR_HEAD_SHA_RESOLVED=$SHA" >> "$GITHUB_ENV"
           echo "::notice::importUrl deploy source: $URL"
 
       - name: Deploy PR source to test hub
@@ -198,6 +203,21 @@ jobs:
       - name: Run E2E tests
         if: steps.gate.outputs.available == 'true'
         run: python tests/e2e_test.py
+
+      # The deploy above landed THIS PR's app on the hub, so hub_update_package now
+      # exists there. Exercise its discovery path live (dryRun: fetch PR source ->
+      # parse #includes -> resolve self app-class) with ZERO writes. This is a REAL
+      # blocking gate -- e2e passing is what shows the tool works. It runs AFTER the
+      # e2e suite so a tool failure can't skip the suite; the cleanup/restore steps
+      # below all use `if: always()`, so the hub is restored regardless. The full
+      # write path (real library + #include + compile equivalence) is validated in
+      # the follow-up #include PR, where a library exists to install.
+      - name: Validate hub_update_package dev tool (dryRun)
+        if: steps.gate.outputs.available == 'true'
+        env:
+          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
+          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
+        run: bash .github/scripts/mcp_validate_package_tool.sh
 
       - name: Cleanup BAT_E2E_ artifacts
         if: always() && steps.gate.outputs.available == 'true'

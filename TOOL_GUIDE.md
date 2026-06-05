@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 30 items (11 core + 19 gateways) covering 89 total tools. Use `hub_search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 30 items (11 core + 19 gateways) covering 90 total tools. Use `hub_search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
@@ -808,7 +808,7 @@ The right move when `partial: true` is to follow the `repairHints`, NOT to delet
 
 The `hub_manage_mcp` gateway exposes self-administration tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration without manual UI intervention. **Requires the opt-in `Enable Developer Mode Tools` toggle** in the MCP rule app settings page (default OFF). Each successful write is logged at WARN level for audit. If the user sees "Developer Mode tools are disabled" errors, direct them to enable the toggle in the MCP Rule Server app settings.
 
-### hub_manage_mcp (1 tool)
+### hub_manage_mcp (2 tools)
 
 - **`hub_update_mcp_settings`** — update one or more of the MCP rule app's own settings (toggles, log level, tuning params)
   - Args: `settings` (map of `{key: value}`), `confirm=true`
@@ -816,6 +816,13 @@ The `hub_manage_mcp` gateway exposes self-administration tools that let an LLM a
   - **Excluded** from the allowlist: `enableWrite` (footgun — would disable own write path mid-session), `enableDeveloperMode` (lockout protection — must remain UI-only to disable), `selectedDevices` (different wire format, separate tool planned), and `disabled_tools`/`disabled_gateways` (could self-disable this tool — UI-only on the Advanced page)
   - After changing any `enable*` toggle or `useGateways`, MCP clients (Claude Code, etc.) may need to reconnect to refresh the cached tool schema
   - Gated on: `enableDeveloperMode` + the Write master + `confirm=true` + a recent backup
+
+- **`hub_update_package`** — self-deploy the whole package (this app + every library it `#include`s) at a git `ref`, in one call (the libraries-aware counterpart to `hub_update_app(importUrl)`). For low-context dev/CI deploys during the issue #209 modularization.
+  - Args: `ref` (branch/tag/SHA), `dryRun?` (plan-only, no writes), `baseUrl?` (raw-source base override for forks/CI), `confirm=true` (real deploy only)
+  - Flow: fetch the app source at `ref` → parse its `#include mcp.<Name>` directives → install/update each referenced library from `libraries/<file>.groovy` (idempotent: update if present, else create) → **then** update the app. **Libraries first, app last.**
+  - **Brick-safe:** any failure before the app save (source fetch, an `#include` with no known library mapping, any library write or an unverified install) aborts **before** touching the app — the app is left exactly as-is and still updatable via `hub_update_app`, which is never modified and always available as the escape hatch.
+  - **Hidden from `tools/list` when Developer Mode is off** (not merely runtime-refused). Use `dryRun=true` to fetch + parse + plan with zero writes (no `confirm`/backup needed).
+  - Gated on: `enableDeveloperMode` (hidden when off) + the Write master + `confirm=true` + a recent backup
 
 ### hub_manage_variables — `hub_delete_variable`
 
