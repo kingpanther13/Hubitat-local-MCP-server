@@ -200,25 +200,24 @@ jobs:
         if: steps.gate.outputs.available == 'true'
         run: bash .github/scripts/mcp_verify_deploy.sh hubitat-mcp-server.groovy
 
-      # The deploy above just landed THIS PR's app on the hub, so hub_update_package
-      # now exists there. Exercise its discovery path live (dryRun: fetch PR source ->
-      # parse #includes -> resolve self app-class) with ZERO writes -- no flaky
-      # self-update recompile. The full write path (real library + #include + compile
-      # equivalence) is validated in the follow-up #include PR, where a library exists
-      # to install. Non-blocking: a tool regression here shouldn't mask the e2e suite.
+      - name: Run E2E tests
+        if: steps.gate.outputs.available == 'true'
+        run: python tests/e2e_test.py
+
+      # The deploy above landed THIS PR's app on the hub, so hub_update_package now
+      # exists there. Exercise its discovery path live (dryRun: fetch PR source ->
+      # parse #includes -> resolve self app-class) with ZERO writes. This is a REAL
+      # blocking gate -- e2e passing is what shows the tool works. It runs AFTER the
+      # e2e suite so a tool failure can't skip the suite; the cleanup/restore steps
+      # below all use `if: always()`, so the hub is restored regardless. The full
+      # write path (real library + #include + compile equivalence) is validated in
+      # the follow-up #include PR, where a library exists to install.
       - name: Validate hub_update_package dev tool (dryRun)
         if: steps.gate.outputs.available == 'true'
-        # Advisory: a dev-tool regression is surfaced as a red step but must not
-        # skip the e2e suite (which has no if: always()) or the restore steps.
-        continue-on-error: true
         env:
           PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
         run: bash .github/scripts/mcp_validate_package_tool.sh
-
-      - name: Run E2E tests
-        if: steps.gate.outputs.available == 'true'
-        run: python tests/e2e_test.py
 
       - name: Cleanup BAT_E2E_ artifacts
         if: always() && steps.gate.outputs.available == 'true'
