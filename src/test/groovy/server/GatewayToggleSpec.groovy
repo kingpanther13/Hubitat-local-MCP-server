@@ -95,6 +95,10 @@ class GatewayToggleSpec extends ToolSpecBase {
         given: 'all feature toggles on so the gateway-filter is the only narrowing'
         settingsMap.useGateways = false
         settingsMap.enableCustomRuleEngine = true
+        // Developer Mode is a feature toggle that narrows the catalog too: dev-mode-only
+        // tools (hub_update_package) are hidden when it's off. Turn it on so the ONLY
+        // narrowing under test is the flat-mode hub_search_tools suppression.
+        settingsMap.enableDeveloperMode = true
 
         when:
         def flatNames = script.getToolDefinitions()*.name as Set
