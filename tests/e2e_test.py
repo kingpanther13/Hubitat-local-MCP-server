@@ -496,7 +496,26 @@ class TestRunner:
                 switch_dev = d
                 break
         if switch_dev is None:
-            raise SkipTest("No switch device found on hub")
+            # No switch on the hub -- provision a throwaway virtual one so this test ALWAYS runs
+            # (never skips; skips are failures). Labeled with the BAT_E2E_ prefix so the standard
+            # cleanup sweep removes it.
+            self.client.call_tool("hub_manage_virtual_device", {
+                "action": "create",
+                "deviceType": "Virtual Switch",
+                "deviceLabel": f"{PREFIX}AttrProbe",
+                "confirm": True,
+            })
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
+            for d in dev_list:
+                if f"{PREFIX}AttrProbe" in (d.get("label") or d.get("name") or ""):
+                    switch_dev = d
+                    dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                    if dni:
+                        self.created_device_dnis.append(dni)
+                    break
+            assert switch_dev is not None, \
+                "no switch on the hub and could not provision a virtual one for the attribute read"
         result = self.client.call_tool("hub_get_device_attribute", {
             "deviceId": str(switch_dev["id"]),
             "attribute": "switch",
@@ -1277,6 +1296,15 @@ class TestRunner:
         result = self.client.call_tool("hub_get_info")
         assert result is not None, "hub_get_info returned None"
         assert isinstance(result, dict), f"hub_get_info returned {type(result)}"
+        # issue #209 load-bearing #include proof: the deployed app `#include mcp.McpSmokeTestLib`,
+        # so mcpSmokeTestMarker() must be callable and folded into the info output. If the include
+        # had not resolved on the hub, the app would not have compiled (deploy would have failed)
+        # or this field would be missing -- either way this assertion catches a broken library load.
+        # Removed together with the smoke test once the modularization split is validated.
+        assert result.get("smokeTestMarker") == "smoke-ok-v1", (
+            "hub_get_info.smokeTestMarker missing/wrong -- the #include of McpSmokeTestLib did not "
+            f"resolve on the hub (got {result.get('smokeTestMarker')!r})"
+        )
 
     @test("system_tools")
     def test_list_libraries(self) -> None:
@@ -1289,6 +1317,12 @@ class TestRunner:
         for lib in libs:
             assert "id" in lib and "name" in lib, "library summary missing id/name"
             assert "source" not in lib, "hub_list_libraries should omit source (read it via hub_get_source)"
+        # issue #209: the deploy (hub_update_package) installs McpSmokeTestLib (mcp namespace) as the
+        # #include's library leg, so it must be present here. Proves the library was actually added to
+        # Libraries Code on the hub (not just that the app compiled). Removed with the smoke test.
+        assert any(
+            lib.get("name") == "McpSmokeTestLib" and lib.get("namespace") == "mcp" for lib in libs
+        ), f"McpSmokeTestLib not found in hub libraries (got {[lib.get('name') for lib in libs]})"
 
     @test("system_tools")
     def test_manage_diagnostics(self) -> None:
@@ -2007,8 +2041,18 @@ class TestRunner:
             for r in failures:
                 print(f"  - {r['name']}: {r['message']}")
 
+        # List skips loudly. A skip means a test could NOT prove what it set out to (a missing
+        # precondition, a failed upstream create, etc.) -- it is NOT a pass. The run fails on any
+        # skip so the e2e can never go green while silently not validating something.
+        skips = [r for r in self.results if r["status"] == "skip"]
+        if skips:
+            print("\nSkipped (treated as FAILURES -- nothing may be silently skipped):")
+            for r in skips:
+                print(f"  - {r['name']}: {r['message']}")
+
         print("=" * 60)
-        return total_fail == 0
+        # Green ONLY when every test ran AND passed -- zero failures and zero skips.
+        return total_fail == 0 and total_skip == 0
 
 
 # ---------------------------------------------------------------------------

@@ -208,7 +208,7 @@ verify_deploy_landed() {
     sleep $POST_DEPLOY_VERIFY_INTERVAL
     elapsed=$((elapsed + POST_DEPLOY_VERIFY_INTERVAL))
   done
-  echo "::error::Deploy verification timed out after ${POST_DEPLOY_VERIFY_TIMEOUT}s; hub totalLength still $current_len (baseline was $PRE_LEN)"
+  echo "::error::Deploy did not land: hub source totalLength is still $current_len (baseline $PRE_LEN) after ${POST_DEPLOY_VERIFY_TIMEOUT}s. The new app source never saved -- the app most likely FAILED TO COMPILE on the hub (e.g. an unresolved #include because a library wasn't installed, or a Groovy syntax error), so Hubitat rejected the save and kept the old source."
   return 1
 }
 
@@ -248,7 +248,7 @@ if [ "$HTTP_CODE" = "200" ]; then
   fi
   DEPLOY_OK=$(echo "$DEPLOY_TEXT" | jq -r '.success // false')
   if [ "$DEPLOY_OK" != "true" ]; then
-    echo "::error::hub_update_app failed: $(echo "$DEPLOY_TEXT" | jq -r '.error // .message // empty')"
+    echo "::error::hub_update_app reported failure (the hub rejected the save -- the app FAILED TO COMPILE or SAVE; e.g. an unresolved #include because a library wasn't installed, or a Groovy syntax error): $(echo "$DEPLOY_TEXT" | jq -r '.error // .message // empty')"
     echo "Tool response: $DEPLOY_TEXT" | head -c 2000
     exit 1
   fi

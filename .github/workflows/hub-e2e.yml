@@ -24,6 +24,8 @@ on:
       - '.github/scripts/mcp_deploy_source.sh'
       - '.github/scripts/mcp_restore_source.sh'
       - '.github/scripts/mcp_validate_package_tool.sh'
+      - '.github/scripts/mcp_install_libraries.sh'
+      - 'libraries/**'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -174,6 +176,19 @@ jobs:
           echo "PR_RAW_BASE=https://raw.githubusercontent.com/$REPO" >> "$GITHUB_ENV"
           echo "PR_HEAD_SHA_RESOLVED=$SHA" >> "$GITHUB_ENV"
           echo "::notice::importUrl deploy source: $URL"
+
+      # Install/update every library the app #includes BEFORE deploying the app, so the
+      # `#include` directives resolve when the hub compiles it (issue #209). Uses only the
+      # always-present baseline code tools (hub_create_library / hub_update_library), so it can
+      # never strand the hub or depend on hub_update_package being present. Blocking (NOT
+      # continue-on-error): if a library can't be installed, the app can't compile, so the run
+      # must fail here rather than deploy a broken app.
+      - name: Install PR libraries (resolve #include deps)
+        if: steps.gate.outputs.available == 'true'
+        env:
+          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
+          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
+        run: bash .github/scripts/mcp_install_libraries.sh hubitat-mcp-server.groovy
 
       - name: Deploy PR source to test hub
         if: steps.gate.outputs.available == 'true'

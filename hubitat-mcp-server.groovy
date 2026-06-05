@@ -29,6 +29,12 @@ definition(
     singleInstance: true
 )
 
+// issue #209 modularization smoke test: pulls in mcpSmokeTestMarker() from the McpSmokeTestLib
+// library (delivered by the required HPM bundle / hub_update_package). Proves the #include load
+// path works end to end -- the marker is surfaced in hub_get_info. Throwaway canary; removed once
+// the split architecture is validated.
+#include mcp.McpSmokeTestLib
+
 preferences {
     page(name: "mainPage")
     page(name: "confirmDeletePage")
@@ -2347,6 +2353,7 @@ Verify rule after creation.""",
                     writeEnabled: [type: "boolean", description: "Write master toggle state (default ON)"],
                     customRuleEngineEnabled: [type: "boolean", description: "Custom rule engine toggle state"],
                     developerModeEnabled: [type: "boolean", description: "Developer Mode toggle state"],
+                    smokeTestMarker: [type: "string", description: "issue #209 #include canary -- 'smoke-ok-v1' from the McpSmokeTestLib library; throwaway, removed after the modularization split is validated"],
                     name: [type: "string", description: "Hub name (Read master only)"],
                     localIP: [type: "string", description: "Hub local IP (Read master only)"],
                     timeZone: [type: "string", description: "Time zone ID (Read master only)"],
@@ -7019,6 +7026,11 @@ def toolGetHubInfo(args = null) {
     info.writeEnabled = settings.enableWrite != false
     info.customRuleEngineEnabled = settings.enableCustomRuleEngine == true
     info.developerModeEnabled = settings.enableDeveloperMode ?: false
+    // issue #209 #include smoke test: this method is supplied by the McpSmokeTestLib library via
+    // `#include mcp.McpSmokeTestLib` at the top of the file. Its presence here -- returning
+    // "smoke-ok-v1" rather than throwing MissingMethodException -- proves the include resolved and
+    // the library loaded. Throwaway canary; removed once the modularization split is validated.
+    info.smokeTestMarker = mcpSmokeTestMarker()
 
     // PII/location data requires the Read master (default ON)
     if (settings.enableRead != false) {

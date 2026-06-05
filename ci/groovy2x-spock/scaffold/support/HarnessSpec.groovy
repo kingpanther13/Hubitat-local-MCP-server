@@ -159,7 +159,13 @@ abstract class HarnessSpec extends Specification {
     }
 
     private void compileSharedScript() {
-        def sandbox = new HubitatAppSandbox(new File('hubitat-mcp-server.groovy'))
+        // Resolve Hubitat `#include namespace.Name` directives before parse (issue #209) -- the
+        // raw `#include` lines are not valid Groovy. IncludeResolver is imported from the shared
+        // src/test/groovy/support corpus (this lane Syncs it in). No-op without #include.
+        File appFile = new File('hubitat-mcp-server.groovy')
+        String resolvedSource = IncludeResolver.resolve(
+            appFile.getText('UTF-8'), new File(appFile.absoluteFile.parentFile, 'libraries'))
+        def sandbox = new HubitatAppSandbox(resolvedSource)
         // PassThroughAppValidator swaps in a classloader that resolves
         // hubitat.helper.{RMUtils,NetworkUtils} from the parent (the
         // main-source stubs), so RMUtilsMock's static-metaclass injection

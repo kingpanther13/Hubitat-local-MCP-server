@@ -119,7 +119,7 @@ done
 
 HUB_BYTES=$(wc -c < "$HUB_SOURCE_FILE" 2>/dev/null || echo 0)
 echo "::error::Deploy NOT verified: after $FETCH_ATTEMPTS attempts the hub's source is not byte-identical to this PR's source."
-echo "::error::PR source = $PR_BYTES B; hub source = $HUB_BYTES B. The e2e tests would run against STALE hub code, so failing the job."
+echo "::error::PR source = $PR_BYTES B; hub source = $HUB_BYTES B. The new source never landed -- the app most likely FAILED TO COMPILE or SAVE on the hub (e.g. an unresolved #include because a library wasn't installed, or a Groovy syntax error), so Hubitat kept the old source. The e2e tests would run against STALE hub code, so failing the job."
 echo "First byte divergence:"
 cmp "$HUB_SOURCE_FILE" "$SOURCE_FILE" 2>&1 | head -1 || true
 exit 1
