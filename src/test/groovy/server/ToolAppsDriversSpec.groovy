@@ -359,6 +359,35 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "hub_list_libraries paginates with opt-in cursor (page size 50)"() {
+        given:
+        enableRead()
+        // 60 libraries -> first page caps at 50 and emits a nextCursor; second page returns the rest.
+        def libs = (1..60).collect { i -> [id: i, name: "Lib${i}", namespace: "ns", version: 1] }
+        hubGet.register('/hub2/userLibraries') { params ->
+            groovy.json.JsonOutput.toJson(libs)
+        }
+
+        when: 'first page (cursor="")'
+        def page1 = script.toolListLibraries([cursor: ''])
+
+        then:
+        page1.total == 60
+        page1.count == 50
+        page1.libraries.size() == 50
+        page1.libraries.first().name == 'Lib1'
+        page1.nextCursor != null
+
+        when: 'second page via nextCursor'
+        def page2 = script.toolListLibraries([cursor: page1.nextCursor])
+
+        then:
+        page2.count == 10
+        page2.libraries.size() == 10
+        page2.libraries.last().name == 'Lib60'
+        page2.nextCursor == null
+    }
+
     // -------- toolGetSource (app / driver) --------
 
     def "hub_get_source app throws when Read tools are disabled"() {
