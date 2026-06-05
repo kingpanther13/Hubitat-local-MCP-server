@@ -37,6 +37,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GROOVY_FILES = [
     REPO_ROOT / "hubitat-mcp-server.groovy",
     REPO_ROOT / "hubitat-mcp-rule.groovy",
+    REPO_ROOT / "libraries" / "mcp-smoke-test-lib.groovy",
 ]
 
 VERSION_SOURCES = {

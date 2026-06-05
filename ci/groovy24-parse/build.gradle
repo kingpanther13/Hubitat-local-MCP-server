@@ -2,7 +2,7 @@
 //
 // Standalone build -- intentionally does NOT touch the root build.gradle or its Groovy 3.0
 // test lane. It resolves a stock Groovy 2.4.21 (the version Hubitat's hub runtime uses) from
-// Maven Central and parses the two production .groovy files under the 2.4 grammar, so a
+// Maven Central and parses the production .groovy files under the 2.4 grammar, so a
 // 3.0-green can't ship a 2.4 hub-load failure.
 //
 // Run locally:  ./gradlew -p ci/groovy24-parse parse24
@@ -24,6 +24,7 @@ def repoRoot = projectDir.parentFile.parentFile
 def productionFiles = [
     new File(repoRoot, 'hubitat-mcp-server.groovy'),
     new File(repoRoot, 'hubitat-mcp-rule.groovy'),
+    new File(repoRoot, 'libraries/mcp-smoke-test-lib.groovy'),
 ]
 
 tasks.register('parse24', JavaExec) {
