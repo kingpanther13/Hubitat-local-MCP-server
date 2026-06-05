@@ -2641,7 +2641,7 @@ def _getAllToolDefinitions_part2() {
 
 Flow: fetch hubitat-mcp-server.groovy at `ref` -> parse its `#include mcp.<Name>` directives -> install/update each referenced library from libraries/<file>.groovy (idempotent: update if present, else create) -> THEN update the app. Libraries first, app last, so any #include resolves.
 
-Brick-safe by design: if ANYTHING before the app save fails (source fetch, an #include with no known library mapping, any library write), the tool aborts BEFORE touching the app -- the app is left exactly as-is and still updatable via hub_update_app. hub_update_app itself is untouched and always available as the escape hatch. The app leg reuses hub_update_app's self-update guard + auto-backup + verify.
+Brick-safe by design: if ANYTHING before the app save fails (source fetch, an #include with no known library mapping, any library write), the tool aborts BEFORE touching the app -- the app is left exactly as-is and still updatable via hub_update_app. hub_update_app itself is untouched and always available as the escape hatch. The app leg reuses hub_update_app's exact update path (auto-backup + post-save verify); self-modification is gated by this tool's own enableDeveloperMode check (it deploys by Apps Code CLASS id, so hub_update_app's instance-id-keyed self-update guard does not itself fire here).
 
 Gated on enableDeveloperMode (the tool is hidden from tools/list when Developer Mode is off) + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch+parse+plan with ZERO writes (no confirm/backup needed) and see exactly which libraries would be installed and which app class would be updated.""",
             inputSchema: [
@@ -13560,8 +13560,11 @@ def toolUpdateLibraryCode(args) {
 //      app save -- the parent app is left exactly as it was, last-good and updatable.
 //   4. Fail-closed on every unknown (can't resolve self, can't list libraries, empty
 //      fetch) -- refuse and write nothing.
-//   5. The app leg reuses hub_update_app's own self-update guard + backup + verify, so
-//      "package deploy" and "plain app update" share identical safety and capability.
+//   5. The app leg reuses hub_update_app's exact update path (auto-backup + post-save
+//      verify). Self-modification is gated by this tool's own enableDeveloperMode check
+//      at the top -- NOT by hub_update_app's self-update guard, which keys on the running
+//      INSTANCE id while this tool deploys by Apps Code CLASS id, so that guard never fires
+//      here. The dev-mode gate is what keeps a self-deploy from running unauthenticated.
 
 // Canonical raw-source base for the MCP package. Per-call URLs are "${base}/${ref}/${path}";
 // mirrors packageManifest.json's location (.../Hubitat-local-MCP-server/main/hubitat-mcp-server.groovy).
@@ -13763,9 +13766,10 @@ def toolUpdatePackage(args) {
     }
 
     // App LAST. Every library is confirmed in place, so any #include resolves. Reuse
-    // hub_update_app's exact self-update path (auto-backup + self-update guard + post-save
-    // verify) -- "package deploy" and "plain app update" share identical safety AND the
-    // identical ability to update.
+    // hub_update_app's exact update path (auto-backup + post-save verify). We deploy by the
+    // Apps Code CLASS id (appClassId), which is NOT the running instance id, so hub_update_app's
+    // instance-id-keyed self-update guard does not fire here -- self-deploy is instead gated by
+    // this tool's own enableDeveloperMode check at the top.
     def appResult
     try {
         appResult = toolUpdateAppCode([appId: appClassId, importUrl: appUrl, confirm: true])

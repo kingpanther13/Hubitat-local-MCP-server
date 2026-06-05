@@ -13,8 +13,10 @@
 #        PR_RAW_BASE           -- e.g. https://raw.githubusercontent.com/<owner>/<repo>
 #        PR_HEAD_SHA_RESOLVED  -- 40-hex PR head SHA (the deploy ref)
 #
-# Non-blocking by design (the workflow step is continue-on-error): a regression
-# here is surfaced loudly but must not mask the main e2e suite.
+# Blocking gate: the workflow step that runs this has NO continue-on-error, so a
+# non-success (exit 1) here fails the e2e job -- e2e passing is what shows the tool
+# works. It runs AFTER the e2e suite (workflow step ordering) so a tool regression
+# can't skip or mask that suite.
 
 set -euo pipefail
 
@@ -28,7 +30,6 @@ mcp_call() {
     --data-binary "$1"
 }
 
-echo "Calling hub_update_package(ref=${PR_HEAD_SHA_RESOLVED}, baseUrl=${PR_RAW_BASE}, dryRun=true)..."
 RPC=$(jq -nc \
   --arg ref "$PR_HEAD_SHA_RESOLVED" \
   --arg base "$PR_RAW_BASE" \

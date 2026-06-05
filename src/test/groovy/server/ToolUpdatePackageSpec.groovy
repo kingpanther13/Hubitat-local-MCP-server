@@ -195,6 +195,20 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.plannedLibraries == []
     }
 
+    def "baseUrl override drives URL construction and strips a trailing slash"() {
+        given:
+        enableDev()
+        nextHttpBody = APP_WITH_SMOKE
+        registerAppTypes('228')
+
+        when: 'baseUrl has a trailing slash that must be normalized away'
+        def result = script.toolUpdatePackage([ref: 'main', dryRun: true, baseUrl: 'https://example.com/raw/'])
+
+        then: 'app + library URLs use the override with exactly one slash between segments'
+        result.appUrl == 'https://example.com/raw/main/hubitat-mcp-server.groovy'
+        result.plannedLibraries[0].url == 'https://example.com/raw/main/libraries/mcp-smoke-test-lib.groovy'
+    }
+
     // -------- fail-closed aborts BEFORE any write --------
 
     def "aborts (no writes) when the self app-class id cannot be resolved"() {
@@ -232,6 +246,25 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         def result = script.toolUpdatePackage([ref: 'main', confirm: true])
 
         then:
+        result.success == false
+        result.aborted == true
+        result.abortReason == 'app_source_fetch_failed'
+        calls == []
+    }
+
+    def "aborts (no writes) when the app source fetch returns a non-200 (bad ref -> 404)"() {
+        given:
+        enableDev()
+        registerAppTypes('228')
+        nextHttpStatus = 404  // _fetchSourceFromUrl throws IAE on status != 200
+        def calls = []
+        script.metaClass.toolInstallLibrary = { a -> calls << 'install'; [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'no-such-ref', confirm: true])
+
+        then: 'a bad ref (GitHub 404) is a clean abort with no writes'
         result.success == false
         result.aborted == true
         result.abortReason == 'app_source_fetch_failed'
@@ -337,6 +370,32 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.success == true
         result.libraries[0].action == 'update'
         result.libraries[0].libraryId == '7'
+    }
+
+    def "an UPDATE is not subject to the create-only unverified block (hub_update_library reports no verified flag)"() {
+        // Asymmetry by design: the unverified block keys on verified==false, which ONLY
+        // hub_create_library produces. hub_update_library returns success without a verified
+        // field (r?.verified is null, never false), and the existing library already
+        // satisfies the #include -- so an update always proceeds to the app leg.
+        given:
+        enableDev()
+        nextHttpBody = APP_WITH_SMOKE
+        registerAppTypes('228')
+        registerLibs([[id: 7, name: 'McpSmokeTestLib', namespace: 'mcp', version: 3]])  // present -> update path
+        def calls = []
+        script.metaClass.toolInstallLibrary = { a -> calls << 'install'; [success: true] }
+        // Production hub_update_library shape: no `verified` key.
+        script.metaClass.toolUpdateLibraryCode = { a -> calls << 'update'; [success: true, libraryId: '7', newVersion: 4] }
+        script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then: 'app leg reached -- the missing verified field is not treated as verified==false'
+        calls == ['update', 'app']
+        result.success == true
+        result.libraries[0].action == 'update'
+        result.libraries[0].verified == null
     }
 
     def "duplicate #include of the same library is de-duplicated to a single write"() {
@@ -557,6 +616,31 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.libraries[0].success == true
         result.app.success == false
         result.message.contains('hub_update_app remains available')
+    }
+
+    def "app-update THROW (self-update recompile loses the response) returns partial, never propagates"() {
+        // The most probable real-world outcome: the app save lands but the running server
+        // recompiles mid-call and the response is lost, so toolUpdateAppCode throws. The
+        // tool must catch it and report partial -- libraries are already in place.
+        given:
+        enableDev()
+        nextHttpBody = APP_WITH_SMOKE
+        registerAppTypes('228')
+        registerLibs([])
+        script.metaClass.toolInstallLibrary = { a -> [success: true, libraryId: '500'] }
+        script.metaClass.toolUpdateAppCode = { a -> throw new RuntimeException('self-update recompile lost response') }
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then: 'caught and reported, not thrown'
+        noExceptionThrown()
+        result.success == false
+        result.partial == true
+        result.abortReason == 'app_update_threw'
+        result.libraries.size() == 1
+        result.libraries[0].success == true
+        result.error.contains('Verify with hub_get_source')
     }
 
     // -------- helper unit: include parsing --------
