@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 30 items (11 core + 19 gateways) covering 88 total tools. Use `hub_search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 30 items (11 core + 19 gateways) covering 89 total tools. Use `hub_search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
@@ -67,6 +67,7 @@ These tools follow an explicit opt-in convention so pre-`cursor` callers see no 
 | `hub_list_devices` | 50 (when `limit` unset) | Cursor is an alias for the existing `offset`+`limit` shape; `nextCursor` is emitted alongside `nextOffset`. |
 | `hub_list_apps` | 50 | `scope='types'` (default): catalog of installable apps. `scope='instances'`: installed app instances; cursor respects `filter` — pages the filtered set. |
 | `hub_list_drivers` | 50 | Catalog of installable drivers. |
+| `hub_list_libraries` | 50 | Installed Groovy libraries (id, name, namespace, version); source omitted (read via `hub_get_source`). |
 | `hub_list_hpm_packages` | 25 | Smaller page because each HPM entry carries the full app/driver/file inventory. |
 | `hub_list_rules` | 50 | RM 4.x + 5.x deduplicated rules. |
 | `hub_get_custom_rule` | 50 | Legacy MCP rule engine; list mode (omit `ruleId`). |

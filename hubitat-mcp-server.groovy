@@ -1155,11 +1155,12 @@ def getGatewayConfig() {
         ],
         hub_read_apps_code: [
             description: "Read-only inspection of installed apps, drivers, libraries, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
-            tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
+            tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
             summaries: [
                 hub_list_apps: "List installed apps. scope='types' (installed app code library) or 'instances' (running apps with parent/child tree). Args: scope, filter?, includeHidden?, cursor?",
                 hub_list_drivers: "List all installed drivers on the hub",
                 hub_get_source: "Get app/driver/library Groovy source with chunked reading. Args: type (app|driver|library), id, offset?, length?",
+                hub_list_libraries: "List installed Groovy libraries (id, name, namespace, version). Pair with hub_get_source(type='library', id) to read source. Args: cursor?",
                 hub_list_backups: "List auto-created source code backups",
                 hub_get_backup: "Get source from a backup. Args: backupKey",
                 hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
@@ -1171,6 +1172,7 @@ def getGatewayConfig() {
                 hub_list_apps: "show installed applications integrations apps list code types running instances builtin user parent child tree",
                 hub_list_drivers: "show installed device handlers types",
                 hub_get_source: "view read application driver library groovy code namespace include",
+                hub_list_libraries: "list show installed groovy libraries code namespace include shared modules discover library id",
                 hub_list_backups: "show saved previous versions revisions",
                 hub_get_backup: "view read saved previous version revision",
                 hub_list_device_dependents: "which apps use device reference inUseBy appsUsing dependencies affected by",
@@ -1536,7 +1538,7 @@ def getReadOnlyToolNames() {
         // matches user expectation for a "health check" tool.
         "hub_get_device_health",
         // Apps/drivers (read)
-        "hub_list_apps", "hub_list_drivers",
+        "hub_list_apps", "hub_list_drivers", "hub_list_libraries",
         "hub_get_source",
         "hub_list_backups", "hub_get_backup",
         // Rooms (read)
@@ -3012,6 +3014,29 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                     nextCursor: [type: "string", description: "Present when more results remain"]
                 ],
                 required: ["drivers"]
+            ]
+        ],
+        [
+            name: "hub_list_libraries",
+            description: "List all Groovy libraries installed on the hub (id, name, namespace, version). Use this to discover a library's id, then read its source with hub_get_source(type='library', id=N); the source is omitted here to keep the list lean. Requires Read master.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    libraries: [type: "array", description: "Installed library summaries (id, name, namespace, version)", items: [type: "object"]],
+                    count: [type: "integer", description: "Libraries returned"],
+                    source: [type: "string", description: "hub_api / hub_api_raw / unavailable"],
+                    note: [type: "string", description: "Status note when the hub API was unavailable or returned a non-JSON shape"],
+                    rawResponse: [type: "string", description: "Raw body when response was not JSON"],
+                    total: [type: "integer", description: "Total matched (present when paginating)"],
+                    nextCursor: [type: "string", description: "Present when more results remain"]
+                ],
+                required: ["libraries"]
             ]
         ],
         [
@@ -5233,6 +5258,7 @@ def executeTool(toolName, args) {
         // Read master Tools (hub_get_details + hub_get_health merged into hub_get_info)
         case "hub_list_apps": return (args?.scope == "types") ? toolListHubApps(args) : toolListInstalledApps(args)
         case "hub_list_drivers": return toolListHubDrivers(args)
+        case "hub_list_libraries": return toolListLibraries(args)
         case "hub_get_radio_details": return toolGetRadioDetails(args)
 
         // Monitoring Tools
@@ -10431,6 +10457,59 @@ def toolListHubDrivers(args) {
     }
 
     mcpLog("info", "hub-admin", "Listed hub drivers (source: ${result.source})")
+    return result
+}
+
+def toolListLibraries(args) {
+
+    def cursor = args?.cursor
+    def result = [:]
+    try {
+        def responseText = hubInternalGet("/hub2/userLibraries")
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                if (parsed instanceof List) {
+                    // Project to summaries -- omit each library's `source` (full Groovy) to keep
+                    // the list lean; read source via hub_get_source(type='library', id=N).
+                    result.libraries = parsed.collect { lib ->
+                        [id: lib.id?.toString(), name: lib.name, namespace: lib.namespace, version: lib.version]
+                    }
+                    result.count = result.libraries.size()
+                    result.source = "hub_api"
+                } else {
+                    result.libraries = []
+                    result.rawResponse = responseText?.take(2000)
+                    result.source = "hub_api_raw"
+                    result.note = "Response was not a JSON array. This endpoint may return a different shape on your firmware version."
+                }
+            } catch (Exception parseErr) {
+                result.libraries = []
+                result.rawResponse = responseText?.take(2000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
+            }
+        } else {
+            result.libraries = []
+            result.note = "Empty response from hub API"
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "hub_list_libraries API call failed: ${e.message}")
+        result.libraries = []
+        result.count = 0
+        result.source = "unavailable"
+        result.note = "Hub internal API unavailable (${e.message}). This may require Hub Security credentials or a firmware update."
+    }
+
+    if (cursor != null && result.libraries instanceof List) {
+        def paged = _paginateList(result.libraries, cursor, 50, "hub_list_libraries")
+        result.total = result.libraries.size()
+        result.libraries = paged.page
+        result.count = paged.page.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
+
+    mcpLog("info", "hub-admin", "Listed hub libraries (source: ${result.source})")
     return result
 }
 

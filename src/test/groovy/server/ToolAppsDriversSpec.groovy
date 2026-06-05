@@ -294,6 +294,71 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    // -------- toolListLibraries --------
+
+    def "hub_list_libraries returns library summaries (source omitted) from the hub API"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            '[{"id": 7, "name": "McpSmokeTestLib", "namespace": "mcp", "version": 1, "source": "library(...)"}, {"id": 9, "name": "OtherLib", "namespace": "foo", "version": 3, "source": "x"}]'
+        }
+
+        when:
+        def result = script.toolListLibraries([:])
+
+        then:
+        result.source == 'hub_api'
+        result.count == 2
+        result.libraries*.name == ['McpSmokeTestLib', 'OtherLib']
+        result.libraries*.id == ['7', '9']
+        result.libraries[0].namespace == 'mcp'
+        result.libraries[0].version == 1
+
+        and: 'full source is omitted to keep the list lean (read it via hub_get_source)'
+        !result.libraries[0].containsKey('source')
+    }
+
+    def "hub_list_libraries reports unavailable when the hub API throws"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            throw new RuntimeException('Connection refused')
+        }
+
+        when:
+        def result = script.toolListLibraries([:])
+
+        then:
+        result.source == 'unavailable'
+        result.libraries == []
+        result.note.contains('Connection refused')
+    }
+
+    @spock.lang.Unroll
+    def "hub_list_libraries via dispatch returns library summaries (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            '[{"id": 7, "name": "McpSmokeTestLib", "namespace": "mcp", "version": 1, "source": "x"}]'
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_libraries', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.source == 'hub_api'
+        inner.count == 1
+        inner.libraries[0].name == 'McpSmokeTestLib'
+        inner.libraries[0].id == '7'
+
+        where:
+        useGateways << [true, false]
+    }
+
     // -------- toolGetSource (app / driver) --------
 
     def "hub_get_source app throws when Read tools are disabled"() {
