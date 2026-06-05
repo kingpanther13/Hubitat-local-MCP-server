@@ -390,11 +390,64 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 89
+        names.size() == 90
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk
         names.contains('hub_search_tools')   // last chunk
+    }
+
+    @Unroll
+    def "hub_update_package is catalog-hidden when Developer Mode is OFF (#mode mode)"() {
+        // The maintainer requirement (#209): a self-deploy tool must only be PRESENT
+        // when Developer Mode is on, not merely runtime-refused. getDeveloperModeOnlyToolNames()
+        // folds it into the hidden set whenever enableDeveloperMode is falsy.
+        given:
+        if (mode == 'flat') { settingsMap.useGateways = false } else { settingsMap.remove('useGateways') }
+        settingsMap.remove('enableDeveloperMode')   // OFF
+
+        when:
+        def tools = script.getToolDefinitions()
+        def names = tools*.name as Set
+        def mcpGw = tools.find { it.name == 'hub_manage_mcp' }
+        def subTools = (mcpGw?.inputSchema?.properties?.tool?.enum ?: []) as Set
+
+        then: 'never advertised as a flat tool'
+        !names.contains('hub_update_package')
+
+        and: 'in gateway mode it is absent from the hub_manage_mcp sub-tool list, yet the gateway survives (hub_update_mcp_settings keeps it non-empty)'
+        mode == 'flat' || (!subTools.contains('hub_update_package') && mcpGw != null)
+
+        where:
+        mode << ['gateway', 'flat']
+    }
+
+    @Unroll
+    def "hub_update_package appears as a write+destructive tool when Developer Mode is ON (#mode mode)"() {
+        given:
+        if (mode == 'flat') { settingsMap.useGateways = false } else { settingsMap.remove('useGateways') }
+        settingsMap.enableDeveloperMode = true   // ON
+
+        when:
+        def tools = script.getToolDefinitions()
+
+        then:
+        if (mode == 'flat') {
+            def t = tools.find { it.name == 'hub_update_package' }
+            assert t != null : 'hub_update_package must be visible in flat mode when Developer Mode is on'
+            assert t.annotations.readOnlyHint == false
+            assert t.annotations.destructiveHint == true
+        } else {
+            def mcpGw = tools.find { it.name == 'hub_manage_mcp' }
+            assert mcpGw != null : 'hub_manage_mcp gateway must be present'
+            def subTools = (mcpGw.inputSchema?.properties?.tool?.enum ?: []) as Set
+            assert subTools.contains('hub_update_package') : 'hub_update_package must be a hub_manage_mcp sub-tool when Developer Mode is on'
+            assert mcpGw.annotations.readOnlyHint == false
+            assert mcpGw.annotations.destructiveHint == true
+        }
+
+        where:
+        mode << ['gateway', 'flat']
     }
 
     def "outputSchema is published in gateway mode (base tools) and stripped in flat mode (size)"() {

@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 89 MCP tools. The server exposes **30 items on `tools/list`**: 11 flat core tools + 19 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
+Quick reference for all 90 MCP tools. The server exposes **30 items on `tools/list`**: 11 flat core tools + 19 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
 
 For the most authoritative reference, call `hub_get_tool_guide` via MCP.
 
@@ -49,7 +49,7 @@ These 11 tools are never behind a gateway. Every other tool is reachable through
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `hub_search_tools` | BM25 natural language search across all 89 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `hub_search_tools` | BM25 natural language search across all 90 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
@@ -294,10 +294,11 @@ Dedicated Rule Machine gateway: create/edit RM rules (`hub_set_rule`), delete th
 | `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Read master |
 | `hub_delete_native_app` | Delete any classic native app, type-agnostic (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Write master |
 
-### hub_manage_mcp (1 tool)
+### hub_manage_mcp (2 tools)
 
 Developer Mode self-administration: tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration without manual UI intervention. Requires the opt-in `enableDeveloperMode` toggle in the MCP rule app settings (default OFF). Each successful write is logged at WARN level for audit. First gateway under the Developer Mode pattern — additional self-admin tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Allowlisted: `mcpLogLevel`, `debugLogging`, `maxCapturedStates`, `loopGuardMax`, `loopGuardWindowSec`, `enableRead`, `enableCustomRuleEngine`, `useGateways`. After flipping any `enable*` toggle or `useGateways`, MCP clients may need to reconnect to refresh their cached tool schema. | Developer Mode + Write master + confirm + recent backup |
+| `hub_update_package` | Self-deploy the whole package (this app + every library it `#include`s) at a git `ref` — fetch the app source, parse its `#include mcp.<Name>` directives, install/update each referenced library (idempotent), then update the app. Libraries first, app last; aborts before the app save on any failure so the app is never left referencing a missing library and always stays updatable via `hub_update_app`. `dryRun=true` plans with zero writes. Hidden from `tools/list` unless Developer Mode is on. | Developer Mode (hidden when off) + Write master + confirm + recent backup |

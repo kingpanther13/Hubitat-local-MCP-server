@@ -23,6 +23,7 @@ on:
       - '.github/scripts/mcp_restore_env.sh'
       - '.github/scripts/mcp_deploy_source.sh'
       - '.github/scripts/mcp_restore_source.sh'
+      - '.github/scripts/mcp_validate_package_tool.sh'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -168,6 +169,10 @@ jobs:
           fi
           URL="https://raw.githubusercontent.com/$REPO/$SHA/hubitat-mcp-server.groovy"
           echo "PR_SOURCE_URL=$URL" >> "$GITHUB_ENV"
+          # Same validated REPO/SHA, split into the (baseUrl, ref) form hub_update_package
+          # takes -- the dev-tool validation step below builds the identical URL on-hub.
+          echo "PR_RAW_BASE=https://raw.githubusercontent.com/$REPO" >> "$GITHUB_ENV"
+          echo "PR_HEAD_SHA_RESOLVED=$SHA" >> "$GITHUB_ENV"
           echo "::notice::importUrl deploy source: $URL"
 
       - name: Deploy PR source to test hub
@@ -194,6 +199,22 @@ jobs:
       - name: Verify deployed source matches this PR
         if: steps.gate.outputs.available == 'true'
         run: bash .github/scripts/mcp_verify_deploy.sh hubitat-mcp-server.groovy
+
+      # The deploy above just landed THIS PR's app on the hub, so hub_update_package
+      # now exists there. Exercise its discovery path live (dryRun: fetch PR source ->
+      # parse #includes -> resolve self app-class) with ZERO writes -- no flaky
+      # self-update recompile. The full write path (real library + #include + compile
+      # equivalence) is validated in the follow-up #include PR, where a library exists
+      # to install. Non-blocking: a tool regression here shouldn't mask the e2e suite.
+      - name: Validate hub_update_package dev tool (dryRun)
+        if: steps.gate.outputs.available == 'true'
+        # Advisory: a dev-tool regression is surfaced as a red step but must not
+        # skip the e2e suite (which has no if: always()) or the restore steps.
+        continue-on-error: true
+        env:
+          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
+          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
+        run: bash .github/scripts/mcp_validate_package_tool.sh
 
       - name: Run E2E tests
         if: steps.gate.outputs.available == 'true'
