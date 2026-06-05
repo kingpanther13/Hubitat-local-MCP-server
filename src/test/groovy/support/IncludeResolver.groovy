@@ -42,9 +42,8 @@ class IncludeResolver {
             return source
         }
         Map index = indexLibraries(librariesDir)
-        List bodies = []
         Set seen = new LinkedHashSet()
-        StringBuilder kept = new StringBuilder()
+        StringBuilder out = new StringBuilder()
         source.eachLine { String line ->
             def m = INCLUDE_LINE.matcher(line)
             if (m.matches()) {
@@ -53,24 +52,20 @@ class IncludeResolver {
                     String body = (String) index[key]
                     if (body == null) {
                         throw new IllegalStateException(
-                            "#include " + key + " has no matching library in " + librariesDir +
+                            "include directive " + key + " has no matching library in " + librariesDir +
                             " (matched libraries: " + index.keySet() + ")")
                     }
-                    bodies.add(body)
+                    // Inline the body AT the directive site, the way the hub pastes it, so position-
+                    // sensitive constructs compile identically -- not appended at end-of-file. The
+                    // banner carries no directive-looking token (tests assert its absence).
+                    out.append('// --- inlined library ' + key + ' (CI/test parity with the hub paste) ---\n')
+                    out.append(body).append('\n')
                 }
-                // drop the #include line (not valid Groovy)
+                // duplicate directive: drop (the body is already inlined once)
             } else {
-                kept.append(line).append('\n')
+                out.append(line).append('\n')
             }
         }
-        if (bodies.isEmpty()) {
-            return kept.toString()
-        }
-        StringBuilder out = new StringBuilder(kept)
-        // NB: deliberately no "#include" substring here -- the resolved output must not reintroduce
-        // a directive-looking token, and tests assert its absence.
-        out.append('\n// ==== inlined library bodies (CI/test parity with the hub directive paste) ====\n')
-        bodies.each { String b -> out.append('\n').append(b).append('\n') }
         return out.toString()
     }
 
@@ -85,8 +80,13 @@ class IncludeResolver {
         for (File f : files) {
             if (!f.isFile() || !f.name.endsWith('.groovy')) continue
             String text = f.getText('UTF-8')
-            String ns = firstGroup(text, ~/library\s*\([^)]*\bnamespace:\s*["']([^"']+)["']/)
-            String name = firstGroup(text, ~/library\s*\([^)]*\bname:\s*["']([^"']+)["']/)
+            // Match namespace/name within the BALANCED library(...) argument list, so a ) inside a
+            // (possibly earlier) quoted value -- e.g. description: "see foo()" -- cannot truncate the
+            // search the way a `[^)]*` regex would.
+            String args = libraryDeclArgs(text)
+            if (args == null) continue
+            String ns = firstGroup(args, ~/\bnamespace:\s*["']([^"']+)["']/)
+            String name = firstGroup(args, ~/\bname:\s*["']([^"']+)["']/)
             if (ns != null && name != null) {
                 index[ns + '.' + name] = stripLibraryDeclaration(text)
             }
@@ -100,20 +100,17 @@ class IncludeResolver {
     }
 
     /**
-     * Removes the leading {@code library( ... )} DSL call (Hubitat strips it on #include). Paren-
-     * balanced from the opening paren, ignoring parens inside single/double-quoted strings, so a
-     * {@code )} in a description literal can't truncate the strip.
+     * Locates the leading {@code library( ... )} DSL call. Returns int[]{keywordStart, openParen,
+     * closeParen} -- paren-balanced and string-aware (a {@code )} inside a single/double-quoted
+     * value is ignored) -- or null if there is no library() call.
      */
-    static String stripLibraryDeclaration(String libSource) {
-        def m = (~/library\s*\(/).matcher(libSource)
-        if (!m.find()) {
-            return libSource.trim()
-        }
-        int start = m.start()
-        int parenOpen = libSource.indexOf((int) '(', start)
-        if (parenOpen < 0) return libSource.trim()
+    private static int[] libraryParenSpan(String libSource) {
+        def m = (~/\blibrary\s*\(/).matcher(libSource)
+        if (!m.find()) return null
+        int keywordStart = m.start()
+        int parenOpen = libSource.indexOf((int) '(', keywordStart)
+        if (parenOpen < 0) return null
         int depth = 0
-        int close = -1
         boolean inStr = false
         char quote = 0
         int i = parenOpen
@@ -130,11 +127,27 @@ class IncludeResolver {
                 depth++
             } else if (c == (')' as char)) {
                 depth--
-                if (depth == 0) { close = i; break }
+                if (depth == 0) return [keywordStart, parenOpen, i] as int[]
             }
             i++
         }
-        if (close < 0) return libSource.trim()
-        return (libSource.substring(0, start) + libSource.substring(close + 1)).trim()
+        return null
+    }
+
+    /** The text between the parens of the leading {@code library( ... )} call, or null. */
+    private static String libraryDeclArgs(String libSource) {
+        int[] span = libraryParenSpan(libSource)
+        if (span == null) return null
+        return libSource.substring(span[1] + 1, span[2])
+    }
+
+    /**
+     * Removes the leading {@code library( ... )} DSL call (Hubitat strips it on #include), paren-
+     * balanced and string-aware so a {@code )} in a description literal can't truncate the strip.
+     */
+    static String stripLibraryDeclaration(String libSource) {
+        int[] span = libraryParenSpan(libSource)
+        if (span == null) return libSource.trim()
+        return (libSource.substring(0, span[0]) + libSource.substring(span[2] + 1)).trim()
     }
 }

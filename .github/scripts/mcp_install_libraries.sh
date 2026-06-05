@@ -52,8 +52,10 @@ mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_cr
   || echo "::warning::hub_create_backup call failed/timed out; relying on cached <24h backup timestamp"
 
 # Snapshot existing hub libraries once, to choose update-vs-create per library.
-LIST_TEXT=$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}' \
-  | jq -r '.result.content[0].text // empty')
+# Capture with `|| true` so a transient curl/relay failure (set -euo pipefail) does NOT
+# bare-exit before the friendly ::error:: below -- the empty-check is the real gate.
+LIST_RESP=$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}' || true)
+LIST_TEXT=$(printf '%s' "$LIST_RESP" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
 if [ -z "$LIST_TEXT" ]; then
   echo "::error::hub_list_libraries returned no MCP content -- cannot plan create-vs-update"
   exit 1
@@ -94,10 +96,13 @@ for tok in "${INCLUDES[@]}"; do
       '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_create_library",arguments:{importUrl:$url,confirm:true}}}')
   fi
 
-  TEXT=$(mcp_call "$RPC" | jq -r '.result.content[0].text // empty')
-  OK=$(echo "$TEXT" | jq -r '.success // false')
+  # `|| true` capture so a transient curl/relay failure surfaces the friendly ::error:: below
+  # (with set -euo pipefail an un-guarded failing pipe would bare-exit with no annotation).
+  RESP=$(mcp_call "$RPC" || true)
+  TEXT=$(printf '%s' "$RESP" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
+  OK=$(printf '%s' "$TEXT" | jq -r '.success // false' 2>/dev/null || echo false)
   if [ "$OK" != "true" ]; then
-    echo "::error::Library ${tok} install/update failed: $(echo "$TEXT" | jq -c '{success,error,note,verified}' 2>/dev/null || echo "$TEXT" | head -c 400)"
+    echo "::error::Library ${tok} install/update failed (transient relay error or a hub-side rejection): $(printf '%s' "$TEXT" | jq -c '{success,error,note,verified}' 2>/dev/null || printf '%s' "$TEXT" | head -c 400)"
     exit 1
   fi
   echo "Library ${tok} OK."

@@ -225,8 +225,9 @@ jobs:
       # blocking gate -- e2e passing is what shows the tool works. It runs AFTER the
       # e2e suite so a tool failure can't skip the suite; the cleanup/restore steps
       # below all use `if: always()`, so the hub is restored regardless. The full
-      # write path (real library + #include + compile equivalence) is validated in
-      # the follow-up #include PR, where a library exists to install.
+      # write path (real library + #include + compile equivalence) is validated by the
+      # "Install PR libraries" step above plus the smokeTestMarker / hub_list_libraries
+      # assertions in tests/e2e_test.py.
       - name: Validate hub_update_package dev tool (dryRun)
         if: steps.gate.outputs.available == 'true'
         env:

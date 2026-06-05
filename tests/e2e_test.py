@@ -577,7 +577,7 @@ class TestRunner:
                 target = d
                 break
         if target is None:
-            raise SkipTest(f"Could not find {PREFIX}Switch_Test virtual device")
+            raise AssertionError(f"Could not find {PREFIX}Switch_Test virtual device -- the upstream create test must have failed")
 
         dev_id = str(target["id"])
 
@@ -619,7 +619,7 @@ class TestRunner:
                 target_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
                 break
         if not target_dni:
-            raise SkipTest(f"{PREFIX}Switch_Test not found for deletion")
+            raise AssertionError(f"{PREFIX}Switch_Test not found for deletion -- the upstream create test must have failed")
 
         self.client.call_tool("hub_manage_virtual_device", {
             "action": "delete",
@@ -656,7 +656,7 @@ class TestRunner:
         # Use the rule created in test_create_rule (last tracked rule)
         rule_id = self._last_rule_id()
         if not rule_id:
-            raise SkipTest("No rule created to get")
+            raise AssertionError("No rule created to get -- the upstream create-rule test must have failed")
         result = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
         assert result.get("name", "").startswith(PREFIX), \
             f"Rule name mismatch: {result.get('name')}"
@@ -667,7 +667,7 @@ class TestRunner:
     def test_update_rule(self) -> None:
         rule_id = self._last_rule_id()
         if not rule_id:
-            raise SkipTest("No rule created to update")
+            raise AssertionError("No rule created to update -- the upstream create-rule test must have failed")
         self.client.call_tool("hub_update_custom_rule", {
             "ruleId": rule_id,
             "name": f"{PREFIX}Rule_CRUD_Updated",
@@ -680,7 +680,7 @@ class TestRunner:
     def test_delete_rule(self) -> None:
         rule_id = self._last_rule_id()
         if not rule_id:
-            raise SkipTest("No rule created to delete")
+            raise AssertionError("No rule created to delete -- the upstream create-rule test must have failed")
         self.client.call_tool("hub_delete_custom_rule", {"ruleId": rule_id, "confirm": True})
         if rule_id in self.created_rule_ids:
             self.created_rule_ids.remove(rule_id)

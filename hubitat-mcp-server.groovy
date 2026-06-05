@@ -30,9 +30,11 @@ definition(
 )
 
 // issue #209 modularization smoke test: pulls in mcpSmokeTestMarker() from the McpSmokeTestLib
-// library (delivered by the required HPM bundle / hub_update_package). Proves the #include load
-// path works end to end -- the marker is surfaced in hub_get_info. Throwaway canary; removed once
-// the split architecture is validated.
+// library. The library is delivered to real hubs by the required HPM bundle (and is installable
+// on the fly via hub_update_package); CI installs it ahead of the app (the e2e library-install
+// step; the unit/parse lanes resolve the #include via support.IncludeResolver). Proves the
+// #include load path works end to end -- the marker is surfaced in hub_get_info. Throwaway
+// canary; removed once the split architecture is validated.
 #include mcp.McpSmokeTestLib
 
 preferences {
