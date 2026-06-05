@@ -3715,7 +3715,7 @@ def _getAllToolDefinitions_part6() {
                 type: "object",
                 properties: [
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What kind of code to read."],
-                    id: [type: "string", description: "The app/driver/library ID (positive integer). App IDs from hub_list_apps, driver IDs from hub_list_drivers, library IDs from hub_create_library response or the Hubitat Libraries code page."],
+                    id: [type: "string", description: "The app/driver/library ID (positive integer). App IDs from hub_list_apps, driver IDs from hub_list_drivers, library IDs from hub_list_libraries (or a hub_create_library response, or the Hubitat Libraries code page)."],
                     offset: [type: "integer", description: "Character offset to start reading from (for chunked reading of large sources). Default: 0"],
                     length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
                 ],
@@ -10477,20 +10477,30 @@ def toolListLibraries(args) {
                     }
                     result.count = result.libraries.size()
                     result.source = "hub_api"
+                    // A library with no id can't be chained into hub_get_source -- surface it in a
+                    // note instead of silently shipping an unusable row under the hub_api all-clear.
+                    def noId = result.libraries.count { it.id == null }
+                    if (noId > 0) {
+                        result.note = "${noId} librar${noId == 1 ? 'y' : 'ies'} returned by the hub had no id and cannot be read via hub_get_source (possible firmware shape change)."
+                    }
                 } else {
                     result.libraries = []
+                    result.count = 0
                     result.rawResponse = responseText?.take(2000)
                     result.source = "hub_api_raw"
                     result.note = "Response was not a JSON array. This endpoint may return a different shape on your firmware version."
                 }
             } catch (Exception parseErr) {
                 result.libraries = []
+                result.count = 0
                 result.rawResponse = responseText?.take(2000)
                 result.source = "hub_api_raw"
                 result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
             }
         } else {
             result.libraries = []
+            result.count = 0
+            result.source = "unavailable"
             result.note = "Empty response from hub API"
         }
     } catch (Exception e) {

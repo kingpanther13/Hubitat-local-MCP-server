@@ -388,6 +388,74 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         page2.nextCursor == null
     }
 
+    def "hub_list_libraries reports hub_api_raw when the hub returns non-array JSON"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            '{"unexpected":"shape"}'
+        }
+
+        when:
+        def result = script.toolListLibraries([:])
+
+        then:
+        result.source == 'hub_api_raw'
+        result.libraries == []
+        result.count == 0
+        result.note.contains('not a JSON array')
+    }
+
+    def "hub_list_libraries reports hub_api_raw when the hub returns non-JSON"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            '<html>not json</html>'
+        }
+
+        when:
+        def result = script.toolListLibraries([:])
+
+        then:
+        result.source == 'hub_api_raw'
+        result.libraries == []
+        result.count == 0
+        result.note.contains('not JSON')
+    }
+
+    def "hub_list_libraries reports unavailable on an empty hub response"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            null
+        }
+
+        when:
+        def result = script.toolListLibraries([:])
+
+        then:
+        result.source == 'unavailable'
+        result.libraries == []
+        result.count == 0
+        result.note.contains('Empty response')
+    }
+
+    def "hub_list_libraries flags library rows that have no id"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userLibraries') { params ->
+            '[{"id": 7, "name": "GoodLib", "namespace": "mcp", "version": 1}, {"name": "NoIdLib", "namespace": "mcp", "version": 1}]'
+        }
+
+        when:
+        def result = script.toolListLibraries([:])
+
+        then:
+        result.source == 'hub_api'
+        result.count == 2
+        result.libraries.find { it.name == 'NoIdLib' }.id == null
+        result.note.contains('no id')
+    }
+
     // -------- toolGetSource (app / driver) --------
 
     def "hub_get_source app throws when Read tools are disabled"() {

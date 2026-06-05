@@ -1283,9 +1283,12 @@ class TestRunner:
         result = self.client.call_tool("hub_list_libraries")
         libs = result if isinstance(result, list) else result.get("libraries", [])
         assert isinstance(libs, list), "hub_list_libraries did not return a list"
+        source = result.get("source") if isinstance(result, dict) else None
+        assert source in (None, "hub_api", "hub_api_raw", "unavailable"), \
+            f"hub_list_libraries returned unexpected source {source!r}"
         for lib in libs:
             assert "id" in lib and "name" in lib, "library summary missing id/name"
-            assert "source" not in lib, "hub_list_libraries should omit source from the list"
+            assert "source" not in lib, "hub_list_libraries should omit source (read it via hub_get_source)"
 
     @test("system_tools")
     def test_manage_diagnostics(self) -> None:
