@@ -50,6 +50,15 @@ fi
 
 PRE_RULE_ENGINE="$(echo "$PRE_INFO_JSON"  | jq -r '.customRuleEngineEnabled // false')"
 
+# Record what hardware/firmware/server version this e2e run actually exercised.
+# Different firmware can react differently to the same tool call, so every run
+# stamps this into the log. Reads the already-fetched PRE_INFO_JSON (no extra hub
+# call); // "unknown" keeps a missing field from aborting setup.
+FW_VERSION="$(echo "$PRE_INFO_JSON" | jq -r '.firmwareVersion // "unknown"')"
+HUB_MODEL="$(echo "$PRE_INFO_JSON"  | jq -r '.model // "unknown"')"
+MCP_VER="$(echo "$PRE_INFO_JSON"    | jq -r '.mcpServerVersion // "unknown"')"
+echo "::notice::E2E hub firmware=${FW_VERSION} model=${HUB_MODEL} mcpServerVersion=${MCP_VER}"
+
 jq -nc \
   --argjson re  "$PRE_RULE_ENGINE" \
   '{enableCustomRuleEngine: $re}' \

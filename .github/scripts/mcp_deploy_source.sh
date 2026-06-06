@@ -112,13 +112,17 @@ mcp_tool_call_text() {
 # and reports failure, stash the real error in DEPLOY_ERROR_FILE for the verify gate to surface --
 # no guessing. (issue #237)
 recover_self_deploy_error() {
-  local attempt=1 text ok url err
+  local attempt=1 text ok url err at
   while [ "$attempt" -le 3 ]; do
     text=$(mcp_tool_call_text "hub_get_info (recover self-deploy error, try $attempt)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}') || text=""
     ok=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.success // empty' 2>/dev/null || true)
     url=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.importUrl // empty' 2>/dev/null || true)
     err=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.error // empty' 2>/dev/null || true)
-    if [ "$url" = "$PR_SOURCE_URL" ] && [ "$ok" = "false" ] && [ -n "$err" ]; then
+    at=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.at // empty' 2>/dev/null || true)
+    # Honor ONLY a record that is for THIS deploy (importUrl), reports failure, AND is
+    # FRESH -- its `at` advanced past the pre-deploy baseline. A stale success:false
+    # record left by a prior run with the same PR_SOURCE_URL must NOT fail a good deploy.
+    if [ "$url" = "$PR_SOURCE_URL" ] && [ "$ok" = "false" ] && [ -n "$err" ] && [ -n "$at" ] && [ "$at" != "${PRE_LSD_AT:-}" ]; then
       printf '%s' "$err" > "$DEPLOY_ERROR_FILE"
       echo "::error::Hub REJECTED the self-deploy. Hub error (recovered via hub_get_info.lastSelfDeploy): ${err}"
       return 0
@@ -126,7 +130,7 @@ recover_self_deploy_error() {
     attempt=$((attempt + 1))
     [ "$attempt" -le 3 ] && sleep 5
   done
-  echo "::notice::Could not recover a matching failed self-deploy record from hub_get_info.lastSelfDeploy (last seen success=${ok:-none}, importUrl match=$([ "$url" = "$PR_SOURCE_URL" ] && echo yes || echo no)). The verify step will report the stale source without the hub's verbatim error."
+  echo "::notice::Could not recover a FRESH matching failed self-deploy record from hub_get_info.lastSelfDeploy (last seen success=${ok:-none}, importUrl match=$([ "$url" = "$PR_SOURCE_URL" ] && echo yes || echo no), fresh=$([ -n "$at" ] && [ "$at" != "${PRE_LSD_AT:-}" ] && echo yes || echo no)). The verify step will report the stale source without the hub's verbatim error."
   return 0
 }
 
@@ -239,6 +243,13 @@ echo "Deploying class $CLASS_ID via importUrl (hub fetches ${NEW_BYTES} bytes fr
 # it forward). Self-update recompiles the MCP app mid-call, so the call may
 # not return cleanly -- the 5xx / curl-failure tolerance and the
 # hub_get_source verify below already handle that.
+# Baseline the existing lastSelfDeploy.at BEFORE the deploy so recover_self_deploy_error
+# can tell a FRESH record (written by THIS deploy) from a STALE one a prior run with the
+# same PR_SOURCE_URL left behind. Best-effort: an empty baseline (no prior record / lookup
+# 504'd) just falls back to the importUrl+success guard -- no regression.
+PRE_LSD_AT=$(mcp_tool_call_text "hub_get_info (pre-deploy lastSelfDeploy baseline)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' 2>/dev/null | jq -r '.lastSelfDeploy.at // empty' 2>/dev/null || true)
+echo "Pre-deploy lastSelfDeploy.at baseline: ${PRE_LSD_AT:-<none>}"
+
 DEPLOY_RPC_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_rpc.json"
 jq -nc \
   --arg id "$CLASS_ID" \
@@ -344,6 +355,10 @@ elif [ "$HTTP_CODE" = "504" ] || [ "$HTTP_CODE" = "502" ] || [ "$HTTP_CODE" = "5
 else
   echo "::error::hub_update_app got unexpected HTTP $HTTP_CODE"
   echo "Body head: $(printf '%s' "$DEPLOY_BODY" | head -c 1000)"
+  # An unexpected relay code (413/500/etc.) can still follow a hub-side reject that
+  # already recorded atomicState.lastSelfDeploy. Try to surface the verbatim error
+  # before giving up, so this exit path isn't blind either (issue #237).
+  recover_self_deploy_error
   exit 1
 fi
 

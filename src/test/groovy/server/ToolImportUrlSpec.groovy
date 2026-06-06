@@ -658,6 +658,31 @@ class ToolImportUrlSpec extends ToolSpecBase {
         atomicStateMap.lastSelfDeploy.importUrl == 'https://raw.example/self-class.groovy'
     }
 
+    def "hub_update_app self-update records lastSelfDeploy when the save THROWS (cloud 504 / exception path)"() {
+        // The big-source importUrl deploy can 504 at the cloud relay: hubInternalPostForm throws
+        // before any parseable 200 body. The catch block must still persist a failure record so a
+        // follow-up hub_get_info can recover it; the message is the exception text (not the hub's
+        // verbatim compiler error -- that only exists on the synchronous 200+errorMessage path).
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        atomicStateMap.lastSelfDeploy = null
+        stubHttpGet(200, 'self-source-that-504s')
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
+        script.metaClass.hubInternalPostForm = { String path, Map body -> throw new RuntimeException('cloud 504') }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '1', importUrl: 'https://raw.example/self-504.groovy', confirm: true])
+
+        then:
+        result.success == false
+        result.error.startsWith('App update failed:')
+        atomicStateMap.lastSelfDeploy?.success == false
+        atomicStateMap.lastSelfDeploy.error.startsWith('App update failed:')
+        atomicStateMap.lastSelfDeploy.importUrl == 'https://raw.example/self-504.groovy'
+    }
+
     // -------- installAsUserApp validation edge cases --------
 
     @spock.lang.Unroll
