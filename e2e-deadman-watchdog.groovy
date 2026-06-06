@@ -196,15 +196,15 @@ String respText(resp) {
 
 // Hub Security cookie (only when this hub has Hub Security on). Cached in atomicState.
 String secCookie() {
-    if (settings.hubSecurityEnabled != true) return null
-    if (!settings.hubSecurityUser || !settings.hubSecurityPassword) return null
+    if (settings?.hubSecurityEnabled != true) return null
+    if (!settings?.hubSecurityUser || !settings?.hubSecurityPassword) return null
     if (atomicState.secCookie && atomicState.secCookieExp && atomicState.secCookieExp > now()) {
         return atomicState.secCookie
     }
     String cookie = null
     try {
         httpPost([uri: "http://127.0.0.1:8080", path: "/login",
-                  body: [username: settings.hubSecurityUser, password: settings.hubSecurityPassword],
+                  body: [username: settings?.hubSecurityUser, password: settings?.hubSecurityPassword],
                   textParser: true, ignoreSSLIssues: true]) { resp ->
             cookie = resp?.headers?.'Set-Cookie'?.split(';')?.getAt(0)
         }
@@ -215,14 +215,20 @@ String secCookie() {
 
 // ---- helpers ----
 String statusText() {
-    def flag = readFlag()
-    if (flag == null) return "Status: idle (no flag file)."
-    if (flag.armed == true) {
-        def secs = (((flag.deadline ?: 0L) as long) - now()) / 1000 as long
-        return "Status: ARMED, target class ${flag.classId}, ${secs}s to deadline."
+    // Defensive: this runs when the hub renders the prefs page, including at CREATE time when there
+    // is no installed instance yet (settings/atomicState null, no flag file). Never let it throw.
+    try {
+        def flag = readFlag()
+        if (flag == null) return "Status: idle (no flag file)."
+        if (flag.armed == true) {
+            def secs = (((flag.deadline ?: 0L) as long) - now()) / 1000 as long
+            return "Status: ARMED, target class ${flag.classId}, ${secs}s to deadline."
+        }
+        return "Status: disarmed. Last fire: ${flag.fireResult ?: 'none'}${flag.firedAt ? ' at ' + flag.firedAt : ''}."
+    } catch (Exception e) {
+        return "Status: (unavailable until installed)."
     }
-    return "Status: disarmed. Last fire: ${flag.fireResult ?: 'none'}${flag.firedAt ? ' at ' + flag.firedAt : ''}."
 }
 
 void logInfo(String m)  { log.info  "[deadman] ${m}" }
-void logDebug(String m) { if (settings.debugLogging != false) log.debug "[deadman] ${m}" }
+void logDebug(String m) { if (settings?.debugLogging != false) log.debug "[deadman] ${m}" }
