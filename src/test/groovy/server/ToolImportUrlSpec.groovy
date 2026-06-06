@@ -559,6 +559,76 @@ class ToolImportUrlSpec extends ToolSpecBase {
         nextHttpGetCaptured.uri == null  // guard ran before _fetchSourceFromUrl
     }
 
+    // -------- self-deploy outcome recorded to atomicState.lastSelfDeploy (issue #237) --------
+    // appId '1' == sharedAppStub id, so these exercise the self-update path. The result can't ride
+    // back on the deploy call live (success reloads the app; a big-file compile failure 504s), so the
+    // outcome is persisted to atomicState for a follow-up hub_get_info read to recover.
+
+    def "hub_update_app self-update records atomicState.lastSelfDeploy on success"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        stubHttpGet(200, 'fetched-self-source')
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '1', importUrl: 'https://raw.example/self.groovy', confirm: true])
+
+        then:
+        result.success == true
+        atomicStateMap.lastSelfDeploy?.success == true
+        atomicStateMap.lastSelfDeploy.error == null
+        atomicStateMap.lastSelfDeploy.importUrl == 'https://raw.example/self.groovy'
+        atomicStateMap.lastSelfDeploy.sourceMode == 'importUrl'
+    }
+
+    def "hub_update_app self-update records the hub's VERBATIM error to atomicState.lastSelfDeploy on a rejected save"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        stubHttpGet(200, 'broken-self-source')
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
+        // Hub rejects the save with its real validation message (the exact thing CI must recover).
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 200, location: null, data: '{"status":"error","errorMessage":"name cannot be empty in definition section"}']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '1', importUrl: 'https://raw.example/self.groovy', confirm: true])
+
+        then:
+        result.success == false
+        result.error == 'name cannot be empty in definition section'
+        atomicStateMap.lastSelfDeploy?.success == false
+        atomicStateMap.lastSelfDeploy.error == 'name cannot be empty in definition section'
+        atomicStateMap.lastSelfDeploy.importUrl == 'https://raw.example/self.groovy'
+    }
+
+    def "hub_update_app of a DIFFERENT app does NOT record lastSelfDeploy"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        atomicStateMap.lastSelfDeploy = null
+        stubHttpGet(200, 'other-app-source')
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', importUrl: 'https://raw.example/other.groovy', confirm: true])
+
+        then:
+        result.success == true
+        atomicStateMap.lastSelfDeploy == null
+    }
+
     // -------- installAsUserApp validation edge cases --------
 
     @spock.lang.Unroll

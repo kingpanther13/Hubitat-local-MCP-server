@@ -2358,6 +2358,7 @@ Verify rule after creation.""",
                     customRuleEngineEnabled: [type: "boolean", description: "Custom rule engine toggle state"],
                     developerModeEnabled: [type: "boolean", description: "Developer Mode toggle state"],
                     smokeTestMarker: [type: "string", description: "issue #209 #include canary -- 'smoke-ok-v1' from the McpSmokeTestLib library; throwaway, removed after the modularization split is validated"],
+                    lastSelfDeploy: [type: "object", description: "issue #237: outcome of the last hub_update_app self-update (the MCP server updating its own app). Recovers the result that can't return on the deploy call (success reloads the app; a big-file compile failure 504s). Keys: success (bool), error (hub's verbatim message or null), sourceMode, importUrl, sourceLength, at (epoch ms). Absent until the first self-update."],
                     name: [type: "string", description: "Hub name (Read master only)"],
                     localIP: [type: "string", description: "Hub local IP (Read master only)"],
                     timeZone: [type: "string", description: "Time zone ID (Read master only)"],
@@ -7066,6 +7067,12 @@ def toolGetHubInfo(args = null) {
     // "smoke-ok-v1" rather than throwing MissingMethodException -- proves the include resolved and
     // the library loaded. Throwaway canary; removed once the modularization split is validated.
     info.smokeTestMarker = mcpSmokeTestMarker()
+
+    // Last self-deploy outcome (issue #237): hub_update_app on the MCP server's own app can't return
+    // its result on the call (success reloads the app; a big-file compile failure 504s), so it records
+    // the hub's verbatim outcome here for a follow-up read to recover -- e.g. CI surfacing the real
+    // compile error after a failed self-deploy. Null until the first self-update.
+    if (atomicState.lastSelfDeploy != null) info.lastSelfDeploy = atomicState.lastSelfDeploy
 
     // PII/location data requires the Read master (default ON)
     if (settings.enableRead != false) {
@@ -12889,6 +12896,11 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
         }
     }
 
+    // Self-update detection: when the MCP server updates its OWN app code, a SUCCESS reloads the app
+    // (dropping our in-flight cloud response) and a big-file FAILURE 504s before the hub returns --
+    // either way the result can't ride back on this call. Record it to atomicState so a later
+    // hub_get_info read recovers the hub's verbatim outcome (incl. compile errors). See issue #237.
+    boolean isSelfUpdate = (type == "app" && app?.id?.toString() != null && itemId?.toString() == app?.id?.toString())
     mcpLog("info", "hub-admin", "Updating ${type} ID: ${itemId} (version: ${currentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
     try {
         def result = hubInternalPostForm(updatePath, [
@@ -12913,6 +12925,21 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
             }
         } else {
             success = true
+        }
+
+        // Persist the self-deploy outcome (incl. the hub's verbatim errorMessage) so it survives the
+        // post-success app reload AND the failure-case cloud 504 -- a later hub_get_info read recovers it.
+        if (isSelfUpdate) {
+            try {
+                atomicState.lastSelfDeploy = [
+                    success: success,
+                    error: success ? null : (errorMsg ?: "Update failed -- the hub returned an error"),
+                    sourceMode: sourceMode,
+                    importUrl: (args.importUrl ?: null),
+                    sourceLength: sourceCode.length(),
+                    at: now()
+                ]
+            } catch (Exception ignore) { /* bookkeeping must never break the deploy */ }
         }
 
         if (success) {
@@ -12983,6 +13010,18 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
         }
     } catch (Exception e) {
         mcpLogError("hub-admin", "${type} update failed", e)
+        if (isSelfUpdate) {
+            try {
+                atomicState.lastSelfDeploy = [
+                    success: false,
+                    error: "${type.capitalize()} update failed: ${e.message}",
+                    sourceMode: sourceMode,
+                    importUrl: (args.importUrl ?: null),
+                    sourceLength: (sourceCode != null ? sourceCode.length() : 0),
+                    at: now()
+                ]
+            } catch (Exception ignore) { }
+        }
         return [
             success: false,
             error: "${type.capitalize()} update failed: ${e.message}",

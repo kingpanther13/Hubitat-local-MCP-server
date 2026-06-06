@@ -106,6 +106,30 @@ mcp_tool_call_text() {
   return 1
 }
 
+# After a self-deploy whose result was lost (success reloaded the app, or a big-file compile failure
+# 504'd before the hub answered), the app recorded the hub's VERBATIM outcome to
+# atomicState.lastSelfDeploy. Read it back via hub_get_info and, if it matches THIS deploy (importUrl)
+# and reports failure, stash the real error in DEPLOY_ERROR_FILE for the verify gate to surface --
+# no guessing. (issue #237)
+recover_self_deploy_error() {
+  local attempt=1 text ok url err
+  while [ "$attempt" -le 3 ]; do
+    text=$(mcp_tool_call_text "hub_get_info (recover self-deploy error, try $attempt)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}') || text=""
+    ok=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.success // empty' 2>/dev/null || true)
+    url=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.importUrl // empty' 2>/dev/null || true)
+    err=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.error // empty' 2>/dev/null || true)
+    if [ "$url" = "$PR_SOURCE_URL" ] && [ "$ok" = "false" ] && [ -n "$err" ]; then
+      printf '%s' "$err" > "$DEPLOY_ERROR_FILE"
+      echo "::error::Hub REJECTED the self-deploy. Hub error (recovered via hub_get_info.lastSelfDeploy): ${err}"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    [ "$attempt" -le 3 ] && sleep 5
+  done
+  echo "::notice::Could not recover a matching failed self-deploy record from hub_get_info.lastSelfDeploy (last seen success=${ok:-none}, importUrl match=$([ "$url" = "$PR_SOURCE_URL" ] && echo yes || echo no)). The verify step will report the stale source without the hub's verbatim error."
+  return 0
+}
+
 echo "Triggering hub backup (best-effort; tolerated if it 504s -- the <24h gate is timestamp-cached)..."
 BACKUP_RPC='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true}}}'
 # `>/dev/null` (not `2>&1`) so genuine curl errors -- DNS, connection refused,
@@ -313,7 +337,8 @@ elif [ "$HTTP_CODE" = "504" ] || [ "$HTTP_CODE" = "502" ] || [ "$HTTP_CODE" = "5
     echo "Deploy verified despite HTTP $HTTP_CODE. PR source is on the hub."
     printf 'verified-via=5xx-poll bytes=%s\n' "$NEW_BYTES" > "$DEPLOY_LANDED_FILE"
   else
-    echo "::error::Deploy not verified -- hub source did not converge away from pre-deploy length."
+    echo "::error::Deploy not verified -- the hub source did not change. Recovering the hub's verbatim outcome from hub_get_info.lastSelfDeploy (issue #237)..."
+    recover_self_deploy_error
     exit 1
   fi
 else
