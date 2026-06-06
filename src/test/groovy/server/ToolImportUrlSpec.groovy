@@ -200,15 +200,15 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- importUrl integration: hub_create_app --------
 
-    def "hub_create_app with importUrl fetches via httpGet and POSTs to /app/save"() {
+    def "hub_create_app with importUrl fetches via httpGet and POSTs to /app/saveOrUpdateJson"() {
         given:
         enableWrite()
         stubHttpGet(200, 'definition(name: "FromUrl")')
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
             captured.body = body
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/7777', data: '']
+            [success: true, id: 7777, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "stub-source", "version": 1}'
@@ -224,8 +224,10 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.success == true
         result.appId == '7777'
         result.sourceMode == 'importUrl'
-        captured.path == '/app/save'
-        captured.body.source == 'definition(name: "FromUrl")'
+        captured.path == '/app/saveOrUpdateJson'
+        def sent = new groovy.json.JsonSlurper().parseText(captured.body)
+        sent.source == 'definition(name: "FromUrl")'
+        sent.id == null
         result.note?.contains('hub-side fetch')  // pins the "no agent transcript" semantic, not just the substring
     }
 
@@ -751,14 +753,14 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- per-tool importUrl smoke (hub_create_driver / hub_update_driver / hub_update_library) --------
 
-    def "hub_create_driver with importUrl fetches via httpGet and POSTs to /driver/save"() {
+    def "hub_create_driver with importUrl fetches via httpGet and POSTs to /driver/saveOrUpdateJson"() {
         given:
         enableWrite()
         stubHttpGet(200, 'metadata { definition (name: "FromUrl") {} }')
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path; captured.body = body
-            [status: 302, location: 'http://127.0.0.1:8080/driver/editor/8888', data: '']
+            [success: true, id: 8888, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"stub","version":1}' }
 
@@ -768,7 +770,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         then:
         result.success == true
         result.driverId == '8888'
-        captured.path == '/driver/save'
+        captured.path == '/driver/saveOrUpdateJson'
     }
 
     def "hub_update_driver with importUrl POSTs the fetched source to /driver/ajax/update"() {
@@ -823,9 +825,9 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
         stubHttpGet(200, 'driver-from-url')
         def postPaths = []
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             postPaths << path
-            [status: 302, location: 'http://127.0.0.1:8080/driver/editor/9001', data: '']
+            [success: true, id: 9001, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"stub","version":1}' }
 
@@ -841,7 +843,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.installs[0].success == true
         result.installs[0].sourceMode == 'importUrl'
         nextHttpGetCaptured.uri == 'https://raw.example/d1.groovy'
-        postPaths.contains('/driver/save')
+        postPaths.contains('/driver/saveOrUpdateJson')
     }
 
     def "hub_update_driver bulk: per-item importUrl is forwarded and fetched"() {
