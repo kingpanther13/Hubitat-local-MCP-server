@@ -609,12 +609,14 @@ class ToolImportUrlSpec extends ToolSpecBase {
         atomicStateMap.lastSelfDeploy.importUrl == 'https://raw.example/self.groovy'
     }
 
-    def "hub_update_app of a DIFFERENT app does NOT record lastSelfDeploy"() {
+    def "hub_update_app of a DIFFERENT app (neither instance nor class id) does NOT record lastSelfDeploy"() {
         given:
         enableWrite()
         settingsMap.enableDeveloperMode = true
         atomicStateMap.lastSelfDeploy = null
         stubHttpGet(200, 'other-app-source')
+        // app.id is 1; the self CLASS id resolves to 178. appId 42 matches neither -> not a self-update.
+        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 200, location: null, data: '{"status":"success"}']
@@ -627,6 +629,33 @@ class ToolImportUrlSpec extends ToolSpecBase {
         then:
         result.success == true
         atomicStateMap.lastSelfDeploy == null
+    }
+
+    def "hub_update_app self-update via the Apps Code CLASS id (the real CI deploy path) records the verbatim error"() {
+        // The CI deploy targets the CLASS id from /hub2/userAppTypes (e.g. 178), which differs from
+        // app.id (the instance). isSelfUpdate must still fire via the class-id branch, else a failed
+        // real deploy would record nothing and CI couldn't recover the hub's error.
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        atomicStateMap.lastSelfDeploy = null
+        stubHttpGet(200, 'class-id-self-source')
+        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 200, location: null, data: '{"status":"error","errorMessage":"name cannot be empty in definition section"}']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '178', importUrl: 'https://raw.example/self-class.groovy', confirm: true])
+
+        then:
+        result.success == false
+        result.error == 'name cannot be empty in definition section'
+        atomicStateMap.lastSelfDeploy?.success == false
+        atomicStateMap.lastSelfDeploy.error == 'name cannot be empty in definition section'
+        atomicStateMap.lastSelfDeploy.importUrl == 'https://raw.example/self-class.groovy'
     }
 
     // -------- installAsUserApp validation edge cases --------

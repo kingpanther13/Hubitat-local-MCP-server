@@ -12900,7 +12900,22 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
     // (dropping our in-flight cloud response) and a big-file FAILURE 504s before the hub returns --
     // either way the result can't ride back on this call. Record it to atomicState so a later
     // hub_get_info read recovers the hub's verbatim outcome (incl. compile errors). See issue #237.
-    boolean isSelfUpdate = (type == "app" && app?.id?.toString() != null && itemId?.toString() == app?.id?.toString())
+    //
+    // Match BOTH ids: app.id is the installed-INSTANCE id, but a code deploy targets the Apps Code
+    // CLASS id (from /hub2/userAppTypes), which differs -- matching only app.id would miss the real
+    // self-deploy. Resolve the class id only when the cheap instance check misses (app-code updates
+    // are rare); _resolveSelfAppClassId returns null on any failure (incl. unstubbed in tests), so a
+    // miss simply leaves isSelfUpdate=false.
+    boolean isSelfUpdate = false
+    if (type == "app") {
+        def selfInstanceId = app?.id?.toString()
+        if (selfInstanceId != null && itemId?.toString() == selfInstanceId) {
+            isSelfUpdate = true
+        } else {
+            def selfClassId = _resolveSelfAppClassId()
+            if (selfClassId != null && itemId?.toString() == selfClassId.toString()) isSelfUpdate = true
+        }
+    }
     mcpLog("info", "hub-admin", "Updating ${type} ID: ${itemId} (version: ${currentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
     try {
         def result = hubInternalPostForm(updatePath, [
