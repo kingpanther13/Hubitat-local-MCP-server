@@ -9097,16 +9097,9 @@ def hubInternalPostFormRaw(String path, String encodedBody, int timeout = 420, b
 }
 
 def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetry = false) {
-    def opts = [body: body, timeout: timeout,
-                requestContentType: "application/x-www-form-urlencoded", keepAlive: true,
-                returnShape: 'struct', isRetry: isRetry]
-    // /app/save & /driver/save (create) respond with a 302 -> <editor>/<newId>; the new id is ONLY in
-    // that Location header. Following the redirect (the default) runs the closure on the followed 200
-    // and DROPS the Location -> hub_create_app saw "no item id" and created nothing usable. For these
-    // create endpoints, don't follow -- read the 3xx Location instead. Other form POSTs (/ajax/update,
-    // /installedapp/*) return 200 and are unaffected. (fixes hub_create_app on 2.5.0.143)
-    if (path.endsWith('/save')) { opts.followRedirects = false; opts.handle3xx = true }
-    _hubRequest('POST', path, opts)
+    _hubRequest('POST', path, [body: body, timeout: timeout,
+                              requestContentType: "application/x-www-form-urlencoded", keepAlive: true,
+                              returnShape: 'struct', isRetry: isRetry])
 }
 
 /**
@@ -12634,41 +12627,6 @@ private Map toolInstallItem(String type, args) {
     return toolInstallItemSingle(type, args)
 }
 
-// Pull the new app/driver id from a create response: first the 302 Location header
-// (<editorPath><id>), then an <editorPath><id> link in the body. Returns null if neither.
-private _extractNewItemId(location, body, String editorPath) {
-    if (location) {
-        def id = location.toString().replaceAll(".*?${editorPath}", "").split("[?#/]")[0]
-        if (id && id.isInteger()) return id
-    }
-    if (body instanceof String && body) {
-        def m = (body =~ /${editorPath}(\d+)/)
-        if (m.find()) return m.group(1)
-    }
-    return null
-}
-
-// Fallback when create returned no usable Location/body id but the item may still have been
-// created: resolve by the source's definition name (+namespace) against the hub's type list.
-private _findNewItemIdByName(String type, String sourceCode) {
-    try {
-        def nm = (sourceCode =~ /(?s)definition\s*\([^)]*?name\s*:\s*["']([^"']+)["']/)
-        if (!nm.find()) return null
-        def wantName = nm.group(1)
-        def nsM = (sourceCode =~ /(?s)definition\s*\([^)]*?namespace\s*:\s*["']([^"']+)["']/)
-        def wantNs = nsM.find() ? nsM.group(1) : null
-        def typesPath = (type == "app") ? "/hub2/userAppTypes" : "/hub2/userDriverTypes"
-        def txt = hubInternalGet(typesPath)
-        if (!txt) return null
-        def arr = new groovy.json.JsonSlurper().parseText(txt)
-        def match = arr.find { it?.name == wantName && (wantNs == null || it?.namespace == wantNs) }
-        return match?.id?.toString()
-    } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "name-fallback id resolution failed: ${e.message}")
-        return null
-    }
-}
-
 // Caller must have already invoked requireDestructiveConfirm -- gate fires once per call, not per bulk item.
 private Map toolInstallItemSingle(String type, args) {
     def idField = (type == "app") ? "appId" : "driverId"
@@ -12700,44 +12658,38 @@ private Map toolInstallItemSingle(String type, args) {
         throw new IllegalArgumentException("One of 'source' (inline Groovy code), 'sourceFile' (File Manager filename), or 'importUrl' (URL the hub will fetch) is required")
     }
 
-    def savePath = (type == "app") ? "/app/save" : "/driver/save"
-    def editorPath = (type == "app") ? "/app/editor/" : "/driver/editor/"
+    def savePath = (type == "app") ? "/app/saveOrUpdateJson" : "/driver/saveOrUpdateJson"
     def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
 
     mcpLog("info", "hub-admin", "Installing new ${type} (mode: ${sourceMode}, sourceLength: ${sourceCode.length()})...")
     try {
-        // hubInternalPostForm does not follow the /save redirect, so the 302 Location (carrying the
-        // new id) survives for _extractNewItemId.
-        def result = hubInternalPostForm(savePath, [
-            id: "",
-            version: "",
-            create: "",
-            source: sourceCode
-        ])
-        def respStatus = result?.status
-        def respLocation = result?.location
-        def respBody = result?.data
+        // Firmware 2.5.x creates app/driver code via POST /app/saveOrUpdateJson (JSON) -- the same
+        // endpoint the Vue editor uses and the twin of /library/saveOrUpdateJson. id:null => create;
+        // response is {success, id, message}. (The old form POST /app/save returns an HTML page and
+        // creates nothing on 2.5.0.143 -- this is the hub_create_app fix.)
+        def saveBody = groovy.json.JsonOutput.toJson([id: null, source: sourceCode, version: 1])
+        def parsed = hubInternalPostJson(savePath, saveBody)
 
-        def newItemId = _extractNewItemId(respLocation, respBody, editorPath)
-        if (!newItemId) {
-            // Created-but-no-usable-Location fallback: resolve by the source's definition name.
-            newItemId = _findNewItemIdByName(type, sourceCode)
-            if (newItemId) mcpLog("info", "hub-admin", "${type.capitalize()} install: id ${newItemId} resolved by name (no usable Location)")
-        }
-
-        if (!newItemId) {
-            // Self-diagnosing: surface what the hub actually returned so a genuine failure (compile
-            // error, changed /app/save contract) is debuggable instead of a blind "no item ID".
-            def bodyHead = (respBody instanceof String) ? respBody.replaceAll("\\s+", " ").trim().take(400) : "(no body)"
-            mcpLog("warn", "hub-admin", "${type.capitalize()} install: no item ID. status=${respStatus} location=${respLocation} bodyHead=${bodyHead}")
+        if (parsed == null || parsed.success != true) {
+            def hubMsg = (parsed instanceof Map) ? (parsed.message ?: parsed.errorMessage) : null
+            mcpLog("warn", "hub-admin", "${type.capitalize()} create rejected: ${hubMsg ?: 'no/unparseable response'}")
             return [
                 success: false,
-                error: "Could not confirm ${type} installation -- the hub returned no item ID (status=${respStatus}, location=${respLocation ?: 'none'}). The source may have a compile error, or the /app/save contract may differ on this firmware.",
+                error: "${type.capitalize()} installation failed: ${hubMsg ?: 'the hub rejected the source or returned no parseable response'}",
                 (idField): null,
-                hubStatus: respStatus,
-                hubLocation: respLocation,
-                hubBodyHead: bodyHead,
-                note: "If hubBodyHead shows a Groovy error, fix the source. Otherwise the create endpoint/params may need adjusting for this firmware. Check Hubitat > Apps Code (or Drivers Code).",
+                note: "The hub validates the source on create. Fix the reported issue -- e.g. a Groovy compile error, or a required definition() field such as a non-empty iconUrl/iconX2Url (enforced on create) -- and retry.",
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+            ]
+        }
+
+        def newItemId = parsed.id?.toString()
+        if (!newItemId) {
+            mcpLog("warn", "hub-admin", "${type.capitalize()} create returned success but no id: ${parsed}")
+            return [
+                success: false,
+                error: "${type.capitalize()} install reported success but returned no item id.",
+                (idField): null,
+                note: "Unexpected /app/saveOrUpdateJson response shape. Check Hubitat > Apps Code (or Drivers Code).",
                 lastBackup: formatTimestamp(state.lastBackupTimestamp)
             ]
         }
