@@ -14,8 +14,8 @@ definition(
     author: "ci",
     description: "Throwaway e2e dead-man watchdog test target",
     category: "Utility",
-    iconUrl: "",
-    iconX2Url: ""
+    iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
+    iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png"
 )
 
 preferences {
