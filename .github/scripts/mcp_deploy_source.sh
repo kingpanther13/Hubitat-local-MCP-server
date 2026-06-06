@@ -31,6 +31,10 @@ PRE_LEN_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source_charlen"
 # Written only after the deploy is verified to have landed on the hub.
 # Restore step early-exits if this is absent: no marker = nothing to undo.
 DEPLOY_LANDED_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_landed"
+# Captures the hub's VERBATIM save/compile error (from hub_update_app's response) so the
+# authoritative verify gate can surface the real message instead of guessing a cause. Written only
+# on a definitive HTTP-200 + success:false rejection; read by mcp_verify_deploy.sh.
+DEPLOY_ERROR_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_error.txt"
 
 # Pulled from the parent app's definition() block — keep these in sync if
 # the parent ever changes its namespace/name (it shouldn't; HPM tracks it).
@@ -45,8 +49,8 @@ POST_DEPLOY_VERIFY_SLEEP=20
 POST_DEPLOY_VERIFY_TIMEOUT=90
 POST_DEPLOY_VERIFY_INTERVAL=8
 
-# Defensive: clear any stale marker from a previous run.
-rm -f "$DEPLOY_LANDED_FILE"
+# Defensive: clear any stale marker/error from a previous run.
+rm -f "$DEPLOY_LANDED_FILE" "$DEPLOY_ERROR_FILE"
 
 if [ ! -f "$SOURCE_FILE" ]; then
   echo "::error::Source file not found: $SOURCE_FILE"
@@ -239,7 +243,7 @@ verify_deploy_landed() {
     sleep $POST_DEPLOY_VERIFY_INTERVAL
     elapsed=$((elapsed + POST_DEPLOY_VERIFY_INTERVAL))
   done
-  echo "::error::Deploy did not land: hub source totalLength is still $current_len (baseline $PRE_LEN) after ${POST_DEPLOY_VERIFY_TIMEOUT}s. The new app source never saved -- the app most likely FAILED TO COMPILE on the hub (e.g. an unresolved #include because a library wasn't installed, or a Groovy syntax error), so Hubitat rejected the save and kept the old source."
+  echo "::error::Deploy did not land: hub source totalLength is still $current_len (baseline $PRE_LEN) after ${POST_DEPLOY_VERIFY_TIMEOUT}s. The new source did not take effect -- the hub rejected the save or the deploy did not reach the hub. The authoritative 'Verify deployed source' step will report the hub's verbatim error if one was captured."
   return 1
 }
 
@@ -279,7 +283,18 @@ if [ "$HTTP_CODE" = "200" ]; then
   fi
   DEPLOY_OK=$(echo "$DEPLOY_TEXT" | jq -r '.success // false')
   if [ "$DEPLOY_OK" != "true" ]; then
-    echo "::error::hub_update_app reported failure (the hub rejected the save -- the app FAILED TO COMPILE or SAVE; e.g. an unresolved #include because a library wasn't installed, or a Groovy syntax error): $(echo "$DEPLOY_TEXT" | jq -r '.error // .message // empty')"
+    # The hub REJECTED the save. hub_update_app returns the hub's VERBATIM error
+    # (toolUpdateItemCodeInner parses /app/ajax/update's errorMessage), e.g. "name cannot be empty
+    # in definition section". Surface that actual message -- no guessing about the cause -- and hand
+    # it to the verify gate (which otherwise only sees stale source) via DEPLOY_ERROR_FILE.
+    HUB_ERR=$(printf '%s' "$DEPLOY_TEXT" | jq -r '.error // .message // empty')
+    HUB_NOTE=$(printf '%s' "$DEPLOY_TEXT" | jq -r '.note // empty')
+    if [ -n "$HUB_ERR" ]; then
+      printf '%s' "$HUB_ERR" > "$DEPLOY_ERROR_FILE"
+      echo "::error::Hub REJECTED the save. Hub error: ${HUB_ERR}${HUB_NOTE:+ -- ${HUB_NOTE}}"
+    else
+      echo "::error::Hub rejected the save (hub_update_app success=false) but returned no error text. Full tool response below."
+    fi
     echo "Tool response: $DEPLOY_TEXT" | head -c 2000
     exit 1
   fi

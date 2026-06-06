@@ -29,6 +29,9 @@ SOURCE_FILE="${1:-hubitat-mcp-server.groovy}"
 CLASS_ID_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source_class_id"
 PRE_SOURCE_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source.groovy"
 HUB_SOURCE_FILE="${RUNNER_TEMP:-/tmp}/mcp_hub_source.groovy"
+# The hub's VERBATIM save/compile error, captured by mcp_deploy_source.sh when the hub rejected the
+# save (e.g. "name cannot be empty in definition section"). Surfaced as the cause below -- no guessing.
+DEPLOY_ERROR_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_error.txt"
 
 APP_NAMESPACE="mcp"
 APP_NAME="MCP Rule Server"
@@ -142,8 +145,14 @@ while [ "$attempt" -le "$FETCH_ATTEMPTS" ]; do
 done
 
 HUB_BYTES=$(wc -c < "$HUB_SOURCE_FILE" 2>/dev/null || echo 0)
-echo "::error::Deploy NOT verified: after $FETCH_ATTEMPTS attempts the hub's source is not byte-identical to this PR's source."
-echo "::error::PR source = $PR_BYTES B; hub source = $HUB_BYTES B. The new source never landed -- the app most likely FAILED TO COMPILE or SAVE on the hub (e.g. an unresolved #include because a library wasn't installed, or a Groovy syntax error), so Hubitat kept the old source. The e2e tests would run against STALE hub code, so failing the job."
+echo "::error::Deploy NOT verified: the hub's source is not byte-identical to this PR's source (PR = $PR_BYTES B, hub = $HUB_BYTES B). The e2e would run on STALE hub code, so failing the job."
+if [ -s "$DEPLOY_ERROR_FILE" ]; then
+  # The deploy step captured the hub's actual rejection -- report it verbatim, no guessing.
+  echo "::error::Cause (the hub's verbatim error at deploy time): $(cat "$DEPLOY_ERROR_FILE")"
+else
+  # No hub error was captured -- so this is NOT confirmed to be a compile failure. Don't guess.
+  echo "::error::The deploy step captured no hub save/compile error, so the cause is NOT confirmed to be a compile failure. See the 'Deploy PR source' step log above for the actual cause (e.g. a transient cloud-gateway timeout that stopped the deploy before the save was attempted, or the deploy not completing)."
+fi
 echo "First byte divergence:"
 cmp "$HUB_SOURCE_FILE" "$SOURCE_FILE" 2>&1 | head -1 || true
 exit 1
