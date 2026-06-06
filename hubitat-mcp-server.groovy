@@ -9169,6 +9169,14 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
         }
     }
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
+    // Fields the classic "Done" form also submits. _rmSubmitMainPageDone (RM)
+    // omits them and gets away with it because RM commits via updateRule first
+    // and tolerates a failing Done; a standalone app's Done is the ONLY commit,
+    // and the hub's update handler 500s without these (verified live). The UI's
+    // referrer/url fields are navigation hints only and are NOT required.
+    body.appTypeId = ""
+    body.appTypeName = ""
+    body._cancellable = "false"
 
     def resp = hubInternalPostForm("/installedapp/update/json", body)
     def st = resp?.status

@@ -427,6 +427,11 @@ class ToolImportUrlSpec extends ToolSpecBase {
         commit.doneBody['debugLogging.type'] == 'bool'
         commit.doneBody['settings[flagFileName]'] == 'e2e-deadman.json'
         commit.doneBody['settings[hubSecurityUser]'] == ''
+        // Classic-form fields the hub's update handler requires for a fresh
+        // standalone install (without them it 500s -- verified live).
+        commit.doneBody._cancellable == 'false'
+        commit.doneBody.appTypeId == ''
+        commit.doneBody.appTypeName == ''
     }
 
     def "hub_create_app with installAsUserApp returns success=false when hub returns non-302"() {
