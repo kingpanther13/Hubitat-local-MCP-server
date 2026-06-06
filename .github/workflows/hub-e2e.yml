@@ -29,6 +29,7 @@ on:
       - '.github/scripts/mcp_validate_package_tool.sh'
       - '.github/scripts/mcp_install_libraries.sh'
       - '.github/scripts/mcp_install_bundle_hpm.sh'
+      - '.github/scripts/mcp_prove_compile_capture.sh'
       - 'libraries/**'
       - 'bundles/**'
   workflow_dispatch:
@@ -219,6 +220,16 @@ jobs:
       - name: Verify deployed source matches this PR
         if: steps.gate.outputs.available == 'true'
         run: bash .github/scripts/mcp_verify_deploy.sh hubitat-mcp-server.groovy
+
+      # Prove (live) that a rejected self-deploy's verbatim hub error is captured + recoverable via
+      # hub_get_info.lastSelfDeploy (issue #237). Submits a deliberately-broken self-update (a
+      # definition with no name) to the MCP server's own app class; the hub rejects it (keeping the
+      # good code), records the verbatim error, and this asserts we recover "name cannot be empty in
+      # definition section". Non-destructive (a rejected save never replaces the running app). Runs
+      # after the main deploy so the persist-capable code is what handles the rejection.
+      - name: Prove compile-error capture (issue #237)
+        if: steps.gate.outputs.available == 'true'
+        run: bash .github/scripts/mcp_prove_compile_capture.sh
 
       # Prove the HPM bundle-install path on the live hub (issue #209). The deploy above used a
       # bootstrap user-library so the app could compile and land hub_install_bundle; this step now
