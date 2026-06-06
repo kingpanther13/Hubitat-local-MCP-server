@@ -77,10 +77,11 @@ class ToolImportUrlSpec extends ToolSpecBase {
         def schedJobs = opts.containsKey('scheduledJobs') ? opts.scheduledJobs : [[name: 'checkDeadman']]
         def subs = opts.containsKey('eventSubscriptions') ? opts.eventSubscriptions : []
         int doneStatus = opts.containsKey('doneStatus') ? (opts.doneStatus as int) : 200
+        def sections = opts.containsKey('sections') ? opts.sections : []
         script.metaClass.hubInternalGet = { String path, Map q = null, int t = 30, boolean r = false ->
             if (path.contains('/installedapp/configure/json/')) {
                 cap.configPaths << path
-                return groovy.json.JsonOutput.toJson([app: [version: 1], configPage: [name: 'mainPage', sections: []]])
+                return groovy.json.JsonOutput.toJson([app: [version: 1], configPage: [name: 'mainPage', sections: sections]])
             }
             if (path.contains('/installedapp/statusJson/')) {
                 cap.statusPaths << path
@@ -397,6 +398,35 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.instanceAppId == 7777
         result.error.contains('shell')
         result.error.contains('7777')
+    }
+
+    def "hub_create_app installAsUserApp submits each input's value in the Done body (bool as true/false, not empty)"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/5555/mainPage', data: '']
+        }
+        // Watchdog-shaped page: a text input with a default + a bool defaulting true
+        // + an unset text input. The hub 500s on settings[bool]="" -- the original bug.
+        def commit = stubInstallCommit(sections: [[
+            input: [
+                [name: 'flagFileName', type: 'text', value: 'e2e-deadman.json'],
+                [name: 'debugLogging', type: 'bool', value: true],
+                [name: 'hubSecurityUser', type: 'text']
+            ]
+        ]])
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: 312, confirm: true])
+
+        then:
+        result.success == true
+        result.committed == true
+        commit.doneBody['settings[debugLogging]'] == 'true'
+        commit.doneBody['checkbox[debugLogging]'] == 'on'
+        commit.doneBody['debugLogging.type'] == 'bool'
+        commit.doneBody['settings[flagFileName]'] == 'e2e-deadman.json'
+        commit.doneBody['settings[hubSecurityUser]'] == ''
     }
 
     def "hub_create_app with installAsUserApp returns success=false when hub returns non-302"() {

@@ -9131,12 +9131,23 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     def cfg = _rmFetchConfigJson(instanceId, pageName)
     def page = pageName ?: (cfg?.configPage?.name?.toString()) ?: "mainPage"
     def schema = _rmCollectInputSchema(cfg?.configPage)
-    def status = _rmFetchStatusJson(instanceId)
-    def liveSettings = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
+    // The UI's Done submits each input's rendered value -- its default on a fresh
+    // shell (e.g. a bool's "true"/"false"). Sending "" for a typed input, notably
+    // a bool, makes the hub's update handler 500. Read each value straight from the
+    // configPage inputs (value, else defaultValue).
+    def pageValues = [:]
+    for (s in (cfg?.configPage?.sections ?: [])) {
+        for (i in (s?.input ?: [])) {
+            if (i instanceof Map && i.name) {
+                def nm = i.name.toString()
+                if (i.value != null) pageValues[nm] = i.value
+                else if (i.defaultValue != null) pageValues[nm] = i.defaultValue
+            }
+        }
+    }
     def settingsMap = [:]
     schema.each { name, meta ->
-        def v = liveSettings[name]
-        settingsMap[name] = (v == null) ? "" : v
+        settingsMap[name] = pageValues.containsKey(name) ? pageValues[name] : ""
     }
     def body = _rmBuildSettingsBody(instanceId, settingsMap, schema)
     body.formAction = "update"
