@@ -65,6 +65,37 @@ class ToolImportUrlSpec extends ToolSpecBase {
         nextHttpGetThrow = new RuntimeException(message)
     }
 
+    /**
+     * Stub the install-commit path (_commitUserAppInstall) so installAsUserApp
+     * success tests run end-to-end: the configure/json + statusJson reads and the
+     * Done POST to /installedapp/update/json. Returns a capture map (donePath /
+     * doneBody / configPaths / statusPaths). opts: scheduledJobs, eventSubscriptions,
+     * doneStatus.
+     */
+    private Map stubInstallCommit(Map opts = [:]) {
+        def cap = [donePath: null, doneBody: null, configPaths: [], statusPaths: []]
+        def schedJobs = opts.containsKey('scheduledJobs') ? opts.scheduledJobs : [[name: 'checkDeadman']]
+        def subs = opts.containsKey('eventSubscriptions') ? opts.eventSubscriptions : []
+        int doneStatus = opts.containsKey('doneStatus') ? (opts.doneStatus as int) : 200
+        script.metaClass.hubInternalGet = { String path, Map q = null, int t = 30, boolean r = false ->
+            if (path.contains('/installedapp/configure/json/')) {
+                cap.configPaths << path
+                return groovy.json.JsonOutput.toJson([app: [version: 1], configPage: [name: 'mainPage', sections: []]])
+            }
+            if (path.contains('/installedapp/statusJson/')) {
+                cap.statusPaths << path
+                return groovy.json.JsonOutput.toJson([appSettings: [], scheduledJobs: schedJobs, eventSubscriptions: subs])
+            }
+            return '{}'
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, int t = 420, boolean r = false ->
+            cap.donePath = path
+            cap.doneBody = body
+            return [status: doneStatus, data: '', location: '/installedapp/list?section=apps']
+        }
+        return cap
+    }
+
     // -------- _fetchSourceFromUrl helper --------
 
     def "_fetchSourceFromUrl: happy path returns body string and uses requested URL"() {
@@ -296,7 +327,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- installAsUserApp --------
 
-    def "hub_create_app with installAsUserApp creates instance via /installedapp/create/<codeId> and parses Location"() {
+    def "hub_create_app with installAsUserApp creates the instance then commits the install (Done)"() {
         given:
         enableWrite()
         def capturedPath = null
@@ -308,16 +339,64 @@ class ToolImportUrlSpec extends ToolSpecBase {
                 data: ''
             ]
         }
+        def commit = stubInstallCommit()
 
         when:
         def result = script.toolInstallApp([installAsUserApp: 310, confirm: true])
 
         then:
         capturedPath == '/installedapp/create/310'
+        // Step 2: the shell is committed via a Done POST -- the step the old
+        // GET-only path skipped, leaving installed()/initialize() unfired.
+        commit.donePath == '/installedapp/update/json'
+        commit.doneBody._action_update == 'Done'
+        commit.doneBody.currentPage == 'mainPage'
+        commit.doneBody.id == '9999'
         result.success == true
+        result.committed == true
         result.mode == 'installAsUserApp'
         result.codeAppId == 310
         result.instanceAppId == 9999
+        result.scheduledJobCount == 1
+    }
+
+    def "hub_create_app installAsUserApp uses the instance's actual first-page name in the Done commit"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/4242/p', data: '']
+        }
+        def commit = stubInstallCommit()
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: 313, confirm: true])
+
+        then:
+        result.success == true
+        result.committed == true
+        result.instanceAppId == 4242
+        // First page is "p" (not "mainPage") -- the commit must target it.
+        commit.configPaths.any { it == '/installedapp/configure/json/4242/p' }
+        commit.doneBody.currentPage == 'p'
+    }
+
+    def "hub_create_app installAsUserApp reports an uncommitted shell when the Done POST fails"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/7777/mainPage', data: '']
+        }
+        stubInstallCommit(doneStatus: 500)
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: 314, confirm: true])
+
+        then:
+        result.success == false
+        result.committed == false
+        result.instanceAppId == 7777
+        result.error.contains('shell')
+        result.error.contains('7777')
     }
 
     def "hub_create_app with installAsUserApp returns success=false when hub returns non-302"() {
@@ -709,12 +788,14 @@ class ToolImportUrlSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             [status: 302, location: '/installedapp/configure/9999/mainPage', data: '']
         }
+        stubInstallCommit()
 
         when:
         def result = script.toolInstallApp([installAsUserApp: '310', confirm: true])
 
         then:
         result.success == true
+        result.committed == true
         result.codeAppId == 310
         result.instanceAppId == 9999
     }
@@ -883,6 +964,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             [status: 302, location: '/installedapp/configure/8888/mainPage', data: '']
         }
+        stubInstallCommit()
 
         when:
         def response = mcpDriver.callTool('hub_create_app', [installAsUserApp: 310, confirm: true])
@@ -892,6 +974,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
+        inner.committed == true
         inner.instanceAppId == 8888
 
         where:

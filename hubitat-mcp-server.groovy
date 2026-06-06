@@ -3837,7 +3837,7 @@ Verifies install succeeded: if the hub accepted the request but the app failed t
                     source: [type: "string", description: "Inline Groovy source. Stubs only -- fills agent transcript. For non-trivial apps prefer sourceFile or importUrl."],
                     sourceFile: [type: "string", description: "File Manager filename (upload first via curl per tool description; bypasses agent transcript)."],
                     importUrl: [type: "string", description: "URL the hub fetches directly. Mirrors the editor's Import Code from Website + Save. http:// or https://. Mutually exclusive with source/sourceFile."],
-                    installAsUserApp: [type: "integer", description: "Second-step mode: create a running instance from already-installed code (the codeAppId returned by a prior hub_create_app call). Mutually exclusive with code-install args (source/sourceFile/importUrl). Fires installed() on the new instance."],
+                    installAsUserApp: [type: "integer", description: "Second-step mode: create a running instance from already-installed code (the codeAppId returned by a prior hub_create_app call) AND commit the install (submits the config page's Done), firing installed()/initialize() so schedules/subscriptions actually register. Mutually exclusive with code-install args (source/sourceFile/importUrl). Targets apps whose first page installs with defaults; a required first-page input with no default blocks the auto-Done (same as the UI)."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
@@ -3854,6 +3854,9 @@ Verifies install succeeded: if the hub accepted the request but the app failed t
                     verifyError: [type: "string", description: "Verification fetch error; present when verify could not run"],
                     codeAppId: [description: "installAsUserApp mode: source code app ID"],
                     instanceAppId: [description: "installAsUserApp mode: new running instance ID"],
+                    committed: [type: "boolean", description: "installAsUserApp mode: whether the install was committed (Done submitted). false means an inert shell was left behind -- delete it and retry"],
+                    scheduledJobCount: [type: "integer", description: "installAsUserApp mode: scheduled jobs registered by initialize() (evidence the install committed)"],
+                    eventSubscriptionCount: [type: "integer", description: "installAsUserApp mode: event subscriptions registered by initialize()"],
                     mode: [type: "string", description: "installAsUserApp mode marker"],
                     note: [type: "string", description: "Recovery/source-mode guidance"],
                     lastBackup: [type: "string", description: "Timestamp of most recent backup"]
@@ -8998,13 +9001,22 @@ private Map _httpFetchUrl(String url) {
 }
 
 /**
- * Create a running user-app instance from already-installed code. Replicates
- * the hub UI's "Add user app -> select code -> Done" flow in one HTTP call.
+ * Create a running user-app instance from already-installed code and COMMIT the
+ * install, replicating the hub UI's "Add user app -> select code -> Done" flow.
  *
- * The hub creates the instance (firing installed()) on GET to
- * /installedapp/create/<codeId>, then 302-redirects to
- * /installedapp/configure/<newInstanceId>/mainPage. We don't follow the
- * redirect -- the new instance id is parsed from the Location header.
+ * Two HTTP steps, because the hub splits the flow exactly as the UI does:
+ *   1. GET /installedapp/create/<codeId> creates a PENDING instance shell and
+ *      302-redirects to /installedapp/configure/<newId>/<firstPage>. This step
+ *      alone does NOT fire installed()/initialize() -- the instance stays an
+ *      inert, uninstalled shell (no schedules/subscriptions). The Vue add-app
+ *      wrapper just loads that config page in an iframe and waits for "Done".
+ *   2. POST /installedapp/update/json with _action_update=Done commits the
+ *      install, which is what actually fires installed()->initialize() (e.g.
+ *      registering runEvery* schedules). Without step 2 the instance is dead.
+ *
+ * Required first-page inputs with no default would block the auto-"Done" the
+ * same way they block the UI; this path targets apps whose first page installs
+ * with defaults (the common case for standalone utility apps).
  *
  * Returns a structured envelope on every input. Caller (toolInstallApp) is
  * responsible for range-checking codeAppId before this is called.
@@ -9050,7 +9062,7 @@ private Map _createUserAppInstance(Integer codeAppId) {
             hubResponse: result?.data?.toString()?.take(500)
         ]
     }
-    def m = (result.location =~ /\/installedapp\/configure\/(\d+)/)
+    def m = (result.location =~ /\/installedapp\/configure\/(\d+)(?:\/([^\/?#]+))?/)
     if (!m) {
         mcpLog("warn", "hub-admin", "_createUserAppInstance(${codeAppId}): could not parse instance id from Location ${result.location}")
         return [
@@ -9060,14 +9072,111 @@ private Map _createUserAppInstance(Integer codeAppId) {
         ]
     }
     def newId = m[0][1] as Integer
-    mcpLog("info", "hub-admin", "_createUserAppInstance: created instance ${newId} from codeAppId ${codeAppId}")
+    def firstPage = m[0][2]
+    mcpLog("info", "hub-admin", "_createUserAppInstance: created shell instance ${newId} from codeAppId ${codeAppId} (page=${firstPage ?: 'default'}); committing install")
+
+    // Step 2: commit the install ("Done"). The GET above only made a pending
+    // shell -- this is what fires installed()/initialize().
+    def commit
+    try {
+        commit = _commitUserAppInstall(newId, firstPage)
+    } catch (Exception ce) {
+        mcpLog("warn", "hub-admin", "_createUserAppInstance: install-commit for instance ${newId} threw: ${ce.toString()}")
+        return [
+            success: false,
+            error: "Instance ${newId} was created from codeAppId ${codeAppId} but the install-commit (Done) failed: ${ce.toString()}. The instance is an uninstalled shell -- delete it via hub_delete_native_app(appId:${newId}, confirm:true) and retry.",
+            codeAppId: codeAppId,
+            instanceAppId: newId,
+            committed: false
+        ]
+    }
+    if (!commit?.success) {
+        return [
+            success: false,
+            error: "Instance ${newId} was created but the install did not commit: ${commit?.error}. It is an uninstalled shell -- delete via hub_delete_native_app(appId:${newId}, confirm:true) and retry.",
+            codeAppId: codeAppId,
+            instanceAppId: newId,
+            committed: false
+        ]
+    }
+    mcpLog("info", "hub-admin", "_createUserAppInstance: committed install of instance ${newId} (scheduledJobs=${commit.scheduledJobCount}, subscriptions=${commit.eventSubscriptionCount})")
     return [
         success: true,
-        message: "User app instance created and installed() fired",
+        message: "User app instance created and install committed (Done submitted; installed()/initialize() fired). scheduledJobCount/eventSubscriptionCount reflect what initialize() registered.",
         codeAppId: codeAppId,
         instanceAppId: newId,
+        committed: true,
+        scheduledJobCount: commit.scheduledJobCount,
+        eventSubscriptionCount: commit.eventSubscriptionCount,
         mode: "installAsUserApp"
     ]
+}
+
+/**
+ * Commit a freshly-created user-app instance's install by submitting its first
+ * config page's "Done" -- POST /installedapp/update/json with _action_update=Done.
+ * This is the step that fires installed()->initialize(); the GET that produced
+ * the instance only made a pending shell.
+ *
+ * Mirrors the wire format _rmSubmitMainPageDone uses (proven live), but
+ * parameterized by the instance's actual first page: a standalone app's first
+ * page may be named anything (e.g. "p"), not always "mainPage". Reuses the
+ * shared config/settings primitives (not the RM-specific flow handlers).
+ *
+ * Returns [success, scheduledJobCount, eventSubscriptionCount, error?]. The
+ * counts are read back from statusJson after the commit as evidence that
+ * initialize() ran (e.g. a runEvery* schedule registering).
+ */
+private Map _commitUserAppInstall(Integer instanceId, String pageName) {
+    def cfg = _rmFetchConfigJson(instanceId, pageName)
+    def page = pageName ?: (cfg?.configPage?.name?.toString()) ?: "mainPage"
+    def schema = _rmCollectInputSchema(cfg?.configPage)
+    def status = _rmFetchStatusJson(instanceId)
+    def liveSettings = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
+    def settingsMap = [:]
+    schema.each { name, meta ->
+        def v = liveSettings[name]
+        settingsMap[name] = (v == null) ? "" : v
+    }
+    def body = _rmBuildSettingsBody(instanceId, settingsMap, schema)
+    body.formAction = "update"
+    body.currentPage = page
+    body._action_update = "Done"
+    body.pageBreadcrumbs = "[]"
+    // Per-type sidecars the form-encoded UI emits (matches _rmSubmitMainPageDone).
+    schema.each { name, meta ->
+        def t = meta?.type?.toString()
+        if (meta?.multiple != true) {
+            body["${name}.multiple".toString()] = "false"
+        }
+        if (t == "bool") {
+            body["checkbox[${name}]".toString()] = "on"
+        } else if (t == "time") {
+            body["hours[${name}]".toString()] = ""
+            body["minutes[${name}]".toString()] = ""
+            body["amPm[${name}]".toString()] = "AM"
+        }
+    }
+    if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
+
+    def resp = hubInternalPostForm("/installedapp/update/json", body)
+    def st = resp?.status
+    if (st != null && st >= 400) {
+        return [
+            success: false,
+            error: "Done POST to /installedapp/update/json returned status ${st}",
+            scheduledJobCount: 0,
+            eventSubscriptionCount: 0
+        ]
+    }
+    // Read back runtime state as evidence installed()/initialize() ran.
+    def post = null
+    try { post = _rmFetchStatusJson(instanceId) } catch (Exception se) {
+        mcpLog("debug", "hub-admin", "_commitUserAppInstall: post-commit statusJson read for ${instanceId} failed (${se.message}) -- reporting zero counts")
+    }
+    def schedCount = (post?.scheduledJobs instanceof List) ? post.scheduledJobs.size() : 0
+    def subCount = (post?.eventSubscriptions instanceof List) ? post.eventSubscriptions.size() : 0
+    return [success: true, scheduledJobCount: schedCount, eventSubscriptionCount: subCount]
 }
 
 /**
