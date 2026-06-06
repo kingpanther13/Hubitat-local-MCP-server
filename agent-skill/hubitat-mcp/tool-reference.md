@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 90 MCP tools. The server exposes **30 items on `tools/list`**: 11 flat core tools + 19 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
+Quick reference for all 91 MCP tools. The server exposes **30 items on `tools/list`**: 11 flat core tools + 19 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
 
 For the most authoritative reference, call `hub_get_tool_guide` via MCP.
 
@@ -49,7 +49,7 @@ These 11 tools are never behind a gateway. Every other tool is reachable through
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `hub_search_tools` | BM25 natural language search across all 90 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `hub_search_tools` | BM25 natural language search across all 91 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
@@ -209,7 +209,7 @@ Destructive hub operations: reboot, shutdown, and device deletion.
 | `hub_shutdown` | Power off hub (needs manual restart). | Write master |
 | `hub_delete_device` | Permanently delete a device. **NO UNDO.** For ghost/orphaned devices only. | Write master |
 
-### hub_manage_code (8 tools)
+### hub_manage_code (9 tools)
 
 Write operations for apps, drivers, and libraries: install, update, delete, and restore code.
 
@@ -223,6 +223,7 @@ Write operations for apps, drivers, and libraries: install, update, delete, and 
 | `hub_update_library` | Update existing library source code (libraryId + source/sourceFile/resave). Auto-backs up before modifying. | Write master |
 | `hub_delete_item` | Delete an installed app, driver, or library (`type`: "app", "driver", "library"; auto-backs up). For libraries, ensure no apps/drivers `#include` it first. | Write master |
 | `hub_restore_backup` | Restore app/driver to backed-up version. | Write master |
+| `hub_install_bundle` | Install a code bundle (`.zip`) from a URL exactly the way Hubitat Package Manager does (the hub fetches + unpacks it into Libraries/Apps/Drivers Code via `/bundle2/uploadZipFromUrl`). Args: `importUrl` (zip), `primary?`, `confirm=true`. Used to prove a package installs the HPM way before users HPM-update. | Write master + confirm + recent backup |
 
 ### hub_manage_logs (6 tools)
 

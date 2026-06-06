@@ -3,9 +3,11 @@ name: Hub E2E (test hub)
 # End-to-end tests against a real Hubitat hub provided by @level99
 # (see issue #77 + the GitHub secret LEVEL99_TEST_HUB_MCP_URL).
 #
-# Failure mode: ADVISORY only. Hub flakiness must not block PR merges,
-# so this workflow is intentionally not added to branch protection's
-# required-checks. Treat it as a signal, not a gate.
+# Failure mode: BLOCKING. Per the maintainer this check is required for merge --
+# a red e2e means the change could not be proven against a real hub, so it gates.
+# When the job genuinely can't run (fork PR with no secret, or no test hub
+# configured) it skips cleanly rather than failing (see the secret gate below);
+# a confirmed infra/flake failure is triaged by the maintainer, not auto-ignored.
 
 on:
   pull_request:
@@ -25,7 +27,9 @@ on:
       - '.github/scripts/mcp_restore_source.sh'
       - '.github/scripts/mcp_validate_package_tool.sh'
       - '.github/scripts/mcp_install_libraries.sh'
+      - '.github/scripts/mcp_install_bundle_hpm.sh'
       - 'libraries/**'
+      - 'bundles/**'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -214,6 +218,21 @@ jobs:
       - name: Verify deployed source matches this PR
         if: steps.gate.outputs.available == 'true'
         run: bash .github/scripts/mcp_verify_deploy.sh hubitat-mcp-server.groovy
+
+      # Prove the HPM bundle-install path on the live hub (issue #209). The deploy above used a
+      # bootstrap user-library so the app could compile and land hub_install_bundle; this step now
+      # reproduces HPM's real sequence -- delete that bootstrap copy, install the package's bundle
+      # .zip via hub_install_bundle (HPM "install bundles"), verify it delivered the library with
+      # the right content, then resave the app so its #include recompiles against the bundle-
+      # delivered library (HPM "install apps", after bundles). A malformed zip / wrong library name /
+      # bad manifest path / broken endpoint fails HERE on every PR instead of on a user's hub after
+      # they HPM-update. Blocking: a broken bundle path means the package can't be installed.
+      - name: Install bundle the HPM way + recompile app (issue #209)
+        if: steps.gate.outputs.available == 'true'
+        env:
+          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
+          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
+        run: bash .github/scripts/mcp_install_bundle_hpm.sh
 
       - name: Run E2E tests
         if: steps.gate.outputs.available == 'true'

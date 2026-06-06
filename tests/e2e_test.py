@@ -1297,9 +1297,11 @@ class TestRunner:
         assert result is not None, "hub_get_info returned None"
         assert isinstance(result, dict), f"hub_get_info returned {type(result)}"
         # issue #209 load-bearing #include proof: the deployed app `#include mcp.McpSmokeTestLib`,
-        # so mcpSmokeTestMarker() must be callable and folded into the info output. If the include
-        # had not resolved on the hub, the app would not have compiled (deploy would have failed)
-        # or this field would be missing -- either way this assertion catches a broken library load.
+        # so mcpSmokeTestMarker() must be callable and folded into the info output. By the time this
+        # test runs, the "Install bundle the HPM way" CI step has re-delivered McpSmokeTestLib via the
+        # bundle .zip and resaved the app, so this marker rides on the BUNDLE-delivered library. If the
+        # include had not resolved on the hub, the app would not have compiled or this field would be
+        # missing -- either way this assertion catches a broken library load.
         # Removed together with the smoke test once the modularization split is validated.
         assert result.get("smokeTestMarker") == "smoke-ok-v1", (
             "hub_get_info.smokeTestMarker missing/wrong -- the #include of McpSmokeTestLib did not "
@@ -1317,9 +1319,10 @@ class TestRunner:
         for lib in libs:
             assert "id" in lib and "name" in lib, "library summary missing id/name"
             assert "source" not in lib, "hub_list_libraries should omit source (read it via hub_get_source)"
-        # issue #209: the deploy (hub_update_package) installs McpSmokeTestLib (mcp namespace) as the
-        # #include's library leg, so it must be present here. Proves the library was actually added to
-        # Libraries Code on the hub (not just that the app compiled). Removed with the smoke test.
+        # issue #209: the "Install bundle the HPM way" CI step delivers McpSmokeTestLib (mcp namespace)
+        # into Libraries Code via the bundle .zip (the #include's library leg), so it must be present
+        # here. Proves the library was actually added to Libraries Code on the hub (not just that the
+        # app compiled). Removed with the smoke test.
         assert any(
             lib.get("name") == "McpSmokeTestLib" and lib.get("namespace") == "mcp" for lib in libs
         ), f"McpSmokeTestLib not found in hub libraries (got {[lib.get('name') for lib in libs]})"

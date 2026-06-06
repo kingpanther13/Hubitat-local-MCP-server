@@ -124,7 +124,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_create_room', 'hub_delete_room', 'hub_update_room',
             'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
             'hub_delete_item',
-            'hub_create_library', 'hub_update_library',
+            'hub_create_library', 'hub_update_library', 'hub_install_bundle',
             'hub_restore_backup',
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
@@ -341,7 +341,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_create_room', 'hub_delete_room', 'hub_update_room',
             'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
             'hub_delete_item',
-            'hub_create_library', 'hub_update_library',
+            'hub_create_library', 'hub_update_library', 'hub_install_bundle',
             'hub_restore_backup',
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
@@ -390,7 +390,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 90
+        names.size() == 91
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk

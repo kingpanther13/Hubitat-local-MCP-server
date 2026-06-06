@@ -1191,7 +1191,7 @@ def getGatewayConfig() {
         ],
         hub_manage_code: [
             description: "Install, update, and delete hub apps, drivers, and libraries. All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
-            tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_restore_backup", "hub_create_library", "hub_update_library"],
+            tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_restore_backup", "hub_create_library", "hub_update_library", "hub_install_bundle"],
             summaries: [
                 hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with installAsUserApp=<codeAppId> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",
                 hub_create_driver: "Install new driver. To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. For 1: source|sourceFile|importUrl. For >1: USE BULK (single round-trip: installs=[{source|sourceFile|importUrl},...]). confirm=true",
@@ -1200,7 +1200,8 @@ def getGatewayConfig() {
                 hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), id, confirm=true",
                 hub_restore_backup: "Restore app/driver to backed-up version. Args: backupKey, confirm=true",
                 hub_create_library: "Install new Groovy library (#include namespace.Name). To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. Args: source|sourceFile|importUrl, confirm=true",
-                hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true"
+                hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true",
+                hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code). Args: importUrl (zip), primary?, confirm=true"
             ],
             searchHints: [
                 hub_create_app: "add new application integration groovy",
@@ -1210,7 +1211,8 @@ def getGatewayConfig() {
                 hub_delete_item: "remove uninstall application integration device handler driver type groovy library shared",
                 hub_restore_backup: "rollback revert undo previous version",
                 hub_create_library: "add new shared groovy library include namespace",
-                hub_update_library: "modify change edit groovy library shared code push deploy"
+                hub_update_library: "modify change edit groovy library shared code push deploy",
+                hub_install_bundle: "install bundle zip package hpm hubitat package manager uploadZipFromUrl library delivery deploy code"
             ]
         ],
         // Option B: manage_logs_diagnostics split into logs + diagnostics
@@ -4148,6 +4150,36 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""
                 required: ["success"]
             ]
         ],
+        [
+            name: "hub_install_bundle",
+            description: """Install a Hubitat code bundle (.zip) from a URL, exactly the way Hubitat Package Manager delivers a required bundle. The hub fetches the zip itself and unpacks it into Libraries/Apps/Drivers Code -- the same mechanism HPM uses to install the libraries an app #includes.
+
+Use this to validate, on the real hub, that a package installs the HPM way (e.g. CI proving a #include'd library is delivered and the app compiles, before users HPM-update). Mirrors HPM's installBundle: firmware >= 2.3.8.108 uses /bundle2/uploadZipFromUrl, older uses /bundle/uploadZipFromUrl.
+
+Requires Write master + confirm=true + a recent backup. The hub does not deep-validate the zip at install time; verify the result with hub_list_libraries / hub_get_source.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    importUrl: [type: "string", description: "URL of the bundle .zip the hub fetches and installs (http:// or https://)."],
+                    primary: [type: "boolean", description: "OPTIONAL. Mark the bundle's contents as installed-by-this-package (HPM's installer/private flag). Default false."],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved installing this bundle."]
+                ],
+                required: ["importUrl", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the bundle installed"],
+                    message: [type: "string", description: "Human-readable result"],
+                    endpoint: [type: "string", description: "Hub endpoint used (/bundle2/uploadZipFromUrl or /bundle/uploadZipFromUrl)"],
+                    primary: [type: "boolean", description: "Whether the bundle was marked primary/installer"],
+                    error: [type: "string", description: "Failure detail; present on failure"],
+                    rawResponse: [type: "string", description: "Raw hub response (truncated); present on a no-success result"],
+                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+                ],
+                required: ["success"]
+            ]
+        ],
         // ==================== Item Backup Tools ====================
         [
             name: "hub_list_backups",
@@ -5374,6 +5406,7 @@ def executeTool(toolName, args) {
         // Hub Admin Library Management
         case "hub_create_library": return toolInstallLibrary(args)
         case "hub_update_library": return toolUpdateLibraryCode(args)
+        case "hub_install_bundle": return toolInstallBundle(args)
 
         // Item Backup Tools
         case "hub_list_backups": return toolListItemBackups(args)
@@ -13269,6 +13302,112 @@ def toolGetLibrarySource(args) {
         mcpLogError("hub-admin", "Failed to get library source", e)
         return [success: false, error: "Failed to get library source: ${e.message}"]
     }
+}
+
+/**
+ * Install a Hubitat code bundle (.zip) from a URL, EXACTLY the way Hubitat Package Manager's
+ * installBundle() does (issue #209). The hub fetches the zip itself and unpacks it into Libraries/
+ * Apps/Drivers Code -- this is how a `required` HPM bundle delivers a library. Used to validate, on
+ * the real hub, that a package installs the HPM way before users HPM-install/update it.
+ *
+ * Mirrors HPM: firmware >= 2.3.8.108 -> GET /bundle2/uploadZipFromUrl?url=&pwd=&private=<primary>;
+ * older firmware -> POST /bundle/uploadZipFromUrl with JSON {url, installer:<primary>, pwd:""}.
+ */
+def toolInstallBundle(args) {
+    requireDestructiveConfirm(args.confirm)
+    def importUrl = args.importUrl
+    if (!(importUrl instanceof String) || !importUrl.trim()) {
+        throw new IllegalArgumentException("importUrl is required: the URL of the bundle .zip the hub fetches and installs.")
+    }
+    importUrl = importUrl.trim()
+    def lower = importUrl.toLowerCase()
+    if (!(lower.startsWith("http://") || lower.startsWith("https://"))) {
+        throw new IllegalArgumentException("importUrl scheme must be http or https (got '${importUrl.take(40)}')")
+    }
+    boolean primary = (args.primary == true)
+
+    String fw = null
+    try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception ignored) { }
+    // bundle2 endpoint exists on firmware >= 2.3.8.108 (matches HPM's gate). Compare
+    // segments numerically, NOT lexically -- string compare breaks once a segment
+    // reaches two digits (e.g. "2.3.10.0" sorts BELOW "2.3.8.0" as strings, which would
+    // wrongly route a newer hub to the removed legacy endpoint).
+    boolean modern = _firmwareAtLeast(fw, "2.3.8.108")
+    String endpoint = modern ? "/bundle2/uploadZipFromUrl" : "/bundle/uploadZipFromUrl"
+
+    mcpLog("info", "hub-admin", "Installing bundle (endpoint: ${endpoint}, fw: ${fw}, primary: ${primary}, url: ${importUrl})")
+    try {
+        def resp
+        if (modern) {
+            // hubInternalGet passes the query map to httpGet, which URL-encodes the values. `private`
+            // is quoted because it is a Groovy keyword. 300s timeout matches HPM's bundle install.
+            resp = hubInternalGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": primary.toString()], 300)
+        } else {
+            def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: primary, pwd: ""])
+            resp = hubInternalPostJson("/bundle/uploadZipFromUrl", body)
+        }
+        boolean ok = _bundleResponseSucceeded(resp)
+        if (!ok) {
+            mcpLog("warn", "hub-admin", "Bundle install did not report success (endpoint ${endpoint})")
+            return [
+                success: false,
+                error: "Bundle install failed: the hub returned no success signal. The zip may be malformed/unreachable, or the firmware endpoint unavailable.",
+                endpoint: endpoint,
+                rawResponse: resp?.toString()?.take(500),
+                lastBackup: formatTimestamp(state.lastBackupTimestamp)
+            ]
+        }
+        mcpLog("info", "hub-admin", "Bundle installed successfully from ${importUrl}")
+        return [
+            success: true,
+            message: "Bundle installed from ${importUrl}. Its libraries/apps/drivers are now in Code -- verify with hub_list_libraries / hub_list_apps.",
+            endpoint: endpoint,
+            primary: primary,
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "Bundle install threw: ${e.toString()}")
+        return [
+            success: false,
+            error: "Bundle install failed: ${e.message ?: e.toString()}",
+            endpoint: endpoint,
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
+    }
+}
+
+// The bundle endpoints signal success as {"success":true} (bundle2 returns JSON; the older endpoint
+// is parsed by hubInternalPostJson). hubInternalGet hands back the raw body String, so normalize both
+// a parsed Map and a raw String/JSON; success only on an explicit truthy signal.
+def _bundleResponseSucceeded(resp) {
+    if (resp == null) return false
+    if (resp instanceof Map) return resp.success == true || resp.success?.toString() == "true"
+    String text = resp.toString().trim()
+    if (!text) return false
+    try {
+        def parsed = new groovy.json.JsonSlurper().parseText(text)
+        if (parsed instanceof Map) return parsed.success == true || parsed.success?.toString() == "true"
+    } catch (Exception ignored) { }
+    return text.equalsIgnoreCase("true")
+}
+
+// Compare dotted firmware versions segment-by-segment, numerically. Returns true when
+// fw >= target. Missing/blank/unparseable fw returns true (assume modern): every hub
+// running this server today is well past the 2.3.8.108 bundle2 cutoff, so the current
+// endpoint is the safe default when the version can't be read.
+def _firmwareAtLeast(fw, String target) {
+    if (fw == null || !fw.toString().trim()) return true
+    def fwParts = fw.toString().trim().split("\\.")
+    def tgtParts = target.split("\\.")
+    int n = Math.max(fwParts.size(), tgtParts.size())
+    for (int i = 0; i < n; i++) {
+        String fwSeg = (i < fwParts.size()) ? fwParts[i] : "0"
+        String tgtSeg = (i < tgtParts.size()) ? tgtParts[i] : "0"
+        int a = fwSeg.isInteger() ? fwSeg.toInteger() : 0
+        int b = tgtSeg.isInteger() ? tgtSeg.toInteger() : 0
+        if (a != b) return a > b
+    }
+    return true  // all segments equal -> >= holds
 }
 
 /**
