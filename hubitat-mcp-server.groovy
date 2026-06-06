@@ -4812,7 +4812,7 @@ Capability families (NAMES here; full per-field specs via addTrigger:{discover:t
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
-  - condition — Map driving the conditional-trigger sub-wizard: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?} (handled inline; no separate call). `conditional` is implied true when set. Custom Attribute needs attribute+comparator; Variable needs variable (+ compareToVariable for a variable-vs-variable RHS, mutually exclusive with value). NOTE: trigger.condition supports a NARROWER set than addRequiredExpression/addAction — Variable, Custom Attribute, and enum/numeric device-state only; Mode-via-picker, Between two times, and compareToDevice are NOT supported here (use addRequiredExpression for those). Wire-format details: guide:true.
+  - condition — Map driving the conditional-trigger sub-wizard: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?} (handled inline; no separate call). `conditional` is implied true when set. Custom Attribute needs attribute+comparator (for an enum-recognized attribute RM routes the value to the picker and omits the comparator -- correct, not a lost value); Variable needs variable (+ compareToVariable for a variable-vs-variable RHS, mutually exclusive with value). NOTE: trigger.condition supports a NARROWER set than addRequiredExpression/addAction — Variable, Custom Attribute, and enum/numeric device-state only; Mode-via-picker, Between two times, and compareToDevice are NOT supported here (use addRequiredExpression for those). Wire-format details: guide:true.
   - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.). Use `@N` token to substitute the auto-assigned trigger/condition index — e.g. {'xVar@N': 'myVar'} writes `xVar1` when the trigger lands at index 1.
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
@@ -4847,7 +4847,7 @@ Per-condition spec fields:
   - state — enum value matching the capability ('on'/'off' Switch, 'active'/'inactive' Motion, 'open'/'closed' Contact, 'locked'/'unlocked' Lock, etc.); omit for numeric.
   - comparator — numeric capabilities ('=', '<', '>', '<=', '>=', '!='); REQUIRED together with attribute for Custom Attribute, and with variable+value for Variable (ASCII !=/<>/== auto-map to RM glyphs).
   - value — numeric threshold paired with comparator.
-  - attribute — Custom Attribute name (e.g. 'humidity'); REQUIRED and paired with comparator. Example: {capability:'Custom Attribute', deviceIds:[N], attribute:'water', comparator:'=', state:'empty'}.
+  - attribute — Custom Attribute name (e.g. 'humidity'); REQUIRED and paired with comparator. Example: {capability:'Custom Attribute', deviceIds:[N], attribute:'water', comparator:'=', state:'empty'}. For an attribute the hub recognizes as an ENUM (switch/motion/contact/lock/...), RM routes the value to the enum picker and omits the comparator -- that is correct, not a lost value (see hub_get_tool_guide section='set_rule_reference').
   - not — boolean (default false), inverts the condition.
   - rawSettings — escape hatch {fieldName: value} for fields not yet mapped.
 
@@ -17488,6 +17488,9 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             writeIfPresent("tCustomAttr${idx}", triggerSpec.attribute)
             def afterAttr = null
             try {
+                // The writeIfPresent helper does not return the post-write schema, so
+                // this GET is the only way to see which fields the rCustomAttr re-render
+                // exposed (comparator vs value picker). Necessary, not redundant.
                 afterAttr = _rmFetchConfigJson(appId, "selectTriggers")
             } catch (Exception fetchEx) {
                 mcpLog("warn", "rm-native", "addTrigger Custom Attribute: re-fetch after tCustomAttr${idx}='${triggerSpec.attribute}' failed for app ${appId} (${fetchEx.message ?: fetchEx}); force-writing comparator ReltDev${idx} as fallback (partial)")
@@ -17503,7 +17506,11 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
                 // picker alone does not mean enum. Write the comparator whenever it is
                 // exposed. Suppress it ONLY for the true enum case -- comparator hidden,
                 // value picker present (the value lands in tstate<N> below). Neither
-                // exposed -> fallback-write so a lagged render does not silently drop it.
+                // exposed (a lagged render) -> still ATTEMPT the write rather than
+                // silently dropping it: writeIfPresent routes through _rmWriteSettingOnPage,
+                // which schema-gates the write -- if ReltDev<N> is genuinely absent the
+                // value is NOT POSTed (no silent dead-storage on a hidden field) and a
+                // not_in_schema skip flips partial so the degradation is visible.
                 if (comparatorExposed) {
                     writeIfPresent("ReltDev${idx}", _rmNormalizeComparator(triggerSpec.comparator))
                 } else if (!valuePickerExposed) {
@@ -21792,6 +21799,9 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
             _rmWriteSettingOnPage(appId, "selectTriggers", "rCustomAttr_${idx}", condSpec.attribute, applied, null, skipped)
             def afterAttr = null
             try {
+                // _rmWriteSettingOnPage does not surface the post-write schema to its
+                // caller, so this GET is the only way to see which fields the
+                // rCustomAttr re-render exposed (comparator vs value picker). Necessary.
                 afterAttr = _rmFetchConfigJson(appId, "selectTriggers")
             } catch (Exception fetchEx) {
                 mcpLog("warn", "rm-native", "condition Custom Attribute: re-fetch after rCustomAttr_${idx}='${condSpec.attribute}' failed for app ${appId} (${fetchEx.message ?: fetchEx}); force-writing comparator RelrDev_${idx} as fallback (partial)")
@@ -21805,7 +21815,10 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
                 // Comparator-FIRST -- a free attribute can render BOTH RelrDev_<N> and
                 // the value picker state_<N>. Write the comparator whenever it is exposed;
                 // suppress only for the true enum case (comparator hidden, value picker
-                // present). Neither exposed -> fallback-write.
+                // present). Neither exposed (lagged render) -> still ATTEMPT the write:
+                // _rmWriteSettingOnPage schema-gates it, so an absent RelrDev_<N> is NOT
+                // POSTed (no silent dead-storage) and records a not_in_schema skip that
+                // flips partial.
                 if (comparatorExposed) {
                     _rmWriteSettingOnPage(appId, "selectTriggers", "RelrDev_${idx}", _rmNormalizeComparator(condSpec.comparator), applied, null, skipped)
                 } else if (!valuePickerExposed) {
@@ -22058,8 +22071,17 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
  * schema-confirmed, so the caller surfaces partial=true honestly.
  */
 private void _rmForceWriteEnumField(Integer appId, String pageName, String key, Object value, List applied, List skipped) {
+    // type:"enum", multiple:false is correct because the only callers force-write a
+    // single-value comparator enum field (ReltDev<N>/RelrDev_<N>); no non-enum or
+    // multi-select field reaches this helper.
     def synthSchema = [(key.toString()): [type: "enum", multiple: false]]
     def body = _rmBuildSettingsBody(appId, [(key): value], synthSchema)
+    // selectTriggers (and the other wizard sub-pages) need the same sub-page context
+    // a normal _rmWriteSettingOnPage write carries -- formAction=update + currentPage +
+    // pageBreadcrumbs=["mainPage"] -- or the wizard silently rejects the field. This is
+    // the _rmWriteSettingOnPage convention, NOT the href-based _rmWriteSubPageField one
+    // (which uses []); the comparator's happy path goes through _rmWriteSettingOnPage,
+    // so the fallback must match it.
     if (pageName && pageName != "mainPage") {
         body.formAction = "update"
         body.currentPage = pageName
@@ -22074,12 +22096,18 @@ private void _rmForceWriteEnumField(Integer appId, String pageName, String key, 
     try {
         _rmPostSettings(appId, body)
     } catch (Exception postEx) {
-        mcpLog("warn", "rm-native", "_rmForceWriteEnumField: fallback POST of ${key} for app ${appId} was rejected (${postEx.message ?: postEx}); comparator did not land -- add degrades to partial")
+        mcpLog("warn", "rm-native", "_rmForceWriteEnumField: fallback POST of ${key} on page '${pageName}' for app ${appId} was rejected (${postEx.message ?: postEx}); comparator did not land -- add degrades to partial")
         if (skipped != null) {
             skipped << [key: key, reason: "comparator_force_write_failed", value: value]
         }
         return
     }
+    // Dual-record is intentional and NOT double-counting: the POST succeeded, so the
+    // key belongs in settingsApplied (the value DID leave for the hub); but it could
+    // not be schema-confirmed (the probe re-fetch that would verify it is the one that
+    // threw), so it ALSO carries a partial-flagging skip. The downstream repair hint
+    // says only "used a degraded write path -- verify via hub_get_app_config", never
+    // "not written", so a key in both lists reads accurately: written-but-unverified.
     applied << key
     if (skipped != null) {
         skipped << [key: key, reason: "comparator_force_written_unverified", value: value]
@@ -24422,8 +24450,10 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                 throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: RelrDev_<N> not visible after rCapab/rDev/rCustomAttr writes. Visible fields: ${visible}")
             }
             // Reveal the RHS-type selector by writing RelrDev as the trigger.
+            // Normalize the comparator (!= -> ≠, == -> =) for parity with every other
+            // comparator write -- the RM enum only accepts the Unicode glyphs.
             def rhsTypeReveal = revealStep(appId, page, /stateType_\d+|rhsType_\d+/, {
-                writeST(hrefParams, "RelrDev_${cIdx}".toString(), cond.comparator)
+                writeST(hrefParams, "RelrDev_${cIdx}".toString(), _rmNormalizeComparator(cond.comparator.toString()))
             })
             if (!rhsTypeReveal.input) {
                 // RHS-type selector not revealed -- fall back to writing literal state_<N>.
@@ -24527,32 +24557,39 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             // A standard capability carrying a custom-attribute field re-renders
             // the same way the dedicated Custom Attribute block does: an
             // enum-recognized attribute reveals the value picker state_<N> and
-            // hides the comparator RelrDev_<N>. writeST does NOT check schema
-            // containment, so an unconditional RelrDev_<N> write here lands on a
-            // hidden field as silent dead-storage (no not_in_schema flag). Re-fetch
-            // after rCustomAttr_<N> and only write the comparator when state_<N>
-            // is NOT yet exposed; when the value picker is present instead, skip
-            // the comparator -- the value lands via state_<N> in the block below.
+            // hides the comparator RelrDev_<N>; a free-valued attribute reveals
+            // RelrDev_<N> (and may also surface state_<N>). writeST does NOT check
+            // schema containment, so an unconditional RelrDev_<N> write here would
+            // land on a hidden field as silent dead-storage (no not_in_schema flag).
+            // Re-fetch after rCustomAttr_<N>, then write the comparator whenever it
+            // IS exposed, suppressing only the positively-detected enum case (value
+            // picker present, comparator hidden) -- the value lands via state_<N> in
+            // the block below.
             writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
             def afterCustomAttr = discoverField(appId, page, /state_\d+|RelrDev_\d+/)
             def attrValuePickerExposed = afterCustomAttr.visibleNames?.contains("state_${cIdx}".toString())
-            // Asymmetry with the dedicated Custom Attribute block (Site A): that
-            // block throws when NEITHER comparator nor value picker renders, because
-            // its revealStep contract requires a revealed field to write into. Here
-            // writeST is unguarded (no schema-containment gate), so the neither-case
-            // needs no throw -- when the value picker is absent we just write the
-            // comparator best-effort: if RelrDev_<N> is in fact present it lands, and
-            // if neither rendered the write is a harmless no-op against the page
-            // rather than a hard failure. Only the positively-detected enum case
-            // (value picker exposed) suppresses the comparator.
-            if (!attrValuePickerExposed) {
+            def comparatorExposed = afterCustomAttr.visibleNames?.contains("RelrDev_${cIdx}".toString())
+            // Comparator-FIRST, matching the dedicated Custom Attribute block (the
+            // revealStep path above): a free-valued attribute can render BOTH the
+            // comparator RelrDev_<N> AND the value picker state_<N>, so the presence of
+            // a value picker alone does not prove enum. Write the comparator whenever it
+            // is exposed; suppress it ONLY for the true enum case (comparator hidden,
+            // value picker present -- the value lands via state_<N> below). When neither
+            // rendered (a lagged render), still attempt the write: writeST POSTs first
+            // then verifies (no schema-containment pre-gate), so the value POSTs but the
+            // post-write verify sees RelrDev_<N> absent and records a silent_rejection
+            // skip that flips partial -- the degradation is surfaced, not masked, and the
+            // wizard is not hard-failed. Normalize the token the same way as the
+            // revealStep path (!= -> ≠, == -> =).
+            if (comparatorExposed || !attrValuePickerExposed) {
                 // Condition-wizard comparator field is RelrDev_<N> ("Relr"),
                 // not ReltDev_<N> ("Relt" = trigger-row comparator).
-                writeST(hrefParams, "RelrDev_${cIdx}".toString(), cond.comparator)
+                writeST(hrefParams, "RelrDev_${cIdx}".toString(), _rmNormalizeComparator(cond.comparator.toString()))
             }
         } else {
             // No attribute -- numeric/enum comparator field is already exposed.
-            writeST(hrefParams, "RelrDev_${cIdx}".toString(), cond.comparator)
+            // Normalize for parity with the Custom Attribute paths.
+            writeST(hrefParams, "RelrDev_${cIdx}".toString(), _rmNormalizeComparator(cond.comparator.toString()))
         }
     }
     // state and value both write to state_${cIdx} -- STPage has no separate
@@ -28110,7 +28147,7 @@ Prefer the structured shortcuts above. Raw mode is the unstructured escape hatch
 - `rhs_type_not_revealed` -- compareToDevice RHS-type toggle absent on firmware. Entry also carries `fallbackApplied: true|false` (literal state_<N> fallback applied vs none available).
 - `offset_field_not_revealed` -- compareToDevice optional offset field absent. Flips `partial:true`.
 - `api_unavailable` paired with `key: "variable-validation"` (LHS Variable picker) OR `key: "compareToVariable-validation"` (RHS variable picker for `compareToVariable`) -- the picker returned an empty option list; write proceeds unvalidated. Flips `partial:true`.
-- `not_in_schema` -- a written field was absent from the current page schema, so the value did not land. Genuine degradation on addTrigger, the condition wizard, AND the walker pages (STPage/doActPage); flips `partial:true`. A state-change comparator like `*changed*` is written as a value into the comparator field, so a clean trigger produces no `not_in_schema` skip on a real field. Two exempt cases do NOT flip `partial`: (1) the cosmetic `isCondTrig.<N>` post-commit finalize toggle on addTrigger, whose absence is a clean exit; (2) the enum-recognized Custom Attribute comparator across all three surfaces (trigger `ReltDev<N>` / condition `RelrDev_<N>` / walker pages) -- when the hub treats the attribute as an ENUM (switch, motion, contact, lock, ...) the re-render reveals the value picker (`tstate<N>` / `state_<N>`) and HIDES the comparator, so the helper deliberately does not write it and no skip is produced. A free-valued attribute still reveals and writes the comparator normally. The walker's two Custom Attribute sites diverge on the neither-rendered edge case: the capability-block throws (its reveal-step needs a write target) while the default block writes best-effort (its `writeST` is unguarded, so a no-op write is harmless). See `hub_get_tool_guide(section='set_rule_reference')` for the full asymmetry rationale.
+- `not_in_schema` -- a written field was absent from the current page schema, so the value did not land. Genuine degradation on addTrigger, the condition wizard, AND the walker pages (STPage/doActPage); flips `partial:true`. A state-change comparator like `*changed*` is written as a value into the comparator field, so a clean trigger produces no `not_in_schema` skip on a real field. Two exempt cases do NOT flip `partial`: (1) the cosmetic `isCondTrig.<N>` post-commit finalize toggle on addTrigger, whose absence is a clean exit; (2) the enum-recognized Custom Attribute comparator across all three surfaces (trigger `ReltDev<N>` / condition `RelrDev_<N>` / walker pages) -- when the hub treats the attribute as an ENUM (switch, motion, contact, lock, ...) the re-render reveals the value picker (`tstate<N>` / `state_<N>`) and HIDES the comparator, so the helper deliberately does not write it and no skip is produced. A free-valued attribute still reveals and writes the comparator normally. The walker's two Custom Attribute sites diverge on the neither-rendered edge case: the dedicated capability-block (Site A) throws because its reveal-step contract has no field to write into without a revealed target, whereas the default enum/numeric block (Site B) still attempts the write because its `writeST` POSTs-then-verifies (no schema-containment pre-gate) -- on a hidden field the post-write verify records a `silent_rejection` skip that flips `partial`, surfacing the degradation without hard-failing the wizard, which is less strict than Site A's throw but still honest about the value loss. (Site B normalizes the comparator and writes it comparator-first: whenever `RelrDev_<N>` is exposed, OR when neither field rendered; it suppresses the comparator only for the positively-detected enum case.) On the trigger row and condition wizard the analogous neither-rendered write goes through `_rmWriteSettingOnPage`, which DOES schema-gate: the comparator is not POSTed and a `not_in_schema` skip flips `partial` instead.
 - `reveal_fallback_to_existing_field` -- walker matched an already-visible field instead of a newly-revealed one (static-schema firmware). INFORMATIONAL -- does NOT flip `partial` by itself.
 - `useST_idempotent_noop` -- the idempotent `useST=true` mainPage toggle (Step 1 of addRequiredExpression) was already set, so the write did not advance the schema. INFORMATIONAL -- does NOT flip `partial` by itself, because the toggle write is idempotent and the schema rejection is cosmetic (the required-expression href is already exposed), not a lost value.
 - `comparator_force_written_unverified` -- on a Custom Attribute add, the exposure-probe re-fetch (issued after writing the attribute to decide whether the comparator is still exposed) failed transiently, so the comparator was force-written straight to the page as a fallback. The value is in `settingsApplied` and `success` stays true, but it could not be schema-confirmed -- flips `partial:true`. Verify via `hub_get_app_config`.

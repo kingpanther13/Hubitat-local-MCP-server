@@ -967,6 +967,44 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error(self) -> None:
+        # Same shared walker (_rmWalkConditionReveal), but reached via the doActPage
+        # surface (addAction ifThen) rather than STPage (addRequiredExpression). The
+        # 4th of the four wizard surfaces that carry the enum-recognized Custom
+        # Attribute bug. The enum re-render hides the comparator RelrDev_<N> and
+        # reveals state_<N> directly; the fix branches to the enum path (writes
+        # state_<N>, skips the comparator, does NOT throw, does NOT flag partial).
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("WalkEnumAct")
+        try:
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "appId": app_id,
+                    "addAction": {"capability": "ifThen", "expression": {"conditions": [
+                        {"capability": "Custom Attribute", "deviceIds": [sw],
+                         "attribute": "switch", "comparator": "=", "state": "on"}]}},
+                    "confirm": True,
+                },
+            })
+            # The whole point: the doActPage walker no longer hard-errors on the enum attr.
+            assert result.get("success") is not False, \
+                f"addAction ifThen hard-errored on an enum Custom Attribute (the walker bug): {result}"
+            applied = result.get("settingsApplied") or []
+            assert any(str(k).startswith("state_") for k in applied), \
+                f"doActPage walker enum value did not land in a state_<N> field; settingsApplied={applied}"
+            skipped = result.get("settingsSkipped") or []
+            bad = [s for s in skipped if isinstance(s, dict)
+                   and s.get("key") and str(s.get("key")).startswith("RelrDev_")
+                   and s.get("reason") == "not_in_schema"]
+            assert not bad, f"unexpected RelrDev_<N> not_in_schema skip on the doActPage walker enum path: {bad}"
+            assert not result.get("partial"), \
+                f"doActPage walker enum condition falsely flagged partial: {result}"
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_required_expression_and_local_var(self) -> None:
         # hub_set_rule edit -> addLocalVariable + addRequiredExpression (STPage) wizards.
         sw = int(self.get_test_switch_id())
