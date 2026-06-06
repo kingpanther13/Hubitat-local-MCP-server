@@ -3627,7 +3627,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: the add returns `success=true` and the comparator `ReltDev<N>` is in `settingsApplied`. The enum-vs-free guard re-fetches `selectTriggers` after writing the attribute; if that re-fetch fails (empty/unparseable response from a transient hub hiccup), the guard catches the throw and writes the comparator as a fallback rather than aborting the entire add or silently dropping the comparator. On a healthy hub the re-fetch succeeds and the free attribute writes its comparator normally -- the contract is identical either way.
+**Expected**: the add returns `success=true` and the comparator `ReltDev<N>` is in `settingsApplied`. The enum-vs-free guard re-fetches `selectTriggers` after writing the attribute; if that re-fetch fails (empty/unparseable response from a transient hub hiccup), the guard catches the throw and writes the comparator as a fallback rather than aborting the entire add or silently dropping the comparator. On a healthy hub the re-fetch succeeds and the free attribute writes its comparator normally -- this live form exercises only that happy path; the fetch-failure fallback branch (force-write + `partial`) is covered deterministically by the `_rmForceWriteEnumField ...` Spock specs.
 
 **Failure modes**: the add aborts with an error envelope when the re-fetch throws (the pre-guard new-failure-surface regression), or the comparator is silently dropped (absent from `settingsApplied` with no skip entry). The Spock specs drive the empty-response path deterministically via stub injection.
 
