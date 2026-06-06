@@ -9377,9 +9377,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             posts << [path: path, body: body]
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m && m[0][1] == "rCustomAttr_1") rCustomAttrWritten = true
-                    if (m && m[0][1] == "RelrDev_1") relrWritten = true
+                    def m = (k.toString() =~ /^settings\[(.+)\]$/)
+                    if (m.matches()) {
+                        def field = m.group(1)
+                        if (field == "rCustomAttr_1") rCustomAttrWritten = true
+                        if (field == "RelrDev_1") relrWritten = true
+                    }
                 }
             }
             [status: 200, location: null, data: '']
