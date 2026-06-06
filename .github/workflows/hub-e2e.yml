@@ -64,6 +64,12 @@ jobs:
         with:
           ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.ref }}
 
+      # Hub-less unit test of the self-deploy error-recovery extraction (issue #237). Runs ALWAYS
+      # (no hub / no secret needed) so the jq `// empty`-on-false bug -- which silently broke the
+      # verbatim-error recovery and that Spock can't catch -- cannot regress unnoticed.
+      - name: Unit-test self-deploy recovery extraction (hub-less)
+        run: bash .github/scripts/test_self_deploy_recovery.sh
+
       - name: Check secret availability + skip if absent
         # Two cases where MCP_URL is empty (and we want to skip silently
         # rather than fail red):
@@ -219,19 +225,6 @@ jobs:
       - name: Verify deployed source matches this PR
         if: steps.gate.outputs.available == 'true'
         run: bash .github/scripts/mcp_verify_deploy.sh hubitat-mcp-server.groovy
-
-      # >>> TEMPORARY (issue #209 / #237 one-time validation) -- DELETE this whole step after one green run <<<
-      # Proves a compile-fail error reaches the e2e logs. Runs AFTER the good PR code is landed +
-      # byte-verified above, so when the hub rejects this deliberately-broken inline source it falls
-      # back to the KNOWN-GOOD verified code (a compile-fail is rejected at the gate, never reloads
-      # the app -> no brick). Runs BEFORE the bundle step, whose resave re-asserts the good app as a
-      # second safety net. NOT continue-on-error: a missing verbatim error means capture is broken.
-      # Remove this step + .github/scripts/TEMP_validate_compile_error_capture.sh once it prints
-      # COMPILE-ERROR-CAPTURE-OK. (grep -rn TEMPORARY .github/)
-      - name: TEMP one-time compile-error capture validation (issue #237)
-        if: steps.gate.outputs.available == 'true'
-        run: bash .github/scripts/TEMP_validate_compile_error_capture.sh
-      # >>> END TEMPORARY <<<
 
       # Prove the HPM bundle-install path on the live hub (issue #209). The deploy above used a
       # bootstrap user-library so the app could compile and land hub_install_bundle; this step now
