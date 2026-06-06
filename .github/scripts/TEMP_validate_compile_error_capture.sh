@@ -79,7 +79,7 @@ if ! UPDATE_TEXT=$(mcp_text "hub_update_app (deliberate compile-fail)" "$UPDATE_
   exit 1
 fi
 
-SYNC_OK=$(printf '%s' "$UPDATE_TEXT" | jq -r '.success // empty')
+SYNC_OK=$(printf '%s' "$UPDATE_TEXT" | jq -r '.success | if type=="boolean" then tostring else "" end')
 SYNC_ERR=$(printf '%s' "$UPDATE_TEXT" | jq -r '.error // .message // empty')
 echo "Synchronous channel -> success=${SYNC_OK:-<none>} error=${SYNC_ERR:-<none>}"
 
@@ -93,7 +93,7 @@ echo "Reading hub_get_info.lastSelfDeploy to confirm the persist-in-state recove
 LSD_OK="" ; LSD_ERR="" ; LSD_AT="" ; attempt=1
 while [ "$attempt" -le 3 ]; do
   INFO_TEXT=$(mcp_text "hub_get_info (lastSelfDeploy check, try $attempt)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}') || INFO_TEXT=""
-  LSD_OK=$(printf '%s' "$INFO_TEXT" | jq -r '.lastSelfDeploy.success // empty' 2>/dev/null || true)
+  LSD_OK=$(printf '%s' "$INFO_TEXT" | jq -r '.lastSelfDeploy.success | if type=="boolean" then tostring else "" end' 2>/dev/null || true)
   LSD_ERR=$(printf '%s' "$INFO_TEXT" | jq -r '.lastSelfDeploy.error // empty' 2>/dev/null || true)
   LSD_AT=$(printf '%s' "$INFO_TEXT" | jq -r '.lastSelfDeploy.at // empty' 2>/dev/null || true)
   if [ "$LSD_OK" = "false" ] && [ -n "$LSD_ERR" ] && [ -n "$LSD_AT" ] && [ "$LSD_AT" != "${PRE_LSD_AT:-}" ]; then break; fi

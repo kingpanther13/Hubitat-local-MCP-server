@@ -75,6 +75,12 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         result.lastSelfDeploy?.success == false
         result.lastSelfDeploy.error == 'name cannot be empty in definition section'
         result.lastSelfDeploy.importUrl == 'https://x/app.groovy'
+        // freshness affordance: ageMs (now - at) is computed at read so a consumer can spot a STALE
+        // record (lastSelfDeploy persists in atomicState across reloads and is not cleared on update).
+        result.lastSelfDeploy.ageMs instanceof Number
+        result.lastSelfDeploy.ageMs >= 0
+        // computed on a copy -- the persisted atomicState record itself is not mutated.
+        !atomicStateMap.lastSelfDeploy.containsKey('ageMs')
     }
 
     def "getHubInfo omits lastSelfDeploy when the app has never self-deployed"() {

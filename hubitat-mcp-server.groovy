@@ -2358,7 +2358,7 @@ Verify rule after creation.""",
                     customRuleEngineEnabled: [type: "boolean", description: "Custom rule engine toggle state"],
                     developerModeEnabled: [type: "boolean", description: "Developer Mode toggle state"],
                     smokeTestMarker: [type: "string", description: "issue #209 #include canary -- 'smoke-ok-v1' from the McpSmokeTestLib library; throwaway, removed after the modularization split is validated"],
-                    lastSelfDeploy: [type: "object", description: "issue #237: outcome of the last hub_update_app self-update (the MCP server updating its own app). Recovers the result that can't return on the deploy call (success reloads the app; a big-file compile failure 504s). Keys: success (bool), error (hub's verbatim message or null), sourceMode, importUrl, sourceLength, at (epoch ms). Absent until the first self-update."],
+                    lastSelfDeploy: [type: "object", description: "issue #237: outcome of the last hub_update_app self-update (the MCP server updating its own app). Recovers the result that can't return on the deploy call (success reloads the app; a big-file compile failure 504s). Keys: success (bool), error (hub's verbatim message or null), sourceMode, importUrl, sourceLength, at (epoch ms), ageMs (ms since `at`, computed at read). PERSISTS in atomicState across app reloads -- it is NOT cleared on update, so a read can return a STALE record from an earlier deploy; check ageMs (or baseline `at` across your own deploy) for freshness before trusting it. Absent until the first self-update."],
                     name: [type: "string", description: "Hub name (Read master only)"],
                     localIP: [type: "string", description: "Hub local IP (Read master only)"],
                     timeZone: [type: "string", description: "Time zone ID (Read master only)"],
@@ -7072,7 +7072,18 @@ def toolGetHubInfo(args = null) {
     // its result on the call (success reloads the app; a big-file compile failure 504s), so it records
     // the hub's verbatim outcome here for a follow-up read to recover -- e.g. CI surfacing the real
     // compile error after a failed self-deploy. Null until the first self-update.
-    if (atomicState.lastSelfDeploy != null) info.lastSelfDeploy = atomicState.lastSelfDeploy
+    //
+    // STALENESS (important for any consumer, e.g. the e2e recover step): this record lives in
+    // atomicState and PERSISTS across app code reloads/restores -- it is NOT cleared on an app update.
+    // So a read can return a record left by an EARLIER deploy (even a prior session) and be mistaken
+    // for the latest outcome. Two freshness aids: `ageMs` (now - at) is added here so age is visible at
+    // a glance, and a consumer comparing across its own deploy should baseline `at` first and require it
+    // to advance (see .github/scripts/mcp_deploy_source.sh recover_self_deploy_error).
+    if (atomicState.lastSelfDeploy != null) {
+        def lsd = [:] + atomicState.lastSelfDeploy
+        if (lsd.at instanceof Number) lsd.ageMs = now() - (lsd.at as long)
+        info.lastSelfDeploy = lsd
+    }
 
     // PII/location data requires the Read master (default ON)
     if (settings.enableRead != false) {

@@ -115,7 +115,10 @@ recover_self_deploy_error() {
   local attempt=1 text ok url err at
   while [ "$attempt" -le 3 ]; do
     text=$(mcp_tool_call_text "hub_get_info (recover self-deploy error, try $attempt)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}') || text=""
-    ok=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.success // empty' 2>/dev/null || true)
+    # NOTE: `.success // empty` is WRONG here -- jq's // treats a `false` boolean like null, so a
+    # genuine success:false (a rejected deploy -- the case we MUST catch) would read as empty and the
+    # recovery would silently skip it. Map the boolean to its string explicitly instead.
+    ok=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.success | if type=="boolean" then tostring else "" end' 2>/dev/null || true)
     url=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.importUrl // empty' 2>/dev/null || true)
     err=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.error // empty' 2>/dev/null || true)
     at=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.at // empty' 2>/dev/null || true)
