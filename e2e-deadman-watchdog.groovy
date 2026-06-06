@@ -35,8 +35,8 @@ definition(
     author: "kingpanther13",
     description: "Autonomous on-hub watchdog that auto-restores the MCP Rule Server app if an e2e session fails to disarm within its window. No cloud endpoint, no OAuth.",
     category: "Utility",
-    iconUrl: "",
-    iconX2Url: "",
+    iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
+    iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
     singleInstance: true
 )
 // NOTE: deliberately NO oauth{} and NO mappings{} -- this app must never expose a cloud
