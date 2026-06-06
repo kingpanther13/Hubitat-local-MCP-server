@@ -49,6 +49,29 @@ mcp_call() {
     --data-binary "$1"
 }
 
+# The cloud gateway has a ~10s per-request ceiling; a slow big read comes back as a non-JSON 502
+# page that would crash an unguarded `... | jq`. mcp_tool_call_text retries ONLY that non-JSON case
+# -- a valid JSON envelope (incl. a hub error) is returned immediately and never masked, so the
+# strict byte-compare below still catches stale code or a true save failure. Prints the inner tool
+# text; returns 0 on a parseable envelope (text may be empty -> caller checks), 1 only if every
+# attempt was non-JSON. Warnings to stderr; caller decides if a final give-up is fatal.
+RPC_ATTEMPTS=5
+RPC_RETRY_SLEEP=6
+mcp_tool_call_text() {
+  local label="$1" rpc="$2" attempt=1 resp text
+  while [ "$attempt" -le "$RPC_ATTEMPTS" ]; do
+    resp=$(mcp_call "$rpc" || true)
+    if text=$(printf '%s' "$resp" | jq -r '.result.content[0].text // ""' 2>/dev/null); then
+      printf '%s' "$text"
+      return 0
+    fi
+    echo "::warning::${label}: non-JSON gateway response (attempt ${attempt}/${RPC_ATTEMPTS}; likely the ~10s cloud-gateway timeout). Body head: $(printf '%s' "$resp" | head -c 120 | tr '\n' ' ')" >&2
+    attempt=$((attempt + 1))
+    [ "$attempt" -le "$RPC_ATTEMPTS" ] && sleep "$RPC_RETRY_SLEEP"
+  done
+  return 1
+}
+
 # Resolve the Apps Code CLASS id (source-bearing), reusing the deploy step's
 # saved value when present; otherwise re-resolve via hub_list_apps scope=types.
 CLASS_ID=""
@@ -56,15 +79,17 @@ if [ -f "$CLASS_ID_FILE" ]; then
   CLASS_ID="$(cat "$CLASS_ID_FILE")"
 fi
 if [ -z "$CLASS_ID" ] || [ "$CLASS_ID" = "null" ]; then
-  # `|| true`: a transient curl/relay flake on this one call shouldn't abort the
-  # gate via set -e -- fall through to the empty/null check below, which fails
-  # loudly with a clear message (never a false pass).
-  LIST_RESP=$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}' || true)
-  LIST_TEXT=$(echo "$LIST_RESP" | jq -r '.result.content[0].text // empty')
-  # `[ ... ][0]` (not `... | head -n1`): selecting the first match inside jq avoids
-  # a SIGPIPE-on-head abort under `set -o pipefail`.
-  CLASS_ID=$(echo "$LIST_TEXT" | jq -r --arg ns "$APP_NAMESPACE" --arg name "$APP_NAME" \
-    'first(.apps[]? | select(.namespace == $ns and .name == $name) | .id) // empty')
+  # Resilient read: retries only the non-JSON gateway-timeout case; a valid envelope (incl. a hub
+  # error) is returned immediately. A persistently non-JSON gateway fails loudly as transient below.
+  if ! LIST_TEXT=$(mcp_tool_call_text "hub_list_apps (verify class-ID lookup)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}'); then
+    echo "::error::hub_list_apps: the Hubitat cloud gateway returned a non-JSON response $RPC_ATTEMPTS times -- a transient relay/timeout (the ~10s gateway ceiling), NOT a compile failure. Re-run the job."
+    exit 1
+  fi
+  # `first(...)` inside jq (not `| head -n1`) avoids a SIGPIPE-on-head abort under set -o pipefail.
+  # `2>/dev/null || true`: an empty/odd LIST_TEXT must fall through to the empty-CLASS_ID check
+  # below (a loud, honest failure), not abort here.
+  CLASS_ID=$(printf '%s' "$LIST_TEXT" | jq -r --arg ns "$APP_NAMESPACE" --arg name "$APP_NAME" \
+    'first(.apps[]? | select(.namespace == $ns and .name == $name) | .id) // empty' 2>/dev/null || true)
 fi
 if [ -z "$CLASS_ID" ] || [ "$CLASS_ID" = "null" ]; then
   echo "::error::Could not resolve the Apps Code class id for $APP_NAMESPACE:$APP_NAME to verify the deploy."
@@ -79,8 +104,7 @@ fetch_hub_source() {
   while :; do
     rpc=$(jq -nc --arg id "$CLASS_ID" --argjson off "$offset" --argjson len "$chunk" \
       '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:$off,length:$len}}}')
-    resp=$(mcp_call "$rpc")
-    text=$(echo "$resp" | jq -r '.result.content[0].text // empty')
+    text=$(mcp_tool_call_text "hub_get_source (verify offset $offset)" "$rpc") || return 1
     [ -z "$text" ] && return 1
     ok=$(echo "$text" | jq -r '.success // false')
     [ "$ok" != "true" ] && return 1

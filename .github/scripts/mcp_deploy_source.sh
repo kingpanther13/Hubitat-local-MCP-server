@@ -73,6 +73,32 @@ mcp_call_stdin() {
     --data-binary @-
 }
 
+# The cloud gateway has a ~10s per-request ceiling. A big read (hub_list_apps scope=types, or a
+# chunk of the hub_get_source snapshot) that the hub answers slowly comes back as a non-JSON 502
+# page, which would crash an unguarded `... | jq` and abort the deploy -- the verify step then
+# mislabels that as "FAILED TO COMPILE". mcp_tool_call_text retries ONLY that non-JSON case (the
+# same transient the post-deploy 5xx polling already tolerates). A valid JSON envelope -- including
+# a real hub error -- is returned immediately and never retried, so this can NOT turn stale code or
+# a genuine save failure into a pass. Prints the inner tool text on stdout; returns 0 on a
+# parseable envelope (text may be empty -> caller checks), 1 only if every attempt was non-JSON.
+# Emits warnings to stderr; the caller decides whether a final give-up is fatal.
+RPC_ATTEMPTS=5
+RPC_RETRY_SLEEP=6
+mcp_tool_call_text() {
+  local label="$1" rpc="$2" attempt=1 resp text
+  while [ "$attempt" -le "$RPC_ATTEMPTS" ]; do
+    resp=$(mcp_call "$rpc" || true)
+    if text=$(printf '%s' "$resp" | jq -r '.result.content[0].text // ""' 2>/dev/null); then
+      printf '%s' "$text"
+      return 0
+    fi
+    echo "::warning::${label}: non-JSON gateway response (attempt ${attempt}/${RPC_ATTEMPTS}; likely the ~10s cloud-gateway timeout). Body head: $(printf '%s' "$resp" | head -c 120 | tr '\n' ' ')" >&2
+    attempt=$((attempt + 1))
+    [ "$attempt" -le "$RPC_ATTEMPTS" ] && sleep "$RPC_RETRY_SLEEP"
+  done
+  return 1
+}
+
 echo "Triggering hub backup (best-effort; tolerated if it 504s -- the <24h gate is timestamp-cached)..."
 BACKUP_RPC='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true}}}'
 # `>/dev/null` (not `2>&1`) so genuine curl errors -- DNS, connection refused,
@@ -86,10 +112,12 @@ echo "Looking up Apps Code class ID for $APP_NAMESPACE:$APP_NAME via hub_list_ap
 # Without it, hub_list_apps defaults to scope='instances' (running app instances, which
 # carry no `namespace`), so the (namespace,name) match below never hits the code class.
 LIST_RPC='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}'
-LIST_RESP=$(mcp_call "$LIST_RPC")
-LIST_TEXT=$(echo "$LIST_RESP" | jq -r '.result.content[0].text // empty')
+if ! LIST_TEXT=$(mcp_tool_call_text "hub_list_apps (deploy class-ID lookup)" "$LIST_RPC"); then
+  echo "::error::hub_list_apps: the Hubitat cloud gateway returned a non-JSON response $RPC_ATTEMPTS times -- a transient relay/timeout (the ~10s gateway ceiling), NOT a compile or save failure. Re-run the job."
+  exit 1
+fi
 if [ -z "$LIST_TEXT" ]; then
-  echo "::error::hub_list_apps returned empty MCP content (resp head: $(echo "$LIST_RESP" | head -c 500))"
+  echo "::error::hub_list_apps returned a valid but empty MCP response -- cannot resolve the Apps Code class id."
   exit 1
 fi
 
@@ -122,10 +150,13 @@ while :; do
     --argjson off "$OFFSET" \
     --argjson len "$CHUNK_LEN" \
     '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:$off,length:$len}}}')
-  RESP=$(mcp_call "$RPC")
-  TEXT=$(echo "$RESP" | jq -r '.result.content[0].text // empty')
+  if ! TEXT=$(mcp_tool_call_text "hub_get_source (pre-deploy snapshot offset $OFFSET)" "$RPC"); then
+    echo "::error::hub_get_source (pre-deploy snapshot) got a non-JSON gateway response $RPC_ATTEMPTS times -- a transient relay/timeout (the ~10s gateway ceiling), NOT a compile failure. Re-run the job."
+    rm -f "$PRE_SOURCE_FILE"
+    exit 1
+  fi
   if [ -z "$TEXT" ]; then
-    echo "::error::hub_get_source returned empty MCP content (resp head: $(echo "$RESP" | head -c 500))"
+    echo "::error::hub_get_source returned a valid but empty MCP response during the pre-deploy snapshot."
     rm -f "$PRE_SOURCE_FILE"
     exit 1
   fi

@@ -24,6 +24,7 @@ on:
       - '.github/scripts/mcp_setup_env.sh'
       - '.github/scripts/mcp_restore_env.sh'
       - '.github/scripts/mcp_deploy_source.sh'
+      - '.github/scripts/mcp_verify_deploy.sh'
       - '.github/scripts/mcp_restore_source.sh'
       - '.github/scripts/mcp_validate_package_tool.sh'
       - '.github/scripts/mcp_install_libraries.sh'
