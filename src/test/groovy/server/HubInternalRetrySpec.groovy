@@ -269,6 +269,47 @@ class HubInternalRetrySpec extends ToolSpecBase {
         resp.location == '/installedapp/configure/9999/mainPage'
     }
 
+    def "hubInternalPostForm on a /save (create) path does NOT follow the 302, surfacing the editor Location (handle3xx)"() {
+        given:
+        enableHubSecurity()
+        seedCachedCookie('JSESSIONID=cached')
+
+        and: '/app/save returns a 302 -> /app/editor/<newId>; the id is ONLY in the Location header'
+        def sawFollowRedirects = null
+        httpPostHandler = { Map params, Closure cb ->
+            sawFollowRedirects = params.followRedirects
+            throw new FakeHttpException(302, 'http://127.0.0.1:8080/app/editor/777')
+        }
+
+        when:
+        def resp = script.hubInternalPostForm('/app/save', [id: '', version: '', create: '', source: 'definition(name: "X")'])
+
+        then: 'the create POST does not follow the redirect, so the new-app Location survives (fixes hub_create_app)'
+        sawFollowRedirects == false
+        resp.status == 302
+        resp.location == 'http://127.0.0.1:8080/app/editor/777'
+    }
+
+    def "hubInternalPostForm on a non-/save path does not override followRedirects (path-sniff is scoped to create)"() {
+        given:
+        enableHubSecurity()
+        seedCachedCookie('JSESSIONID=cached')
+
+        and:
+        def sawFollow = 'unset'
+        httpPostHandler = { Map params, Closure cb ->
+            sawFollow = params.containsKey('followRedirects') ? params.followRedirects : 'unset'
+            cb.call([status: 200, headers: ['Location': null], data: 'OK'])
+        }
+
+        when:
+        def resp = script.hubInternalPostForm('/app/ajax/update', [id: '1', source: 'x'])
+
+        then: 'non-create POSTs keep the default redirect behavior'
+        sawFollow == 'unset'
+        resp.status == 200
+    }
+
     def "hubInternalGetRaw on a 404 (outside the 3xx window) propagates rather than returning a struct"() {
         given:
         enableHubSecurity()
