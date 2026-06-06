@@ -18,7 +18,7 @@
  */
 
 definition(
-    naame: "MCP Rule Server",
+    name: "MCP Rule Server",
     namespace: "mcp",
     author: "kingpanther13",
     description: "MCP Server with Custom Rule Engine for Hubitat",

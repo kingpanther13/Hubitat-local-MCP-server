@@ -36,10 +36,13 @@ DEPLOY_ERROR_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_error.txt"
 APP_NAMESPACE="mcp"
 APP_NAME="MCP Rule Server"
 
-# A full re-fetch is ~24 chunked calls over the cloud relay; allow a few
-# attempts for the hub-side recompile to settle and for transient relay flake.
-FETCH_ATTEMPTS=4
-ATTEMPT_SLEEP=15
+# A full re-fetch is ~24 chunked calls over the cloud relay. The deploy step already polled for the
+# recompile to settle, so a couple of attempts here is plenty (was 4 -- it kept re-fetching after the
+# byte-compare already showed a mismatch). When the deploy captured a definitive hub rejection
+# (DEPLOY_ERROR_FILE present), we drop to a single attempt below -- no point waiting for "settling"
+# that will never come.
+FETCH_ATTEMPTS=2
+ATTEMPT_SLEEP=10
 
 if [ ! -f "$SOURCE_FILE" ]; then
   echo "::error::PR source file not found: $SOURCE_FILE"
@@ -123,6 +126,13 @@ fetch_hub_source() {
 
 PR_BYTES=$(wc -c < "$SOURCE_FILE")
 echo "Verifying the hub is running THIS PR's source ($PR_BYTES bytes, class $CLASS_ID)..."
+
+# Fail-fast: if the deploy step captured a definitive hub rejection, the save did NOT land and never
+# will -- one fetch to confirm staleness is enough, no settle retries.
+if [ -s "$DEPLOY_ERROR_FILE" ]; then
+  echo "Deploy step captured a hub rejection ($(cat "$DEPLOY_ERROR_FILE")); confirming stale source once, no settle retries."
+  FETCH_ATTEMPTS=1
+fi
 
 attempt=1
 while [ "$attempt" -le "$FETCH_ATTEMPTS" ]; do

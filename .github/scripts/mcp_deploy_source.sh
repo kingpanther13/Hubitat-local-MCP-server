@@ -46,7 +46,10 @@ APP_NAME="MCP Rule Server"
 # hub_get_source until totalLength changes from PRE_LEN (proving the
 # write landed) or we hit the timeout.
 POST_DEPLOY_VERIFY_SLEEP=20
-POST_DEPLOY_VERIFY_TIMEOUT=90
+# Shorter than before: the authoritative byte-compare in mcp_verify_deploy.sh is the real gate, so
+# this poll is just a fast-path. A rejected save never changes the length, so a long poll here is
+# pure waste (issue: it polled the full 90s on a deliberate compile-failure test).
+POST_DEPLOY_VERIFY_TIMEOUT=40
 POST_DEPLOY_VERIFY_INTERVAL=8
 
 # Defensive: clear any stale marker/error from a previous run.
