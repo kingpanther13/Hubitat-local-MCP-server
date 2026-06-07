@@ -1,12 +1,16 @@
 # Ruff configuration -- LINT ONLY (no formatter gate).
 #
-# This is a Groovy-first project; Ruff covers the auxiliary Python (tests, CI
-# scripts, tooling). The rule set is pinned to Ruff's high-value bug-catching
-# default (pyflakes F + pycodestyle E4/E7/E9) so CI stays deterministic across
-# Ruff version bumps. The formatter and line-length (E501) are deliberately NOT
-# enabled: the existing Python is not formatter-managed, so a reformat gate would
-# add churn without catching bugs. Add rules here as the codebase tightens.
+# This is a Groovy-first project; Ruff covers the auxiliary Python (tests, CI scripts, tooling).
+# The rule set is pinned (not "default") so CI is deterministic across Ruff version bumps. It
+# covers correctness (pyflakes F, pycodestyle E/W, bugbear B), import hygiene (I), modernization
+# (UP), and a few high-signal hygiene groups (C4 comprehensions, RUF ruff-specific, PIE).
+#
+# Deliberately OFF: E501 (line-too-long) -- this codebase has long descriptive tool-description
+# and message strings; reflowing them is noise, not safety. The formatter is not enabled either.
 target-version = "py311"
 
 [lint]
-select = ["E4", "E7", "E9", "F"]
+select = ["E4", "E7", "E9", "F", "W", "I", "UP", "B", "C4", "RUF", "PIE"]
+# B011 (assert False): the e2e/unit tests use `assert False, "..."` as the idiomatic
+# "this path should not be reached" guard; they never run under `python -O`.
+ignore = ["B011"]

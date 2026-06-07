@@ -24,9 +24,9 @@ import os
 import random
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
@@ -85,7 +85,7 @@ class HubitatMcpClient:
         if self.verbose:
             print(f"    [DEBUG] {msg}")
 
-    def _send(self, method: str, params: Optional[dict] = None) -> dict:
+    def _send(self, method: str, params: dict | None = None) -> dict:
         """Send a JSON-RPC 2.0 request and return the parsed result.
 
         Retries transient HTTP 5xx and network errors (cloud relay flake) with
@@ -110,8 +110,8 @@ class HubitatMcpClient:
         # Rate-limit: don't overwhelm the hub
         time.sleep(0.2)
 
-        last_exc: Optional[Exception] = None
-        data: Optional[dict] = None
+        last_exc: Exception | None = None
+        data: dict | None = None
         resp = None
         for attempt in range(3):
             resp = None
@@ -177,7 +177,7 @@ class HubitatMcpClient:
             "clientInfo": {"name": "e2e-test", "version": "1.0.0"},
         })
 
-    def raw_request(self, payload: Any) -> "requests.Response":
+    def raw_request(self, payload: Any) -> requests.Response:
         """POST a raw JSON-RPC body (single object, batch array, or notification)
         and return the raw requests.Response — no result-unwrapping, no
         error-raising. Retries transient 5xx/network flake like _send. Used by
@@ -186,7 +186,7 @@ class HubitatMcpClient:
         the result-unwrapping call_tool/_send helpers deliberately hide.
         """
         time.sleep(0.2)
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
         for attempt in range(3):
             try:
                 resp = requests.post(
@@ -213,7 +213,7 @@ class HubitatMcpClient:
         about pagination. Caps at 20 pages defensively to avoid runaway on a buggy server.
         """
         combined: list = []
-        params: Optional[dict] = None
+        params: dict | None = None
         for _ in range(20):
             page_result = self._send("tools/list", params)
             combined.extend(page_result.get("tools", []))
@@ -223,7 +223,7 @@ class HubitatMcpClient:
             params = {"cursor": next_cursor}
         raise McpError("tools/list pagination did not terminate within 20 pages")
 
-    def call_tool(self, name: str, arguments: Optional[dict] = None) -> Any:
+    def call_tool(self, name: str, arguments: dict | None = None) -> Any:
         """Call an MCP tool. Returns parsed content text (dict/list/str)."""
         result = self._send("tools/call", {"name": name, "arguments": arguments or {}})
 
@@ -288,8 +288,8 @@ class TestRunner:
         self.created_variable_names: list[str] = []
 
         # Cached helpers
-        self._first_device_id: Optional[str] = None
-        self._test_start_time: Optional[str] = None  # ISO for log check
+        self._first_device_id: str | None = None
+        self._test_start_time: str | None = None  # ISO for log check
 
     # -- Helpers -------------------------------------------------------------
 
@@ -691,7 +691,7 @@ class TestRunner:
         except (McpToolError, McpError):
             pass
 
-    def _last_rule_id(self) -> Optional[str]:
+    def _last_rule_id(self) -> str | None:
         return self.created_rule_ids[-1] if self.created_rule_ids else None
 
     # -----------------------------------------------------------------------
@@ -2435,10 +2435,10 @@ class TestRunner:
     # Run
     # -----------------------------------------------------------------------
 
-    def run(self, filter_group: Optional[str] = None,
-            filter_test: Optional[str] = None) -> bool:
+    def run(self, filter_group: str | None = None,
+            filter_test: str | None = None) -> bool:
         """Run tests. Returns True if all passed."""
-        self._test_start_time = datetime.now(timezone.utc).isoformat()
+        self._test_start_time = datetime.now(UTC).isoformat()
 
         tests_to_run = []
         for group, display_name, method_name in TEST_REGISTRY:
@@ -2537,7 +2537,7 @@ class SkipTest(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _find_attr(attrs: Any, name: str) -> Optional[str]:
+def _find_attr(attrs: Any, name: str) -> str | None:
     """Extract an attribute value from various response shapes."""
     if isinstance(attrs, dict):
         return attrs.get(name)
@@ -2569,7 +2569,7 @@ def load_config() -> dict:
     config = {}
 
     if config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
 
     # Env var overrides

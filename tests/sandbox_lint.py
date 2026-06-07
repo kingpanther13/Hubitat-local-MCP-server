@@ -10,9 +10,9 @@ Exit 0 = clean, exit 1 = errors found.
 Outputs GitHub Actions annotations when running in CI.
 """
 
+import os
 import re
 import sys
-import os
 from pathlib import Path
 
 # Force UTF-8 on stdout/stderr so prints containing em dashes, arrows, and

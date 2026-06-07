@@ -9,15 +9,14 @@ individual parametrized pytest tests, then adds coverage for:
 All 19 original self-test cases are preserved with zero coverage loss.
 """
 
-import sys
 import os
+import sys
 
 # sandbox_lint lives in tests/ — add that directory to the path.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
 import pytest
 import sandbox_lint as sl
-
 
 # ---------------------------------------------------------------------------
 # Helpers

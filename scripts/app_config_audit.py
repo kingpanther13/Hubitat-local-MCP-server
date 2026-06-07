@@ -39,8 +39,8 @@ encoding, etc.) — those are fragile by design. Only the SDK-level shape contra
 import argparse
 import json
 import sys
-import urllib.request
 import urllib.error
+import urllib.request
 from typing import Any
 
 # Edit to match the sample IDs on your hub. Each target is a (description, appId, pageName|None).

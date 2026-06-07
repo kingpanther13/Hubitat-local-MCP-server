@@ -5,15 +5,16 @@ Covers: parse_release_notes, split_release_blocks, filter_same_minor,
 """
 
 import json
-import sys
 import os
+import sys
 
 # Make release_bump importable without installing it.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".github", "scripts"))
 
+from datetime import UTC
+
 import pytest
 import release_bump as rb
-
 
 # ---------------------------------------------------------------------------
 # parse_release_notes
@@ -617,12 +618,12 @@ def test_bump_manifest_first_run_regression_anchor(tmp_path, monkeypatch):
 
 def test_bump_manifest_updates_version_and_date(tmp_path, monkeypatch):
     """bump_manifest writes new_version and today's date into the JSON."""
-    from datetime import datetime, timezone
+    from datetime import datetime
     _make_manifest(tmp_path, monkeypatch, "0.11.0", release_notes="")
     new_block = _block("0.11.1", "2026-05-05", ["something (#101)"])
     rb.bump_manifest("0.11.1", "release:patch", new_block)
     m = _read_manifest(tmp_path)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
     assert m["version"] == "0.11.1"
     assert m["dateReleased"] == today
 

@@ -10,8 +10,8 @@ Importing the module itself is skipped if the 'requests' library is not availabl
 (not installed in the CI environment for this repo).
 """
 
-import sys
 import os
+import sys
 
 # tests/ is already on sys.path conceptually, but be explicit for safety.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
@@ -23,7 +23,6 @@ import pytest
 requests = pytest.importorskip("requests", reason="'requests' not installed; skipping e2e helpers")
 
 import e2e_test as et  # noqa: E402 -- must follow the importorskip above (e2e_test imports requests at module level)
-
 
 # ---------------------------------------------------------------------------
 # _find_attr

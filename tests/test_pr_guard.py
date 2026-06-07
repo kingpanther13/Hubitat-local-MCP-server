@@ -4,15 +4,14 @@ Covers: extract_first, extract_version_history, and the pure logic of
 check_bookkeeping via monkeypatching git and file reads.
 """
 
+import os
 import re
 import sys
-import os
 
 # Make pr_guard importable without installing it.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".github", "scripts"))
 
 import pr_guard
-
 
 # ---------------------------------------------------------------------------
 # extract_first
