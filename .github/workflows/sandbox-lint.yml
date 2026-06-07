@@ -6,6 +6,9 @@ on:
       - '*.groovy'
       - 'packageManifest.json'
       - 'tests/sandbox_lint.py'
+      - 'libraries/**'
+      - 'bundles/**'
+      - 'tools/build-bundle.py'
 
 permissions:
   contents: read
@@ -20,3 +23,17 @@ jobs:
           python-version: '3.x'
       - name: Sandbox-lint scan
         run: python tests/sandbox_lint.py
+      # Bundle/library sync (issue #209): the HPM bundle ships the library, so the checked-in
+      # bundles/*.zip MUST match what tools/build-bundle.py produces from the current library
+      # source. build-bundle.py is byte-deterministic (fixed epoch, ZIP_STORED), so a rebuild that
+      # changes anything means a library was edited without rebuilding the bundle -- which would
+      # make HPM deliver STALE library code and (if the app's #include needs the new code) break.
+      - name: Bundle is in sync with library source
+        run: |
+          python tools/build-bundle.py
+          if ! git diff --quiet -- bundles/; then
+            echo "::error::bundles/ is out of sync with the library source. A library under libraries/ changed but the HPM bundle zip was not rebuilt -- HPM would deliver stale library code. Run 'python tools/build-bundle.py' and commit the updated bundles/*.zip."
+            git --no-pager diff --stat -- bundles/
+            exit 1
+          fi
+          echo "Bundle zip(s) match the library source (HPM would deliver current code)."

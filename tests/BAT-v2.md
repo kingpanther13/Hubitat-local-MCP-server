@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B 19-gateway read/write split (11 flat core + 19 gateways = 30 on tools/list, 90 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B 19-gateway read/write split (11 flat core + 19 gateways = 30 on tools/list, 91 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -3005,6 +3005,40 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 (Manual test -- not automatable without simulating File Manager failure.)
 
 **Expected behavior**: If `uploadHubFile` fails during pre-delete backup, `hub_delete_item` (type=library) still proceeds and sets `backupWarning` in the response. The deletion is not blocked by a backup failure. The response message contains "WARNING: Pre-delete backup failed".
+
+### T509 — hub_install_bundle installs a code bundle the HPM way
+
+```json
+{
+  "setup_prompt": "the Write master enabled, recent backup exists. Identify the raw URL of a small bundle .zip the hub can reach (e.g. this repo's bundles/mcp-smoke-test.zip on a public GitHub raw URL). The bundle ships the McpSmokeTestLib library.",
+  "test_prompt": "Install the bundle from that .zip URL using hub_install_bundle (confirm=true), then verify the bundle's library is present with hub_list_libraries.",
+  "teardown_prompt": "Optionally delete the McpSmokeTestLib library if it was newly created (note: removing it would break the server's #include on next save, so leave it in place on the live server)."
+}
+```
+
+**Expected**: AI calls `hub_manage_code(tool='hub_install_bundle', args={importUrl:'https://.../bundles/mcp-smoke-test.zip', confirm:true})`. Result: `{success:true, endpoint:'/bundle2/uploadZipFromUrl', message:'Bundle installed...'}` on firmware >= 2.3.8.108 (older firmware uses `/bundle/uploadZipFromUrl`). A follow-up `hub_list_libraries` shows `McpSmokeTestLib` (namespace `mcp`). This mirrors how Hubitat Package Manager delivers a package's library files — bundle fetched + unpacked into Libraries Code server-side, no UI.
+
+### T510 — hub_install_bundle refuses without confirm flag
+
+```json
+{
+  "setup_prompt": "the Write master enabled.",
+  "test_prompt": "Try to install a bundle from a .zip URL without setting confirm=true. Observe the error."
+}
+```
+
+**Expected**: Gateway (or tool) returns an error (isError or -32602) containing "SAFETY CHECK FAILED" or "confirm". No bundle is installed. AI explains the confirm requirement and the mandatory pre-flight checklist (backup).
+
+### T511 — hub_install_bundle rejects a non-http(s) importUrl
+
+```json
+{
+  "setup_prompt": "the Write master enabled, recent backup exists.",
+  "test_prompt": "Try to install a bundle with importUrl='mcp-smoke-test.zip' (a bare filename, no scheme) and confirm=true. What does the tool say?"
+}
+```
+
+**Expected**: Gateway (or tool) returns an error (isError or -32602) containing "scheme must be http or https". AI recognizes that `hub_install_bundle` needs a full URL the hub can fetch, not a File Manager filename, and corrects to a raw https URL.
 
 ---
 

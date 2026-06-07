@@ -31,6 +31,10 @@ PRE_LEN_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source_charlen"
 # Written only after the deploy is verified to have landed on the hub.
 # Restore step early-exits if this is absent: no marker = nothing to undo.
 DEPLOY_LANDED_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_landed"
+# Captures the hub's VERBATIM save/compile error (from hub_update_app's response) so the
+# authoritative verify gate can surface the real message instead of guessing a cause. Written only
+# on a definitive HTTP-200 + success:false rejection; read by mcp_verify_deploy.sh.
+DEPLOY_ERROR_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_error.txt"
 
 # Pulled from the parent app's definition() block — keep these in sync if
 # the parent ever changes its namespace/name (it shouldn't; HPM tracks it).
@@ -42,11 +46,14 @@ APP_NAME="MCP Rule Server"
 # hub_get_source until totalLength changes from PRE_LEN (proving the
 # write landed) or we hit the timeout.
 POST_DEPLOY_VERIFY_SLEEP=20
-POST_DEPLOY_VERIFY_TIMEOUT=90
+# Shorter than before: the authoritative byte-compare in mcp_verify_deploy.sh is the real gate, so
+# this poll is just a fast-path. A rejected save never changes the length, so a long poll here is
+# pure waste (issue: it polled the full 90s on a deliberate compile-failure test).
+POST_DEPLOY_VERIFY_TIMEOUT=40
 POST_DEPLOY_VERIFY_INTERVAL=8
 
-# Defensive: clear any stale marker from a previous run.
-rm -f "$DEPLOY_LANDED_FILE"
+# Defensive: clear any stale marker/error from a previous run.
+rm -f "$DEPLOY_LANDED_FILE" "$DEPLOY_ERROR_FILE"
 
 if [ ! -f "$SOURCE_FILE" ]; then
   echo "::error::Source file not found: $SOURCE_FILE"
@@ -73,6 +80,73 @@ mcp_call_stdin() {
     --data-binary @-
 }
 
+# The cloud gateway has a ~10s per-request ceiling. A big read (hub_list_apps scope=types, or a
+# chunk of the hub_get_source snapshot) that the hub answers slowly comes back as a non-JSON 502
+# page, which would crash an unguarded `... | jq` and abort the deploy -- the verify step then
+# mislabels that as "FAILED TO COMPILE". mcp_tool_call_text retries ONLY that non-JSON case (the
+# same transient the post-deploy 5xx polling already tolerates). A valid JSON envelope -- including
+# a real hub error -- is returned immediately and never retried, so this can NOT turn stale code or
+# a genuine save failure into a pass. Prints the inner tool text on stdout; returns 0 on a
+# parseable envelope (text may be empty -> caller checks), 1 only if every attempt was non-JSON.
+# Emits warnings to stderr; the caller decides whether a final give-up is fatal.
+RPC_ATTEMPTS=5
+RPC_RETRY_SLEEP=6
+mcp_tool_call_text() {
+  local label="$1" rpc="$2" attempt=1 resp text
+  while [ "$attempt" -le "$RPC_ATTEMPTS" ]; do
+    resp=$(mcp_call "$rpc" || true)
+    if text=$(printf '%s' "$resp" | jq -r '.result.content[0].text // ""' 2>/dev/null); then
+      printf '%s' "$text"
+      return 0
+    fi
+    echo "::warning::${label}: non-JSON gateway response (attempt ${attempt}/${RPC_ATTEMPTS}; likely the ~10s cloud-gateway timeout). Body head: $(printf '%s' "$resp" | head -c 120 | tr '\n' ' ')" >&2
+    attempt=$((attempt + 1))
+    [ "$attempt" -le "$RPC_ATTEMPTS" ] && sleep "$RPC_RETRY_SLEEP"
+  done
+  return 1
+}
+
+# After a self-deploy whose result was lost (success reloaded the app, or a big-file compile failure
+# 504'd before the hub answered), the app recorded the hub's VERBATIM outcome to
+# atomicState.lastSelfDeploy. Read it back via hub_get_info and, if it matches THIS deploy (importUrl)
+# and reports failure, stash the real error in DEPLOY_ERROR_FILE for the verify gate to surface --
+# no guessing. (issue #237)
+recover_self_deploy_error() {
+  local attempt=1 text ok url err at is_fresh=0
+  while [ "$attempt" -le 3 ]; do
+    text=$(mcp_tool_call_text "hub_get_info (recover self-deploy error, try $attempt)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}') || text=""
+    # NOTE: `.success // empty` is WRONG here -- jq's // treats a `false` boolean like null, so a
+    # genuine success:false (a rejected deploy -- the case we MUST catch) would read as empty and the
+    # recovery would silently skip it. Map the boolean to its string explicitly instead.
+    ok=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.success | if type=="boolean" then tostring else "" end' 2>/dev/null || true)
+    url=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.importUrl // empty' 2>/dev/null || true)
+    err=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.error // empty' 2>/dev/null || true)
+    at=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.at // empty' 2>/dev/null || true)
+    # FRESH = its `at` advanced past the pre-deploy baseline. With a known baseline that's at!=baseline.
+    # With an EMPTY baseline, honor it ONLY if the baseline READ succeeded (PRE_LSD_OK=1 = genuinely "no
+    # prior record"); a FAILED baseline read leaves freshness unknowable, so we don't trust a same-URL
+    # stale record (else a prior run's success:false would be reported as this deploy's error).
+    is_fresh=0
+    if [ -n "$at" ]; then
+      if [ -n "${PRE_LSD_AT:-}" ]; then
+        [ "$at" != "$PRE_LSD_AT" ] && is_fresh=1
+      elif [ "${PRE_LSD_OK:-0}" = "1" ]; then
+        is_fresh=1
+      fi
+    fi
+    # Honor ONLY a record that is for THIS deploy (importUrl), reports failure, AND is fresh.
+    if [ "$url" = "$PR_SOURCE_URL" ] && [ "$ok" = "false" ] && [ -n "$err" ] && [ "$is_fresh" = "1" ]; then
+      printf '%s' "$err" > "$DEPLOY_ERROR_FILE"
+      echo "::error::Hub REJECTED the self-deploy. Hub error (recovered via hub_get_info.lastSelfDeploy): ${err}"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    [ "$attempt" -le 3 ] && sleep 5
+  done
+  echo "::notice::Could not recover a FRESH matching failed self-deploy record from hub_get_info.lastSelfDeploy (last seen success=${ok:-none}, importUrl match=$([ "$url" = "$PR_SOURCE_URL" ] && echo yes || echo no), fresh=$([ "${is_fresh:-0}" = "1" ] && echo yes || echo no), baselineReadOk=${PRE_LSD_OK:-0}). The verify step will report the stale source without the hub's verbatim error."
+  return 0
+}
+
 echo "Triggering hub backup (best-effort; tolerated if it 504s -- the <24h gate is timestamp-cached)..."
 BACKUP_RPC='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true}}}'
 # `>/dev/null` (not `2>&1`) so genuine curl errors -- DNS, connection refused,
@@ -86,10 +160,12 @@ echo "Looking up Apps Code class ID for $APP_NAMESPACE:$APP_NAME via hub_list_ap
 # Without it, hub_list_apps defaults to scope='instances' (running app instances, which
 # carry no `namespace`), so the (namespace,name) match below never hits the code class.
 LIST_RPC='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}'
-LIST_RESP=$(mcp_call "$LIST_RPC")
-LIST_TEXT=$(echo "$LIST_RESP" | jq -r '.result.content[0].text // empty')
+if ! LIST_TEXT=$(mcp_tool_call_text "hub_list_apps (deploy class-ID lookup)" "$LIST_RPC"); then
+  echo "::error::hub_list_apps: the Hubitat cloud gateway returned a non-JSON response $RPC_ATTEMPTS times -- a transient relay/timeout (the ~10s gateway ceiling), NOT a compile or save failure. Re-run the job."
+  exit 1
+fi
 if [ -z "$LIST_TEXT" ]; then
-  echo "::error::hub_list_apps returned empty MCP content (resp head: $(echo "$LIST_RESP" | head -c 500))"
+  echo "::error::hub_list_apps returned a valid but empty MCP response -- cannot resolve the Apps Code class id."
   exit 1
 fi
 
@@ -122,10 +198,13 @@ while :; do
     --argjson off "$OFFSET" \
     --argjson len "$CHUNK_LEN" \
     '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:$off,length:$len}}}')
-  RESP=$(mcp_call "$RPC")
-  TEXT=$(echo "$RESP" | jq -r '.result.content[0].text // empty')
+  if ! TEXT=$(mcp_tool_call_text "hub_get_source (pre-deploy snapshot offset $OFFSET)" "$RPC"); then
+    echo "::error::hub_get_source (pre-deploy snapshot) got a non-JSON gateway response $RPC_ATTEMPTS times -- a transient relay/timeout (the ~10s gateway ceiling), NOT a compile failure. Re-run the job."
+    rm -f "$PRE_SOURCE_FILE"
+    exit 1
+  fi
   if [ -z "$TEXT" ]; then
-    echo "::error::hub_get_source returned empty MCP content (resp head: $(echo "$RESP" | head -c 500))"
+    echo "::error::hub_get_source returned a valid but empty MCP response during the pre-deploy snapshot."
     rm -f "$PRE_SOURCE_FILE"
     exit 1
   fi
@@ -177,6 +256,21 @@ echo "Deploying class $CLASS_ID via importUrl (hub fetches ${NEW_BYTES} bytes fr
 # it forward). Self-update recompiles the MCP app mid-call, so the call may
 # not return cleanly -- the 5xx / curl-failure tolerance and the
 # hub_get_source verify below already handle that.
+# Baseline the existing lastSelfDeploy.at BEFORE the deploy so recover_self_deploy_error can tell a
+# FRESH record (written by THIS deploy) from a STALE one a prior run with the same PR_SOURCE_URL left
+# behind. PRE_LSD_OK records whether the baseline READ itself succeeded: an empty PRE_LSD_AT means
+# "no prior record" ONLY when PRE_LSD_OK=1. If the baseline read 504'd we can't tell freshness, so
+# recover must NOT honor a same-URL stale record (else it would report a prior run's error as this
+# deploy's). The authoritative byte-compare in mcp_verify_deploy.sh is the staleness backstop.
+PRE_LSD_OK=0
+if PRE_LSD_RAW=$(mcp_tool_call_text "hub_get_info (pre-deploy lastSelfDeploy baseline)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' 2>/dev/null); then
+  PRE_LSD_AT=$(printf '%s' "$PRE_LSD_RAW" | jq -r '.lastSelfDeploy.at // empty' 2>/dev/null || true)
+  PRE_LSD_OK=1
+else
+  PRE_LSD_AT=""
+fi
+echo "Pre-deploy lastSelfDeploy.at baseline: ${PRE_LSD_AT:-<none>} (baseline read ok=${PRE_LSD_OK})"
+
 DEPLOY_RPC_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_rpc.json"
 jq -nc \
   --arg id "$CLASS_ID" \
@@ -208,7 +302,7 @@ verify_deploy_landed() {
     sleep $POST_DEPLOY_VERIFY_INTERVAL
     elapsed=$((elapsed + POST_DEPLOY_VERIFY_INTERVAL))
   done
-  echo "::error::Deploy verification timed out after ${POST_DEPLOY_VERIFY_TIMEOUT}s; hub totalLength still $current_len (baseline was $PRE_LEN)"
+  echo "::error::Deploy did not land: hub source totalLength is still $current_len (baseline $PRE_LEN) after ${POST_DEPLOY_VERIFY_TIMEOUT}s. The new source did not take effect -- the hub rejected the save or the deploy did not reach the hub. The authoritative 'Verify deployed source' step will report the hub's verbatim error if one was captured."
   return 1
 }
 
@@ -248,7 +342,18 @@ if [ "$HTTP_CODE" = "200" ]; then
   fi
   DEPLOY_OK=$(echo "$DEPLOY_TEXT" | jq -r '.success // false')
   if [ "$DEPLOY_OK" != "true" ]; then
-    echo "::error::hub_update_app failed: $(echo "$DEPLOY_TEXT" | jq -r '.error // .message // empty')"
+    # The hub REJECTED the save. hub_update_app returns the hub's VERBATIM error
+    # (toolUpdateItemCodeInner parses /app/ajax/update's errorMessage), e.g. "name cannot be empty
+    # in definition section". Surface that actual message -- no guessing about the cause -- and hand
+    # it to the verify gate (which otherwise only sees stale source) via DEPLOY_ERROR_FILE.
+    HUB_ERR=$(printf '%s' "$DEPLOY_TEXT" | jq -r '.error // .message // empty')
+    HUB_NOTE=$(printf '%s' "$DEPLOY_TEXT" | jq -r '.note // empty')
+    if [ -n "$HUB_ERR" ]; then
+      printf '%s' "$HUB_ERR" > "$DEPLOY_ERROR_FILE"
+      echo "::error::Hub REJECTED the save. Hub error: ${HUB_ERR}${HUB_NOTE:+ -- ${HUB_NOTE}}"
+    else
+      echo "::error::Hub rejected the save (hub_update_app success=false) but returned no error text. Full tool response below."
+    fi
     echo "Tool response: $DEPLOY_TEXT" | head -c 2000
     exit 1
   fi
@@ -264,12 +369,17 @@ elif [ "$HTTP_CODE" = "504" ] || [ "$HTTP_CODE" = "502" ] || [ "$HTTP_CODE" = "5
     echo "Deploy verified despite HTTP $HTTP_CODE. PR source is on the hub."
     printf 'verified-via=5xx-poll bytes=%s\n' "$NEW_BYTES" > "$DEPLOY_LANDED_FILE"
   else
-    echo "::error::Deploy not verified -- hub source did not converge away from pre-deploy length."
+    echo "::error::Deploy not verified -- the hub source did not change. Recovering the hub's verbatim outcome from hub_get_info.lastSelfDeploy (issue #237)..."
+    recover_self_deploy_error
     exit 1
   fi
 else
   echo "::error::hub_update_app got unexpected HTTP $HTTP_CODE"
   echo "Body head: $(printf '%s' "$DEPLOY_BODY" | head -c 1000)"
+  # An unexpected relay code (413/500/etc.) can still follow a hub-side reject that
+  # already recorded atomicState.lastSelfDeploy. Try to surface the verbatim error
+  # before giving up, so this exit path isn't blind either (issue #237).
+  recover_self_deploy_error
   exit 1
 fi
 

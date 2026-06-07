@@ -34,4 +34,7 @@ class TestHub implements Hub {
     // zwaveVersion read and :5202 for the zigbeeChannel read) ---
     String zwaveVersion
     Integer zigbeeChannel
+    // location.hub.firmwareVersionString — read by toolInstallBundle to pick the
+    // bundle endpoint (>= 2.3.8.108 -> /bundle2/uploadZipFromUrl, else /bundle/...).
+    String firmwareVersionString
 }

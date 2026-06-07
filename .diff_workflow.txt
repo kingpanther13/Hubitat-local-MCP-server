@@ -1,0 +1,583 @@
+diff --git a/.github/workflows/hub-e2e.yml b/.github/workflows/hub-e2e.yml
+index d83868c..bb4085d 100644
+--- a/.github/workflows/hub-e2e.yml
++++ b/.github/workflows/hub-e2e.yml
+@@ -1,246 +1,332 @@
+-name: Hub E2E (test hub)
+-
+-# End-to-end tests against a real Hubitat hub provided by @level99
+-# (see issue #77 + the GitHub secret LEVEL99_TEST_HUB_MCP_URL).
+-#
+-# Failure mode: ADVISORY only. Hub flakiness must not block PR merges,
+-# so this workflow is intentionally not added to branch protection's
+-# required-checks. Treat it as a signal, not a gate.
+-
+-on:
+-  pull_request:
+-    branches: [main]
+-    # Skip when only docs / non-test files change. Cuts CI cost on
+-    # README-only / SKILL-only PRs that can't break the hub-side surface.
+-    paths:
+-      - 'hubitat-mcp-server.groovy'
+-      - 'hubitat-mcp-rule.groovy'
+-      - 'tests/e2e_test.py'
+-      - '.github/workflows/hub-e2e.yml'
+-      - '.github/scripts/lease_acquire.sh'
+-      - '.github/scripts/lease_release.sh'
+-      - '.github/scripts/mcp_setup_env.sh'
+-      - '.github/scripts/mcp_restore_env.sh'
+-      - '.github/scripts/mcp_deploy_source.sh'
+-      - '.github/scripts/mcp_restore_source.sh'
+-      - '.github/scripts/mcp_validate_package_tool.sh'
+-  workflow_dispatch:
+-    inputs:
+-      pr_number:
+-        description: 'PR number to test (blank = current ref)'
+-        required: false
+-
+-# Serialize concurrent runs against the shared test hub. Don't cancel
+-# in-progress — they hold the lease and need to release it cleanly via
+-# the `if: always()` cleanup step. A cancelled run that leaves a
+-# stranded lease will eventually expire via the 30-min TTL, but it's
+-# better to let things finish and release explicitly.
+-concurrency:
+-  group: hub-e2e
+-  cancel-in-progress: false
+-
+-permissions:
+-  contents: read
+-
+-jobs:
+-  e2e:
+-    runs-on: ubuntu-latest
+-    # Must match the lease duration in lease_acquire.sh so the job can't
+-    # outlive the lease and let another run trample state mid-test.
+-    timeout-minutes: 30
+-
+-    env:
+-      MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
+-
+-    steps:
+-      - uses: actions/checkout@v6
+-        with:
+-          ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.ref }}
+-
+-      - name: Check secret availability + skip if absent
+-        # Two cases where MCP_URL is empty (and we want to skip silently
+-        # rather than fail red):
+-        #   - PRs from forks: GitHub's security policy strips secrets from
+-        #     fork-PR workflow runs, even when the secret is set on the
+-        #     upstream repo. The job runs but the env var is empty.
+-        #   - Secret intentionally not configured (no donated test hub,
+-        #     maintainer-private fork without test infra).
+-        # The fork-dispatch path (workflow_dispatch from level99's fork)
+-        # DOES have access to the secret, so this gate doesn't block the
+-        # intended "run via fork dispatch" use case.
+-        # GitHub doesn't allow `secrets` in job-level `if:` conditions, so
+-        # the check happens here as a step output and gates everything below.
+-        id: gate
+-        run: |
+-          if [ -z "$MCP_URL" ]; then
+-            echo "::notice::LEVEL99_TEST_HUB_MCP_URL secret not available — skipping E2E (expected on fork PRs and on repos without the test hub configured)"
+-            echo "available=false" >> "$GITHUB_OUTPUT"
+-          else
+-            echo "available=true" >> "$GITHUB_OUTPUT"
+-          fi
+-
+-      - uses: actions/setup-python@v6
+-        if: steps.gate.outputs.available == 'true'
+-        with:
+-          python-version: '3.x'
+-
+-      - name: Install Python dependencies
+-        if: steps.gate.outputs.available == 'true'
+-        run: pip install requests
+-
+-      - name: Mask access token in subsequent log lines
+-        if: steps.gate.outputs.available == 'true'
+-        # Secrets are auto-masked, but the URL parsing below can split the
+-        # token out into a separate string that isn't recognized as the
+-        # original secret value. Force-mask.
+-        run: |
+-          TOKEN="$(echo "$MCP_URL" | sed -nE 's|.*access_token=(.*)|\1|p')"
+-          if [ -n "$TOKEN" ]; then
+-            echo "::add-mask::$TOKEN"
+-          fi
+-
+-      - name: Parse MCP_URL into HUBITAT_* env vars
+-        if: steps.gate.outputs.available == 'true'
+-        # tests/e2e_test.py expects these three env vars (see its docstring).
+-        # MCP_URL format: https://cloud.hubitat.com/api/<UUID>/apps/<APPID>/mcp?access_token=<TOKEN>
+-        run: |
+-          # Note: regional cloud endpoints (e.g. eu.cloud.hubitat.com) are not yet supported —
+-          # update the regex if Hubitat adds them.
+-          if [[ ! "$MCP_URL" =~ ^https://cloud\.hubitat\.com/api/[^/]+/apps/[0-9]+/mcp\?access_token=.+$ ]]; then
+-            echo "::error::MCP_URL does not match the expected cloud-endpoint shape — refusing to parse a malformed value into HUBITAT_* env vars."
+-            exit 1
+-          fi
+-          BASE=$(echo "$MCP_URL"  | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\1|')
+-          APPID=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\2|')
+-          TOKEN=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\3|')
+-          {
+-            echo "HUBITAT_HUB_URL=$BASE"
+-            echo "HUBITAT_APP_ID=$APPID"
+-            echo "HUBITAT_ACCESS_TOKEN=$TOKEN"
+-          } >> "$GITHUB_ENV"
+-
+-      - name: Acquire test hub lease
+-        if: steps.gate.outputs.available == 'true'
+-        run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
+-
+-      - name: Configure test environment (capture pre-state + enable toggles)
+-        if: steps.gate.outputs.available == 'true'
+-        # Captures enableCustomRuleEngine / enableRead
+-        # to $RUNNER_TEMP/mcp_pre_state.json, then enables all three so the
+-        # tests can exercise the rule engine + hub admin read paths regardless
+-        # of the test hub's prior toggle state. Refuses if Developer Mode
+-        # itself is off (UI-only to enable).
+-        run: bash .github/scripts/mcp_setup_env.sh
+-
+-      - name: Compute PR source URL for importUrl deploy
+-        if: steps.gate.outputs.available == 'true'
+-        # The hub fetches the PR branch's raw source itself (importUrl mode), so the
+-        # ~1.5MB blob never crosses the cloud gateway. Resolve head repo + SHA for the
+-        # three trigger shapes (PR, dispatch-with-pr_number, plain dispatch).
+-        env:
+-          GH_TOKEN: ${{ github.token }}
+-          EVENT_NAME: ${{ github.event_name }}
+-          PR_INPUT: ${{ inputs.pr_number }}
+-          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+-          DEFAULT_REPO: ${{ github.repository }}
+-          DEFAULT_SHA: ${{ github.sha }}
+-        run: |
+-          set -euo pipefail
+-          if [ "$EVENT_NAME" = "pull_request" ]; then
+-            REPO="$PR_HEAD_REPO"; SHA="$PR_HEAD_SHA"
+-          elif [ -n "${PR_INPUT:-}" ]; then
+-            # Validate the dispatch input before it reaches gh api.
+-            if ! printf '%s' "$PR_INPUT" | grep -qE '^[0-9]+$'; then
+-              echo "::error::pr_number must be numeric"; exit 1
+-            fi
+-            REPO=$(gh api "repos/$DEFAULT_REPO/pulls/$PR_INPUT" --jq '.head.repo.full_name')
+-            SHA=$(gh api "repos/$DEFAULT_REPO/pulls/$PR_INPUT" --jq '.head.sha')
+-          else
+-            REPO="$DEFAULT_REPO"; SHA="$DEFAULT_SHA"
+-          fi
+-          # Defense-in-depth: only a 40-hex SHA and an owner/name repo may form the
+-          # URL, so a malformed value can't inject into $GITHUB_ENV or the URL.
+-          if ! printf '%s' "$SHA" | grep -qE '^[0-9a-f]{40}$'; then
+-            echo "::error::unexpected head SHA shape"; exit 1
+-          fi
+-          if ! printf '%s' "$REPO" | grep -qE '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'; then
+-            echo "::error::unexpected head repo shape"; exit 1
+-          fi
+-          URL="https://raw.githubusercontent.com/$REPO/$SHA/hubitat-mcp-server.groovy"
+-          echo "PR_SOURCE_URL=$URL" >> "$GITHUB_ENV"
+-          # Same validated REPO/SHA, split into the (baseUrl, ref) form hub_update_package
+-          # takes -- the dev-tool validation step below builds the identical URL on-hub.
+-          echo "PR_RAW_BASE=https://raw.githubusercontent.com/$REPO" >> "$GITHUB_ENV"
+-          echo "PR_HEAD_SHA_RESOLVED=$SHA" >> "$GITHUB_ENV"
+-          echo "::notice::importUrl deploy source: $URL"
+-
+-      - name: Deploy PR source to test hub
+-        if: steps.gate.outputs.available == 'true'
+-        # Self-update is permitted because mcp_setup_env.sh already verified
+-        # Developer Mode is on (the guard update_app_code checks for
+-        # self-modification on the MCP server's own app row).
+-        #
+-        # continue-on-error: the hub recompiles the MCP app mid-call when it
+-        # self-updates, so the deploy call can return a cloud 5xx / drop the
+-        # connection; the script tolerates that and polls get_app_source to
+-        # verify. importUrl mode (issue #228) has the hub fetch the source
+-        # itself, so the ~1.5MB blob never crosses the cloud gateway (an inline
+-        # source=... write reliably 504s before the hub receives it).
+-        continue-on-error: true
+-        run: bash .github/scripts/mcp_deploy_source.sh hubitat-mcp-server.groovy
+-
+-      # Authoritative deploy gate (NOT continue-on-error). The deploy step above
+-      # tolerates the cloud 5xx the hub returns while it recompiles mid-self-update
+-      # (a false error), but that tolerance also masks a genuinely un-landed deploy,
+-      # which would silently run the tests on STALE hub code. This step re-fetches
+-      # the hub's full source and byte-compares it to this PR's source: a no-op
+-      # (already identical) passes, a real mismatch fails the job loudly. (#236/#234)
+-      - name: Verify deployed source matches this PR
+-        if: steps.gate.outputs.available == 'true'
+-        run: bash .github/scripts/mcp_verify_deploy.sh hubitat-mcp-server.groovy
+-
+-      - name: Run E2E tests
+-        if: steps.gate.outputs.available == 'true'
+-        run: python tests/e2e_test.py
+-
+-      # The deploy above landed THIS PR's app on the hub, so hub_update_package now
+-      # exists there. Exercise its discovery path live (dryRun: fetch PR source ->
+-      # parse #includes -> resolve self app-class) with ZERO writes. This is a REAL
+-      # blocking gate -- e2e passing is what shows the tool works. It runs AFTER the
+-      # e2e suite so a tool failure can't skip the suite; the cleanup/restore steps
+-      # below all use `if: always()`, so the hub is restored regardless. The full
+-      # write path (real library + #include + compile equivalence) is validated in
+-      # the follow-up #include PR, where a library exists to install.
+-      - name: Validate hub_update_package dev tool (dryRun)
+-        if: steps.gate.outputs.available == 'true'
+-        env:
+-          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
+-          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
+-        run: bash .github/scripts/mcp_validate_package_tool.sh
+-
+-      - name: Cleanup BAT_E2E_ artifacts
+-        if: always() && steps.gate.outputs.available == 'true'
+-        # Defensive — e2e_test.py cleans up after itself in the happy path,
+-        # but a crashed run can strand virtual devices / rules / variables
+-        # under the BAT_E2E_ prefix. This sweeps anything left over.
+-        run: python tests/e2e_test.py --cleanup-only
+-
+-      - name: Restore previous app source (push pre-deploy snapshot back)
+-        if: always() && steps.gate.outputs.available == 'true'
+-        # Pushes $RUNNER_TEMP/mcp_pre_source.groovy back to the hub so the
+-        # next run (and any user inspecting the hub afterwards) sees the
+-        # source that was live before this run mutated it. Tolerant of a
+-        # missing snapshot file: if the deploy step never ran or never
+-        # captured, this is a no-op.
+-        run: bash .github/scripts/mcp_restore_source.sh
+-
+-      - name: Restore test environment (settings back to pre-run state)
+-        if: always() && steps.gate.outputs.available == 'true'
+-        # Tolerant of missing pre-state file (early-exit no-op) so a setup
+-        # failure before capture doesn't propagate here.
+-        run: bash .github/scripts/mcp_restore_env.sh
+-
+-      - name: Release test hub lease
+-        if: always() && steps.gate.outputs.available == 'true'
+-        run: bash .github/scripts/lease_release.sh
++name: Hub E2E (test hub)
++
++# End-to-end tests against a real Hubitat hub provided by @level99
++# (see issue #77 + the GitHub secret LEVEL99_TEST_HUB_MCP_URL).
++#
++# Failure mode: BLOCKING. Per the maintainer this check is required for merge --
++# a red e2e means the change could not be proven against a real hub, so it gates.
++# When the job genuinely can't run (fork PR with no secret, or no test hub
++# configured) it skips cleanly rather than failing (see the secret gate below);
++# a confirmed infra/flake failure is triaged by the maintainer, not auto-ignored.
++
++on:
++  pull_request:
++    branches: [main]
++    # Skip when only docs / non-test files change. Cuts CI cost on
++    # README-only / SKILL-only PRs that can't break the hub-side surface.
++    paths:
++      - 'hubitat-mcp-server.groovy'
++      - 'hubitat-mcp-rule.groovy'
++      - 'e2e-deadman-watchdog.groovy'
++      - 'tests/e2e_test.py'
++      - '.github/workflows/hub-e2e.yml'
++      - '.github/scripts/lease_acquire.sh'
++      - '.github/scripts/lease_release.sh'
++      - '.github/scripts/mcp_setup_env.sh'
++      - '.github/scripts/mcp_restore_env.sh'
++      - '.github/scripts/mcp_deploy_source.sh'
++      - '.github/scripts/mcp_verify_deploy.sh'
++      - '.github/scripts/mcp_restore_source.sh'
++      - '.github/scripts/mcp_validate_package_tool.sh'
++      - '.github/scripts/mcp_install_libraries.sh'
++      - '.github/scripts/mcp_install_bundle_hpm.sh'
++      - '.github/scripts/mcp_arm_watchdog.sh'
++      - '.github/scripts/mcp_disarm_watchdog.sh'
++      - 'libraries/**'
++      - 'bundles/**'
++  workflow_dispatch:
++    inputs:
++      pr_number:
++        description: 'PR number to test (blank = current ref)'
++        required: false
++
++# Serialize concurrent runs against the shared test hub. Don't cancel
++# in-progress — they hold the lease and need to release it cleanly via
++# the `if: always()` cleanup step. A cancelled run that leaves a
++# stranded lease will eventually expire via the 30-min TTL, but it's
++# better to let things finish and release explicitly.
++concurrency:
++  group: hub-e2e
++  cancel-in-progress: false
++
++permissions:
++  contents: read
++
++jobs:
++  e2e:
++    runs-on: ubuntu-latest
++    # Must match the lease duration in lease_acquire.sh so the job can't
++    # outlive the lease and let another run trample state mid-test.
++    timeout-minutes: 30
++
++    env:
++      MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
++
++    steps:
++      - uses: actions/checkout@v6
++        with:
++          ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.ref }}
++
++      # Hub-less unit test of the self-deploy error-recovery extraction (issue #237). Runs ALWAYS
++      # (no hub / no secret needed) so the jq `// empty`-on-false bug -- which silently broke the
++      # verbatim-error recovery and that Spock can't catch -- cannot regress unnoticed.
++      - name: Unit-test self-deploy recovery extraction (hub-less)
++        run: bash .github/scripts/test_self_deploy_recovery.sh
++
++      - name: Check secret availability + skip if absent
++        # Two cases where MCP_URL is empty (and we want to skip silently
++        # rather than fail red):
++        #   - PRs from forks: GitHub's security policy strips secrets from
++        #     fork-PR workflow runs, even when the secret is set on the
++        #     upstream repo. The job runs but the env var is empty.
++        #   - Secret intentionally not configured (no donated test hub,
++        #     maintainer-private fork without test infra).
++        # The fork-dispatch path (workflow_dispatch from level99's fork)
++        # DOES have access to the secret, so this gate doesn't block the
++        # intended "run via fork dispatch" use case.
++        # GitHub doesn't allow `secrets` in job-level `if:` conditions, so
++        # the check happens here as a step output and gates everything below.
++        id: gate
++        run: |
++          if [ -z "$MCP_URL" ]; then
++            echo "::notice::LEVEL99_TEST_HUB_MCP_URL secret not available — skipping E2E (expected on fork PRs and on repos without the test hub configured)"
++            echo "available=false" >> "$GITHUB_OUTPUT"
++          else
++            echo "available=true" >> "$GITHUB_OUTPUT"
++          fi
++
++      - uses: actions/setup-python@v6
++        if: steps.gate.outputs.available == 'true'
++        with:
++          python-version: '3.x'
++
++      - name: Install Python dependencies
++        if: steps.gate.outputs.available == 'true'
++        run: pip install requests
++
++      - name: Mask access token in subsequent log lines
++        if: steps.gate.outputs.available == 'true'
++        # Secrets are auto-masked, but the URL parsing below can split the
++        # token out into a separate string that isn't recognized as the
++        # original secret value. Force-mask.
++        run: |
++          TOKEN="$(echo "$MCP_URL" | sed -nE 's|.*access_token=(.*)|\1|p')"
++          if [ -n "$TOKEN" ]; then
++            echo "::add-mask::$TOKEN"
++          fi
++
++      - name: Parse MCP_URL into HUBITAT_* env vars
++        if: steps.gate.outputs.available == 'true'
++        # tests/e2e_test.py expects these three env vars (see its docstring).
++        # MCP_URL format: https://cloud.hubitat.com/api/<UUID>/apps/<APPID>/mcp?access_token=<TOKEN>
++        run: |
++          # Note: regional cloud endpoints (e.g. eu.cloud.hubitat.com) are not yet supported —
++          # update the regex if Hubitat adds them.
++          if [[ ! "$MCP_URL" =~ ^https://cloud\.hubitat\.com/api/[^/]+/apps/[0-9]+/mcp\?access_token=.+$ ]]; then
++            echo "::error::MCP_URL does not match the expected cloud-endpoint shape — refusing to parse a malformed value into HUBITAT_* env vars."
++            exit 1
++          fi
++          BASE=$(echo "$MCP_URL"  | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\1|')
++          APPID=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\2|')
++          TOKEN=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\3|')
++          {
++            echo "HUBITAT_HUB_URL=$BASE"
++            echo "HUBITAT_APP_ID=$APPID"
++            echo "HUBITAT_ACCESS_TOKEN=$TOKEN"
++          } >> "$GITHUB_ENV"
++
++      - name: Acquire test hub lease
++        if: steps.gate.outputs.available == 'true'
++        run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
++
++      - name: Configure test environment (capture pre-state + enable toggles)
++        if: steps.gate.outputs.available == 'true'
++        # Captures enableCustomRuleEngine / enableRead
++        # to $RUNNER_TEMP/mcp_pre_state.json, then enables all three so the
++        # tests can exercise the rule engine + hub admin read paths regardless
++        # of the test hub's prior toggle state. Refuses if Developer Mode
++        # itself is off (UI-only to enable).
++        run: bash .github/scripts/mcp_setup_env.sh
++
++      - name: Clear stale watchdog flag
++        if: steps.gate.outputs.available == 'true'
++        # Best-effort: write {armed:false} to the dead-man flag so a CRASHED prior run's still-armed
++        # flag can't fire its auto-restore during THIS run's deploy. continue-on-error because the
++        # watchdog/flag may not exist yet (first run on a hub, or watchdog not installed) -- that's
++        # fine; there's nothing to clear. The real arm happens later, after the server is confirmed
++        # working and a fresh >1MB pre-deploy backup exists.
++        continue-on-error: true
++        run: |
++          curl -sS --max-time 60 -X POST "$MCP_URL" \
++            -H "Content-Type: application/json" \
++            --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_write_file","arguments":{"fileName":"e2e-deadman.json","content":"{\"armed\":false,\"clearedBy\":\"pre-run-stale-flag-clear\"}","confirm":true}}}' \
++            >/dev/null || echo "::notice::stale-flag clear call failed/absent (watchdog/flag may not exist yet) -- continuing"
++
++      - name: Compute PR source URL for importUrl deploy
++        if: steps.gate.outputs.available == 'true'
++        # The hub fetches the PR branch's raw source itself (importUrl mode), so the
++        # ~1.5MB blob never crosses the cloud gateway. Resolve head repo + SHA for the
++        # three trigger shapes (PR, dispatch-with-pr_number, plain dispatch).
++        env:
++          GH_TOKEN: ${{ github.token }}
++          EVENT_NAME: ${{ github.event_name }}
++          PR_INPUT: ${{ inputs.pr_number }}
++          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
++          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
++          DEFAULT_REPO: ${{ github.repository }}
++          DEFAULT_SHA: ${{ github.sha }}
++        run: |
++          set -euo pipefail
++          if [ "$EVENT_NAME" = "pull_request" ]; then
++            REPO="$PR_HEAD_REPO"; SHA="$PR_HEAD_SHA"
++          elif [ -n "${PR_INPUT:-}" ]; then
++            # Validate the dispatch input before it reaches gh api.
++            if ! printf '%s' "$PR_INPUT" | grep -qE '^[0-9]+$'; then
++              echo "::error::pr_number must be numeric"; exit 1
++            fi
++            REPO=$(gh api "repos/$DEFAULT_REPO/pulls/$PR_INPUT" --jq '.head.repo.full_name')
++            SHA=$(gh api "repos/$DEFAULT_REPO/pulls/$PR_INPUT" --jq '.head.sha')
++          else
++            REPO="$DEFAULT_REPO"; SHA="$DEFAULT_SHA"
++          fi
++          # Defense-in-depth: only a 40-hex SHA and an owner/name repo may form the
++          # URL, so a malformed value can't inject into $GITHUB_ENV or the URL.
++          if ! printf '%s' "$SHA" | grep -qE '^[0-9a-f]{40}$'; then
++            echo "::error::unexpected head SHA shape"; exit 1
++          fi
++          if ! printf '%s' "$REPO" | grep -qE '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'; then
++            echo "::error::unexpected head repo shape"; exit 1
++          fi
++          URL="https://raw.githubusercontent.com/$REPO/$SHA/hubitat-mcp-server.groovy"
++          echo "PR_SOURCE_URL=$URL" >> "$GITHUB_ENV"
++          # Same validated REPO/SHA, split into the (baseUrl, ref) form hub_update_package
++          # takes -- the dev-tool validation step below builds the identical URL on-hub.
++          echo "PR_RAW_BASE=https://raw.githubusercontent.com/$REPO" >> "$GITHUB_ENV"
++          echo "PR_HEAD_SHA_RESOLVED=$SHA" >> "$GITHUB_ENV"
++          echo "::notice::importUrl deploy source: $URL"
++
++      # Install/update every library the app #includes BEFORE deploying the app, so the
++      # `#include` directives resolve when the hub compiles it (issue #209). Uses only the
++      # always-present baseline code tools (hub_create_library / hub_update_library), so it can
++      # never strand the hub or depend on hub_update_package being present. Blocking (NOT
++      # continue-on-error): if a library can't be installed, the app can't compile, so the run
++      # must fail here rather than deploy a broken app.
++      - name: Install PR libraries (resolve #include deps)
++        if: steps.gate.outputs.available == 'true'
++        env:
++          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
++          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
++        run: bash .github/scripts/mcp_install_libraries.sh hubitat-mcp-server.groovy
++
++      - name: Deploy PR source to test hub
++        if: steps.gate.outputs.available == 'true'
++        # Self-update is permitted because mcp_setup_env.sh already verified
++        # Developer Mode is on (the guard update_app_code checks for
++        # self-modification on the MCP server's own app row).
++        #
++        # continue-on-error: the hub recompiles the MCP app mid-call when it
++        # self-updates, so the deploy call can return a cloud 5xx / drop the
++        # connection; the script tolerates that and polls get_app_source to
++        # verify. importUrl mode (issue #228) has the hub fetch the source
++        # itself, so the ~1.5MB blob never crosses the cloud gateway (an inline
++        # source=... write reliably 504s before the hub receives it).
++        continue-on-error: true
++        run: bash .github/scripts/mcp_deploy_source.sh hubitat-mcp-server.groovy
++
++      # Authoritative deploy gate (NOT continue-on-error). The deploy step above
++      # tolerates the cloud 5xx the hub returns while it recompiles mid-self-update
++      # (a false error), but that tolerance also masks a genuinely un-landed deploy,
++      # which would silently run the tests on STALE hub code. This step re-fetches
++      # the hub's full source and byte-compares it to this PR's source: a no-op
++      # (already identical) passes, a real mismatch fails the job loudly. (#236/#234)
++      - name: Verify deployed source matches this PR
++        if: steps.gate.outputs.available == 'true'
++        run: bash .github/scripts/mcp_verify_deploy.sh hubitat-mcp-server.groovy
++
++      # Prove the HPM bundle-install path on the live hub (issue #209). The deploy above used a
++      # bootstrap user-library so the app could compile and land hub_install_bundle; this step now
++      # reproduces HPM's real sequence -- delete that bootstrap copy, install the package's bundle
++      # .zip via hub_install_bundle (HPM "install bundles"), verify it delivered the library with
++      # the right content, then resave the app so its #include recompiles against the bundle-
++      # delivered library (HPM "install apps", after bundles). A malformed zip / wrong library name /
++      # bad manifest path / broken endpoint fails HERE on every PR instead of on a user's hub after
++      # they HPM-update. Blocking: a broken bundle path means the package can't be installed.
++      - name: Install bundle the HPM way + recompile app (issue #209)
++        if: steps.gate.outputs.available == 'true'
++        env:
++          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
++          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
++        run: bash .github/scripts/mcp_install_bundle_hpm.sh
++
++      # Arm the standing dead-man watchdog for THIS run. Placed here -- AFTER the authoritative
++      # "Verify deployed source matches this PR" gate AND the "Install bundle the HPM way" recompile
++      # -- so the server is confirmed working and the server's PRE-deploy backup
++      # (mcp-backup-app-<CLASS_ID>.groovy) already exists for the watchdog to restore from. The arm
++      # script asserts that backup is present and >1MB before writing a 20-min armed flag; the
++      # always() "Disarm dead-man watchdog (final)" step below clears it before the lease is released.
++      - name: Arm dead-man watchdog
++        if: steps.gate.outputs.available == 'true'
++        env:
++          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
++          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
++        run: bash .github/scripts/mcp_arm_watchdog.sh
++
++      - name: Run E2E tests
++        if: steps.gate.outputs.available == 'true'
++        run: python tests/e2e_test.py
++
++      # The deploy above landed THIS PR's app on the hub, so hub_update_package now
++      # exists there. Exercise its discovery path live (dryRun: fetch PR source ->
++      # parse #includes -> resolve self app-class) with ZERO writes. This is a REAL
++      # blocking gate -- e2e passing is what shows the tool works. It runs AFTER the
++      # e2e suite so a tool failure can't skip the suite; the cleanup/restore steps
++      # below all use `if: always()`, so the hub is restored regardless. The full
++      # write path (real library + #include + compile equivalence) is validated by the
++      # "Install PR libraries" step above plus the smokeTestMarker / hub_list_libraries
++      # assertions in tests/e2e_test.py.
++      - name: Validate hub_update_package dev tool (dryRun)
++        if: steps.gate.outputs.available == 'true'
++        env:
++          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
++          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
++        run: bash .github/scripts/mcp_validate_package_tool.sh
++
++      # NOTE: the dead-man watchdog's real-server restore was proven once on the e2e hub
++      # (run 27079818537: WATCHDOG_VERIFY_PASS -- fired, code-class version 209->210, server alive).
++      # The one-time mcp_watchdog_verify.sh fire test was removed after that green run; the standing
++      # arm (above) + always() disarm (below) are the permanent safety net.
++
++      - name: Cleanup BAT_E2E_ artifacts
++        if: always() && steps.gate.outputs.available == 'true'
++        # Defensive — e2e_test.py cleans up after itself in the happy path,
++        # but a crashed run can strand virtual devices / rules / variables
++        # under the BAT_E2E_ prefix. This sweeps anything left over.
++        run: python tests/e2e_test.py --cleanup-only
++
++      - name: Restore previous app source (push pre-deploy snapshot back)
++        if: always() && steps.gate.outputs.available == 'true'
++        # Pushes $RUNNER_TEMP/mcp_pre_source.groovy back to the hub so the
++        # next run (and any user inspecting the hub afterwards) sees the
++        # source that was live before this run mutated it. Tolerant of a
++        # missing snapshot file: if the deploy step never ran or never
++        # captured, this is a no-op.
++        run: bash .github/scripts/mcp_restore_source.sh
++
++      - name: Restore test environment (settings back to pre-run state)
++        if: always() && steps.gate.outputs.available == 'true'
++        # Tolerant of missing pre-state file (early-exit no-op) so a setup
++        # failure before capture doesn't propagate here.
++        run: bash .github/scripts/mcp_restore_env.sh
++
++      # Disarm the dead-man watchdog as the final always() action BEFORE the lease is released, so a
++      # clean run can never hand the next run an armed flag (the watchdog would otherwise fire its
++      # auto-restore mid-next-run). The disarm reads the flag back and asserts armed==false, failing
++      # loudly if it can't confirm -- a silently-failed disarm is exactly the dangerous case. It runs
++      # before lease release so the next run can't be left unprotected.
++      - name: Disarm dead-man watchdog (final)
++        if: always() && steps.gate.outputs.available == 'true'
++        run: bash .github/scripts/mcp_disarm_watchdog.sh
++
++      - name: Release test hub lease
++        if: always() && steps.gate.outputs.available == 'true'
++        run: bash .github/scripts/lease_release.sh

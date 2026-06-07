@@ -65,6 +65,45 @@ class ToolImportUrlSpec extends ToolSpecBase {
         nextHttpGetThrow = new RuntimeException(message)
     }
 
+    /**
+     * Stub the install-commit path (_commitUserAppInstall) so installAsUserApp
+     * success tests run end-to-end: the configure/json + statusJson reads and the
+     * Done POST to /installedapp/update/json. Returns a capture map (donePath /
+     * doneBody / configPaths / statusPaths). opts: scheduledJobs, eventSubscriptions,
+     * doneStatus, installedFlag (post-commit app.installed read-back, default true),
+     * statusThrows (make the post-commit statusJson read throw).
+     */
+    private Map stubInstallCommit(Map opts = [:]) {
+        def cap = [donePath: null, doneBody: null, configPaths: [], statusPaths: []]
+        def schedJobs = opts.containsKey('scheduledJobs') ? opts.scheduledJobs : [[name: 'checkDeadman']]
+        def subs = opts.containsKey('eventSubscriptions') ? opts.eventSubscriptions : []
+        int doneStatus = opts.containsKey('doneStatus') ? (opts.doneStatus as int) : 200
+        def sections = opts.containsKey('sections') ? opts.sections : []
+        def installedFlag = opts.containsKey('installedFlag') ? opts.installedFlag : true
+        boolean statusThrows = opts.containsKey('statusThrows') ? (opts.statusThrows as boolean) : false
+        script.metaClass.hubInternalGet = { String path, Map q = null, int t = 30, boolean r = false ->
+            if (path.contains('/installedapp/configure/json/')) {
+                cap.configPaths << path
+                return groovy.json.JsonOutput.toJson([app: [version: 1, installed: installedFlag], configPage: [name: 'mainPage', sections: sections]])
+            }
+            if (statusThrows && path.contains('/installedapp/statusJson/')) {
+                cap.statusPaths << path
+                throw new RuntimeException('statusJson read failed (transient)')
+            }
+            if (path.contains('/installedapp/statusJson/')) {
+                cap.statusPaths << path
+                return groovy.json.JsonOutput.toJson([appSettings: [], scheduledJobs: schedJobs, eventSubscriptions: subs])
+            }
+            return '{}'
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, int t = 420, boolean r = false ->
+            cap.donePath = path
+            cap.doneBody = body
+            return [status: doneStatus, data: '', location: '/installedapp/list?section=apps']
+        }
+        return cap
+    }
+
     // -------- _fetchSourceFromUrl helper --------
 
     def "_fetchSourceFromUrl: happy path returns body string and uses requested URL"() {
@@ -200,15 +239,15 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- importUrl integration: hub_create_app --------
 
-    def "hub_create_app with importUrl fetches via httpGet and POSTs to /app/save"() {
+    def "hub_create_app with importUrl fetches via httpGet and POSTs to /app/saveOrUpdateJson"() {
         given:
         enableWrite()
         stubHttpGet(200, 'definition(name: "FromUrl")')
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
             captured.body = body
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/7777', data: '']
+            [success: true, id: 7777, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "stub-source", "version": 1}'
@@ -224,8 +263,10 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.success == true
         result.appId == '7777'
         result.sourceMode == 'importUrl'
-        captured.path == '/app/save'
-        captured.body.source == 'definition(name: "FromUrl")'
+        captured.path == '/app/saveOrUpdateJson'
+        def sent = new groovy.json.JsonSlurper().parseText(captured.body)
+        sent.source == 'definition(name: "FromUrl")'
+        sent.id == null
         result.note?.contains('hub-side fetch')  // pins the "no agent transcript" semantic, not just the substring
     }
 
@@ -294,7 +335,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- installAsUserApp --------
 
-    def "hub_create_app with installAsUserApp creates instance via /installedapp/create/<codeId> and parses Location"() {
+    def "hub_create_app with installAsUserApp creates the instance then commits the install (Done)"() {
         given:
         enableWrite()
         def capturedPath = null
@@ -306,16 +347,159 @@ class ToolImportUrlSpec extends ToolSpecBase {
                 data: ''
             ]
         }
+        def commit = stubInstallCommit()
 
         when:
         def result = script.toolInstallApp([installAsUserApp: 310, confirm: true])
 
         then:
         capturedPath == '/installedapp/create/310'
+        // Step 2: the shell is committed via a Done POST -- the step the old
+        // GET-only path skipped, leaving installed()/initialize() unfired.
+        commit.donePath == '/installedapp/update/json'
+        commit.doneBody._action_update == 'Done'
+        commit.doneBody.currentPage == 'mainPage'
+        commit.doneBody.id == '9999'
         result.success == true
+        result.committed == true
         result.mode == 'installAsUserApp'
         result.codeAppId == 310
         result.instanceAppId == 9999
+        result.scheduledJobCount == 1
+    }
+
+    def "hub_create_app installAsUserApp uses the instance's actual first-page name in the Done commit"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/4242/p', data: '']
+        }
+        def commit = stubInstallCommit()
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: 313, confirm: true])
+
+        then:
+        result.success == true
+        result.committed == true
+        result.instanceAppId == 4242
+        // First page is "p" (not "mainPage") -- the commit must target it.
+        commit.configPaths.any { it == '/installedapp/configure/json/4242/p' }
+        commit.doneBody.currentPage == 'p'
+    }
+
+    def "hub_create_app installAsUserApp reports an uncommitted shell when the Done POST fails"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/7777/mainPage', data: '']
+        }
+        stubInstallCommit(doneStatus: 500)
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: 314, confirm: true])
+
+        then:
+        result.success == false
+        result.committed == false
+        result.instanceAppId == 7777
+        result.error.contains('shell')
+        result.error.contains('7777')
+    }
+
+    def "hub_create_app installAsUserApp rejects a shell that 200s the Done but reads app.installed=false"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/7373/mainPage', data: '']
+        }
+        // The hub can return HTTP 200 on a rejected/re-rendered Done -- "didn't 4xx" is NOT proof the
+        // commit took. The independent app.installed read-back is the real gate.
+        stubInstallCommit(installedFlag: false)
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: 314, confirm: true])
+
+        then:
+        result.success == false
+        result.committed == false
+        result.instanceAppId == 7373
+        result.error.contains('app.installed=false')
+        result.error.contains('shell')
+    }
+
+    def "hub_create_app installAsUserApp still reports committed when the post-commit statusJson read fails (zero counts)"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/4646/mainPage', data: '']
+        }
+        // app.installed confirms true, but the runtime-evidence read (statusJson) flakes -- a committed
+        // install must still report committed, just with zero counts (don't fail a real install).
+        stubInstallCommit(statusThrows: true)
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: 312, confirm: true])
+
+        then:
+        result.success == true
+        result.committed == true
+        result.installedConfirmed == true
+        result.scheduledJobCount == 0
+        result.eventSubscriptionCount == 0
+    }
+
+    def "hub_create_app installAsUserApp falls back to the config page name when the create redirect omits the page segment"() {
+        given:
+        enableWrite()
+        // Location with NO trailing page segment -> firstPage parses to null -> page resolves from configPage.name.
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/8989', data: '']
+        }
+        def commit = stubInstallCommit()  // configPage.name == 'mainPage'
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: 312, confirm: true])
+
+        then:
+        result.success == true
+        result.committed == true
+        result.instanceAppId == 8989
+        commit.doneBody.currentPage == 'mainPage'
+    }
+
+    def "hub_create_app installAsUserApp submits each input's value in the Done body (bool as true/false, not empty)"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/5555/mainPage', data: '']
+        }
+        // Watchdog-shaped page: a text input with a default + a bool defaulting true
+        // + an unset text input. The hub 500s on settings[bool]="" -- the original bug.
+        def commit = stubInstallCommit(sections: [[
+            input: [
+                [name: 'flagFileName', type: 'text', value: 'e2e-deadman.json'],
+                [name: 'debugLogging', type: 'bool', value: true],
+                [name: 'hubSecurityUser', type: 'text']
+            ]
+        ]])
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: 312, confirm: true])
+
+        then:
+        result.success == true
+        result.committed == true
+        commit.doneBody['settings[debugLogging]'] == 'true'
+        commit.doneBody['checkbox[debugLogging]'] == 'on'
+        commit.doneBody['debugLogging.type'] == 'bool'
+        commit.doneBody['settings[flagFileName]'] == 'e2e-deadman.json'
+        commit.doneBody['settings[hubSecurityUser]'] == ''
+        // Classic-form fields the hub's update handler requires for a fresh
+        // standalone install (without them it 500s -- verified live).
+        commit.doneBody._cancellable == 'false'
+        commit.doneBody.appTypeId == ''
+        commit.doneBody.appTypeName == ''
     }
 
     def "hub_create_app with installAsUserApp returns success=false when hub returns non-302"() {
@@ -559,6 +743,130 @@ class ToolImportUrlSpec extends ToolSpecBase {
         nextHttpGetCaptured.uri == null  // guard ran before _fetchSourceFromUrl
     }
 
+    // -------- self-deploy outcome recorded to atomicState.lastSelfDeploy (issue #237) --------
+    // appId '1' == sharedAppStub id, so these exercise the self-update path. The result can't ride
+    // back on the deploy call live (success reloads the app; a big-file compile failure 504s), so the
+    // outcome is persisted to atomicState for a follow-up hub_get_info read to recover.
+
+    def "hub_update_app self-update records atomicState.lastSelfDeploy on success"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        stubHttpGet(200, 'fetched-self-source')
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '1', importUrl: 'https://raw.example/self.groovy', confirm: true])
+
+        then:
+        result.success == true
+        atomicStateMap.lastSelfDeploy?.success == true
+        atomicStateMap.lastSelfDeploy.error == null
+        atomicStateMap.lastSelfDeploy.importUrl == 'https://raw.example/self.groovy'
+        atomicStateMap.lastSelfDeploy.sourceMode == 'importUrl'
+    }
+
+    def "hub_update_app self-update records the hub's VERBATIM error to atomicState.lastSelfDeploy on a rejected save"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        stubHttpGet(200, 'broken-self-source')
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
+        // Hub rejects the save with its real validation message (the exact thing CI must recover).
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 200, location: null, data: '{"status":"error","errorMessage":"name cannot be empty in definition section"}']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '1', importUrl: 'https://raw.example/self.groovy', confirm: true])
+
+        then:
+        result.success == false
+        result.error == 'name cannot be empty in definition section'
+        atomicStateMap.lastSelfDeploy?.success == false
+        atomicStateMap.lastSelfDeploy.error == 'name cannot be empty in definition section'
+        atomicStateMap.lastSelfDeploy.importUrl == 'https://raw.example/self.groovy'
+    }
+
+    def "hub_update_app of a DIFFERENT app (neither instance nor class id) does NOT record lastSelfDeploy"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        atomicStateMap.lastSelfDeploy = null
+        stubHttpGet(200, 'other-app-source')
+        // app.id is 1; the self CLASS id resolves to 178. appId 42 matches neither -> not a self-update.
+        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', importUrl: 'https://raw.example/other.groovy', confirm: true])
+
+        then:
+        result.success == true
+        atomicStateMap.lastSelfDeploy == null
+    }
+
+    def "hub_update_app self-update via the Apps Code CLASS id (the real CI deploy path) records the verbatim error"() {
+        // The CI deploy targets the CLASS id from /hub2/userAppTypes (e.g. 178), which differs from
+        // app.id (the instance). isSelfUpdate must still fire via the class-id branch, else a failed
+        // real deploy would record nothing and CI couldn't recover the hub's error.
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        atomicStateMap.lastSelfDeploy = null
+        stubHttpGet(200, 'class-id-self-source')
+        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 200, location: null, data: '{"status":"error","errorMessage":"name cannot be empty in definition section"}']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '178', importUrl: 'https://raw.example/self-class.groovy', confirm: true])
+
+        then:
+        result.success == false
+        result.error == 'name cannot be empty in definition section'
+        atomicStateMap.lastSelfDeploy?.success == false
+        atomicStateMap.lastSelfDeploy.error == 'name cannot be empty in definition section'
+        atomicStateMap.lastSelfDeploy.importUrl == 'https://raw.example/self-class.groovy'
+    }
+
+    def "hub_update_app self-update records lastSelfDeploy when the save THROWS (cloud 504 / exception path)"() {
+        // The big-source importUrl deploy can 504 at the cloud relay: hubInternalPostForm throws
+        // before any parseable 200 body. The catch block must still persist a failure record so a
+        // follow-up hub_get_info can recover it; the message is the exception text (not the hub's
+        // verbatim compiler error -- that only exists on the synchronous 200+errorMessage path).
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        atomicStateMap.lastSelfDeploy = null
+        stubHttpGet(200, 'self-source-that-504s')
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
+        script.metaClass.hubInternalPostForm = { String path, Map body -> throw new RuntimeException('cloud 504') }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '1', importUrl: 'https://raw.example/self-504.groovy', confirm: true])
+
+        then:
+        result.success == false
+        result.error.startsWith('App update failed:')
+        atomicStateMap.lastSelfDeploy?.success == false
+        atomicStateMap.lastSelfDeploy.error.startsWith('App update failed:')
+        atomicStateMap.lastSelfDeploy.importUrl == 'https://raw.example/self-504.groovy'
+    }
+
     // -------- installAsUserApp validation edge cases --------
 
     @spock.lang.Unroll
@@ -583,12 +891,14 @@ class ToolImportUrlSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             [status: 302, location: '/installedapp/configure/9999/mainPage', data: '']
         }
+        stubInstallCommit()
 
         when:
         def result = script.toolInstallApp([installAsUserApp: '310', confirm: true])
 
         then:
         result.success == true
+        result.committed == true
         result.codeAppId == 310
         result.instanceAppId == 9999
     }
@@ -627,14 +937,14 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- per-tool importUrl smoke (hub_create_driver / hub_update_driver / hub_update_library) --------
 
-    def "hub_create_driver with importUrl fetches via httpGet and POSTs to /driver/save"() {
+    def "hub_create_driver with importUrl fetches via httpGet and POSTs to /driver/saveOrUpdateJson"() {
         given:
         enableWrite()
         stubHttpGet(200, 'metadata { definition (name: "FromUrl") {} }')
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path; captured.body = body
-            [status: 302, location: 'http://127.0.0.1:8080/driver/editor/8888', data: '']
+            [success: true, id: 8888, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"stub","version":1}' }
 
@@ -644,7 +954,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         then:
         result.success == true
         result.driverId == '8888'
-        captured.path == '/driver/save'
+        captured.path == '/driver/saveOrUpdateJson'
     }
 
     def "hub_update_driver with importUrl POSTs the fetched source to /driver/ajax/update"() {
@@ -699,9 +1009,9 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
         stubHttpGet(200, 'driver-from-url')
         def postPaths = []
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             postPaths << path
-            [status: 302, location: 'http://127.0.0.1:8080/driver/editor/9001', data: '']
+            [success: true, id: 9001, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"stub","version":1}' }
 
@@ -717,7 +1027,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.installs[0].success == true
         result.installs[0].sourceMode == 'importUrl'
         nextHttpGetCaptured.uri == 'https://raw.example/d1.groovy'
-        postPaths.contains('/driver/save')
+        postPaths.contains('/driver/saveOrUpdateJson')
     }
 
     def "hub_update_driver bulk: per-item importUrl is forwarded and fetched"() {
@@ -757,6 +1067,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             [status: 302, location: '/installedapp/configure/8888/mainPage', data: '']
         }
+        stubInstallCommit()
 
         when:
         def response = mcpDriver.callTool('hub_create_app', [installAsUserApp: 310, confirm: true])
@@ -766,6 +1077,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
+        inner.committed == true
         inner.instanceAppId == 8888
 
         where:

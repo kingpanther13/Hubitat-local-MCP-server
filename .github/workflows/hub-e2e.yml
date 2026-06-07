@@ -3,9 +3,11 @@ name: Hub E2E (test hub)
 # End-to-end tests against a real Hubitat hub provided by @level99
 # (see issue #77 + the GitHub secret LEVEL99_TEST_HUB_MCP_URL).
 #
-# Failure mode: ADVISORY only. Hub flakiness must not block PR merges,
-# so this workflow is intentionally not added to branch protection's
-# required-checks. Treat it as a signal, not a gate.
+# Failure mode: BLOCKING. Per the maintainer this check is required for merge --
+# a red e2e means the change could not be proven against a real hub, so it gates.
+# When the job genuinely can't run (fork PR with no secret, or no test hub
+# configured) it skips cleanly rather than failing (see the secret gate below);
+# a confirmed infra/flake failure is triaged by the maintainer, not auto-ignored.
 
 on:
   pull_request:
@@ -15,6 +17,7 @@ on:
     paths:
       - 'hubitat-mcp-server.groovy'
       - 'hubitat-mcp-rule.groovy'
+      - 'e2e-deadman-watchdog.groovy'
       - 'tests/e2e_test.py'
       - '.github/workflows/hub-e2e.yml'
       - '.github/scripts/lease_acquire.sh'
@@ -22,8 +25,15 @@ on:
       - '.github/scripts/mcp_setup_env.sh'
       - '.github/scripts/mcp_restore_env.sh'
       - '.github/scripts/mcp_deploy_source.sh'
+      - '.github/scripts/mcp_verify_deploy.sh'
       - '.github/scripts/mcp_restore_source.sh'
       - '.github/scripts/mcp_validate_package_tool.sh'
+      - '.github/scripts/mcp_install_libraries.sh'
+      - '.github/scripts/mcp_install_bundle_hpm.sh'
+      - '.github/scripts/mcp_arm_watchdog.sh'
+      - '.github/scripts/mcp_disarm_watchdog.sh'
+      - 'libraries/**'
+      - 'bundles/**'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -56,6 +66,12 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.ref }}
+
+      # Hub-less unit test of the self-deploy error-recovery extraction (issue #237). Runs ALWAYS
+      # (no hub / no secret needed) so the jq `// empty`-on-false bug -- which silently broke the
+      # verbatim-error recovery and that Spock can't catch -- cannot regress unnoticed.
+      - name: Unit-test self-deploy recovery extraction (hub-less)
+        run: bash .github/scripts/test_self_deploy_recovery.sh
 
       - name: Check secret availability + skip if absent
         # Two cases where MCP_URL is empty (and we want to skip silently
@@ -132,6 +148,20 @@ jobs:
         # itself is off (UI-only to enable).
         run: bash .github/scripts/mcp_setup_env.sh
 
+      - name: Clear stale watchdog flag
+        if: steps.gate.outputs.available == 'true'
+        # Best-effort: write {armed:false} to the dead-man flag so a CRASHED prior run's still-armed
+        # flag can't fire its auto-restore during THIS run's deploy. continue-on-error because the
+        # watchdog/flag may not exist yet (first run on a hub, or watchdog not installed) -- that's
+        # fine; there's nothing to clear. The real arm happens later, after the server is confirmed
+        # working and a fresh >1MB pre-deploy backup exists.
+        continue-on-error: true
+        run: |
+          curl -sS --max-time 60 -X POST "$MCP_URL" \
+            -H "Content-Type: application/json" \
+            --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_write_file","arguments":{"fileName":"e2e-deadman.json","content":"{\"armed\":false,\"clearedBy\":\"pre-run-stale-flag-clear\"}","confirm":true}}}' \
+            >/dev/null || echo "::notice::stale-flag clear call failed/absent (watchdog/flag may not exist yet) -- continuing"
+
       - name: Compute PR source URL for importUrl deploy
         if: steps.gate.outputs.available == 'true'
         # The hub fetches the PR branch's raw source itself (importUrl mode), so the
@@ -175,6 +205,19 @@ jobs:
           echo "PR_HEAD_SHA_RESOLVED=$SHA" >> "$GITHUB_ENV"
           echo "::notice::importUrl deploy source: $URL"
 
+      # Install/update every library the app #includes BEFORE deploying the app, so the
+      # `#include` directives resolve when the hub compiles it (issue #209). Uses only the
+      # always-present baseline code tools (hub_create_library / hub_update_library), so it can
+      # never strand the hub or depend on hub_update_package being present. Blocking (NOT
+      # continue-on-error): if a library can't be installed, the app can't compile, so the run
+      # must fail here rather than deploy a broken app.
+      - name: Install PR libraries (resolve #include deps)
+        if: steps.gate.outputs.available == 'true'
+        env:
+          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
+          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
+        run: bash .github/scripts/mcp_install_libraries.sh hubitat-mcp-server.groovy
+
       - name: Deploy PR source to test hub
         if: steps.gate.outputs.available == 'true'
         # Self-update is permitted because mcp_setup_env.sh already verified
@@ -200,6 +243,34 @@ jobs:
         if: steps.gate.outputs.available == 'true'
         run: bash .github/scripts/mcp_verify_deploy.sh hubitat-mcp-server.groovy
 
+      # Prove the HPM bundle-install path on the live hub (issue #209). The deploy above used a
+      # bootstrap user-library so the app could compile and land hub_install_bundle; this step now
+      # reproduces HPM's real sequence -- delete that bootstrap copy, install the package's bundle
+      # .zip via hub_install_bundle (HPM "install bundles"), verify it delivered the library with
+      # the right content, then resave the app so its #include recompiles against the bundle-
+      # delivered library (HPM "install apps", after bundles). A malformed zip / wrong library name /
+      # bad manifest path / broken endpoint fails HERE on every PR instead of on a user's hub after
+      # they HPM-update. Blocking: a broken bundle path means the package can't be installed.
+      - name: Install bundle the HPM way + recompile app (issue #209)
+        if: steps.gate.outputs.available == 'true'
+        env:
+          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
+          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
+        run: bash .github/scripts/mcp_install_bundle_hpm.sh
+
+      # Arm the standing dead-man watchdog for THIS run. Placed here -- AFTER the authoritative
+      # "Verify deployed source matches this PR" gate AND the "Install bundle the HPM way" recompile
+      # -- so the server is confirmed working. The arm script refreshes the known-good backup via
+      # hub_get_source (which writes mcp-source-app-<CLASS_ID>.groovy hub-side) and asserts it is
+      # present and >1MB before writing the armed flag (ARM_WINDOW_MS deadline, 35 min); the always()
+      # "Disarm dead-man watchdog (final)" step below clears it before the lease is released.
+      - name: Arm dead-man watchdog
+        if: steps.gate.outputs.available == 'true'
+        env:
+          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
+          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
+        run: bash .github/scripts/mcp_arm_watchdog.sh
+
       - name: Run E2E tests
         if: steps.gate.outputs.available == 'true'
         run: python tests/e2e_test.py
@@ -210,14 +281,20 @@ jobs:
       # blocking gate -- e2e passing is what shows the tool works. It runs AFTER the
       # e2e suite so a tool failure can't skip the suite; the cleanup/restore steps
       # below all use `if: always()`, so the hub is restored regardless. The full
-      # write path (real library + #include + compile equivalence) is validated in
-      # the follow-up #include PR, where a library exists to install.
+      # write path (real library + #include + compile equivalence) is validated by the
+      # "Install PR libraries" step above plus the smokeTestMarker / hub_list_libraries
+      # assertions in tests/e2e_test.py.
       - name: Validate hub_update_package dev tool (dryRun)
         if: steps.gate.outputs.available == 'true'
         env:
           PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
         run: bash .github/scripts/mcp_validate_package_tool.sh
+
+      # NOTE: the dead-man watchdog's real-server restore was proven once on the e2e hub
+      # (run 27079818537: WATCHDOG_VERIFY_PASS -- fired, code-class version 209->210, server alive).
+      # The one-time mcp_watchdog_verify.sh fire test was removed after that green run; the standing
+      # arm (above) + always() disarm (below) are the permanent safety net.
 
       - name: Cleanup BAT_E2E_ artifacts
         if: always() && steps.gate.outputs.available == 'true'
@@ -240,6 +317,15 @@ jobs:
         # Tolerant of missing pre-state file (early-exit no-op) so a setup
         # failure before capture doesn't propagate here.
         run: bash .github/scripts/mcp_restore_env.sh
+
+      # Disarm the dead-man watchdog as the final always() action BEFORE the lease is released, so a
+      # clean run can never hand the next run an armed flag (the watchdog would otherwise fire its
+      # auto-restore mid-next-run). The disarm reads the flag back and asserts armed==false, failing
+      # loudly if it can't confirm -- a silently-failed disarm is exactly the dangerous case. It runs
+      # before lease release so the next run can't be left unprotected.
+      - name: Disarm dead-man watchdog (final)
+        if: always() && steps.gate.outputs.available == 'true'
+        run: bash .github/scripts/mcp_disarm_watchdog.sh
 
       - name: Release test hub lease
         if: always() && steps.gate.outputs.available == 'true'

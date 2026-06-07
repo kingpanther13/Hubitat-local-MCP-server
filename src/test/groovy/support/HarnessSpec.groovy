@@ -230,7 +230,13 @@ abstract class HarnessSpec extends Specification {
     }
 
     private void compileSharedScript() {
-        def sandbox = new HubitatAppSandbox(new File('hubitat-mcp-server.groovy'))
+        // Resolve Hubitat `#include namespace.Name` directives the way the hub does before parse
+        // (issue #209): the raw file's `#include` lines are not valid Groovy, so compile the
+        // hub-equivalent inlined source. No-op when the file carries no #include.
+        File appFile = new File('hubitat-mcp-server.groovy')
+        String resolvedSource = IncludeResolver.resolve(
+            appFile.getText('UTF-8'), new File(appFile.absoluteFile.parentFile, 'libraries'))
+        def sandbox = new HubitatAppSandbox(resolvedSource)
         def validator = new PassThroughAppValidator([
             Flags.DontValidatePreferences,
             Flags.DontValidateDefinition,

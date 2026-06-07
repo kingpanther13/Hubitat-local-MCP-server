@@ -34,10 +34,16 @@ if hasattr(sys.stderr, "reconfigure"):
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# Glob the whole libraries/ dir (not a hardcoded list) so every library module the app
+# #includes is sandbox-scanned automatically -- when real code (e.g. the RM tools) moves into
+# its own library file under the issue #209 modularization, the lint covers it with no edit here.
 GROOVY_FILES = [
     REPO_ROOT / "hubitat-mcp-server.groovy",
     REPO_ROOT / "hubitat-mcp-rule.groovy",
-    REPO_ROOT / "libraries" / "mcp-smoke-test-lib.groovy",
+    # Standalone e2e safety-net app: it runs in the Hubitat sandbox on the e2e hub, so lint it for
+    # forbidden patterns here rather than discovering a violation only at live install time.
+    REPO_ROOT / "e2e-deadman-watchdog.groovy",
+    *sorted((REPO_ROOT / "libraries").glob("*.groovy")),
 ]
 
 VERSION_SOURCES = {

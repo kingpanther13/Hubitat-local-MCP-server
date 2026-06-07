@@ -29,14 +29,20 @@ SOURCE_FILE="${1:-hubitat-mcp-server.groovy}"
 CLASS_ID_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source_class_id"
 PRE_SOURCE_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_source.groovy"
 HUB_SOURCE_FILE="${RUNNER_TEMP:-/tmp}/mcp_hub_source.groovy"
+# The hub's VERBATIM save/compile error, captured by mcp_deploy_source.sh when the hub rejected the
+# save (e.g. "name cannot be empty in definition section"). Surfaced as the cause below -- no guessing.
+DEPLOY_ERROR_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_error.txt"
 
 APP_NAMESPACE="mcp"
 APP_NAME="MCP Rule Server"
 
-# A full re-fetch is ~24 chunked calls over the cloud relay; allow a few
-# attempts for the hub-side recompile to settle and for transient relay flake.
-FETCH_ATTEMPTS=4
-ATTEMPT_SLEEP=15
+# A full re-fetch is ~24 chunked calls over the cloud relay. The deploy step already polled for the
+# recompile to settle, so a couple of attempts here is plenty (was 4 -- it kept re-fetching after the
+# byte-compare already showed a mismatch). When the deploy captured a definitive hub rejection
+# (DEPLOY_ERROR_FILE present), we drop to a single attempt below -- no point waiting for "settling"
+# that will never come.
+FETCH_ATTEMPTS=2
+ATTEMPT_SLEEP=10
 
 if [ ! -f "$SOURCE_FILE" ]; then
   echo "::error::PR source file not found: $SOURCE_FILE"
@@ -49,6 +55,29 @@ mcp_call() {
     --data-binary "$1"
 }
 
+# The cloud gateway has a ~10s per-request ceiling; a slow big read comes back as a non-JSON 502
+# page that would crash an unguarded `... | jq`. mcp_tool_call_text retries ONLY that non-JSON case
+# -- a valid JSON envelope (incl. a hub error) is returned immediately and never masked, so the
+# strict byte-compare below still catches stale code or a true save failure. Prints the inner tool
+# text; returns 0 on a parseable envelope (text may be empty -> caller checks), 1 only if every
+# attempt was non-JSON. Warnings to stderr; caller decides if a final give-up is fatal.
+RPC_ATTEMPTS=5
+RPC_RETRY_SLEEP=6
+mcp_tool_call_text() {
+  local label="$1" rpc="$2" attempt=1 resp text
+  while [ "$attempt" -le "$RPC_ATTEMPTS" ]; do
+    resp=$(mcp_call "$rpc" || true)
+    if text=$(printf '%s' "$resp" | jq -r '.result.content[0].text // ""' 2>/dev/null); then
+      printf '%s' "$text"
+      return 0
+    fi
+    echo "::warning::${label}: non-JSON gateway response (attempt ${attempt}/${RPC_ATTEMPTS}; likely the ~10s cloud-gateway timeout). Body head: $(printf '%s' "$resp" | head -c 120 | tr '\n' ' ')" >&2
+    attempt=$((attempt + 1))
+    [ "$attempt" -le "$RPC_ATTEMPTS" ] && sleep "$RPC_RETRY_SLEEP"
+  done
+  return 1
+}
+
 # Resolve the Apps Code CLASS id (source-bearing), reusing the deploy step's
 # saved value when present; otherwise re-resolve via hub_list_apps scope=types.
 CLASS_ID=""
@@ -56,15 +85,17 @@ if [ -f "$CLASS_ID_FILE" ]; then
   CLASS_ID="$(cat "$CLASS_ID_FILE")"
 fi
 if [ -z "$CLASS_ID" ] || [ "$CLASS_ID" = "null" ]; then
-  # `|| true`: a transient curl/relay flake on this one call shouldn't abort the
-  # gate via set -e -- fall through to the empty/null check below, which fails
-  # loudly with a clear message (never a false pass).
-  LIST_RESP=$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}' || true)
-  LIST_TEXT=$(echo "$LIST_RESP" | jq -r '.result.content[0].text // empty')
-  # `[ ... ][0]` (not `... | head -n1`): selecting the first match inside jq avoids
-  # a SIGPIPE-on-head abort under `set -o pipefail`.
-  CLASS_ID=$(echo "$LIST_TEXT" | jq -r --arg ns "$APP_NAMESPACE" --arg name "$APP_NAME" \
-    'first(.apps[]? | select(.namespace == $ns and .name == $name) | .id) // empty')
+  # Resilient read: retries only the non-JSON gateway-timeout case; a valid envelope (incl. a hub
+  # error) is returned immediately. A persistently non-JSON gateway fails loudly as transient below.
+  if ! LIST_TEXT=$(mcp_tool_call_text "hub_list_apps (verify class-ID lookup)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}'); then
+    echo "::error::hub_list_apps: the Hubitat cloud gateway returned a non-JSON response $RPC_ATTEMPTS times -- a transient relay/timeout (the ~10s gateway ceiling), NOT a compile failure. Re-run the job."
+    exit 1
+  fi
+  # `first(...)` inside jq (not `| head -n1`) avoids a SIGPIPE-on-head abort under set -o pipefail.
+  # `2>/dev/null || true`: an empty/odd LIST_TEXT must fall through to the empty-CLASS_ID check
+  # below (a loud, honest failure), not abort here.
+  CLASS_ID=$(printf '%s' "$LIST_TEXT" | jq -r --arg ns "$APP_NAMESPACE" --arg name "$APP_NAME" \
+    'first(.apps[]? | select(.namespace == $ns and .name == $name) | .id) // empty' 2>/dev/null || true)
 fi
 if [ -z "$CLASS_ID" ] || [ "$CLASS_ID" = "null" ]; then
   echo "::error::Could not resolve the Apps Code class id for $APP_NAMESPACE:$APP_NAME to verify the deploy."
@@ -79,8 +110,7 @@ fetch_hub_source() {
   while :; do
     rpc=$(jq -nc --arg id "$CLASS_ID" --argjson off "$offset" --argjson len "$chunk" \
       '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:$off,length:$len}}}')
-    resp=$(mcp_call "$rpc")
-    text=$(echo "$resp" | jq -r '.result.content[0].text // empty')
+    text=$(mcp_tool_call_text "hub_get_source (verify offset $offset)" "$rpc") || return 1
     [ -z "$text" ] && return 1
     ok=$(echo "$text" | jq -r '.success // false')
     [ "$ok" != "true" ] && return 1
@@ -96,6 +126,13 @@ fetch_hub_source() {
 
 PR_BYTES=$(wc -c < "$SOURCE_FILE")
 echo "Verifying the hub is running THIS PR's source ($PR_BYTES bytes, class $CLASS_ID)..."
+
+# Fail-fast: if the deploy step captured a definitive hub rejection, the save did NOT land and never
+# will -- one fetch to confirm staleness is enough, no settle retries.
+if [ -s "$DEPLOY_ERROR_FILE" ]; then
+  echo "Deploy step captured a hub rejection ($(cat "$DEPLOY_ERROR_FILE")); confirming stale source once, no settle retries."
+  FETCH_ATTEMPTS=1
+fi
 
 attempt=1
 while [ "$attempt" -le "$FETCH_ATTEMPTS" ]; do
@@ -118,8 +155,14 @@ while [ "$attempt" -le "$FETCH_ATTEMPTS" ]; do
 done
 
 HUB_BYTES=$(wc -c < "$HUB_SOURCE_FILE" 2>/dev/null || echo 0)
-echo "::error::Deploy NOT verified: after $FETCH_ATTEMPTS attempts the hub's source is not byte-identical to this PR's source."
-echo "::error::PR source = $PR_BYTES B; hub source = $HUB_BYTES B. The e2e tests would run against STALE hub code, so failing the job."
+echo "::error::Deploy NOT verified: the hub's source is not byte-identical to this PR's source (PR = $PR_BYTES B, hub = $HUB_BYTES B). The e2e would run on STALE hub code, so failing the job."
+if [ -s "$DEPLOY_ERROR_FILE" ]; then
+  # The deploy step captured the hub's actual rejection -- report it verbatim, no guessing.
+  echo "::error::Cause (the hub's verbatim error at deploy time): $(cat "$DEPLOY_ERROR_FILE")"
+else
+  # No hub error was captured -- so this is NOT confirmed to be a compile failure. Don't guess.
+  echo "::error::The deploy step captured no hub save/compile error, so the cause is NOT confirmed to be a compile failure. See the 'Deploy PR source' step log above for the actual cause (e.g. a transient cloud-gateway timeout that stopped the deploy before the save was attempted, or the deploy not completing)."
+fi
 echo "First byte divergence:"
 cmp "$HUB_SOURCE_FILE" "$SOURCE_FILE" 2>&1 | head -1 || true
 exit 1

@@ -16,6 +16,7 @@ on:
     branches: [main]
     paths:
       - '*.groovy'
+      - 'libraries/**'
       - 'src/test/groovy/**'
       - 'src/main/groovy/**'
       - 'ci/groovy2x-spock/**'

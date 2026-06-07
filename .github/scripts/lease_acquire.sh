@@ -22,10 +22,24 @@ LEASE_DURATION_MIN=30
 EXPIRES_MS=$((NOW_MS + LEASE_DURATION_MIN * 60 * 1000))
 VERIFY_SLEEP_S=2
 
+# Retry on transient cloud-gateway failures (the ~10s relay ceiling returns a 504,
+# which --fail turns into curl exit 22). Without this a single 504 on lease acquire
+# fails the WHOLE e2e before any test runs -- exactly the transient-flake class we
+# don't want. A persistent failure (5 misses) still aborts honestly.
 mcp_call() {
-  curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
-    -H "Content-Type: application/json" \
-    -d "$1"
+  local attempt=1 resp
+  while [ "$attempt" -le 5 ]; do
+    if resp=$(curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
+        -H "Content-Type: application/json" -d "$1" 2>/dev/null); then
+      printf '%s' "$resp"
+      return 0
+    fi
+    echo "::warning::lease mcp_call attempt ${attempt}/5 failed (transient cloud-gateway error, e.g. 504). Retrying in 5s..." >&2
+    attempt=$((attempt + 1))
+    [ "$attempt" -le 5 ] && sleep 5
+  done
+  echo "::error::lease mcp_call: all 5 attempts failed (cloud gateway unreachable or persistent 5xx)." >&2
+  return 1
 }
 
 get_lease_value() {

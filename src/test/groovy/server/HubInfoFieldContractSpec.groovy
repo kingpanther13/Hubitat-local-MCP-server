@@ -58,6 +58,54 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         result.developerModeEnabled == true
     }
 
+    // issue #237: a self-deploy can't return its result on the deploy call (success reloads the app;
+    // a big-file compile failure 504s), so toolUpdateItemCodeInner records the hub's verbatim outcome
+    // to atomicState.lastSelfDeploy and hub_get_info surfaces it for a follow-up read (CI recovers the
+    // real compile error this way). These pin that the field is exposed when set and omitted otherwise.
+    def "getHubInfo exposes atomicState.lastSelfDeploy when present (issue #237)"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        atomicStateMap.lastSelfDeploy = [success: false, error: 'name cannot be empty in definition section',
+                                         sourceMode: 'importUrl', importUrl: 'https://x/app.groovy', at: 1234567890000L]
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        result.lastSelfDeploy?.success == false
+        result.lastSelfDeploy.error == 'name cannot be empty in definition section'
+        result.lastSelfDeploy.importUrl == 'https://x/app.groovy'
+        // freshness affordance: ageMs (now - at) is computed at read so a consumer can spot a STALE
+        // record (lastSelfDeploy persists in atomicState across reloads and is not cleared on update).
+        result.lastSelfDeploy.ageMs instanceof Number
+        result.lastSelfDeploy.ageMs >= 0
+        // computed on a copy -- the persisted atomicState record itself is not mutated.
+        !atomicStateMap.lastSelfDeploy.containsKey('ageMs')
+    }
+
+    def "getHubInfo omits lastSelfDeploy when the app has never self-deployed"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        atomicStateMap.lastSelfDeploy = null
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        !result.containsKey('lastSelfDeploy')
+    }
+
+    def "getHubInfo surfaces the #include'd smoke-test marker (issue #209)"() {
+        given:
+        sharedLocation.hub = new TestHub()
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then: 'the McpSmokeTestLib marker, pulled in via #include and folded into the info output'
+        result.smokeTestMarker == 'smoke-ok-v1'
+    }
+
     def "getHubInfo includes both fields as false when toggles are off"() {
         given:
         settingsMap.enableCustomRuleEngine = false

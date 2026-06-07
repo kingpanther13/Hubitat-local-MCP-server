@@ -23,8 +23,11 @@ import support.ToolSpecBase
  *
  * Mocking strategy (see docs/testing.md):
  *   - hubInternalGet       -- routed by HarnessSpec via hubGet.register(path) closures.
- *   - hubInternalPostForm  -- script-defined helper, stubbed per-test on script.metaClass
- *                            (returns [status, location, data]).
+ *   - hubInternalPostJson  -- create POST helper (POST /app|driver/saveOrUpdateJson),
+ *                            stubbed per-test on script.metaClass; takes (String path,
+ *                            String body) and returns the PARSED response Map ({success, id, ...}).
+ *   - hubInternalPostForm  -- update/restore POST helper, stubbed per-test on script.metaClass
+ *                            (takes (String path, Map body); returns [status, location, data]).
  *   - uploadHubFile / downloadHubFile -- purely dynamic, stubbed per-test on script.metaClass.
  *
  * Each direct-call feature has a parallel "via dispatch" feature that fires
@@ -166,14 +169,14 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_create_app (source mode) POSTs to /app/save, verifies via ajax/code, and extracts the new appId"() {
+    def "hub_create_app (source mode) POSTs to /app/saveOrUpdateJson, verifies via ajax/code, and extracts the new appId"() {
         given:
         enableWrite()
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
             captured.body = body
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/4242', data: '']
+            [success: true, id: 4242, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "stub-app-source", "version": 1}'
@@ -183,10 +186,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def result = script.toolInstallApp([source: 'definition(name: "Hello")', confirm: true])
 
         then:
-        captured.path == '/app/save'
-        captured.body.source == 'definition(name: "Hello")'
-        captured.body.id == ''
-        captured.body.create == ''
+        captured.path == '/app/saveOrUpdateJson'
+        def sent = new groovy.json.JsonSlurper().parseText(captured.body)
+        sent.source == 'definition(name: "Hello")'
+        sent.id == null
+        sent.version == 1
         result.success == true
         result.appId == '4242'
         result.sourceMode == 'source'
@@ -199,10 +203,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
             captured.body = body
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/4242', data: '']
+            [success: true, id: 4242, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "stub-app-source", "version": 1}'
@@ -212,10 +216,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_app', [source: 'definition(name: "Hello")', confirm: true])
 
         then:
-        captured.path == '/app/save'
-        captured.body.source == 'definition(name: "Hello")'
-        captured.body.id == ''
-        captured.body.create == ''
+        captured.path == '/app/saveOrUpdateJson'
+        def sent = new groovy.json.JsonSlurper().parseText(captured.body)
+        sent.source == 'definition(name: "Hello")'
+        sent.id == null
+        sent.version == 1
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
@@ -234,8 +239,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'my-app.groovy' ? 'definition(name: "FromFile")'.getBytes('UTF-8') : null
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/5555', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 5555, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "stub-app-source-from-file", "version": 1}'
@@ -259,8 +264,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'my-app.groovy' ? 'definition(name: "FromFile")'.getBytes('UTF-8') : null
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/5555', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 5555, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "stub-app-source-from-file", "version": 1}'
@@ -313,11 +318,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_create_app returns success=false when Location header is absent (hub did not persist item)"() {
+    def "hub_create_app returns success=false when the hub rejects the create (success!=true)"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: 'ok']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, message: 'NoLoc rejected']
         }
 
         when:
@@ -326,16 +331,17 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         result.success == false
         result.appId == null
-        result.error.contains('no item ID')
+        result.error.contains('installation failed')
+        result.error.contains('NoLoc rejected')
     }
 
     @spock.lang.Unroll
-    def "hub_create_app via dispatch returns success=false envelope when Location header is absent (useGateways=#useGateways)"() {
+    def "hub_create_app via dispatch returns success=false envelope when the hub rejects the create (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: 'ok']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, message: 'NoLoc rejected']
         }
 
         when:
@@ -347,7 +353,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.appId == null
-        inner.error.contains('no item ID')
+        inner.error.contains('installation failed')
+        inner.error.contains('NoLoc rejected')
 
         where:
         useGateways << [true, false]
@@ -356,8 +363,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app returns success=false when post-install verification shows an error state"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/9900', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 9900, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "error", "errorMessage": "Compilation failed: unexpected token"}'
@@ -378,8 +385,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/9900', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 9900, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "error", "errorMessage": "Compilation failed: unexpected token"}'
@@ -404,7 +411,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app reports failure when the hub POST throws"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             throw new RuntimeException('compile error: bad syntax')
         }
 
@@ -423,7 +430,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             throw new RuntimeException('compile error: bad syntax')
         }
 
@@ -446,8 +453,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/7100', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 7100, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
             throw new RuntimeException('transient error')
@@ -470,8 +477,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/7100', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 7100, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
             throw new RuntimeException('transient error')
@@ -498,8 +505,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app returns success=false when verify endpoint returns an empty body"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/7200', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 7200, version: 1]
         }
         hubGet.register('/app/ajax/code') { params -> '' }
 
@@ -519,8 +526,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/7200', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 7200, version: 1]
         }
         hubGet.register('/app/ajax/code') { params -> '' }
 
@@ -544,8 +551,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app returns success=false when verify endpoint returns unparseable HTML"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/7300', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 7300, version: 1]
         }
         hubGet.register('/app/ajax/code') { params -> '<html><body>Login required</body></html>' }
 
@@ -566,8 +573,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: 'http://127.0.0.1:8080/app/editor/7300', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 7300, version: 1]
         }
         hubGet.register('/app/ajax/code') { params -> '<html><body>Login required</body></html>' }
 
@@ -620,13 +627,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_create_driver (source mode) POSTs to /driver/save and returns the new driverId"() {
+    def "hub_create_driver (source mode) POSTs to /driver/saveOrUpdateJson and returns the new driverId"() {
         given:
         enableWrite()
         def postedPath = null
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             postedPath = path
-            [status: 302, location: '/driver/editor/9001', data: '']
+            [success: true, id: 9001, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -636,21 +643,21 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def result = script.toolInstallDriver([source: 'metadata { }', confirm: true])
 
         then:
-        postedPath == '/driver/save'
+        postedPath == '/driver/saveOrUpdateJson'
         result.success == true
         result.driverId == '9001'
         result.sourceMode == 'source'
     }
 
     @spock.lang.Unroll
-    def "hub_create_driver via dispatch (source mode) POSTs to /driver/save and returns driverId (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch (source mode) POSTs to /driver/saveOrUpdateJson and returns driverId (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
         def postedPath = null
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             postedPath = path
-            [status: 302, location: '/driver/editor/9001', data: '']
+            [success: true, id: 9001, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -660,7 +667,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_create_driver', [source: 'metadata { }', confirm: true])
 
         then:
-        postedPath == '/driver/save'
+        postedPath == '/driver/saveOrUpdateJson'
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
@@ -678,8 +685,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'my-driver.groovy' ? 'metadata { }'.getBytes('UTF-8') : null
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/7777', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 7777, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -703,8 +710,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'my-driver.groovy' ? 'metadata { }'.getBytes('UTF-8') : null
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/7777', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 7777, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -729,8 +736,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver returns success=false when post-install verification shows an error state"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/8800', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 8800, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "error", "errorMessage": "Unknown identifier: xyz"}'
@@ -750,8 +757,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/8800', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 8800, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "error", "errorMessage": "Unknown identifier: xyz"}'
@@ -775,8 +782,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/6600', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 6600, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             throw new RuntimeException('transient error')
@@ -799,8 +806,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/6600', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 6600, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             throw new RuntimeException('transient error')
@@ -827,8 +834,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver returns success=false when verify endpoint returns an empty body"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/6700', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 6700, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params -> '' }
 
@@ -847,8 +854,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/6700', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 6700, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params -> '' }
 
@@ -871,8 +878,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver returns success=false when verify endpoint returns unparseable HTML"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/6800', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 6800, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params -> '<html>not json</html>' }
 
@@ -891,8 +898,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/6800', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 6800, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params -> '<html>not json</html>' }
 
@@ -1059,11 +1066,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_create_driver returns success=false when Location header is absent (hub did not persist item)"() {
+    def "hub_create_driver returns success=false when the hub rejects the create (success!=true)"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: 'ok']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, message: 'NoLoc rejected']
         }
 
         when:
@@ -1072,16 +1079,17 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then:
         result.success == false
         result.driverId == null
-        result.error.contains('no item ID')
+        result.error.contains('installation failed')
+        result.error.contains('NoLoc rejected')
     }
 
     @spock.lang.Unroll
-    def "hub_create_driver via dispatch returns success=false envelope when Location header absent (useGateways=#useGateways)"() {
+    def "hub_create_driver via dispatch returns success=false envelope when the hub rejects the create (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: 'ok']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, message: 'NoLoc rejected']
         }
 
         when:
@@ -1093,7 +1101,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == false
         inner.driverId == null
-        inner.error.contains('no item ID')
+        inner.error.contains('installation failed')
+        inner.error.contains('NoLoc rejected')
 
         where:
         useGateways << [true, false]
@@ -1102,7 +1111,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver reports failure when the hub POST throws"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             throw new RuntimeException('compile error: syntax problem')
         }
 
@@ -1121,7 +1130,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             throw new RuntimeException('compile error: syntax problem')
         }
 
@@ -1237,9 +1246,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
         def callNum = 0
         script.metaClass.downloadHubFile = { String fileName -> 'metadata { }'.getBytes('UTF-8') }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             callNum++
-            [status: 302, location: "/driver/editor/${9000 + callNum}", data: '']
+            [success: true, id: 9000 + callNum, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -1271,9 +1280,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
         def callNum = 0
         script.metaClass.downloadHubFile = { String fileName -> 'metadata { }'.getBytes('UTF-8') }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             callNum++
-            [status: 302, location: "/driver/editor/${9000 + callNum}", data: '']
+            [success: true, id: 9000 + callNum, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -1312,9 +1321,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             // driver-b.groovy is missing -- simulate absent file
             fileName == 'driver-b.groovy' ? null : 'metadata { }'.getBytes('UTF-8')
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             callNum++
-            [status: 302, location: "/driver/editor/${8000 + callNum}", data: '']
+            [success: true, id: 8000 + callNum, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -1353,9 +1362,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'driver-b.groovy' ? null : 'metadata { }'.getBytes('UTF-8')
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             callNum++
-            [status: 302, location: "/driver/editor/${8000 + callNum}", data: '']
+            [success: true, id: 8000 + callNum, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -1396,9 +1405,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName ->
             'metadata { }'.getBytes('UTF-8')
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             callNum++
-            [status: 302, location: "/driver/editor/${8500 + callNum}", data: '']
+            [success: true, id: 8500 + callNum, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -1429,9 +1438,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
         def callNum = 0
         script.metaClass.downloadHubFile = { String fileName -> 'metadata { }'.getBytes('UTF-8') }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             callNum++
-            [status: 302, location: "/driver/editor/${8500 + callNum}", data: '']
+            [success: true, id: 8500 + callNum, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -1464,8 +1473,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver bulk mode: single-element installs array works"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/8900', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 8900, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -1488,8 +1497,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/8900', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 8900, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -1516,8 +1525,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver bulk mode: malformed entry (non-Map) yields per-item failure with index hint"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/9100', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 9100, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -1548,8 +1557,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/9100', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 9100, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "metadata { }", "version": 1}'
@@ -1585,9 +1594,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         enableWrite()
         def callNum = 0
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             callNum++
-            [status: 302, location: "/driver/editor/${9300 + callNum}", data: '']
+            [success: true, id: 9300 + callNum, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             // middle item's verify GET throws, outer two return clean JSON
@@ -1628,9 +1637,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         def callNum = 0
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             callNum++
-            [status: 302, location: "/driver/editor/${9300 + callNum}", data: '']
+            [success: true, id: 9300 + callNum, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             if (params?.id?.toString() == '9302') {
@@ -1672,9 +1681,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         enableWrite()
         def callNum = 0
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             callNum++
-            [status: 302, location: "/driver/editor/${9400 + callNum}", data: '']
+            [success: true, id: 9400 + callNum, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             // middle item's verify returns status=error (compile failure surfaced post-install)
@@ -1716,9 +1725,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         def callNum = 0
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             callNum++
-            [status: 302, location: "/driver/editor/${9400 + callNum}", data: '']
+            [success: true, id: 9400 + callNum, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             if (params?.id?.toString() == '9402') {
@@ -2665,8 +2674,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver returns success=false when verify endpoint returns clean JSON with empty source field"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/4444', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 4444, version: 1]
         }
         // Verify response parses cleanly but reports empty source — driver slot created but
         // no body persisted. Distinct from status:"error" and from empty/unparseable body.
@@ -2690,8 +2699,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 302, location: '/driver/editor/4444', data: '']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 4444, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "source": "", "version": 1}'
