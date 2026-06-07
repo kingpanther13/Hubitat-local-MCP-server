@@ -1678,14 +1678,25 @@ class TestRunner:
                 )
 
             # 2) confirm safety gate: hub_create_room without confirm -> refused, no room created.
+            # `confirm` is a REQUIRED schema param (the convention for every destructive tool), so a
+            # missing confirm is refused by the dispatch's required-param check. That surfaces as an
+            # isError envelope ("Missing required parameter: confirm") whose isError lives in the
+            # content, so call_tool RETURNS it as the parsed dict rather than raising; a raised
+            # McpError/-32602 is also acceptable. The load-bearing guarantee is refusal + no room.
+            refused = False
+            detail = None
             try:
-                self.client.call_tool("hub_manage_rooms", {
+                detail = self.client.call_tool("hub_manage_rooms", {
                     "tool": "hub_create_room", "args": {"name": name_a},
                 })
-                assert False, "hub_create_room without confirm should have raised"
-            except McpError as e:
-                assert "confirm" in str(e).lower() or "safety check" in str(e).lower(), \
-                    f"hub_create_room no-confirm error was not a safety-gate refusal: {e}"
+                blob = (detail if isinstance(detail, str) else json.dumps(detail)).lower()
+                refused = (isinstance(detail, dict) and bool(detail.get("isError"))) \
+                    or "confirm" in blob or "required parameter" in blob
+            except McpError as e:  # also catches McpToolError (subclass): a raised envelope / -32602
+                detail = str(e)
+                refused = any(s in detail.lower() for s in ("confirm", "safety check", "required parameter"))
+            assert refused, \
+                f"hub_create_room without confirm should have been refused by the safety gate, got: {detail}"
             after = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
             assert not any(
                 r.get("name") == name_a
@@ -1726,14 +1737,22 @@ class TestRunner:
                 assert "already exists" in str(e).lower(), f"collision-rename error unexpected: {e}"
 
             # 5) confirm safety gate on delete: hub_delete_room without confirm -> refused, room survives.
+            # Same refusal shape as the create gate above: a missing REQUIRED confirm comes back as an
+            # isError envelope (returned by call_tool) or a raise -- accept either; room must survive.
+            del_refused = False
+            del_detail = None
             try:
-                self.client.call_tool("hub_manage_rooms", {
+                del_detail = self.client.call_tool("hub_manage_rooms", {
                     "tool": "hub_delete_room", "args": {"room": id_a},
                 })
-                assert False, "hub_delete_room without confirm should have raised"
+                blob = (del_detail if isinstance(del_detail, str) else json.dumps(del_detail)).lower()
+                del_refused = (isinstance(del_detail, dict) and bool(del_detail.get("isError"))) \
+                    or "confirm" in blob or "required parameter" in blob
             except McpError as e:
-                assert "confirm" in str(e).lower() or "safety check" in str(e).lower(), \
-                    f"hub_delete_room no-confirm error was not a safety-gate refusal: {e}"
+                del_detail = str(e)
+                del_refused = any(s in del_detail.lower() for s in ("confirm", "safety check", "required parameter"))
+            assert del_refused, \
+                f"hub_delete_room without confirm should have been refused by the safety gate, got: {del_detail}"
             still = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
             assert any(
                 str(r.get("id")) == id_a
