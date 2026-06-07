@@ -712,3 +712,20 @@ def test_lockstep_real_source_clean():
         "INCLUDE_LOCKSTEP violation(s) in the shipped source:\n  "
         + "\n  ".join(f["message"] for f in findings)
     )
+
+
+def test_lockstep_duplicate_library_declaration_flagged(monkeypatch, tmp_path):
+    """Two library files declaring the same (namespace, name) -> a duplicate finding
+    (the hub's #include would bind ambiguously to only one copy)."""
+    _write_lockstep_repo(tmp_path, **{
+        **_LOCKSTEP_OK,
+        "libraries": [
+            ("mcp-foo-lib.groovy", "mcp", "McpFooLib"),
+            ("mcp-foo-dup.groovy", "mcp", "McpFooLib"),
+        ],
+    })
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    findings = sl.check_include_library_lockstep()
+    dups = [f for f in findings if "Duplicate library declaration" in f["message"]]
+    assert dups, f"expected a duplicate-declaration finding, got: {findings}"
+    assert "McpFooLib" in dups[0]["message"]

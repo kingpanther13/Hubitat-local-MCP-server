@@ -3191,6 +3191,11 @@ def check_include_library_lockstep() -> list[dict]:
 
     A gap means the library can't load on a user's hub, so the app's #include fails to compile.
     Catches it cheaply here (no hub) instead of at install/recompile time.
+
+    Direction: this is #include -> delivery (every include must resolve). It does NOT flag an
+    orphan library/LIBS/registry entry with no #include (a stale-but-harmless entry). It DOES flag
+    two library files declaring the same (namespace, name), since a duplicate makes the hub's
+    #include bind ambiguously (only one of the two copies wins).
     """
     findings: list[dict] = []
     server = REPO_ROOT / "hubitat-mcp-server.groovy"
@@ -3218,7 +3223,19 @@ def check_include_library_lockstep() -> list[dict]:
             nm = re.search(r"name:\s*['\"]([^'\"]+)['\"]", decl)
             ns = re.search(r"namespace:\s*['\"]([^'\"]+)['\"]", decl)
             if nm and ns:
-                declared[(ns.group(1), nm.group(1))] = lib.name
+                key = (ns.group(1), nm.group(1))
+                if key in declared:
+                    findings.append({
+                        "file": f"libraries/{lib.name}", "line": 1, "severity": "error",
+                        "rule": "INCLUDE_LOCKSTEP", "source": "",
+                        "message": (
+                            f"Duplicate library declaration namespace='{key[0]}', name='{key[1]}' in "
+                            f"both {declared[key]} and {lib.name} -- a duplicate (namespace, name) makes "
+                            f"the hub's #include bind ambiguously (only one copy wins). Rename or remove one."
+                        ),
+                    })
+                else:
+                    declared[key] = lib.name
 
     # (2) build-bundle.py LIBS dest names ({NAMESPACE}.<Name>.groovy).
     bb = REPO_ROOT / "tools" / "build-bundle.py"

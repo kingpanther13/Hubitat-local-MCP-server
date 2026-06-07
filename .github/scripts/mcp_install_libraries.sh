@@ -2,11 +2,13 @@
 # Install/update every library the PR's app #includes, BEFORE the app is deployed, so the
 # `#include` directives resolve when the app compiles on the hub (issue #209).
 #
-# Design (per maintainer): load whatever libraries the CURRENT PR carries, every run, without
-# ever stranding the hub or depending on a tool that might not be present. It uses ONLY the
-# always-available baseline code tools -- hub_list_libraries + hub_create_library /
-# hub_update_library -- so it can never chicken-and-egg on hub_update_package, and the crucial
-# code/package-loading tools are never required to pre-exist. Idempotent: a library already on
+# Design: load whatever libraries the CURRENT PR carries, every run, without ever stranding the hub
+# or depending on a tool that might not be present. The REQUIRED path uses only the always-available
+# baseline code tools -- hub_list_libraries + hub_create_library / hub_update_library -- so it can
+# never chicken-and-egg on hub_update_package, and the crucial code/package-loading tools are never
+# required to pre-exist. As a BEST-EFFORT extra (never required), it first tries hub_delete_bundle to
+# clear a stale bundle-managed copy so libraries refresh cleanly before deploy; if that tool isn't on
+# the deployed app yet, it no-ops and the baseline path still runs. Idempotent: a library already on
 # the hub is updated to the PR's source; a missing one is created. No `#include` -> no-op.
 #
 # Runs in the GHA runner (the repo is checked out): it reads the LOCAL app + library files to
@@ -65,6 +67,32 @@ echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]}"
 echo "Triggering hub backup (best-effort; the <24h gate is timestamp-cached)..."
 mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true}}}' >/dev/null \
   || echo "::warning::hub_create_backup call failed/timed out; relying on cached <24h backup timestamp"
+
+# Positive refresh BEFORE the snapshot: if a prior issue #209 bundle run left an mcp bundle
+# installed, the libraries it delivered are bundle-managed and the baseline library tools below
+# CANNOT edit them in place. Delete the bundle first (via hub_delete_bundle, IF the
+# currently-deployed app exposes it) so the loop re-creates each library fresh from the PR source --
+# a clean library state before the app deploys, instead of compiling the app against a stale
+# bundle-managed copy. This is BEST-EFFORT and never fatal: hub_delete_bundle is not one of the
+# always-available baseline tools, so on an older deployed app the call simply no-ops and any
+# still-bundle-managed library is left in place for the loop to skip (the deploy step's verbatim
+# compile/library-error capture is the loud backstop, and the later bundle-install step refreshes it).
+delete_bundle_named_best_effort() {
+  local want="$1" list id rpc text
+  list=$(call_tool '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_bundles","arguments":{}}}')
+  id=$(printf '%s' "$list" | jq -r --arg n "$want" \
+    '(.bundles // []) | map(select(.name==$n)) | (.[0].id // empty)' 2>/dev/null || true)
+  [ -n "$id" ] || return 0
+  echo "Found pre-existing bundle '${want}' (id ${id}); deleting it so its libraries can be re-created fresh before deploy..."
+  rpc=$(jq -nc --arg id "$id" \
+    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_delete_bundle",arguments:{bundleId:$id,confirm:true}}}')
+  text=$(call_tool "$rpc")
+  if [ "$(ok_of "$text")" != "true" ]; then
+    echo "::warning::Could not delete pre-existing bundle '${want}' (it may not exist, or hub_delete_bundle isn't on the currently-deployed app yet); continuing -- any bundle-managed library is left in place and the bundle-install step will refresh it."
+  fi
+}
+delete_bundle_named_best_effort "mcp_libraries"
+delete_bundle_named_best_effort "mcp_smoke_test"
 
 # Snapshot existing hub libraries once, to choose update-vs-create per library.
 # Capture with `|| true` so a transient curl/relay failure (set -euo pipefail) does NOT

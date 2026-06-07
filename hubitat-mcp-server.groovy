@@ -1176,7 +1176,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_apps_code: [
-            description: "Read-only inspection of installed apps, drivers, libraries, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
+            description: "Read-only inspection of installed apps, drivers, libraries, code bundles, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, list installed bundles, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
             tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
             summaries: [
                 hub_list_apps: "List installed apps. scope='types' (installed app code library) or 'instances' (running apps with parent/child tree). Args: scope, filter?, includeHidden?, cursor?",
@@ -1206,7 +1206,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_code: [
-            description: "Install, update, and delete hub apps, drivers, and libraries. All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
+            description: "Install, update, and delete hub apps, drivers, libraries, and code bundles (install/delete/export). All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
             tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_restore_backup", "hub_create_library", "hub_update_library", "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"],
             summaries: [
                 hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with installAsUserApp=<codeAppId> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",

@@ -91,8 +91,15 @@ def toolCreateRoom(args) {
         throw new IllegalArgumentException("A room named '${roomName}' already exists")
     }
 
-    // Build device IDs list
-    def deviceIds = args.deviceIds?.collect { it as Integer } ?: []
+    // Build device IDs list. Validate each element before coercing so a non-numeric id is a clean
+    // IllegalArgumentException (-32602) naming the offending value, not an opaque NumberFormatException.
+    def deviceIds = (args.deviceIds ?: []).collect {
+        def s = it?.toString()?.trim()
+        if (!(s ==~ /\d+/)) {
+            throw new IllegalArgumentException("deviceIds must be numeric device ids; got '${it}'. Use hub_list_devices to find device ids.")
+        }
+        s as Integer
+    }
 
     // POST /room/save with roomId: 0 to create (Grails convention). Routed through
     // hubInternalPostJson for the shared Hub Security cookie-refresh retry; the

@@ -19,7 +19,7 @@ Every `tools/call` response is bounded by a 120 KB wire-encoded size guard. Over
 
 Opt-in cursor pagination is wired into the read-only list-returning tools below. All follow the same shape: omit `cursor` for the full list (backward-compatible), pass `cursor: ""` for the first page, iterate `nextCursor` until absent. Non-numeric / out-of-range cursors reject as `-32602`.
 
-**Tools with cursor:** `hub_list_devices` (including `filter='virtual'`), `hub_list_apps` (both `scope=types` and `scope=instances`), `hub_list_drivers`, `hub_list_libraries`, `hub_list_hpm_packages`, `hub_list_rules`, `hub_get_custom_rule` (list mode, ruleId omitted), `hub_list_variables`, `hub_list_captured_states`, `hub_list_backups`, `hub_list_files`, `hub_list_rooms`, `hub_get_device_health`, `hub_list_device_dependents`, `hub_get_logs`, `hub_get_memory_history`, `hub_get_debug_logs`. See [TOOL_GUIDE.md](../../TOOL_GUIDE.md) for per-tool page sizes.
+**Tools with cursor:** `hub_list_devices` (including `filter='virtual'`), `hub_list_apps` (both `scope=types` and `scope=instances`), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_hpm_packages`, `hub_list_rules`, `hub_get_custom_rule` (list mode, ruleId omitted), `hub_list_variables`, `hub_list_captured_states`, `hub_list_backups`, `hub_list_files`, `hub_list_rooms`, `hub_get_device_health`, `hub_list_device_dependents`, `hub_get_logs`, `hub_get_memory_history`, `hub_get_debug_logs`. See [TOOL_GUIDE.md](../../TOOL_GUIDE.md) for per-tool page sizes.
 
 ## Core Tools (11) — Always flat and visible on tools/list
 
@@ -59,15 +59,16 @@ Call a gateway with no arguments to see full parameter schemas for all its tools
 
 Seven gateways are pure-read (`hub_read_*`, every sub-tool read-only); twelve carry at least one write (`hub_manage_*`). A read-only tool that lives inside a mixed `hub_manage_*` gateway is also surfaced under a `hub_read_*` gateway (multi-membership; same tool, no duplication).
 
-### hub_read_apps_code (9 tools)
+### hub_read_apps_code (11 tools)
 
-Read-only access to apps, drivers, libraries, backups, installed-app inventory, and HPM package state: list, view source, browse backups, inspect configs, and discover page names.
+Read-only access to apps, drivers, libraries, code bundles, backups, installed-app inventory, and HPM package state: list, view source, list bundles, browse backups, inspect configs, and discover page names.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_list_apps` | List apps. `scope='types'` enumerates installable app types; `scope='instances'` enumerates all installed apps (built-in + user) with parent/child tree, filterable by `all`/`builtin`/`user`/`disabled`/`parents`/`children`. Optional `cursor` opt-in pagination. | Read master |
 | `hub_list_drivers` | List installed user drivers. | Read master |
 | `hub_list_libraries` | List installed Groovy libraries (id, name, namespace, version). Source is omitted to keep the list lean — read it via `hub_get_source(type='library', id)`. Optional `cursor` opt-in pagination. | Read master |
+| `hub_list_bundles` | List installed code bundles (Bundle-Manager containers HPM delivers code in; distinct from Libraries Code). Returns id, name, namespace, private, and a contains summary. Find a bundle id for `hub_delete_bundle`/`hub_export_bundle`. Optional `cursor` opt-in pagination. | Read master |
 | `hub_get_source` | Get Groovy source code for an app, driver, or library (`type`: "app", "driver", "library"; `id`). Chunked-read support via `offset`/`length`. Large files auto-saved to File Manager. | Read master |
 | `hub_list_backups` | List all source code backups. | None |
 | `hub_get_backup` | Retrieve source from a backup. | None |
@@ -209,9 +210,9 @@ Destructive hub operations: reboot, shutdown, and device deletion.
 | `hub_shutdown` | Power off hub (needs manual restart). | Write master |
 | `hub_delete_device` | Permanently delete a device. **NO UNDO.** For ghost/orphaned devices only. | Write master |
 
-### hub_manage_code (9 tools)
+### hub_manage_code (11 tools)
 
-Write operations for apps, drivers, and libraries: install, update, delete, and restore code.
+Write operations for apps, drivers, libraries, and code bundles: install, update, delete, restore, and export code.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
@@ -224,6 +225,8 @@ Write operations for apps, drivers, and libraries: install, update, delete, and 
 | `hub_delete_item` | Delete an installed app, driver, or library (`type`: "app", "driver", "library"; auto-backs up). For libraries, ensure no apps/drivers `#include` it first. | Write master |
 | `hub_restore_backup` | Restore app/driver to backed-up version. | Write master |
 | `hub_install_bundle` | Install a code bundle (`.zip`) from a URL exactly the way Hubitat Package Manager does (the hub fetches + unpacks it into Libraries/Apps/Drivers Code via `/bundle2/uploadZipFromUrl`). Args: `importUrl` (zip), `primary?`, `confirm=true`. Used to prove a package installs the HPM way before users HPM-update. | Write master + confirm + recent backup |
+| `hub_delete_bundle` | Delete a code bundle (the Bundle-Manager container) by its numeric `bundleId` (from `hub_list_bundles`); re-lists to verify removal. Libraries/apps/drivers the bundle delivered may remain in Code — verify and delete separately if needed. Args: `bundleId`, `confirm=true`. | Write master + confirm + recent backup |
+| `hub_export_bundle` | Export a bundle's `.zip` to the hub File Manager (download at `/local/<file>`); fetched as binary and saved verbatim. Args: `bundleId`, `saveAs?` (filename; `.zip` appended if missing). | Write master |
 
 ### hub_manage_logs (6 tools)
 

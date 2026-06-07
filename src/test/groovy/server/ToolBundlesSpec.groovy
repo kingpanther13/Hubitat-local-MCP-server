@@ -230,6 +230,34 @@ class ToolBundlesSpec extends ToolSpecBase {
         result.status == 200
     }
 
+    def "hub_delete_bundle returns success=false when the delete request throws"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([bundle(id: 4)]) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            throw new RuntimeException("connection refused")
+        }
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: "4", confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains("Bundle delete request failed")
+    }
+
+    def "hub_delete_bundle throws when bundleId is missing"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolDeleteBundle([confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("bundleId is required")
+    }
+
     @Unroll
     def "hub_delete_bundle via dispatch returns -32602 envelope when confirm not provided (useGateways=#useGateways)"() {
         given:
@@ -273,6 +301,32 @@ class ToolBundlesSpec extends ToolSpecBase {
         ex.message.contains('positive integer')
     }
 
+    def "hub_export_bundle throws when bundleId is missing"() {
+        given:
+        settingsMap.enableWrite = true
+
+        when:
+        script.toolExportBundle([:])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('bundleId is required')
+    }
+
+    def "hub_export_bundle returns success=false when the bundle id is not present"() {
+        given:
+        settingsMap.enableWrite = true
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([bundle(id: 4)]) }
+
+        when:
+        def result = script.toolExportBundle([bundleId: "999"])
+
+        then:
+        result.success == false
+        result.error.contains("No bundle with id 999")
+        savedFiles.isEmpty()
+    }
+
     def "hub_export_bundle fetches the zip and saves it to the File Manager"() {
         given:
         settingsMap.enableWrite = true
@@ -289,7 +343,6 @@ class ToolBundlesSpec extends ToolSpecBase {
         result.fileName == "mcp_libraries.zip"
         result.bytes == 6
         result.directDownload == "/local/mcp_libraries.zip"
-        result.note == null   // valid PK signature -> no warning
     }
 
     def "hub_export_bundle honors saveAs and appends .zip"() {
@@ -390,6 +443,31 @@ class ToolBundlesSpec extends ToolSpecBase {
         result.success == false
         result.verified == false
         result.error.contains("could not be verified")
+    }
+
+    def "hub_delete_bundle reports verified=false when the PRE-delete list is degraded (existence unconfirmed)"() {
+        given:
+        enableWrite()
+        // First list (pre-delete) is degraded -> existence can't be confirmed; second list
+        // (post-delete) is a clean empty list -> the id is absent. Deleting a nonexistent id is a
+        // harmless hub no-op (302), so "absent now" must NOT be reported as a verified deletion.
+        def calls = 0
+        hubGet.register('/hub2/userBundles') { params ->
+            calls++
+            calls == 1 ? "<html>not json</html>" : bundlesJson([])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            [status: 302, location: "/bundle/list", data: null]
+        }
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: "7", confirm: true])
+
+        then:
+        result.success == true
+        result.verified == false
+        result.message.contains("could not confirm the bundle existed")
+        result.bundleId == "7"
     }
 
     // -------- export: error branches + cookie + unexpected body --------

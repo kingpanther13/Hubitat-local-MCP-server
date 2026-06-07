@@ -3,6 +3,8 @@ gradlew text eol=lf
 *.sh text eol=lf
 *.py text eol=lf
 *.gradle text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
 *.bat text eol=crlf
 *.jar binary
 *.zip binary

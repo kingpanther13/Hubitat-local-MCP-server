@@ -68,6 +68,7 @@ These tools follow an explicit opt-in convention so pre-`cursor` callers see no 
 | `hub_list_apps` | 50 | `scope='types'` (default): catalog of installable apps. `scope='instances'`: installed app instances; cursor respects `filter` — pages the filtered set. |
 | `hub_list_drivers` | 50 | Catalog of installable drivers. |
 | `hub_list_libraries` | 50 | Installed Groovy libraries (id, name, namespace, version); source omitted (read via `hub_get_source`). |
+| `hub_list_bundles` | 50 | Installed code bundles (Bundle-Manager containers); id, name, namespace, private, and a contains summary. |
 | `hub_list_hpm_packages` | 25 | Smaller page because each HPM entry carries the full app/driver/file inventory. |
 | `hub_list_rules` | 50 | RM 4.x + 5.x deduplicated rules. |
 | `hub_get_custom_rule` | 50 | Legacy MCP rule engine; list mode (omit `ruleId`). |

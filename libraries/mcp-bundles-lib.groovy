@@ -111,11 +111,15 @@ def toolDeleteBundle(args) {
 
     def before = toolListBundles([:])
     def target = (before.bundles ?: []).find { it.id?.toString() == bundleId }
+    // Only a clean live list that actually contains the id proves the bundle existed. Without that,
+    // a later "absent" can't prove WE deleted it (deleting a nonexistent id is a harmless hub no-op),
+    // so the result must NOT claim verified:true.
+    def confirmedPresentBefore = (before.source == "hub_api" && target != null)
     if (before.source == "hub_api" && !target) {
         return [success: false, error: "No bundle with id ${bundleId} found on the hub. Use hub_list_bundles to see installed bundles.", bundleId: bundleId]
     }
     if (before.source != "hub_api") {
-        mcpLog("warn", "hub-admin", "hub_delete_bundle: could not validate bundle ${bundleId} against the live list (source=${before.source}); proceeding on the supplied id")
+        mcpLog("warn", "hub-admin", "hub_delete_bundle: could not validate bundle ${bundleId} against the live list (source=${before.source}); proceeding on the supplied id, but the result will be reported unverified")
     }
     def bundleName = target?.name
     mcpLog("info", "hub-admin", "Deleting bundle ${bundleId} (${bundleName ?: 'name unknown'})")
@@ -144,6 +148,21 @@ def toolDeleteBundle(args) {
     def stillThere = (after.bundles ?: []).any { it.id?.toString() == bundleId }
     if (stillThere) {
         return [success: false, error: "Bundle ${bundleId}${bundleName ? " ('${bundleName}')" : ''} is still present after the delete request -- the hub may have refused it (status=${resp?.status}).", bundleId: bundleId, status: resp?.status, lastBackup: formatTimestamp(state.lastBackupTimestamp)]
+    }
+
+    if (!confirmedPresentBefore) {
+        // Post-delete list is clean and shows no id ${bundleId}, but the PRE-delete list was degraded
+        // so we never confirmed the bundle existed. "Absent now" therefore doesn't prove a real
+        // deletion (it may have been a no-op on a nonexistent id). Report the end state but do NOT
+        // claim verified -- mirrors the degraded post-list refusal above.
+        return [
+            success: true,
+            verified: false,
+            message: "Bundle ${bundleId} is not present in the current bundle list. The pre-delete list was degraded, so I could not confirm the bundle existed beforehand -- if you expected a specific bundle removed, re-run hub_list_bundles to confirm.",
+            bundleId: bundleId,
+            bundleName: bundleName,
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
     }
 
     return [
@@ -436,7 +455,7 @@ def _getAllToolDefinitions_partBundles() {
                     fileName: [type: "string", description: "File Manager filename the zip was saved as"],
                     bytes: [type: "integer", description: "Size of the saved zip in bytes"],
                     directDownload: [type: "string", description: "Local download path (/local/<fileName>)"],
-                    note: [type: "string", description: "Present when the saved body did not start with the ZIP signature"],
+                    status: [type: "integer", description: "Hub HTTP status of the export request; present on a non-2xx failure"],
                     error: [type: "string", description: "Failure detail; present on failure"]
                 ],
                 required: ["success"]

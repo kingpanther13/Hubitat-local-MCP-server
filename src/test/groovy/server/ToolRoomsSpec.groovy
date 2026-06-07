@@ -420,6 +420,26 @@ class ToolRoomsSpec extends ToolSpecBase {
         unknown.accessible == false
     }
 
+    def "hub_get_room tolerates a device whose currentStates read throws (entry still returned, no propagation)"() {
+        given: 'a room with a device whose currentStates getter throws'
+        installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [100]]])
+        def dev = new TestDevice(id: 100, name: 'den_light', label: 'Den Light',
+            currentStates: [[name: 'switch', value: 'on']])
+        dev.metaClass.getCurrentStates = { -> throw new RuntimeException('states unavailable') }
+        childDevicesList << dev
+
+        when:
+        def result = script.toolGetRoom('7')
+
+        then: 'the device entry is still returned (id/label/name) with no currentStates, and nothing propagates'
+        result.deviceCount == 1
+        def d = result.devices.find { it.id == '100' }
+        d != null
+        d.label == 'Den Light'
+        d.name == 'den_light'
+        !d.containsKey('currentStates')
+    }
+
     @spock.lang.Unroll
     def "hub_get_room via dispatch expands deviceIds and flags unresolvable ids (useGateways=#useGateways)"() {
         given:
@@ -528,6 +548,20 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Room name is required')
+    }
+
+    def "hub_create_room rejects a non-numeric deviceId with a clean validation error (not an opaque coercion failure)"() {
+        given:
+        enableWrite()
+        installGetRoomsStub([])
+
+        when:
+        script.toolCreateRoom([name: 'Den', deviceIds: ['100', 'abc'], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('deviceIds must be numeric')
+        ex.message.contains('abc')
     }
 
     @spock.lang.Unroll
