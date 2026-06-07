@@ -28,18 +28,15 @@ on:
       - 'hubitat-mcp-server.groovy'
       - 'hubitat-mcp-rule.groovy'
       - 'e2e-deadman-watchdog.groovy'
+      - 'e2e-deadman-watchdog-v2.groovy'
       - 'tests/e2e_test.py'
       - '.github/workflows/hub-e2e.yml'
       - '.github/scripts/lease_acquire.sh'
       - '.github/scripts/lease_release.sh'
       - '.github/scripts/mcp_setup_env.sh'
       - '.github/scripts/mcp_restore_env.sh'
-      - '.github/scripts/mcp_deploy_source.sh'
-      - '.github/scripts/mcp_verify_deploy.sh'
-      - '.github/scripts/mcp_restore_source.sh'
       - '.github/scripts/mcp_validate_package_tool.sh'
-      - '.github/scripts/mcp_install_libraries.sh'
-      - '.github/scripts/mcp_install_bundle_hpm.sh'
+      - '.github/scripts/mcp_watchdog_deploy.sh'
       - '.github/scripts/mcp_arm_watchdog.sh'
       - '.github/scripts/mcp_disarm_watchdog.sh'
       - 'libraries/**'
@@ -110,6 +107,12 @@ jobs:
 
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
+      # The standing dead-man watchdog is a SEPARATE on-hub app with its own cloud MCP
+      # endpoint (secret WATCHDOG_MCP_URL). The v2 watchdog drives the backup / PR-install /
+      # clean-disarm-restore plumbing over THIS url, independent of the MCP server under test
+      # ($MCP_URL) -- so a deploy that bricks the server under test can still be restored
+      # through the watchdog's own live endpoint.
+      WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
 
     steps:
       - uses: actions/checkout@v6
@@ -117,18 +120,22 @@ jobs:
           ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.event.pull_request.head.sha || github.ref }}
 
       - name: Check secret availability + skip if absent
-        # MCP_URL is empty only when the secret isn't configured at all -- e.g. someone
-        # forked the whole project to a repo without the donated test hub. (Under
+        # MCP_URL / WATCHDOG_URL are empty only when the secrets aren't configured at all --
+        # e.g. someone forked the whole project to a repo without the donated test hub, or
+        # @level99 has not yet provisioned the separate watchdog endpoint. (Under
         # pull_request_target on the upstream repo the run is in trusted context, so the
-        # secret IS present for both trusted and approved fork PRs; fork-PR secret
+        # secrets ARE present for both trusted and approved fork PRs; fork-PR secret
         # stripping does NOT apply here the way it does to a plain pull_request trigger.)
-        # In the no-secret case we skip cleanly rather than fail red. GitHub doesn't allow
-        # `secrets` in job-level `if:` conditions, so the check happens here as a step
-        # output and gates everything below.
+        # In the no-secret case we skip cleanly rather than fail red -- e2e must not go red
+        # before WATCHDOG_MCP_URL exists. GitHub doesn't allow `secrets` in job-level `if:`
+        # conditions, so the check happens here as a step output and gates everything below.
         id: gate
         run: |
           if [ -z "$MCP_URL" ]; then
             echo "::notice::LEVEL99_TEST_HUB_MCP_URL secret not available — skipping E2E (expected on repos without the test hub configured)"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "$WATCHDOG_URL" ]; then
+            echo "::notice::WATCHDOG_MCP_URL secret not available — skipping E2E (the v2 dead-man watchdog endpoint is not provisioned yet; this is expected until @level99 sets WATCHDOG_MCP_URL)"
             echo "available=false" >> "$GITHUB_OUTPUT"
           else
             echo "available=true" >> "$GITHUB_OUTPUT"
@@ -147,12 +154,14 @@ jobs:
         if: steps.gate.outputs.available == 'true'
         # Secrets are auto-masked, but the URL parsing below can split the
         # token out into a separate string that isn't recognized as the
-        # original secret value. Force-mask.
+        # original secret value. Force-mask both endpoints' tokens.
         run: |
-          TOKEN="$(echo "$MCP_URL" | sed -nE 's|.*access_token=(.*)|\1|p')"
-          if [ -n "$TOKEN" ]; then
-            echo "::add-mask::$TOKEN"
-          fi
+          for U in "$MCP_URL" "$WATCHDOG_URL"; do
+            TOKEN="$(echo "$U" | sed -nE 's|.*access_token=(.*)|\1|p')"
+            if [ -n "$TOKEN" ]; then
+              echo "::add-mask::$TOKEN"
+            fi
+          done
 
       - name: Parse MCP_URL into HUBITAT_* env vars
         if: steps.gate.outputs.available == 'true'
@@ -174,6 +183,37 @@ jobs:
             echo "HUBITAT_ACCESS_TOKEN=$TOKEN"
           } >> "$GITHUB_ENV"
 
+      - name: Watchdog health check (HALT if unreachable / not installed)
+        if: steps.gate.outputs.available == 'true'
+        # The v2 dead-man watchdog is a STANDALONE on-hub app reachable on its own cloud MCP
+        # endpoint ($WATCHDOG_URL) -- the same tool surface as the main server (hub_get_info,
+        # tools/list, etc.). Everything below (backup+arm, PR install, clean-disarm restore)
+        # drives the hub THROUGH that endpoint, so if it is unreachable or the watchdog app
+        # isn't installed there is no safety net and we must HALT before mutating the hub --
+        # never deploy PR code we can't roll back. NOT continue-on-error: a dead watchdog
+        # endpoint is a hard stop, not a skip.
+        run: |
+          set -euo pipefail
+          echo "Probing the watchdog endpoint (tools/list)..."
+          LIST_RPC='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+          RESP=$(curl -sS --max-time 60 -X POST "$WATCHDOG_URL" \
+            -H "Content-Type: application/json" \
+            --data-binary "$LIST_RPC" || true)
+          if ! printf '%s' "$RESP" | jq -e '.result.tools | type == "array"' >/dev/null 2>&1; then
+            echo "::error::Watchdog endpoint ($WATCHDOG_URL) did not return a tools/list result. The v2 dead-man watchdog is unreachable or not installed on the test hub — HALTING before any hub mutation (no safety net to roll back a bad deploy). Body head: $(printf '%s' "$RESP" | head -c 300 | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "Confirming the watchdog responds to hub_get_info..."
+          INFO_RPC='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}'
+          INFO=$(curl -sS --max-time 60 -X POST "$WATCHDOG_URL" \
+            -H "Content-Type: application/json" \
+            --data-binary "$INFO_RPC" || true)
+          if ! printf '%s' "$INFO" | jq -e '.result.content[0].text // empty' >/dev/null 2>&1; then
+            echo "::error::Watchdog endpoint reachable but hub_get_info returned no result — the watchdog app may be mis-installed. HALTING. Body head: $(printf '%s' "$INFO" | head -c 300 | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "WATCHDOG_HEALTHY — endpoint reachable and hub_get_info OK"
+
       - name: Acquire test hub lease
         if: steps.gate.outputs.available == 'true'
         run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
@@ -192,13 +232,13 @@ jobs:
         # Best-effort: write {armed:false} to the dead-man flag so a CRASHED prior run's still-armed
         # flag can't fire its auto-restore during THIS run's deploy. continue-on-error because the
         # watchdog/flag may not exist yet (first run on a hub, or watchdog not installed) -- that's
-        # fine; there's nothing to clear. The real arm happens later, after the server is confirmed
-        # working and a fresh >1MB pre-deploy backup exists.
+        # fine; there's nothing to clear. The real arm happens later, after a fresh >1MB pre-deploy
+        # backup exists. Written over the watchdog's own endpoint ($WATCHDOG_URL).
         continue-on-error: true
         run: |
-          curl -sS --max-time 60 -X POST "$MCP_URL" \
+          curl -sS --max-time 60 -X POST "$WATCHDOG_URL" \
             -H "Content-Type: application/json" \
-            --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_write_file","arguments":{"fileName":"e2e-deadman.json","content":"{\"armed\":false,\"clearedBy\":\"pre-run-stale-flag-clear\"}","confirm":true}}}' \
+            --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_write_file","arguments":{"fileName":"e2e-deadman-v2.json","content":"{\"armed\":false,\"clearedBy\":\"pre-run-stale-flag-clear\"}","confirm":true}}}' \
             >/dev/null || echo "::notice::stale-flag clear call failed/absent (watchdog/flag may not exist yet) -- continuing"
 
       - name: Compute PR source URL for importUrl deploy
@@ -247,84 +287,45 @@ jobs:
           echo "PR_HEAD_SHA_RESOLVED=$SHA" >> "$GITHUB_ENV"
           echo "::notice::importUrl deploy source: $URL"
 
-      # Install/update every library the app #includes BEFORE deploying the app, so the
-      # `#include` directives resolve when the hub compiles it (issue #209). Uses only the
-      # always-present baseline code tools (hub_create_library / hub_update_library), so it can
-      # never strand the hub or depend on hub_update_package being present. Blocking (NOT
-      # continue-on-error): if a library can't be installed, the app can't compile, so the run
-      # must fail here rather than deploy a broken app.
-      - name: Install PR libraries (resolve #include deps)
-        if: steps.gate.outputs.available == 'true'
-        env:
-          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
-          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
-        run: bash .github/scripts/mcp_install_libraries.sh hubitat-mcp-server.groovy
-
-      - name: Deploy PR source to test hub
-        if: steps.gate.outputs.available == 'true'
-        # Self-update is permitted because mcp_setup_env.sh already verified
-        # Developer Mode is on (the guard update_app_code checks for
-        # self-modification on the MCP server's own app row).
-        #
-        # continue-on-error: the hub recompiles the MCP app mid-call when it
-        # self-updates, so the deploy call can return a cloud 5xx / drop the
-        # connection; the script tolerates that and polls get_app_source to
-        # verify. importUrl mode (issue #228) has the hub fetch the source
-        # itself, so the ~1.5MB blob never crosses the cloud gateway (an inline
-        # source=... write reliably 504s before the hub receives it).
-        continue-on-error: true
-        run: bash .github/scripts/mcp_deploy_source.sh hubitat-mcp-server.groovy
-
-      # Authoritative deploy gate (NOT continue-on-error). The deploy step above
-      # tolerates the cloud 5xx the hub returns while it recompiles mid-self-update
-      # (a false error), but that tolerance also masks a genuinely un-landed deploy,
-      # which would silently run the tests on STALE hub code. This step re-fetches
-      # the hub's full source and byte-compares it to this PR's source: a no-op
-      # (already identical) passes, a real mismatch fails the job loudly. (#236/#234)
-      - name: Verify deployed source matches this PR
-        if: steps.gate.outputs.available == 'true'
-        run: bash .github/scripts/mcp_verify_deploy.sh hubitat-mcp-server.groovy
-
-      # Prove the HPM bundle-install path on the live hub (issue #209). The deploy above used a
-      # bootstrap user-library so the app could compile and land hub_install_bundle; this step now
-      # reproduces HPM's real sequence -- delete that bootstrap copy, install the package's bundle
-      # .zip via hub_install_bundle (HPM "install bundles"), verify it delivered the library with
-      # the right content, then resave the app so its #include recompiles against the bundle-
-      # delivered library (HPM "install apps", after bundles). A malformed zip / wrong library name /
-      # bad manifest path / broken endpoint fails HERE on every PR instead of on a user's hub after
-      # they HPM-update. Blocking: a broken bundle path means the package can't be installed.
-      - name: Install bundle the HPM way + recompile app (issue #209)
-        if: steps.gate.outputs.available == 'true'
-        env:
-          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
-          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
-        run: bash .github/scripts/mcp_install_bundle_hpm.sh
-
-      # Arm the standing dead-man watchdog for THIS run. Placed here -- AFTER the authoritative
-      # "Verify deployed source matches this PR" gate AND the "Install bundle the HPM way" recompile
-      # -- so the server is confirmed working. The arm script refreshes the known-good backup via
-      # hub_get_source (which writes mcp-source-app-<CLASS_ID>.groovy hub-side) and asserts it is
-      # present and >1MB before writing the armed flag (ARM_WINDOW_MS deadline, 35 min); the always()
-      # "Disarm dead-man watchdog (final)" step below clears it before the lease is released.
-      - name: Arm dead-man watchdog
+      # Backup the known-good MCP server source and ARM the standing v2 dead-man watchdog for THIS
+      # run, both driven over the watchdog's own endpoint ($WATCHDOG_URL). The arm script captures a
+      # fresh >1MB known-good backup hub-side and asserts it is present before writing the armed flag
+      # (ARM_WINDOW_MS deadline, deliberately > the job timeout), so the watchdog can only fire its
+      # restore AFTER GitHub has already killed a hung/dead job, never mid-live-run. The always()
+      # "Disarm dead-man watchdog (final)" step below clears it and restores main before the lease is
+      # released. Placed BEFORE the PR install so the rollback target exists before the hub is mutated.
+      - name: Backup + arm dead-man watchdog
         if: steps.gate.outputs.available == 'true'
         env:
           PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
         run: bash .github/scripts/mcp_arm_watchdog.sh
 
+      # Install THIS PR's source + libraries + bundle onto the test hub through the watchdog's
+      # install plumbing ($WATCHDOG_URL). Replaces the old separate install-libraries / deploy-source /
+      # verify-deploy / install-bundle-HPM steps: the watchdog endpoint is a single driver of the
+      # same loopback restore/install plumbing, so it resolves #include libraries, lands the app
+      # source, verifies the deploy landed, and installs the bundle the HPM way in one step. Blocking:
+      # a failed PR install means the tests would run against stale/broken hub code.
+      - name: Watchdog - install PR
+        if: steps.gate.outputs.available == 'true'
+        env:
+          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
+          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
+        run: bash .github/scripts/mcp_watchdog_deploy.sh
+
       - name: Run E2E tests
         if: steps.gate.outputs.available == 'true'
         run: python tests/e2e_test.py
 
-      # The deploy above landed THIS PR's app on the hub, so hub_update_package now
+      # The install above landed THIS PR's app on the hub, so hub_update_package now
       # exists there. Exercise its discovery path live (dryRun: fetch PR source ->
       # parse #includes -> resolve self app-class) with ZERO writes. This is a REAL
       # blocking gate -- e2e passing is what shows the tool works. It runs AFTER the
       # e2e suite so a tool failure can't skip the suite; the cleanup/restore steps
       # below all use `if: always()`, so the hub is restored regardless. The full
       # write path (real library + #include + compile equivalence) is validated by the
-      # "Install PR libraries" step above plus the smokeTestMarker / hub_list_libraries
+      # watchdog PR-install step above plus the smokeTestMarker / hub_list_libraries
       # assertions in tests/e2e_test.py.
       - name: Validate hub_update_package dev tool (dryRun)
         if: steps.gate.outputs.available == 'true'
@@ -333,11 +334,6 @@ jobs:
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
         run: bash .github/scripts/mcp_validate_package_tool.sh
 
-      # NOTE: the dead-man watchdog's real-server restore was proven once on the e2e hub
-      # (run 27079818537: WATCHDOG_VERIFY_PASS -- fired, code-class version 209->210, server alive).
-      # The one-time mcp_watchdog_verify.sh fire test was removed after that green run; the standing
-      # arm (above) + always() disarm (below) are the permanent safety net.
-
       - name: Cleanup BAT_E2E_ artifacts
         if: always() && steps.gate.outputs.available == 'true'
         # Defensive — e2e_test.py cleans up after itself in the happy path,
@@ -345,26 +341,20 @@ jobs:
         # under the BAT_E2E_ prefix. This sweeps anything left over.
         run: python tests/e2e_test.py --cleanup-only
 
-      - name: Restore previous app source (push pre-deploy snapshot back)
-        if: always() && steps.gate.outputs.available == 'true'
-        # Pushes $RUNNER_TEMP/mcp_pre_source.groovy back to the hub so the
-        # next run (and any user inspecting the hub afterwards) sees the
-        # source that was live before this run mutated it. Tolerant of a
-        # missing snapshot file: if the deploy step never ran or never
-        # captured, this is a no-op.
-        run: bash .github/scripts/mcp_restore_source.sh
-
       - name: Restore test environment (settings back to pre-run state)
         if: always() && steps.gate.outputs.available == 'true'
         # Tolerant of missing pre-state file (early-exit no-op) so a setup
         # failure before capture doesn't propagate here.
         run: bash .github/scripts/mcp_restore_env.sh
 
-      # Disarm the dead-man watchdog as the final always() action BEFORE the lease is released, so a
+      # Disarm the v2 dead-man watchdog as the final always() action BEFORE the lease is released, so a
       # clean run can never hand the next run an armed flag (the watchdog would otherwise fire its
-      # auto-restore mid-next-run). The disarm reads the flag back and asserts armed==false, failing
-      # loudly if it can't confirm -- a silently-failed disarm is exactly the dangerous case. It runs
-      # before lease release so the next run can't be left unprotected.
+      # auto-restore mid-next-run). The v2 clean disarm ALSO restores main: it pushes the pre-deploy
+      # known-good snapshot back through the watchdog's own restore plumbing ($WATCHDOG_URL), so this
+      # one step replaces both the old disarm AND the old "Restore previous app source" step (return-to-
+      # main is now handled here). It reads the flag back and asserts armed==false, failing loudly if it
+      # can't confirm -- a silently-failed disarm is exactly the dangerous case. Runs before lease
+      # release so the next run can't be left unprotected.
       - name: Disarm dead-man watchdog (final)
         if: always() && steps.gate.outputs.available == 'true'
         run: bash .github/scripts/mcp_disarm_watchdog.sh
