@@ -511,7 +511,7 @@ def _read_manifest(tmp_path):
 
 def _block(version, date, lines):
     """Build a realistic manifest block string."""
-    body = "\n".join(f"- {l}" for l in lines)
+    body = "\n".join(f"- {line}" for line in lines)
     return f"v{version} - {date}\n{body}"
 
 

@@ -1,29 +1,33 @@
 #!/usr/bin/env python3
-"""Build the HPM bundle ZIP for the issue #209 smoke-test library.
+"""Build the HPM bundle ZIP for the MCP Rule Server's #include libraries (issue #209).
 
-Produces bundles/mcp-smoke-test.zip in the layout Hubitat's Bundle Manager
+Produces bundles/mcp-libraries.zip in the layout Hubitat's Bundle Manager
 expects (the format proven in production by level99/Hubitat-VeSync, which
 migrated to bundles[] after the older libraries[] manifest array silently
 dropped libraries on HPM update):
 
-  mcp.McpSmokeTestLib.groovy   <- the library source, renamed to <namespace>.<name>.groovy
+  mcp.McpSmokeTestLib.groovy   <- a library source, renamed to <namespace>.<name>.groovy
+  mcp.McpRoomsLib.groovy       <- (one .groovy entry per library in LIBS)
   install.txt                  <- bundle install manifest
   update.txt                   <- bundle update manifest (identical content)
 
-install.txt / update.txt declare, one line each:
+install.txt / update.txt declare the namespace, the bundle name, then one
+`library <namespace>.<name>.groovy` line per library:
 
   <namespace>
   <bundle_name>
   library <namespace>.<name>.groovy
+  ...
 
 On HPM install/update the hub extracts each .groovy into Libraries Code under
-the declared namespace + name, making it resolvable via `#include mcp.McpSmokeTestLib`.
+the declared namespace + name, making each resolvable via its `#include`
+(e.g. `#include mcp.McpRoomsLib`).
 
 Hosting: this repo serves the bundle from a stable raw-main URL (see
 packageManifest.json `bundles[]`), exactly as it already serves the app .groovy
 files, so the ZIP IS committed to git. The build is deterministic (fixed DOS
-epoch, stored entries) so a rebuild yields byte-identical output and a future
-drift check can diff it.
+epoch, stored entries) so a rebuild yields byte-identical output and the
+sandbox-lint drift check can diff it.
 
 Run:  python3 tools/build-bundle.py
 """
@@ -37,15 +41,19 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB_DIR = REPO_ROOT / "libraries"
 OUTPUT_DIR = REPO_ROOT / "bundles"
-OUTPUT_ZIP = OUTPUT_DIR / "mcp-smoke-test.zip"
+OUTPUT_ZIP = OUTPUT_DIR / "mcp-libraries.zip"
 
 NAMESPACE = "mcp"
-BUNDLE_NAME = "mcp_smoke_test_lib"
+BUNDLE_NAME = "mcp_libraries"
 
 LIBS = [
     {
         "source": LIB_DIR / "mcp-smoke-test-lib.groovy",
         "dest": f"{NAMESPACE}.McpSmokeTestLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-rooms-lib.groovy",
+        "dest": f"{NAMESPACE}.McpRoomsLib.groovy",
     },
 ]
 
@@ -64,7 +72,9 @@ def _add(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
 def build() -> str:
     for lib in LIBS:
         if not lib["source"].exists():
-            print(f"ERROR: source library not found at {lib['source']}", file=sys.stderr)
+            print(
+                f"ERROR: source library not found at {lib['source']}", file=sys.stderr
+            )
             raise SystemExit(1)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -75,7 +85,12 @@ def build() -> str:
         for lib in LIBS:
             # Read as text + normalize CRLF->LF so the committed ZIP is byte-identical
             # regardless of the builder's git core.autocrlf / platform.
-            content = lib["source"].read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+            content = (
+                lib["source"]
+                .read_text(encoding="utf-8")
+                .replace("\r\n", "\n")
+                .encode("utf-8")
+            )
             _add(zf, lib["dest"], content)
         _add(zf, "install.txt", manifest.encode())
         _add(zf, "update.txt", manifest.encode())
@@ -91,7 +106,9 @@ def verify(manifest: str) -> None:
     with zipfile.ZipFile(OUTPUT_ZIP) as zf:
         names = set(zf.namelist())
         if names != expected:
-            raise RuntimeError(f"bundle entries {sorted(names)} != expected {sorted(expected)}")
+            raise RuntimeError(
+                f"bundle entries {sorted(names)} != expected {sorted(expected)}"
+            )
         if zf.read("install.txt").decode() != manifest:
             raise RuntimeError("install.txt content drifted from the builder")
         if zf.read("update.txt").decode() != manifest:

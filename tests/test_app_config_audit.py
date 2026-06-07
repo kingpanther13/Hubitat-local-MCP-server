@@ -11,7 +11,6 @@ import os
 # Make app_config_audit importable without installing it.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-import pytest
 import app_config_audit as aca
 
 

@@ -118,6 +118,22 @@ class IncludeResolverSpec extends Specification {
         !out.contains('#include')
     }
 
+    def "resolving against the REAL repo libraries dir inlines the live McpRoomsLib impls"() {
+        given: 'the actual checked-in Rooms library -- first real module of the issue #209 split'
+        def realLibs = new File('libraries')
+        assert realLibs.isDirectory(), "expected the repo 'libraries' dir relative to cwd ${new File('.').absolutePath} -- run from the repo root"
+        def src = "#include mcp.McpRoomsLib\n"
+
+        when:
+        def out = IncludeResolver.resolve(src, realLibs)
+
+        then: 'the room tool impls are inlined and both the directive and the library() decl are stripped'
+        out.contains('def toolListRooms')
+        out.contains('def toolRenameRoom')
+        !out.contains('#include')
+        !out.contains('library(name: "McpRoomsLib"')
+    }
+
     def "indexLibraries matches name/namespace even when a description ) appears BEFORE the keys"() {
         given: 'regression for the old [^)]* index regex, which a ) in an earlier field truncated'
         def libs = libsDir()

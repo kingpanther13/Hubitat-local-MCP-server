@@ -3010,13 +3010,13 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "the Write master enabled, recent backup exists. Identify the raw URL of a small bundle .zip the hub can reach (e.g. this repo's bundles/mcp-smoke-test.zip on a public GitHub raw URL). The bundle ships the McpSmokeTestLib library.",
-  "test_prompt": "Install the bundle from that .zip URL using hub_install_bundle (confirm=true), then verify the bundle's library is present with hub_list_libraries.",
-  "teardown_prompt": "Optionally delete the McpSmokeTestLib library if it was newly created (note: removing it would break the server's #include on next save, so leave it in place on the live server)."
+  "setup_prompt": "the Write master enabled, recent backup exists. Identify the raw URL of a bundle .zip the hub can reach (e.g. this repo's bundles/mcp-libraries.zip on a public GitHub raw URL). The bundle ships the McpRoomsLib and McpSmokeTestLib libraries.",
+  "test_prompt": "Install the bundle from that .zip URL using hub_install_bundle (confirm=true), then verify the bundle's libraries are present with hub_list_libraries.",
+  "teardown_prompt": "Optionally delete a library if it was newly created (note: removing McpRoomsLib or McpSmokeTestLib would break the server's #include on next save, so leave them in place on the live server)."
 }
 ```
 
-**Expected**: AI calls `hub_manage_code(tool='hub_install_bundle', args={importUrl:'https://.../bundles/mcp-smoke-test.zip', confirm:true})`. Result: `{success:true, endpoint:'/bundle2/uploadZipFromUrl', message:'Bundle installed...'}` on firmware >= 2.3.8.108 (older firmware uses `/bundle/uploadZipFromUrl`). A follow-up `hub_list_libraries` shows `McpSmokeTestLib` (namespace `mcp`). This mirrors how Hubitat Package Manager delivers a package's library files — bundle fetched + unpacked into Libraries Code server-side, no UI.
+**Expected**: AI calls `hub_manage_code(tool='hub_install_bundle', args={importUrl:'https://.../bundles/mcp-libraries.zip', confirm:true})`. Result: `{success:true, endpoint:'/bundle2/uploadZipFromUrl', message:'Bundle installed...'}` on firmware >= 2.3.8.108 (older firmware uses `/bundle/uploadZipFromUrl`). A follow-up `hub_list_libraries` shows `McpRoomsLib` and `McpSmokeTestLib` (namespace `mcp`). This mirrors how Hubitat Package Manager delivers a package's library files — bundle fetched + unpacked into Libraries Code server-side, no UI.
 
 ### T510 — hub_install_bundle refuses without confirm flag
 
@@ -3034,7 +3034,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 ```json
 {
   "setup_prompt": "the Write master enabled, recent backup exists.",
-  "test_prompt": "Try to install a bundle with importUrl='mcp-smoke-test.zip' (a bare filename, no scheme) and confirm=true. What does the tool say?"
+  "test_prompt": "Try to install a bundle with importUrl='mcp-libraries.zip' (a bare filename, no scheme) and confirm=true. What does the tool say?"
 }
 ```
 

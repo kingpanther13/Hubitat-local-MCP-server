@@ -73,7 +73,7 @@ result = quick_probe(
 
 print()
 print(f"broken: {result['final']['broken']}")
-print(f"render:")
+print("render:")
 for line in result["final"]["paragraphs"]:
     print(f"  {line}")
 print(f"errors: {result['errors']}")

@@ -1,0 +1,12 @@
+# Ruff configuration -- LINT ONLY (no formatter gate).
+#
+# This is a Groovy-first project; Ruff covers the auxiliary Python (tests, CI
+# scripts, tooling). The rule set is pinned to Ruff's high-value bug-catching
+# default (pyflakes F + pycodestyle E4/E7/E9) so CI stays deterministic across
+# Ruff version bumps. The formatter and line-length (E501) are deliberately NOT
+# enabled: the existing Python is not formatter-managed, so a reformat gate would
+# add churn without catching bugs. Add rules here as the codebase tightens.
+target-version = "py311"
+
+[lint]
+select = ["E4", "E7", "E9", "F"]

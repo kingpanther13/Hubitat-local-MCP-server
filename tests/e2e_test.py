@@ -1386,18 +1386,31 @@ class TestRunner:
         libs = result if isinstance(result, list) else result.get("libraries", [])
         assert isinstance(libs, list), "hub_list_libraries did not return a list"
         source = result.get("source") if isinstance(result, dict) else None
-        assert source in (None, "hub_api", "hub_api_raw", "unavailable"), \
-            f"hub_list_libraries returned unexpected source {source!r}"
+        # The library-PRESENCE assertions below require the hub's library API to return its
+        # populated JSON-array shape (source == "hub_api"). The degraded shapes
+        # (hub_api_raw / unavailable) return an empty list, so requiring hub_api here turns a
+        # genuinely-unreadable library API into a clear failure instead of a misleading
+        # "McpRoomsLib not found (got [])". level99's hub returns the array today.
+        assert source == "hub_api", (
+            f"hub_list_libraries did not return the populated hub API shape (source={source!r}); "
+            "cannot validate bundle-delivered libraries"
+        )
         for lib in libs:
             assert "id" in lib and "name" in lib, "library summary missing id/name"
             assert "source" not in lib, "hub_list_libraries should omit source (read it via hub_get_source)"
-        # issue #209: the "Install bundle the HPM way" CI step delivers McpSmokeTestLib (mcp namespace)
-        # into Libraries Code via the bundle .zip (the #include's library leg), so it must be present
-        # here. Proves the library was actually added to Libraries Code on the hub (not just that the
-        # app compiled). Removed with the smoke test.
+        # issue #209: the "Install bundle the HPM way" CI step delivers the package's libraries (mcp
+        # namespace) into Libraries Code via the bundle .zip (the #include's library leg), so they must
+        # be present here. Proves the libraries were actually added to Libraries Code on the hub (not
+        # just that the app compiled).
+        lib_names = [lib.get("name") for lib in libs]
+        # McpRoomsLib is the first REAL extracted module (hub_*_room impls) -- permanent.
+        assert any(
+            lib.get("name") == "McpRoomsLib" and lib.get("namespace") == "mcp" for lib in libs
+        ), f"McpRoomsLib not found in hub libraries (got {lib_names})"
+        # McpSmokeTestLib is the throwaway #209 canary -- removed once the split is validated.
         assert any(
             lib.get("name") == "McpSmokeTestLib" and lib.get("namespace") == "mcp" for lib in libs
-        ), f"McpSmokeTestLib not found in hub libraries (got {[lib.get('name') for lib in libs]})"
+        ), f"McpSmokeTestLib not found in hub libraries (got {lib_names})"
 
     @test("system_tools")
     def test_manage_diagnostics(self) -> None:
@@ -1525,6 +1538,95 @@ class TestRunner:
         })
         # May be empty list, but should not error
         assert result is not None, "hub_list_rooms returned None"
+
+    @test("system_tools")
+    def test_manage_rooms_create_get_rename_delete(self) -> None:
+        """Issue #209: validate the FULL McpRoomsLib-backed Rooms flow live.
+
+        Room create/get/update/delete impls now live in the McpRoomsLib #include
+        library; this exercises all five room tools (create, get, update/rename, list,
+        delete) against the real hub through the deployed app, including the
+        device-assignment path (create WITH a device -> hub_get_room renders it ->
+        hub_delete_room unassigns it). The Spock suite covers the logic in isolation;
+        this proves the extracted library actually runs end-to-end. Self-cleaning;
+        cleanup()'s room sweep reclaims a strand if this crashes mid-way.
+        """
+        dev_id = self.get_first_device_id()
+        name = f"{PREFIX}RoomLib"
+        renamed = f"{PREFIX}RoomLib2"
+        room_id = None
+        try:
+            # Self-heal: a doubly-crashed prior run could leave BAT_E2E_RoomLib/RoomLib2 behind,
+            # which would make hub_create_room/hub_update_room fail on the duplicate-name guard.
+            # Delete any pre-existing same-named rooms first (mirrors get_test_switch_id reuse).
+            pre = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            for r in (pre.get("rooms", []) if isinstance(pre, dict) else []):
+                if r.get("name") in (name, renamed):
+                    try:
+                        self.client.call_tool("hub_manage_rooms", {
+                            "tool": "hub_delete_room",
+                            "args": {"room": str(r.get("id")), "confirm": True},
+                        })
+                    except Exception as exc:
+                        print(f"  [WARN] rooms flow pre-sweep: delete {r.get('id')} failed: {exc}")
+
+            # hub_create_room WITH a device assigned at creation.
+            created = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_create_room",
+                "args": {"name": name, "deviceIds": [dev_id], "confirm": True},
+            })
+            assert created.get("success") is True, f"hub_create_room did not succeed: {created}"
+            room = created.get("room") or {}
+            room_id = str(room.get("id") or "")
+            assert room_id, f"hub_create_room returned no room id: {created}"
+            assert room.get("deviceCount") == 1, \
+                f"hub_create_room did not assign the device at creation (deviceCount={room.get('deviceCount')!r}): {created}"
+
+            # hub_get_room (singular read): must return the room WITH the assigned device.
+            got = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_get_room",
+                "args": {"room": room_id},
+            })
+            assert str(got.get("id")) == room_id, f"hub_get_room returned wrong room: {got}"
+            assert got.get("name") == name, f"hub_get_room name mismatch: {got}"
+            got_devices = got.get("devices") or []
+            assert any(str(d.get("id")) == dev_id for d in got_devices), \
+                f"hub_get_room did not list the assigned device {dev_id}: {got}"
+
+            # hub_update_room (rename).
+            renamed_res = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_update_room",
+                "args": {"room": room_id, "newName": renamed, "confirm": True},
+            })
+            assert renamed_res.get("success") is True, f"hub_update_room did not succeed: {renamed_res}"
+            assert (renamed_res.get("room") or {}).get("name") == renamed, \
+                f"hub_update_room did not apply the new name: {renamed_res}"
+
+            # hub_list_rooms must reflect the rename.
+            listed = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            rooms = listed.get("rooms", []) if isinstance(listed, dict) else []
+            assert any(str(r.get("id")) == room_id and r.get("name") == renamed for r in rooms), \
+                f"renamed room {room_id} not found as '{renamed}' in hub_list_rooms: {rooms}"
+
+            # hub_delete_room (unassigns the device, does NOT delete the device).
+            deleted = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_delete_room",
+                "args": {"room": room_id, "confirm": True},
+            })
+            assert deleted.get("success") is True, f"hub_delete_room did not succeed: {deleted}"
+            assert deleted.get("devicesUnassigned") == 1, \
+                f"hub_delete_room did not report the device unassigned: {deleted}"
+            room_id = None  # deleted cleanly; skip the finally sweep
+            print(f"    ROOMS_LIB_FLOW create+get+rename+delete OK ({renamed}, dev {dev_id})")
+        finally:
+            if room_id:
+                try:
+                    self.client.call_tool("hub_manage_rooms", {
+                        "tool": "hub_delete_room",
+                        "args": {"room": room_id, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] rooms flow cleanup: delete {room_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
     # GROUP 10: developer_mode (10 tests — Section 12 of BAT-v2.md + review-fix coverage)
@@ -1929,10 +2031,13 @@ class TestRunner:
     # -----------------------------------------------------------------------
 
     def cleanup(self) -> None:
-        """Three-layer cleanup:
-        1. Delete tracked artifacts (device DNIs, rule IDs, variables)
-        2. Sweep for any BAT_E2E_ virtual devices
-        3. Sweep for any BAT_E2E_ rules
+        """Multi-layer cleanup of BAT_E2E_ artifacts:
+        1. Tracked artifacts (device DNIs, rule IDs, variables)
+        2. Virtual devices (prefix sweep)
+        3. Custom rules (prefix sweep)
+        4. Native RM apps (tracked + prefix sweep)
+        5. Deadman install-fix throwaway (namespace+name)
+        6. Rooms (prefix sweep)
         """
         print("\n--- Cleanup ---")
 
@@ -2063,6 +2168,28 @@ class TestRunner:
                         print(f"  [WARN] deadman sweep: code-class delete failed: {exc}")
         except Exception as exc:
             print(f"  [WARN] deadman target sweep failed: {exc}")
+
+        # Layer 6: rooms with the BAT_E2E_ prefix (issue #209 McpRoomsLib round-trip).
+        # The create/rename/delete test cleans up in its own finally; this reclaims a
+        # room a crashed run stranded.
+        try:
+            rooms_result = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            rlist = rooms_result.get("rooms", []) if isinstance(rooms_result, dict) else []
+            for rm in rlist:
+                rname = rm.get("name") or ""
+                if PREFIX in rname:
+                    rid = str(rm.get("id", ""))
+                    if rid:
+                        try:
+                            print(f"  Sweep: deleting room '{rname}' (id={rid})")
+                            self.client.call_tool("hub_manage_rooms", {
+                                "tool": "hub_delete_room",
+                                "args": {"room": rid, "confirm": True},
+                            })
+                        except Exception as exc:
+                            print(f"  [WARN] Room sweep delete failed for '{rname}': {exc}")
+        except Exception as exc:
+            print(f"  [WARN] Room sweep failed: {exc}")
 
         print("--- Cleanup complete ---\n")
 
@@ -2216,11 +2343,11 @@ def load_config() -> dict:
     missing = [k for k in ("hub_url", "app_id", "access_token") if not config.get(k)]
     if missing:
         print(f"ERROR: Missing config values: {', '.join(missing)}")
-        print(f"  Set via tests/e2e_config.json or env vars "
-              f"HUBITAT_HUB_URL, HUBITAT_APP_ID, HUBITAT_ACCESS_TOKEN")
+        print("  Set via tests/e2e_config.json or env vars "
+              "HUBITAT_HUB_URL, HUBITAT_APP_ID, HUBITAT_ACCESS_TOKEN")
         if not config_path.exists():
             print(f"  Config file not found: {config_path}")
-            print(f"  Copy e2e_config.example.json to e2e_config.json and fill in values.")
+            print("  Copy e2e_config.example.json to e2e_config.json and fill in values.")
         sys.exit(1)
 
     return config
@@ -2274,7 +2401,7 @@ def main() -> None:
         print("  Hub is reachable. MCP server responded to initialize.\n")
     except requests.exceptions.ConnectionError:
         print(f"  ERROR: Cannot connect to hub at {config['hub_url']}")
-        print(f"  Check that the hub is online and the URL is correct.")
+        print("  Check that the hub is online and the URL is correct.")
         sys.exit(1)
     except Exception as exc:
         print(f"  ERROR: Initialize failed: {exc}")
@@ -2288,7 +2415,7 @@ def main() -> None:
         print(f"  Backup: {msg}\n")
     except Exception as exc:
         print(f"  [WARN] Backup failed: {exc}")
-        print(f"  Tests requiring backup may fail.\n")
+        print("  Tests requiring backup may fail.\n")
 
     all_passed = runner.run(filter_group=args.group, filter_test=args.test)
     sys.exit(0 if all_passed else 1)

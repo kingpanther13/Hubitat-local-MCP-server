@@ -11,7 +11,6 @@ import os
 # Make pr_guard importable without installing it.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".github", "scripts"))
 
-import pytest
 import pr_guard
 
 

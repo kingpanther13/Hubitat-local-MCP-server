@@ -48,3 +48,6 @@ tests/wizard_probe_results/
 # Local scratch / targeted-test output files (contributor-private, not committed)
 tests/bat_targeted_results.md
 tests/diag_*.py
+
+# Working-artifact diff dumps (never commit; six were accidentally tracked once)
+.diff_*.txt

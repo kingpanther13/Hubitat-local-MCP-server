@@ -43,7 +43,7 @@ Once HPM is installed:
 2. Search for **"MCP"**
 3. Select **MCP Rule Server** and install
 
-That's it! HPM will install both the parent app and child app automatically and notify you when updates are available.
+That's it! HPM will install the parent app, the child app, and the required Groovy **libraries** (delivered as a bundle, shown under **Libraries Code**) automatically in the same install/update, and notify you when updates are available.
 
 > **Alternate HPM method**: You can also use HPM > **Install** > **From a URL** and paste:
 > ```
@@ -52,9 +52,18 @@ That's it! HPM will install both the parent app and child app automatically and 
 
 ### Option B: Manual Installation
 
-You need to install **two** app files:
+The parent app `#include`s Groovy **libraries**, so you must install the libraries **first** — otherwise the parent app fails to compile when you Save it. Install in this order: libraries, then the parent app, then the child app.
 
-**1. Install the Parent App (MCP Rule Server):**
+**1. Install the Libraries:**
+
+For each URL below, go to the Hubitat web UI > **Libraries Code** > **+ New Library**, click **Import**, paste the URL, then **Import** > **OK** > **Save**:
+   ```
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/libraries/mcp-rooms-lib.groovy
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/libraries/mcp-smoke-test-lib.groovy
+   ```
+   (`mcp-smoke-test-lib` is a small internal canary the app currently `#include`s; it will be removed in a future release. Until then, both libraries are required for the app to compile. HPM installs them for you — this manual step only applies to Option B.)
+
+**2. Install the Parent App (MCP Rule Server):**
 1. Go to Hubitat web UI > **Apps Code** > **+ New App**
 2. Click **Import** and paste this URL:
    ```
@@ -63,7 +72,7 @@ You need to install **two** app files:
 3. Click **Import** > **OK** > **Save**
 4. Click **OAuth** > **Enable OAuth in App** > **Save**
 
-**2. Install the Child App (MCP Rule):**
+**3. Install the Child App (MCP Rule):**
 1. Go to **Apps Code** > **+ New App**
 2. Click **Import** and paste this URL:
    ```

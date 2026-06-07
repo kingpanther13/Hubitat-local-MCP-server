@@ -1,0 +1,25 @@
+name: Ruff
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.py'
+      - 'ruff.toml'
+      - '.github/workflows/ruff.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - name: Install Ruff
+        # Pinned to match the version used locally so CI and local agree.
+        run: pip install ruff==0.15.15
+      - name: Ruff lint
+        run: ruff check .

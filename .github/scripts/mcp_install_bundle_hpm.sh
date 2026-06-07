@@ -9,19 +9,20 @@
 # every PR instead of on a user's hub after they HPM-update.
 #
 # It runs AFTER the app has been deployed once (so hub_install_bundle itself exists on the hub) and
-# AFTER mcp_install_libraries.sh bootstrapped mcp.McpSmokeTestLib as a plain user library (so that
-# first deploy compiled). To make the BUNDLE the sole deliverer -- a faithful fresh-install mimic,
-# and to avoid a user-library-vs-bundle-library name clash -- it deletes that bootstrap library
-# first, then:
+# AFTER mcp_install_libraries.sh bootstrapped each #include'd library as a plain user library (so
+# that first deploy compiled). To make the BUNDLE the sole deliverer -- a faithful fresh-install
+# mimic, and to avoid a user-library-vs-bundle-library name clash -- it deletes EVERY bundle-managed
+# user library first, then:
 #   1. installs the real bundle zip via hub_install_bundle (HPM "install bundles" step),
-#   2. verifies the library is back in Libraries Code with the expected marker content,
-#   3. resaves the app so its #include recompiles against the bundle-delivered library
+#   2. verifies each library is back in Libraries Code (plus expected marker content where defined),
+#   3. resaves the app so its #include directives recompile against the bundle-delivered libraries
 #      (HPM "install apps" step, run AFTER bundles -- exactly HPM's order).
 #
 # Safety on a shared hub: the app is already compiled and running in hub memory, so the cloud MCP
-# endpoint stays reachable even while the on-disk library is briefly absent. An EXIT trap re-ensures
-# mcp.McpSmokeTestLib exists (re-creating it from the PR source if the bundle install failed) so the
-# later restore-source step never re-saves an app that references a missing library.
+# endpoint stays reachable even while the on-disk libraries are briefly absent. An EXIT trap
+# re-ensures every bundle-managed library exists (re-creating it from the PR source if the bundle
+# install failed) so the later restore-source step never re-saves an app that references a missing
+# library.
 #
 # Env:  MCP_URL               -- full cloud OAuth URL with access_token
 #       PR_RAW_BASE           -- https://raw.githubusercontent.com/<owner>/<repo>
@@ -35,14 +36,18 @@ set -uo pipefail
 : "${PR_RAW_BASE:?PR_RAW_BASE env var required}"
 : "${PR_HEAD_SHA_RESOLVED:?PR_HEAD_SHA_RESOLVED env var required}"
 
-LIB_NS="mcp"
-LIB_NAME="McpSmokeTestLib"
-LIB_MARKER="smoke-ok-v1"
 APP_NAMESPACE="mcp"
 APP_NAME="MCP Rule Server"
-BUNDLE_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/bundles/mcp-smoke-test.zip"
-# Recovery source uses the library file's real path (filename != declared namespace.name).
-LIB_SOURCE_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/libraries/mcp-smoke-test-lib.groovy"
+BUNDLE_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/bundles/mcp-libraries.zip"
+
+# Libraries the bundle is expected to deliver, as "ns|name|marker|source_relpath":
+#   marker         -- a string that MUST appear in the delivered source (content check); "" = presence-only
+#   source_relpath -- the library file's real path (filename != declared namespace.name), for recovery
+# Keep in sync with tools/build-bundle.py's LIBS and the app's #include directives.
+LIB_SPECS=(
+  "mcp|McpSmokeTestLib|smoke-ok-v1|libraries/mcp-smoke-test-lib.groovy"
+  "mcp|McpRoomsLib||libraries/mcp-rooms-lib.groovy"
+)
 
 mcp_call() {
   curl -sS --max-time 300 -X POST "$MCP_URL" \
@@ -56,48 +61,56 @@ tool_text() {
   printf '%s' "$resp" | jq -r '.result.content[0].text // empty' 2>/dev/null || true
 }
 
-# Echo the hub library id for (LIB_NS, LIB_NAME), or empty if not present.
+# Echo the hub library id for (ns, name), or empty if not present.
 lib_id() {
-  local text
+  local ns="$1" name="$2" text
   text=$(tool_text '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}')
-  printf '%s' "$text" | jq -r --arg ns "$LIB_NS" --arg name "$LIB_NAME" \
+  printf '%s' "$text" | jq -r --arg ns "$ns" --arg name "$name" \
     '(.libraries // []) | map(select(.namespace==$ns and .name==$name)) | (.[0].id // empty)' 2>/dev/null || true
 }
 
-# Safety net: if the library is gone at exit (bundle install failed after we deleted it),
-# re-create it from the PR source so restore-source can re-save the app without a dangling #include.
-ensure_lib_present() {
-  if [ -z "$(lib_id)" ]; then
-    echo "::warning::${LIB_NS}.${LIB_NAME} absent at exit -- re-creating from PR source to keep the hub safe for restore."
-    local rpc
-    rpc=$(jq -nc --arg url "$LIB_SOURCE_URL" \
-      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_create_library",arguments:{importUrl:$url,confirm:true}}}')
-    mcp_call "$rpc" >/dev/null || echo "::warning::recovery hub_create_library call failed/timed out"
-  fi
+# Safety net: re-create any bundle-managed library that's missing at exit (bundle install failed
+# after we deleted it), from the PR source, so restore-source can re-save the app without a
+# dangling #include.
+ensure_libs_present() {
+  local spec ns name _marker src url rpc
+  for spec in "${LIB_SPECS[@]}"; do
+    IFS='|' read -r ns name _marker src <<<"$spec"
+    if [ -z "$(lib_id "$ns" "$name")" ]; then
+      url="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/${src}"
+      echo "::warning::${ns}.${name} absent at exit -- re-creating from PR source to keep the hub safe for restore."
+      rpc=$(jq -nc --arg url "$url" \
+        '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_create_library",arguments:{importUrl:$url,confirm:true}}}')
+      mcp_call "$rpc" >/dev/null || echo "::warning::recovery hub_create_library call for ${ns}.${name} failed/timed out"
+    fi
+  done
 }
-trap ensure_lib_present EXIT
+trap ensure_libs_present EXIT
 
 # Keep the destructive-confirm <24h backup window warm (timestamp-cached; a 504 here is tolerated).
 echo "Triggering hub backup (best-effort)..."
 mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true}}}' >/dev/null \
   || echo "::warning::hub_create_backup failed/timed out; relying on cached <24h backup timestamp"
 
-# --- 1) Remove the bootstrap user-library so the bundle is the SOLE deliverer (fresh-install mimic).
-EXISTING_ID="$(lib_id)"
-if [ -n "$EXISTING_ID" ]; then
-  echo "Deleting bootstrap library ${LIB_NS}.${LIB_NAME} (id ${EXISTING_ID}) so the bundle delivers it cleanly..."
-  DEL_RPC=$(jq -nc --arg id "$EXISTING_ID" \
-    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_delete_item",arguments:{type:"library",id:$id,confirm:true}}}')
-  DEL_TEXT=$(tool_text "$DEL_RPC")
-  DEL_OK=$(printf '%s' "$DEL_TEXT" | jq -r '.success // false' 2>/dev/null || echo false)
-  if [ "$DEL_OK" != "true" ]; then
-    # Non-fatal: fall through to the bundle install (it will overwrite/coexist). If the hub refused
-    # because the library is in use, the bundle-over-existing path is then the thing under test.
-    echo "::warning::Could not delete bootstrap library (continuing; bundle install will overwrite or coexist): $(printf '%s' "$DEL_TEXT" | head -c 200)"
+# --- 1) Remove the bootstrap user-libraries so the bundle is the SOLE deliverer (fresh-install mimic).
+for spec in "${LIB_SPECS[@]}"; do
+  IFS='|' read -r ns name _marker _src <<<"$spec"
+  existing_id="$(lib_id "$ns" "$name")"
+  if [ -n "$existing_id" ]; then
+    echo "Deleting bootstrap library ${ns}.${name} (id ${existing_id}) so the bundle delivers it cleanly..."
+    del_rpc=$(jq -nc --arg id "$existing_id" \
+      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_delete_item",arguments:{type:"library",id:$id,confirm:true}}}')
+    del_text=$(tool_text "$del_rpc")
+    del_ok=$(printf '%s' "$del_text" | jq -r '.success // false' 2>/dev/null || echo false)
+    if [ "$del_ok" != "true" ]; then
+      # Non-fatal: fall through to the bundle install (it will overwrite/coexist). If the hub refused
+      # because the library is in use, the bundle-over-existing path is then the thing under test.
+      echo "::warning::Could not delete bootstrap library ${ns}.${name} (continuing; bundle install will overwrite or coexist): $(printf '%s' "$del_text" | head -c 200)"
+    fi
+  else
+    echo "No existing ${ns}.${name} on the hub -- the bundle will create it fresh."
   fi
-else
-  echo "No existing ${LIB_NS}.${LIB_NAME} on the hub -- the bundle will create it fresh."
-fi
+done
 
 # --- 2) HPM "install bundles": install the REAL bundle zip via the REAL hub endpoint.
 echo "Installing bundle from ${BUNDLE_URL} via hub_install_bundle ..."
@@ -106,29 +119,37 @@ BUN_RPC=$(jq -nc --arg url "$BUNDLE_URL" \
 BUN_TEXT=$(tool_text "$BUN_RPC")
 BUN_OK=$(printf '%s' "$BUN_TEXT" | jq -r '.success // false' 2>/dev/null || echo false)
 if [ "$BUN_OK" != "true" ]; then
-  echo "::error::hub_install_bundle did not report success -- HPM would fail to deliver this package's library: $(printf '%s' "$BUN_TEXT" | jq -c '{success,error,endpoint,rawResponse}' 2>/dev/null || printf '%s' "$BUN_TEXT" | head -c 400)"
+  echo "::error::hub_install_bundle did not report success -- HPM would fail to deliver this package's libraries: $(printf '%s' "$BUN_TEXT" | jq -c '{success,error,endpoint,rawResponse}' 2>/dev/null || printf '%s' "$BUN_TEXT" | head -c 400)"
   exit 1
 fi
 echo "Bundle installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint,message}' 2>/dev/null || true)"
 
-# --- 3) Verify the bundle delivered the CORRECT library content into Libraries Code.
-NEW_ID="$(lib_id)"
-if [ -z "$NEW_ID" ]; then
-  echo "::error::Bundle install reported success but ${LIB_NS}.${LIB_NAME} is not in the hub library list -- the zip did not deliver the library."
-  exit 1
-fi
-SRC_RPC=$(jq -nc --arg id "$NEW_ID" \
-  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"library",id:$id}}}')
-SRC_TEXT=$(tool_text "$SRC_RPC")
-LIB_SRC=$(printf '%s' "$SRC_TEXT" | jq -r '.source // empty' 2>/dev/null || true)
-if ! printf '%s' "$LIB_SRC" | grep -q "$LIB_MARKER"; then
-  echo "::error::Bundle-delivered ${LIB_NS}.${LIB_NAME} (id ${NEW_ID}) does not contain the expected marker '${LIB_MARKER}' -- the zip shipped stale or wrong library content. Source head: $(printf '%s' "$LIB_SRC" | head -c 200)"
-  exit 1
-fi
-echo "Verified: bundle delivered ${LIB_NS}.${LIB_NAME} (id ${NEW_ID}) carrying marker '${LIB_MARKER}'."
+# --- 3) Verify the bundle delivered EACH library into Libraries Code (presence + marker content).
+for spec in "${LIB_SPECS[@]}"; do
+  IFS='|' read -r ns name marker _src <<<"$spec"
+  new_id="$(lib_id "$ns" "$name")"
+  if [ -z "$new_id" ]; then
+    echo "::error::Bundle install reported success but ${ns}.${name} is not in the hub library list -- the zip did not deliver this library."
+    exit 1
+  fi
+  if [ -n "$marker" ]; then
+    src_rpc=$(jq -nc --arg id "$new_id" \
+      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"library",id:$id}}}')
+    src_text=$(tool_text "$src_rpc")
+    lib_src=$(printf '%s' "$src_text" | jq -r '.source // empty' 2>/dev/null || true)
+    if ! printf '%s' "$lib_src" | grep -q "$marker"; then
+      echo "::error::Bundle-delivered ${ns}.${name} (id ${new_id}) does not contain the expected marker '${marker}' -- the zip shipped stale or wrong library content. Source head: $(printf '%s' "$lib_src" | head -c 200)"
+      exit 1
+    fi
+    echo "Verified: bundle delivered ${ns}.${name} (id ${new_id}) carrying marker '${marker}'."
+  else
+    echo "Verified: bundle delivered ${ns}.${name} (id ${new_id})."
+  fi
+done
 
-# --- 4) HPM "install apps" (after bundles): recompile the app so its #include resolves against the
-# bundle-delivered library. Resolve the Apps Code CLASS id (scope=types), then hub_update_app resave.
+# --- 4) HPM "install apps" (after bundles): recompile the app so its #include directives resolve
+# against the bundle-delivered libraries. Resolve the Apps Code CLASS id (scope=types), then
+# hub_update_app resave.
 #
 # Reading the compile result through the cloud relay: Hubitat reloads the app ONLY on a SUCCESSFUL
 # recompile (which drops the in-flight cloud connection -> 5xx/curl-error), whereas a COMPILE FAILURE
@@ -138,9 +159,9 @@ echo "Verified: bundle delivered ${LIB_NS}.${LIB_NAME} (id ${NEW_ID}) carrying m
 #   curl error / 5xx         -> app reloaded => recompiled successfully    -> PASS
 # Note the curl-error/5xx PASS branch can also fire on pure relay flakiness (e.g. a --max-time
 # stall), i.e. a false green on THIS check -- but it cannot mask a real bundle-delivery failure:
-# step 3 above already verified the bundle delivered the library WITH the correct marker content, so
-# the #include is guaranteed to resolve by the time we get here. This resave is a defensive recompile
-# in HPM's bundle->app order, not the primary delivery proof.
+# step 3 above already verified the bundle delivered every library (with marker content where
+# defined), so the #include directives are guaranteed to resolve by the time we get here. This
+# resave is a defensive recompile in HPM's bundle->app order, not the primary delivery proof.
 LIST_TEXT=$(tool_text '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}')
 CLASS_ID=$(printf '%s' "$LIST_TEXT" | jq -r --arg ns "$APP_NAMESPACE" --arg name "$APP_NAME" \
   '.apps[]? | select(.namespace == $ns and .name == $name) | .id' 2>/dev/null | head -n1)
@@ -148,7 +169,7 @@ if [ -z "$CLASS_ID" ] || [ "$CLASS_ID" = "null" ]; then
   echo "::error::Could not resolve Apps Code class id for ${APP_NAMESPACE}:${APP_NAME} to recompile after the bundle install."
   exit 1
 fi
-echo "Resaving app class ${CLASS_ID} so its #include recompiles against the bundle-delivered library..."
+echo "Resaving app class ${CLASS_ID} so its #include directives recompile against the bundle-delivered libraries..."
 RESAVE_RPC=$(jq -nc --arg id "$CLASS_ID" \
   '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_update_app",arguments:{appId:$id,resave:true,confirm:true}}}')
 RESAVE_RESP=$(curl -sS --max-time 120 -X POST "$MCP_URL" -H "Content-Type: application/json" \
@@ -168,10 +189,10 @@ elif [ "$HTTP_CODE" = "200" ]; then
   RESAVE_TEXT=$(printf '%s' "$RESAVE_BODY" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
   RESAVE_OK=$(printf '%s' "$RESAVE_TEXT" | jq -r '.success // false' 2>/dev/null || echo false)
   if [ "$RESAVE_OK" != "true" ]; then
-    echo "::error::App FAILED to recompile against the bundle-delivered library -- the #include did not resolve (HPM-installed package would not compile on a user's hub): $(printf '%s' "$RESAVE_TEXT" | jq -c '{success,error,note}' 2>/dev/null || printf '%s' "$RESAVE_TEXT" | head -c 400)"
+    echo "::error::App FAILED to recompile against the bundle-delivered libraries -- a #include did not resolve (HPM-installed package would not compile on a user's hub): $(printf '%s' "$RESAVE_TEXT" | jq -c '{success,error,note}' 2>/dev/null || printf '%s' "$RESAVE_TEXT" | head -c 400)"
     exit 1
   fi
-  echo "App recompiled cleanly against the bundle-delivered library (HTTP 200 / success:true)."
+  echo "App recompiled cleanly against the bundle-delivered libraries (HTTP 200 / success:true)."
 elif [ "$HTTP_CODE" = "502" ] || [ "$HTTP_CODE" = "503" ] || [ "$HTTP_CODE" = "504" ]; then
   echo "::notice::Resave returned HTTP ${HTTP_CODE} (cloud gateway timeout from the app reload) -- a reload only follows a SUCCESSFUL recompile. Treating as compiled."
   RELOADED=true
@@ -187,4 +208,4 @@ if [ "$RELOADED" = "true" ]; then
   sleep 20
 fi
 
-echo "HPM bundle-install path proven: real zip -> /bundle2 endpoint -> library delivered with correct content -> app #include recompiles. The marker assertions in tests/e2e_test.py now ride on the bundle-delivered library."
+echo "HPM bundle-install path proven: real zip -> /bundle2 endpoint -> libraries delivered with correct content -> app #include recompiles. The marker/library assertions in tests/e2e_test.py now ride on the bundle-delivered libraries."

@@ -22,7 +22,7 @@ import pytest
 # gracefully if requests is not installed (base CI only has pytest).
 requests = pytest.importorskip("requests", reason="'requests' not installed; skipping e2e helpers")
 
-import e2e_test as et
+import e2e_test as et  # noqa: E402 -- must follow the importorskip above (e2e_test imports requests at module level)
 
 
 # ---------------------------------------------------------------------------

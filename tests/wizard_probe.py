@@ -52,7 +52,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -787,7 +786,7 @@ def run_probe(client: HubitatMcpClient, probe: dict, pool: dict,
         status = "pass" if passed else "fail"
 
         if passed:
-            print(f"    PASS", flush=True)
+            print("    PASS", flush=True)
         else:
             for msg in failures:
                 print(f"    {msg}", flush=True)
@@ -1484,7 +1483,7 @@ def main() -> None:
     # Write output files
     json_path = write_json_report(results, run_ts)
     md_path = write_markdown_report(results, run_ts)
-    print(f"\nResults written:", flush=True)
+    print("\nResults written:", flush=True)
     print(f"  JSON: {json_path}", flush=True)
     print(f"  MD:   {md_path}", flush=True)
 
