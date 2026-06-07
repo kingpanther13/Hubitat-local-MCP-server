@@ -999,6 +999,77 @@ class TestRunner:
         self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
 
     # -----------------------------------------------------------------------
+    # GROUP 4c: deadman (1 test) -- the issue #243 install-commit fix, the exact
+    # bug the E2E Dead-Man Watchdog tripped on. installAsUserApp must actually
+    # COMMIT the install (submit Done) so initialize() runs and the instance is
+    # live -- the pre-#243 path left an inert shell (committed reported true but
+    # app.installed==false, schedules never registered). This installs the
+    # throwaway tests/fixtures/deadman-test-target.groovy (so a misfire can't
+    # touch anything real), then asserts BOTH the tool's committed flag AND, via
+    # an independent hub_get_app_config read, app.installed==true -- the shell
+    # would report installed:false, the old silent false-pass.
+    # -----------------------------------------------------------------------
+
+    @test("deadman")
+    def test_install_as_user_app_commits(self) -> None:
+        fixture = (Path(__file__).resolve().parent
+                   / "fixtures" / "deadman-test-target.groovy")
+        source = fixture.read_text(encoding="utf-8")
+
+        code_app_id = None
+        instance_app_id = None
+        try:
+            # 1) Install the throwaway app CODE (inline source) -> code class id.
+            created_code = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_app",
+                "args": {"source": source, "confirm": True},
+            })
+            code_app_id = created_code.get("appId")
+            assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created_code}"
+
+            # 2) Create a RUNNING instance from that code -> the #243 commit path.
+            installed = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_app",
+                "args": {"installAsUserApp": code_app_id, "confirm": True},
+            })
+            instance_app_id = installed.get("instanceAppId")
+            committed = installed.get("committed")
+            assert committed is True, \
+                f"installAsUserApp did not commit (committed={committed!r}) -- the #243 install fix regressed, leaving an inert shell: {installed}"
+            assert instance_app_id, f"installAsUserApp committed but returned no instanceAppId: {installed}"
+
+            # 3) INDEPENDENT verification: hub_get_app_config must report app.installed==true.
+            # A shell (the old false-pass) reads installed:false even though the tool said committed.
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": instance_app_id},
+            })
+            app_obj = cfg.get("app") or {}
+            installed_flag = app_obj.get("installed")
+            assert installed_flag is True, \
+                f"hub_get_app_config reports app.installed={installed_flag!r} -- the instance is an inert shell, not a committed install: {app_obj}"
+
+            print(f"    DEADMAN_INSTALL_COMMIT committed={committed} installed={installed_flag}")
+        finally:
+            # Clean up: delete the running instance first, then the code class.
+            if instance_app_id:
+                try:
+                    self.client.call_tool("hub_manage_native_rules_and_apps", {
+                        "tool": "hub_delete_native_app",
+                        "args": {"appId": instance_app_id, "force": True, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] deadman cleanup: delete instance {instance_app_id} failed: {exc}")
+            if code_app_id:
+                try:
+                    self.client.call_tool("hub_manage_code", {
+                        "tool": "hub_delete_item",
+                        "args": {"type": "app", "id": code_app_id, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
+
+    # -----------------------------------------------------------------------
     # GROUP 5: trigger_types (6 tests)
     # -----------------------------------------------------------------------
 
@@ -1962,6 +2033,35 @@ class TestRunner:
                             print(f"  [WARN] Native rule sweep delete failed for '{rname}': {exc}")
         except Exception as exc:
             print(f"  [WARN] Native rule sweep failed: {exc}")
+
+        # Layer 5: stranded deadman install-fix throwaway. The @test("deadman") test installs
+        # 'Deadman Test Target' (namespace mcptest) + its code class; neither carries the BAT_E2E_
+        # prefix, so a crash/kill between its create and finally would strand it past the other
+        # sweeps. Reclaim instance(s) + code class by namespace+name (idempotent across runs).
+        try:
+            dtypes = self.client.call_tool("hub_read_apps_code",
+                                           {"tool": "hub_list_apps", "args": {"scope": "types"}})
+            for a in (dtypes.get("apps", []) if isinstance(dtypes, dict) else []):
+                if a.get("namespace") == "mcptest" and str(a.get("name") or "").startswith("Deadman Test Target"):
+                    for u in a.get("usedBy", []) or []:
+                        try:
+                            print(f"  Sweep: deleting stranded deadman instance {u.get('id')}")
+                            self.client.call_tool("hub_manage_native_rules_and_apps", {
+                                "tool": "hub_delete_native_app",
+                                "args": {"appId": str(u.get("id")), "force": True, "confirm": True},
+                            })
+                        except Exception as exc:
+                            print(f"  [WARN] deadman sweep: instance delete failed: {exc}")
+                    try:
+                        print(f"  Sweep: deleting stranded deadman code class {a.get('id')}")
+                        self.client.call_tool("hub_manage_code", {
+                            "tool": "hub_delete_item",
+                            "args": {"type": "app", "id": str(a.get("id")), "confirm": True},
+                        })
+                    except Exception as exc:
+                        print(f"  [WARN] deadman sweep: code-class delete failed: {exc}")
+        except Exception as exc:
+            print(f"  [WARN] deadman target sweep failed: {exc}")
 
         print("--- Cleanup complete ---\n")
 

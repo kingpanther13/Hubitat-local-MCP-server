@@ -17,6 +17,7 @@ on:
     paths:
       - 'hubitat-mcp-server.groovy'
       - 'hubitat-mcp-rule.groovy'
+      - 'e2e-deadman-watchdog.groovy'
       - 'tests/e2e_test.py'
       - '.github/workflows/hub-e2e.yml'
       - '.github/scripts/lease_acquire.sh'
@@ -29,6 +30,9 @@ on:
       - '.github/scripts/mcp_validate_package_tool.sh'
       - '.github/scripts/mcp_install_libraries.sh'
       - '.github/scripts/mcp_install_bundle_hpm.sh'
+      - '.github/scripts/mcp_arm_watchdog.sh'
+      - '.github/scripts/mcp_disarm_watchdog.sh'
+      - '.github/scripts/mcp_watchdog_verify.sh'
       - 'libraries/**'
       - 'bundles/**'
   workflow_dispatch:
@@ -145,6 +149,20 @@ jobs:
         # itself is off (UI-only to enable).
         run: bash .github/scripts/mcp_setup_env.sh
 
+      - name: Clear stale watchdog flag
+        if: steps.gate.outputs.available == 'true'
+        # Best-effort: write {armed:false} to the dead-man flag so a CRASHED prior run's still-armed
+        # flag can't fire its auto-restore during THIS run's deploy. continue-on-error because the
+        # watchdog/flag may not exist yet (first run on a hub, or watchdog not installed) -- that's
+        # fine; there's nothing to clear. The real arm happens later, after the server is confirmed
+        # working and a fresh >1MB pre-deploy backup exists.
+        continue-on-error: true
+        run: |
+          curl -sS --max-time 60 -X POST "$MCP_URL" \
+            -H "Content-Type: application/json" \
+            --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_write_file","arguments":{"fileName":"e2e-deadman.json","content":"{\"armed\":false,\"clearedBy\":\"pre-run-stale-flag-clear\"}","confirm":true}}}' \
+            >/dev/null || echo "::notice::stale-flag clear call failed/absent (watchdog/flag may not exist yet) -- continuing"
+
       - name: Compute PR source URL for importUrl deploy
         if: steps.gate.outputs.available == 'true'
         # The hub fetches the PR branch's raw source itself (importUrl mode), so the
@@ -241,6 +259,19 @@ jobs:
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
         run: bash .github/scripts/mcp_install_bundle_hpm.sh
 
+      # Arm the standing dead-man watchdog for THIS run. Placed here -- AFTER the authoritative
+      # "Verify deployed source matches this PR" gate AND the "Install bundle the HPM way" recompile
+      # -- so the server is confirmed working and the server's PRE-deploy backup
+      # (mcp-backup-app-<CLASS_ID>.groovy) already exists for the watchdog to restore from. The arm
+      # script asserts that backup is present and >1MB before writing a 20-min armed flag; the
+      # always() "Disarm dead-man watchdog (final)" step below clears it before the lease is released.
+      - name: Arm dead-man watchdog
+        if: steps.gate.outputs.available == 'true'
+        env:
+          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
+          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
+        run: bash .github/scripts/mcp_arm_watchdog.sh
+
       - name: Run E2E tests
         if: steps.gate.outputs.available == 'true'
         run: python tests/e2e_test.py
@@ -260,6 +291,25 @@ jobs:
           PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
         run: bash .github/scripts/mcp_validate_package_tool.sh
+
+      # =====================================================================================
+      # TEMPORARY ONE-TIME STEP -- DELETE THIS STEP ONCE IT HAS PASSED ONCE.
+      # =====================================================================================
+      # This is the single real-server proof that the dead-man watchdog actually restores the LIVE
+      # MCP Rule Server from its known-good >1MB backup. It arms with an already-expired deadline so
+      # the watchdog fires immediately, polls until the server's code-class version advances and the
+      # flag reports fireResult=="restored", then confirms hub_get_info still succeeds (server NOT
+      # bricked). It deliberately leaves the server reverted to the pre-deploy backup -- that's fine:
+      # it runs AFTER every PR-code step, and the always() "Restore previous app source" step below
+      # re-pushes the canonical PR source. Once this has gone green once, the watchdog's restore path
+      # is proven against the real hub; this whole step must be REMOVED (it reverts the server and
+      # costs ~3 minutes every run for no further signal).
+      - name: Verify watchdog restores real server (ONE-TIME -- DELETE after first green run)
+        if: steps.gate.outputs.available == 'true'
+        env:
+          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
+          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
+        run: bash .github/scripts/mcp_watchdog_verify.sh
 
       - name: Cleanup BAT_E2E_ artifacts
         if: always() && steps.gate.outputs.available == 'true'
@@ -282,6 +332,15 @@ jobs:
         # Tolerant of missing pre-state file (early-exit no-op) so a setup
         # failure before capture doesn't propagate here.
         run: bash .github/scripts/mcp_restore_env.sh
+
+      # Disarm the dead-man watchdog as the final always() action BEFORE the lease is released, so a
+      # clean run can never hand the next run an armed flag (the watchdog would otherwise fire its
+      # auto-restore mid-next-run). The disarm reads the flag back and asserts armed==false, failing
+      # loudly if it can't confirm -- a silently-failed disarm is exactly the dangerous case. It runs
+      # before lease release so the next run can't be left unprotected.
+      - name: Disarm dead-man watchdog (final)
+        if: always() && steps.gate.outputs.available == 'true'
+        run: bash .github/scripts/mcp_disarm_watchdog.sh
 
       - name: Release test hub lease
         if: always() && steps.gate.outputs.available == 'true'

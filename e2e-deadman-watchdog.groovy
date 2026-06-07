@@ -89,7 +89,9 @@ def checkDeadman() {
     flag.armed = false
     flag.firedAt = now()
     flag.fireResult = ok ? "restored" : "failed"
-    writeFlag(flag)
+    if (!writeFlag(flag)) {
+        log.error "E2E Dead-Man Watchdog: FAILED to persist disarm flag after fire (fireResult=${flag.fireResult}); the still-armed flag will re-fire next check until the write succeeds."
+    }
     log.warn "E2E Dead-Man Watchdog fire complete: ${flag.fireResult}."
 }
 
@@ -104,21 +106,32 @@ boolean restoreApp(String classId, String restoreFileName) {
         log.error "restoreApp: backup '${restoreFileName}' missing/empty/too-small -- refusing to push it."
         return false
     }
-    def version = appCodeVersion(classId)
-    if (version == null) {
+    def oldVersion = appCodeVersion(classId)
+    if (oldVersion == null) {
         log.error "restoreApp: could not read current version of app class ${classId}"
         return false
     }
-    def resp = hubPostForm("/app/ajax/update", [id: classId, version: version, source: source])
+    def resp = hubPostForm("/app/ajax/update", [id: classId, version: oldVersion, source: source])
     if (resp?.status != 200) {
-        log.error "restoreApp: /app/ajax/update returned status ${resp?.status}"
+        log.error "restoreApp: /app/ajax/update returned status ${resp?.status}; body=${resp?.data?.toString()?.take(300)}"
         return false
     }
-    boolean success = false
-    try { success = (new groovy.json.JsonSlurper().parseText(resp.data ?: "{}")).status == "success" }
-    catch (Exception e) { log.error "restoreApp: could not parse update response: ${e.message}" }
-    logInfo "restoreApp: pushed ${source.length()} chars to class ${classId}; hub success=${success}"
-    return success
+    boolean reported = false
+    try { reported = (new groovy.json.JsonSlurper().parseText(resp.data ?: "{}")).status == "success" }
+    catch (Exception e) { log.error "restoreApp: could not parse update response (${e.message}); body=${resp?.data?.toString()?.take(300)}" }
+    if (!reported) {
+        log.error "restoreApp: hub did not report success; body=${resp?.data?.toString()?.take(300)}"
+        return false
+    }
+    // Independent confirmation: a real code-class save advances the version. A
+    // reported success that doesn't bump the version means the push didn't land
+    // (the watchdog must not claim 'restored' on a silent no-op).
+    def newVersion = appCodeVersion(classId)
+    boolean confirmed = false
+    try { confirmed = (newVersion != null) && ((newVersion as Long) > (oldVersion as Long)) }
+    catch (Exception e) { log.error "restoreApp: version compare failed (${oldVersion} -> ${newVersion}): ${e.message}" }
+    logInfo "restoreApp: pushed ${source.length()} chars to class ${classId}; reported=${reported}, version ${oldVersion}->${newVersion}, confirmed=${confirmed}"
+    return confirmed
 }
 
 // Current code version of an app class (needed as the optimistic-lock field on update).
@@ -137,11 +150,13 @@ Map readFlag() {
     catch (Exception e) { log.error "readFlag: flag is not valid JSON: ${e.message}"; return null }
 }
 
-void writeFlag(Map flag) {
+boolean writeFlag(Map flag) {
     try {
         uploadHubFile(flagFileName ?: "e2e-deadman.json", groovy.json.JsonOutput.toJson(flag).getBytes("UTF-8"))
+        return true
     } catch (Exception e) {
         log.error "writeFlag: failed to write flag: ${e.message}"
+        return false
     }
 }
 
@@ -170,9 +185,11 @@ String hubGet(String path, Map query) {
 }
 
 Map hubPostForm(String path, Map body) {
+    // 420s mirrors the main server's hubInternalPostForm: restoring the ~1.6MB MCP
+    // server source is a large form POST that can be slow on a loaded hub.
     def params = [uri: "http://127.0.0.1:8080", path: path, body: body,
                   requestContentType: "application/x-www-form-urlencoded",
-                  textParser: true, ignoreSSLIssues: true, timeout: 120]
+                  textParser: true, ignoreSSLIssues: true, timeout: 420]
     def headers = [Connection: "keep-alive"]
     def cookie = secCookie()
     if (cookie) headers.Cookie = cookie
