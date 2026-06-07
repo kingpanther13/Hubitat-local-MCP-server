@@ -956,7 +956,17 @@ def handleToolsCall(msg) {
         // alone left a gap zone where escape-heavy payloads (every `"` becomes `\"`)
         // could slip the inner guard yet still trip the outer -32603 fallback that
         // #174 was filed to eliminate.
-        def candidateResponse = jsonRpcResult(msg.id, [content: [[type: "text", text: jsonText]]])
+        // File-wide error contract: a tool that RETURNS a result with isError:true (the gateway
+        // disabled/missing-required-param refusals, toolCloneNativeApp / native-wizard soft failures,
+        // etc.) MUST surface that on the JSON-RPC envelope so MCP clients route retries -- this
+        // function is documented to "flag isError on the JSON-RPC envelope", but until now only the
+        // throw / null / non-serializable branches set it, so a *returned* isError stayed invisible
+        // top-level (a refused destructive call read as success to a spec-compliant client).
+        def envelopeBody = [content: [[type: "text", text: jsonText]]]
+        if (result instanceof Map && result.isError == true) {
+            envelopeBody.isError = true
+        }
+        def candidateResponse = jsonRpcResult(msg.id, envelopeBody)
         // Serialize the wire form ONCE here. We measure its byte length for the inner cap,
         // then (on the common under-limit path) hand the already-built string to
         // handleMcpRequest via a __preserialized sentinel so it renders verbatim instead of

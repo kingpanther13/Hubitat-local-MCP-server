@@ -508,6 +508,26 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "gateway missing-required-param refusal sets top-level isError on the envelope, not just content (#209)"() {
+        // handleGateway pre-validates a sub-tool's required params and RETURNS an isError envelope
+        // (rather than throwing). handleToolsCall must flag that on the JSON-RPC result's top-level
+        // isError so a spec-compliant client -- one that checks top-level isError, not the content
+        // JSON -- sees a refused destructive call as an error and routes a retry. This is the
+        // file-wide contract ("handleToolsCall flags isError on the JSON-RPC envelope"); regression
+        // guard for the bug where a returned isError stayed invisible top-level.
+        given:
+        enableWrite()
+
+        when: 'hub_create_room is invoked via the hub_manage_rooms gateway with confirm omitted'
+        def response = mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_create_room', args: [name: 'EnvErr']])
+
+        then: 'the refusal is on the TOP-LEVEL envelope (isError), carrying the helpful content'
+        response.error == null
+        response.result.isError == true
+        response.result.content[0].text.contains('Missing required parameter')
+        response.result.content[0].text.contains('confirm')
+    }
+
     def "hub_create_room throws when the Write master is disabled"() {
         given:
         settingsMap.enableWrite = false
