@@ -11,7 +11,9 @@
 # expired, this WAITS (polling) and claims it automatically the moment it frees or
 # the holder's TTL lapses — so a run queued behind another holder, or behind a manual
 # hub session that GitHub's `concurrency` group can't see, starts on its own instead
-# of needing a manual re-run. Exits 1 only if the lease is STILL held after
+# of needing a manual re-run. A transient read failure or a malformed/corrupt lease
+# value mid-wait is treated as "still busy" and polled through, never as free. Exits 1
+# only if the lease is STILL held (or stays unreadable/malformed) after
 # LEASE_WAIT_TIMEOUT_S, or if the post-write race-check shows another claim landed last.
 #
 # Lease shape (JSON, written into Hubitat Hub Variable `_TEST_HUB_LEASED_BY`):
@@ -72,15 +74,43 @@ set_lease_value() {
 # we claim only AFTER this wait, the lease TTL below starts at acquisition.
 WAIT_DEADLINE_S=$(( $(now_ms) / 1000 + LEASE_WAIT_TIMEOUT_S ))
 while :; do
-  NOW_MS="$(now_ms)"
-  NOW_S=$(( NOW_MS / 1000 ))
-  CURRENT="$(get_lease_value)"
+  # A read failure (cloud gateway down past mcp_call's own 5 retries) is NOT fatal
+  # mid-wait: a failed read claims nothing, so keep polling within the budget rather
+  # than aborting the run this wait exists to keep alive.
+  if ! CURRENT="$(get_lease_value)"; then
+    if [ "$(( $(now_ms) / 1000 ))" -ge "$WAIT_DEADLINE_S" ]; then
+      echo "::error::Lease unreadable (cloud gateway) through the ${LEASE_WAIT_TIMEOUT_S}s wait budget. Aborting."
+      exit 1
+    fi
+    echo "::warning::Lease read failed (cloud gateway); retrying next poll..."
+    sleep "$LEASE_POLL_INTERVAL_S"
+    continue
+  fi
 
   if [ -z "$CURRENT" ]; then
     break  # released
   fi
-  CURRENT_BY="$(echo "$CURRENT" | jq -r '.by // ""' 2>/dev/null || echo "")"
-  CURRENT_UNTIL="$(echo "$CURRENT" | jq -r '.until // 0' 2>/dev/null || echo 0)"
+
+  NOW_MS="$(now_ms)"
+  NOW_S=$(( NOW_MS / 1000 ))
+
+  # Parse defensively. A non-empty value that isn't well-formed JSON, or whose `until`
+  # is missing/non-numeric, means the variable holds SOMETHING (corrupt/truncated read,
+  # partial write) — treat it as BUSY, never as free. Claiming over an unparseable value
+  # would double-book the hub, which is exactly what the lease exists to prevent. (A bare
+  # `// 0` fallback here would read as "expired -> reclaimable" and silently double-claim.)
+  if ! CURRENT_BY="$(printf '%s' "$CURRENT" | jq -re '.by // ""' 2>/dev/null)" \
+     || ! CURRENT_UNTIL="$(printf '%s' "$CURRENT" | jq -re '.until' 2>/dev/null)" \
+     || ! printf '%s' "$CURRENT_UNTIL" | grep -qE '^[0-9]+$'; then
+    if [ "$NOW_S" -ge "$WAIT_DEADLINE_S" ]; then
+      echo "::error::Lease variable malformed/non-JSON through the ${LEASE_WAIT_TIMEOUT_S}s wait budget: $(printf '%.120s' "$CURRENT"). Aborting."
+      exit 1
+    fi
+    echo "::warning::Lease variable holds a malformed/non-JSON value (corrupt or truncated read?); treating as busy: $(printf '%.120s' "$CURRENT")"
+    sleep "$LEASE_POLL_INTERVAL_S"
+    continue
+  fi
+
   if [ "$CURRENT_BY" = "$BY" ]; then
     break  # re-entrant: already held by this run
   fi

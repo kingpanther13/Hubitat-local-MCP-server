@@ -98,10 +98,12 @@ jobs:
 
     # Serialize against the shared test hub at the JOB level (not workflow level) so the
     # `approve` gate -- which may sit waiting on a human reviewer -- never holds this
-    # group. lease_acquire.sh ABORTS red if the hub is already leased (it does not
-    # wait), so this serialization is what keeps two e2e jobs from colliding on the
-    # lease. Don't cancel in-progress: a running job holds the lease and needs to
-    # release it cleanly via its `if: always()` cleanup step.
+    # group. This group is the PRIMARY serializer: it stops two CI e2e jobs from running
+    # against the single-tenant hub at once, so they never even both enter lease_acquire's
+    # wait loop. lease_acquire.sh's in-script wait (it polls a busy lease, it does NOT
+    # abort on sight) is the SECONDARY net -- it covers a manual hub session GitHub's
+    # `concurrency` can't see. Don't cancel in-progress: a running job holds the lease and
+    # needs to release it cleanly via its `if: always()` cleanup step.
     concurrency:
       group: hub-e2e
       cancel-in-progress: false
