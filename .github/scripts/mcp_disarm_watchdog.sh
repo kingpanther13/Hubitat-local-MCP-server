@@ -43,10 +43,16 @@ mcp_call() {
 RPC_ATTEMPTS=5
 RPC_RETRY_SLEEP=6
 mcp_tool_call_text() {
-  local label="$1" rpc="$2" attempt=1 resp text
+  local label="$1" rpc="$2" attempt=1 resp text err
   while [ "$attempt" -le "$RPC_ATTEMPTS" ]; do
     resp=$(mcp_call "$rpc" || true)
-    if text=$(printf '%s' "$resp" | jq -r '.result.content[0].text // ""' 2>/dev/null); then
+    if printf '%s' "$resp" | jq -e . >/dev/null 2>&1; then
+      err=$(printf '%s' "$resp" | jq -r '.error.message // (.error | strings) // empty' 2>/dev/null || true)
+      if [ -n "$err" ] && [ "$err" != "null" ]; then
+        echo "::error::${label}: JSON-RPC error envelope from the watchdog: $(printf '%s' "$err" | head -c 200)" >&2
+        return 1
+      fi
+      text=$(printf '%s' "$resp" | jq -r '.result.content[0].text // ""' 2>/dev/null || true)
       printf '%s' "$text"
       return 0
     fi
@@ -57,10 +63,11 @@ mcp_tool_call_text() {
   return 1
 }
 
-# Independent post-restore check: the live app source length must be back to the arm-stamped MAIN
-# baseline (mainChars, captured BEFORE any PR deploy, so it is immune to a poisoned cache). If the restore
-# had pushed PR code, the live length would be the PR's, not main's. Reads with noSave:true so the check
-# itself does not re-cache. Uses MAIN_CHARS/APP_CLASS extracted from the manifest below.
+# Post-restore length TRIPWIRE (defense-in-depth, not the primary guarantee): the watchdog only stamps
+# restoreResult==restored after restoreApp's BYTE-IDENTICAL check passed, so byte-correct main is already
+# proven by the time we get here. This is a cheap independent cross-check that the live app length equals
+# the arm-stamped MAIN baseline (mainChars, captured BEFORE any PR deploy) -- it would catch a gross
+# regression (e.g. the wrong file restored). Reads with noSave:true so the check doesn't re-cache.
 assert_hub_on_main() {
   if [ -z "${MAIN_CHARS:-}" ] || [ "${MAIN_CHARS:-0}" = "0" ] || [ -z "${APP_CLASS:-}" ]; then
     echo "::warning::Post-disarm: no mainChars/classId baseline in the manifest -- skipping the independent hub-on-main length assertion (older arm flag)."
@@ -84,7 +91,7 @@ assert_hub_on_main() {
 # --- 1) Read the current (armed) flag to reuse its manifest -----------------------------------------
 # The watchdog's disarm-path restore reads flag.manifest, so the disarm flag MUST carry the same
 # manifest the arm wrote. Rather than re-deriving it, we read the armed flag and reuse its manifest +
-# mainSha, flipping armed:false / intent:"disarm". If no flag/manifest is present (arm never ran or it
+# armPrSha, flipping armed:false / intent:"disarm". If no flag/manifest is present (arm never ran or it
 # was wiped), we cannot drive a restore -- fail loudly.
 echo "Reading the current flag '$FLAG_FILE' to reuse its restore manifest..."
 READ_RPC=$(jq -nc --arg fn "$FLAG_FILE" \
@@ -95,7 +102,7 @@ if ! CUR_TEXT=$(mcp_tool_call_text "hub_read_file (read armed flag for manifest)
 fi
 CUR_CONTENT=$(echo "$CUR_TEXT" | jq -r '.content // ""')
 MANIFEST_JSON=$(printf '%s' "$CUR_CONTENT" | jq -c '.manifest // empty' 2>/dev/null || echo "")
-MAIN_SHA=$(printf '%s' "$CUR_CONTENT" | jq -r '.mainSha // ""' 2>/dev/null || echo "")
+ARM_PR_SHA=$(printf '%s' "$CUR_CONTENT" | jq -r '.armPrSha // .mainSha // ""' 2>/dev/null || echo "")
 FLAG_RUN_ID=$(printf '%s' "$CUR_CONTENT" | jq -r '.runId // ""' 2>/dev/null || echo "")
 if [ -z "$MANIFEST_JSON" ] || [ "$MANIFEST_JSON" = "null" ]; then
   echo "::error::The flag '$FLAG_FILE' has no manifest -- arm never ran or the flag was wiped. The watchdog cannot restore main on disarm. Response: $(printf '%s' "$CUR_TEXT" | head -c 600)"
@@ -118,9 +125,9 @@ DISARMED_AT_MS=$(( $(date +%s) * 1000 ))
 FLAG_JSON=$(jq -nc \
   --arg runId "$GITHUB_RUN_ID" \
   --argjson disarmedAt "$DISARMED_AT_MS" \
-  --arg mainSha "$MAIN_SHA" \
+  --arg armPrSha "$ARM_PR_SHA" \
   --argjson manifest "$MANIFEST_JSON" \
-  '{armed:false, intent:"disarm", runId:$runId, disarmedAt:$disarmedAt, mainSha:$mainSha, manifest:$manifest}')
+  '{armed:false, intent:"disarm", runId:$runId, disarmedAt:$disarmedAt, armPrSha:$armPrSha, manifest:$manifest}')
 
 echo "Disarming the watchdog: writing {armed:false, intent:\"disarm\"} to '$FLAG_FILE'..."
 WRITE_RPC=$(jq -nc --arg fn "$FLAG_FILE" --arg content "$FLAG_JSON" \

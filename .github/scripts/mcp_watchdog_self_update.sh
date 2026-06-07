@@ -23,7 +23,18 @@ WD_FILE="e2e-deadman-watchdog-v2.groovy"
 WD_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/${WD_FILE}"
 
 mcp_call() { curl -sS --max-time 120 -X POST "$WATCHDOG_URL" -H "Content-Type: application/json" --data-binary "$1"; }
-call_tool() { printf '%s' "$(mcp_call "$1" || true)" | jq -r '.result.content[0].text // empty' 2>/dev/null || true; }
+# Surfaces a JSON-RPC error envelope ({"error":...}) loudly and returns empty, so an importUrl
+# fetch/compile failure fails fast with the real cause instead of looking like a dropped response.
+call_tool() {
+  local resp err
+  resp=$(mcp_call "$1" || true)
+  err=$(printf '%s' "$resp" | jq -r '.error.message // (.error | strings) // empty' 2>/dev/null || true)
+  if [ -n "$err" ] && [ "$err" != "null" ]; then
+    echo "::error::watchdog JSON-RPC error: $(printf '%s' "$err" | head -c 200)" >&2
+    return 0
+  fi
+  printf '%s' "$resp" | jq -r '.result.content[0].text // empty' 2>/dev/null || true
+}
 RPC_ATTEMPTS="${RPC_ATTEMPTS:-5}"; RPC_RETRY_SLEEP="${RPC_RETRY_SLEEP:-5}"
 call_tool_retry() {
   local attempt=1 out
@@ -50,21 +61,17 @@ if [ -z "$WD_CLASS" ] || [ "$WD_CLASS" = "null" ]; then
 fi
 echo "Watchdog own Apps Code class id: ${WD_CLASS}"
 
-# Skip-if-unchanged: compare the hub's live watchdog source length to this PR's.
+# Always deploy this PR's watchdog (do NOT skip on a length match -- a length-preserving edit would
+# leave the OLD watchdog live and validate the wrong code green). A byte-identical no-op is cheap (the
+# hub won't reload), and the post-update length + tools/list gate confirms the right version is live.
 PR_WD_CHARS=$(LC_ALL=C.UTF-8 wc -m < "$WD_FILE" | tr -d '[:space:]')
-LIVE_TEXT=$(call_tool_retry "$(jq -nc --arg id "$WD_CLASS" \
-  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:1,noSave:true}}}')")
-LIVE_WD_CHARS=$(printf '%s' "$LIVE_TEXT" | jq -r '.totalLength // empty' 2>/dev/null || true)
-echo "Watchdog source length: hub=${LIVE_WD_CHARS:-<unreadable>} vs this PR=${PR_WD_CHARS}"
-
-if [ -n "$LIVE_WD_CHARS" ] && [ "$LIVE_WD_CHARS" = "$PR_WD_CHARS" ]; then
-  echo "Watchdog already at this PR's version (length matches) -- skipping self-update (no needless reload)."
-  exit 0
-fi
-
-echo "Watchdog differs from this PR -- self-updating from ${WD_URL} ..."
+echo "Deploying this PR's watchdog (length ${PR_WD_CHARS}) from ${WD_URL} ..."
+# selfClassId == appId arms the issue #237 self-update capture: when the watchdog updates its OWN code
+# the loopback POST reloads it mid-request, so an empty/null response is the EXPECTED success signal
+# (without this, that null is read as a failure and reds a good run). The length + tools/list gate below
+# still guards a genuine non-landing, so this can't false-green.
 UPD_RPC=$(jq -nc --arg id "$WD_CLASS" --arg url "$WD_URL" \
-  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_update_app",arguments:{appId:$id,importUrl:$url,confirm:true}}}')
+  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_update_app",arguments:{appId:$id,importUrl:$url,selfUpdate:true,selfClassId:$id,confirm:true}}}')
 UPD_TEXT=$(call_tool "$UPD_RPC")
 
 if [ -z "$UPD_TEXT" ]; then

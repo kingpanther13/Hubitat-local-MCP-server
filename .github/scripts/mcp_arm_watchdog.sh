@@ -288,15 +288,16 @@ echo "Assembled restore manifest: $MANIFEST_JSON"
 
 # --- 4) Write the manifest-shaped armed flag, then READ IT BACK and assert ------------------------
 # `date +%s` * 1000 (not %s%3N): %3N is a GNU-only extension; this stays portable (the second-
-# granularity is irrelevant for a 35-minute deadline). mainSha stamps the source the cache was taken
-# from, for traceability/forensics on a fire.
+# granularity is irrelevant for a 35-minute deadline). armPrSha records the PR head SHA being tested
+# this run -- a forensic breadcrumb on a fire. It is NOT the SHA of the cached source (that is whatever
+# was live on the hub at arm time; its real revision is unknown).
 DEADLINE_MS=$(( $(date +%s) * 1000 + ARM_WINDOW_MS ))
 FLAG_JSON=$(jq -nc \
   --argjson deadline "$DEADLINE_MS" \
   --arg runId "$GITHUB_RUN_ID" \
-  --arg mainSha "$PR_HEAD_SHA_RESOLVED" \
+  --arg armPrSha "$PR_HEAD_SHA_RESOLVED" \
   --argjson manifest "$MANIFEST_JSON" \
-  '{armed:true, deadline:$deadline, runId:$runId, intent:"arm", mainSha:$mainSha, manifest:$manifest}')
+  '{armed:true, deadline:$deadline, runId:$runId, intent:"arm", armPrSha:$armPrSha, manifest:$manifest}')
 
 echo "Writing armed flag to '$FLAG_FILE' (deadline=$DEADLINE_MS, ~35min)..."
 WRITE_RPC=$(jq -nc --arg fn "$FLAG_FILE" --arg content "$FLAG_JSON" \
