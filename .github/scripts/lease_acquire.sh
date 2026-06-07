@@ -28,11 +28,12 @@ LEASE_WAIT_TIMEOUT_S="${LEASE_WAIT_TIMEOUT_S:-600}"
 LEASE_POLL_INTERVAL_S="${LEASE_POLL_INTERVAL_S:-15}"
 VERIFY_SLEEP_S=2
 
-# Portable epoch helpers (date +%s%N is GNU-only — fails on BSD/macOS).
+# Portable epoch helpers (date +%s%N is GNU-only — fails on BSD/macOS). Seconds are
+# derived from ms by the callers (NOW_MS / 1000) to avoid a second subprocess per poll.
 now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
-now_s()  { python3 -c 'import time; print(int(time.time()))'; }
-# epoch-ms -> ISO8601 UTC, for human-readable log lines.
-fmt_ts() { python3 -c "import datetime,sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])//1000, datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
+# epoch-ms -> ISO8601 UTC, for human-readable log lines. timezone.utc (not datetime.UTC)
+# so this stays valid on Python 3.2+, not just 3.11+.
+fmt_ts() { python3 -c "import datetime,sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])//1000, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
 
 # Retry on transient cloud-gateway failures (the ~10s relay ceiling returns a 504,
 # which --fail turns into curl exit 22). Without this a single 504 on lease acquire
@@ -69,9 +70,10 @@ set_lease_value() {
 # Wait (polling) until the lease is free, expired, or already ours — or until the
 # wait budget runs out. The job's own timeout-minutes bounds the total, and because
 # we claim only AFTER this wait, the lease TTL below starts at acquisition.
-WAIT_DEADLINE_S=$(( $(now_s) + LEASE_WAIT_TIMEOUT_S ))
+WAIT_DEADLINE_S=$(( $(now_ms) / 1000 + LEASE_WAIT_TIMEOUT_S ))
 while :; do
   NOW_MS="$(now_ms)"
+  NOW_S=$(( NOW_MS / 1000 ))
   CURRENT="$(get_lease_value)"
 
   if [ -z "$CURRENT" ]; then
@@ -88,11 +90,11 @@ while :; do
 
   # Held by someone else and still valid — wait for it.
   UNTIL_TS="$(fmt_ts "$CURRENT_UNTIL")"
-  if [ "$(now_s)" -ge "$WAIT_DEADLINE_S" ]; then
+  if [ "$NOW_S" -ge "$WAIT_DEADLINE_S" ]; then
     echo "::error::Test hub still leased by '$CURRENT_BY' until ${UNTIL_TS} after waiting ${LEASE_WAIT_TIMEOUT_S}s. Aborting."
     exit 1
   fi
-  REMAIN_S=$(( WAIT_DEADLINE_S - $(now_s) ))
+  REMAIN_S=$(( WAIT_DEADLINE_S - NOW_S ))
   echo "::notice::Test hub leased by '$CURRENT_BY' until ${UNTIL_TS}; waiting for release (poll every ${LEASE_POLL_INTERVAL_S}s, up to ${REMAIN_S}s more)..."
   sleep "$LEASE_POLL_INTERVAL_S"
 done

@@ -54,20 +54,10 @@ permissions:
   contents: read
 
 jobs:
-  # Hub-less guard. No secret, no hub, no approval -- runs on EVERY PR (including
-  # before the maintainer approves an outside contributor's e2e) so the jq
-  # `// empty`-on-false regression in the self-deploy recovery extraction (issue #237)
-  # can't slip in unseen. Safe to run untrusted-PR code here: there is no secret in
-  # this job and the token is contents:read.
-  unit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.event.pull_request.head.sha || github.ref }}
-
-      - name: Unit-test self-deploy recovery extraction (hub-less)
-        run: bash .github/scripts/test_self_deploy_recovery.sh
+  # The hub-less self-deploy recovery guard (issue #237) is NOT here: running untrusted
+  # PR code in this privileged pull_request_target workflow is a cache-poisoning vector,
+  # so it lives in the unprivileged self-deploy-recovery.yml (pull_request) instead --
+  # it needs no secret and no hub, and runs on every PR there in a safe context.
 
   # Approval gate. The environment NAME is chosen from the PR author's relationship to
   # the repo:
@@ -94,7 +84,7 @@ jobs:
         run: echo "e2e approved to run against the shared test hub"
 
   e2e:
-    needs: [unit, approve]
+    needs: [approve]
     runs-on: ubuntu-latest
     # Bounds the whole job (lease wait + hold). Kept equal to the lease TTL in
     # lease_acquire.sh: the lease is claimed only AFTER any wait, so the
