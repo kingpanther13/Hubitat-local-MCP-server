@@ -33,7 +33,7 @@ def productionFiles = [
 
 tasks.register('parse24', JavaExec) {
     group = 'verification'
-    description = 'Parse the production Groovy files under Groovy 2.4.21 (catches 3.0-only syntax that would fail to load on the hub).'
+    description = 'Parse the production Groovy files under Groovy 2.4.21 (catches 3.0-only syntax) AND compile to CANONICALIZATION to flag references to sandbox-blocked classes (java.io / reflection / threads / GroovyShell / sockets) the hub rejects at parse time.'
     javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
     classpath = configurations.groovy24
     mainClass = 'groovy.ui.GroovyMain'
