@@ -32,7 +32,6 @@ on:
       - '.github/scripts/mcp_install_bundle_hpm.sh'
       - '.github/scripts/mcp_arm_watchdog.sh'
       - '.github/scripts/mcp_disarm_watchdog.sh'
-      - '.github/scripts/mcp_watchdog_verify.sh'
       - 'libraries/**'
       - 'bundles/**'
   workflow_dispatch:
@@ -292,24 +291,10 @@ jobs:
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
         run: bash .github/scripts/mcp_validate_package_tool.sh
 
-      # =====================================================================================
-      # TEMPORARY ONE-TIME STEP -- DELETE THIS STEP ONCE IT HAS PASSED ONCE.
-      # =====================================================================================
-      # This is the single real-server proof that the dead-man watchdog actually restores the LIVE
-      # MCP Rule Server from its known-good >1MB backup. It arms with an already-expired deadline so
-      # the watchdog fires immediately, polls until the server's code-class version advances and the
-      # flag reports fireResult=="restored", then confirms hub_get_info still succeeds (server NOT
-      # bricked). It deliberately leaves the server reverted to the pre-deploy backup -- that's fine:
-      # it runs AFTER every PR-code step, and the always() "Restore previous app source" step below
-      # re-pushes the canonical PR source. Once this has gone green once, the watchdog's restore path
-      # is proven against the real hub; this whole step must be REMOVED (it reverts the server and
-      # costs ~3 minutes every run for no further signal).
-      - name: Verify watchdog restores real server (ONE-TIME -- DELETE after first green run)
-        if: steps.gate.outputs.available == 'true'
-        env:
-          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
-          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
-        run: bash .github/scripts/mcp_watchdog_verify.sh
+      # NOTE: the dead-man watchdog's real-server restore was proven once on the e2e hub
+      # (run 27079818537: WATCHDOG_VERIFY_PASS -- fired, code-class version 209->210, server alive).
+      # The one-time mcp_watchdog_verify.sh fire test was removed after that green run; the standing
+      # arm (above) + always() disarm (below) are the permanent safety net.
 
       - name: Cleanup BAT_E2E_ artifacts
         if: always() && steps.gate.outputs.available == 'true'
