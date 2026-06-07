@@ -32,6 +32,9 @@
  * OAuth access_token (whoever holds WATCHDOG_MCP_URL can deploy arbitrary code to ANY app class
  * on this hub) plus a confirm=true flag on writes. NEVER install this on a production/user hub,
  * and never expose its token. It is intended for the donated level99 e2e hub and nothing else.
+ * With debug logging on (default), it also writes the first 500 chars of each request/response body
+ * to the hub log -- so set/variable values and inline-source prefixes are visible there (the token
+ * is NOT: it rides the query string, not the body). Acceptable for a test hub; do not ship elsewhere.
  */
 definition(
     name: "E2E Dead-Man Watchdog v2",
@@ -122,7 +125,14 @@ def checkDeadman() {
 
     if (flag.armed != true) { logDebug "flag present but disarmed/idle"; return }
 
-    def deadline = (flag.deadline != null) ? (flag.deadline as long) : 0L
+    // Parse the deadline defensively: a non-numeric value must NOT throw out of this tick (that would
+    // silently disable the dead-man). Treat an unparseable deadline as already-expired so we FIRE
+    // (restore) rather than sit armed forever -- the safe direction.
+    long deadline = 0L
+    if (flag.deadline != null) {
+        try { deadline = flag.deadline as long }
+        catch (Exception e) { log.warn "checkDeadman: non-numeric deadline '${flag.deadline}' -- treating as expired (will fire)." }
+    }
     if (now() < deadline) {
         logDebug "armed; ${((deadline - now()) / 1000) as long}s until deadline"
         return
@@ -134,7 +144,8 @@ def checkDeadman() {
 }
 
 // Run the package restore, then record result + idempotency stamp into the flag (the signal CI
-// polls). A clean disarm records pass/fail once; a fire retries up to a cap (recovery matters most).
+// polls). BOTH triggers retry up to a 5-tick cap before latching "failed" (a transient miss must not
+// latch the restore failed); a success stamps restoreFor=runId so it runs at most once per run.
 private void actAndRecord(Map flag, String trigger) {
     Map res = restorePackage(flag)
     if (res.ok) {
@@ -184,9 +195,13 @@ private Map restorePackage(Map flag) {
     // Libraries first so the app's #include directives resolve when it recompiles.
     def libs = (m.libraries instanceof List) ? m.libraries : []
     for (lib in libs) {
-        boolean ok = restoreLibrary(lib?.id?.toString(), lib?.file?.toString())
-        detail << "lib ${lib?.id}=${ok}"
-        if (!ok) return [ok: false, detail: "library ${lib?.id} restore failed [${detail.join('; ')}]"]
+        // Re-resolve the library's CURRENT id from its namespace.name: the deploy may have deleted +
+        // recreated a bundle-managed library, giving it a new id the arm-time manifest doesn't know.
+        // Falls back to the manifest id if the lookup fails, so it never makes a restore worse.
+        String curId = resolveLibraryId(lib?.namespace?.toString(), lib?.name?.toString(), lib?.id?.toString())
+        boolean ok = restoreLibrary(curId, lib?.file?.toString())
+        detail << "lib ${lib?.name ?: lib?.id}(${curId})=${ok}"
+        if (!ok) return [ok: false, detail: "library ${lib?.name ?: lib?.id} restore failed [${detail.join('; ')}]"]
     }
     // Then the app(s). manifest.app is a single {classId,file}; manifest.apps an optional list.
     def apps = (m.apps instanceof List) ? m.apps : (m.app ? [m.app] : [])
@@ -230,8 +245,9 @@ boolean restoreApp(String classId, String restoreFileName) {
     // A real code-class save advances the version -- but Hubitat may NOT bump it on a byte-identical
     // save, which is a legitimate no-op (the live app already equals what we pushed; common when a PR
     // triggers e2e WITHOUT changing hubitat-mcp-server.groovy). So: version-advanced -> restored; else
-    // re-read the live source and treat a length match as a no-op success; only a genuine mismatch
-    // (the push silently dropped) fails. Mirrors mcp_watchdog_deploy.sh's no-op handling.
+    // re-read the live source and require it to be BYTE-IDENTICAL to what we pushed (NOT merely the same
+    // length -- a same-length-but-different live source means the push silently dropped and main is NOT
+    // restored). Mirrors mcp_watchdog_deploy.sh's no-op handling.
     def newVersion = appCodeVersion(classId)
     String oldStr = oldVersion?.toString()?.trim()
     String newStr = newVersion?.toString()?.trim()
@@ -240,11 +256,11 @@ boolean restoreApp(String classId, String restoreFileName) {
         return true
     }
     String live = readAppSource(classId)
-    if (live != null && live.length() == source.length()) {
-        logInfo "restoreApp: class ${classId} version unchanged (${oldVersion}) but live source length matches the pushed source -- legitimate no-op, treating as restored."
+    if (live != null && live == source) {
+        logInfo "restoreApp: class ${classId} version unchanged (${oldVersion}) but live source is byte-identical to the pushed source -- legitimate no-op, treating as restored."
         return true
     }
-    log.error "restoreApp: reported success but version did not advance (old=${oldVersion}, new=${newVersion}) and the live source does not match the pushed source -- the restore did not land for class ${classId}."
+    log.error "restoreApp: reported success but version did not advance (old=${oldVersion}, new=${newVersion}) and the live source is not byte-identical to the pushed source -- the restore did not land for class ${classId}."
     return false
 }
 
@@ -274,8 +290,9 @@ boolean restoreLibrary(String libId, String fileName) {
     try {
         def parsed = new groovy.json.JsonSlurper().parseText(resp.data ?: "{}")
         // Confirm the restore actually landed (don't trust success+id alone): the version advanced, OR
-        // -- on a byte-identical no-op the hub may not bump it -- the live library source length matches
-        // what we pushed.
+        // -- on a byte-identical no-op the hub may not bump it -- the live library source is BYTE-IDENTICAL
+        // to what we pushed (NOT merely the same length -- a same-length-but-different live source means
+        // the push dropped and the library is NOT restored).
         if (parsed?.success == false || parsed?.id == null) {
             log.error "restoreLibrary ${libId}: hub reported failure or no id (${resp?.data?.toString()?.take(200)})"
         } else {
@@ -284,11 +301,11 @@ boolean restoreLibrary(String libId, String fileName) {
                 ok = true
             } else {
                 String live = readLibrarySource(libId)
-                if (live != null && live.length() == source.length()) {
+                if (live != null && live == source) {
                     ok = true
-                    logInfo "restoreLibrary ${libId}: version unchanged but live source length matches the pushed source -- legitimate no-op."
+                    logInfo "restoreLibrary ${libId}: version unchanged but live source is byte-identical to the pushed source -- legitimate no-op."
                 } else {
-                    log.error "restoreLibrary ${libId}: success reported but version did not advance and live source != pushed -- did not land."
+                    log.error "restoreLibrary ${libId}: success reported but version did not advance and live source is not byte-identical to pushed -- did not land."
                 }
             }
         }
@@ -316,6 +333,29 @@ Integer libraryVersion(String libId) {
         if (parsed instanceof List && !parsed.isEmpty()) return (parsed[0]?.version) as Integer
     } catch (Exception e) { log.error "libraryVersion: parse failed: ${e.message}" }
     return null
+}
+
+// Re-resolve a library's CURRENT id from its namespace.name via /hub2/userLibraries (same source as
+// hub_list_libraries). Used by restorePackage so a deploy-time delete+recreate (which changes the id)
+// can't strand the restore on a stale arm-time id. Returns fallbackId if name is missing or the lookup
+// fails -- defensive, never makes a restore worse.
+private String resolveLibraryId(String ns, String name, String fallbackId) {
+    if (!ns || !name) return fallbackId
+    try {
+        def body = hubGet("/hub2/userLibraries", [:])
+        if (body) {
+            def parsed = new groovy.json.JsonSlurper().parseText(body)
+            if (parsed instanceof List) {
+                def match = parsed.find { it?.namespace == ns && it?.name == name }
+                if (match?.id != null) {
+                    String resolved = match.id.toString()
+                    if (resolved != fallbackId) logInfo "resolveLibraryId: ${ns}.${name} id ${fallbackId} -> ${resolved} (re-resolved from live hub state)."
+                    return resolved
+                }
+            }
+        }
+    } catch (Exception e) { logDebug "resolveLibraryId(${ns}.${name}): ${e.message}" }
+    return fallbackId
 }
 
 // Full current source of an app class / library -- for the restore no-op check (a reported success
@@ -701,8 +741,12 @@ def adminGetSource(args) {
     // File Manager auto-save side effect (server 12158-12169): caches the full source so a later
     // restore (or hub_update_app sourceFile) can read it without cloud size limits. This is how
     // the dead-man cache is populated from main at the healthy start of a run.
+    // noSave opt-out: a length/metadata probe (e.g. the CI deploy poll reading totalLength) must NOT
+    // auto-save, or it overwrites the dead-man restore cache 'mcp-source-<type>-<id>.groovy' with the
+    // CURRENTLY-live source (the just-deployed PR code mid-run), which would make the disarm "restore
+    // main" from a cache holding PR code. Arm (which DOES want the cache populated) omits noSave.
     def savedToFile = null
-    if (totalLength > maxChunkSize) {
+    if (totalLength > maxChunkSize && args.noSave != true) {
         def sourceFileName = "mcp-source-${type}-${id}.groovy"
         try {
             uploadHubFile(sourceFileName, fullSource.getBytes("UTF-8"))
@@ -839,9 +883,14 @@ def adminUpdateLibrary(args) {
         def body = groovy.json.JsonOutput.toJson([id: libraryId as Integer, source: sourceCode, version: freshVersion as Integer])
         def resp = hubPostJson("/library/saveOrUpdateJson", body)
         def parsed = _parseJsonBody(resp?.data)
-        if (parsed?.success == false) {
-            return [success: false, error: "Library update failed: ${parsed?.message ?: 'Hub returned failure'}",
-                    libraryId: libraryId, note: "Check the Groovy source code for syntax errors or compilation issues."]
+        // Fail CLOSED: a dropped/empty loopback POST yields resp.data null -> parsed null, and a lone
+        // `parsed?.success == false` gate would fall through to success:true (null?.success == false is
+        // false). The hub returns the saved library's id + version on success; require status 200, a
+        // parsed body, no explicit failure, and an id -- mirrors adminCreateLibrary / restoreLibrary.
+        if (resp?.status != 200 || parsed == null || parsed?.success == false || parsed?.id == null) {
+            return [success: false,
+                    error: "Library update failed: ${parsed?.message ?: (resp?.status != 200 ? "hub HTTP ${resp?.status}" : 'empty/dropped hub response -- the loopback POST may have failed')}",
+                    libraryId: libraryId, note: "Check the Groovy source for syntax/compile errors; a bundle-managed library may need delete+recreate instead of in-place update."]
         }
         mcpAdminLog "Library ID ${libraryId} updated successfully (mode ${sourceMode})"
         return [success: true, message: "Library code updated successfully", libraryId: libraryId,
@@ -1156,10 +1205,16 @@ def adminCreateBackup(args) {
     if (!args.confirm) throw new IllegalArgumentException("You must set confirm=true to create a backup.")
     mcpAdminLog "Creating hub backup..."
     try {
-        hubGet("/hub/backupDB", [fileName: "latest"])
+        // hubGet swallows its own transport exception (returns null), so this try/catch alone can't see
+        // a failed backup; /hub/backupDB also returns no useful body on success, so we can't hard-fail
+        // on null without false-failing. Report it honestly as a best-effort snapshot -- this backup is
+        // a DEFENSIVE snapshot, NOT a restore prerequisite (the real restore floor is the source cache).
+        def resp = hubGet("/hub/backupDB", [fileName: "latest"])
         def backupTime = now()
         state.lastBackupTimestamp = backupTime
-        return [success: true, message: "Hub backup created successfully", backupTimestampEpoch: backupTime]
+        return [success: true, confirmed: (resp != null),
+                message: (resp != null) ? "Hub backup created" : "Hub backup triggered (no confirmation body; best-effort snapshot)",
+                backupTimestampEpoch: backupTime]
     } catch (Exception e) {
         log.error "adminCreateBackup: ${e.message}"
         return [success: false, error: "Backup failed: ${e.message}"]
@@ -1167,8 +1222,10 @@ def adminCreateBackup(args) {
 }
 
 // hub_manage_variables: thin action-dispatch gateway exposing hub_get_variable / hub_set_variable
-// for the lease. Copied from toolGetVariable / toolSetVariable (hubitat-mcp-server.groovy 7197-7220,
-// 7639-7656) using the sandbox global-var API (getGlobalVar / setGlobalVar).
+// using the sandbox global-var API (getGlobalVar / setGlobalVar). NOTE: this is a convenience
+// read/write with a flat {action,name,value} shape; the e2e LEASE runs over $MCP_URL (the main server)
+// and uses that server's nested {tool,args} shape -- it does NOT go through this watchdog tool. Copied
+// from toolGetVariable / toolSetVariable (hubitat-mcp-server.groovy 7197-7220, 7639-7656).
 def adminManageVariables(args) {
     def action = args?.action
     if (!action) {

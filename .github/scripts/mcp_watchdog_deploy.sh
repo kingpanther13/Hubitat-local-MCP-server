@@ -14,14 +14,16 @@
 # code-install plumbing. Its advantage over self-deploying through the primary
 # endpoint is that the watchdog is a DIFFERENT running app, so installing the MCP
 # package does NOT reload the app answering the request -- it never bricks itself
-# and stays queryable throughout. Small/fast calls (the libraries, the bundle,
-# get_source, get_info) return the hub's VERBATIM compile/save result synchronously,
-# within the ~10s cloud relay window, so VERIFY for those is simply: parse the tool
+# and stays queryable throughout. Small/fast calls (the libraries, the CURRENT
+# small smoke-test bundle, get_source, get_info) return the hub's VERBATIM
+# compile/save result synchronously within the ~10s cloud relay window (the bundle
+# is fast only because mcp-smoke-test.zip is tiny -- a large bundle would need the
+# app's dropped-response tolerance too), so VERIFY for those is simply: parse the tool
 # response and fail loudly -- surfacing the hub's verbatim errorMessage -- if
 # success != true. The one exception is the ~1.6MB APP deploy: it runs ~200s
 # hub-side, so the relay drops its response even though the deploy proceeds, exactly
 # like the live server's self-deploy. For that case we tolerate the dropped response
-# and poll get_app_source until the new source lands, consulting lastSelfDeploy only
+# and poll hub_get_source until the new source lands, consulting lastSelfDeploy only
 # as a secondary source for the hub's verbatim compile error if it never does.
 #
 # Install order (HPM's order; #include deps must exist before the app compiles):
@@ -36,9 +38,9 @@
 #        RUNNER_TEMP           -- GHA temp dir; falls back to /tmp
 #
 # The app's importUrl points the hub at the PR branch's raw source so the ~1.5MB
-# blob never has to cross the MCP transport as an inline argument (same rationale
-# as the old importUrl deploy, issue #228); each library/bundle importUrl is built
-# the same way mcp_install_libraries.sh / mcp_install_bundle_hpm.sh built theirs.
+# blob never has to cross the MCP transport as an inline argument (importUrl
+# deploy, issue #228); each library/bundle importUrl is built from PR_RAW_BASE +
+# the resolved head SHA + the repo-relative path.
 set -euo pipefail
 
 : "${WATCHDOG_URL:?WATCHDOG_URL env var required (full watchdog MCP endpoint URL with access_token; from secret WATCHDOG_MCP_URL)}"
@@ -72,7 +74,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # mcp_call -- POST one JSON-RPC body to the watchdog endpoint and echo the raw
-# HTTP response body. Modeled on mcp_deploy_source.sh's mcp_call. `|| true` is
+# HTTP response body. `|| true` is
 # NOT used here so a transient curl failure surfaces via the empty-parse guards
 # in the helpers below; --data-binary streams the body without arg/newline
 # mangling and dodges ARG_MAX for the (small) importUrl bodies.
@@ -84,15 +86,30 @@ mcp_call() {
 
 # Echo the inner MCP tool-result text (the tool's own JSON payload) for an RPC
 # body, or empty. `|| true` so a transient relay failure can't bare-exit under
-# `set -e` before the caller inspects the (empty) result. Mirrors the call_tool
-# helper in mcp_install_libraries.sh.
+# `set -e` before the caller inspects the (empty) result.
 call_tool() {
   local resp
   resp=$(mcp_call "$1" || true)
   printf '%s' "$resp" | jq -r '.result.content[0].text // empty' 2>/dev/null || true
 }
 
-# Echo "true"/"false" for a tool result's .success field (mcp_install_libraries.sh::ok_of).
+# Like call_tool but retries an IDEMPOTENT read up to RPC_ATTEMPTS times on an empty (relay-dropped)
+# result, mirroring the 5x wrapper in mcp_arm_watchdog.sh / mcp_disarm_watchdog.sh. Use ONLY for reads
+# (the class-id lookup, the source-length probe); WRITES stay single-shot to match the prior scripts.
+RPC_ATTEMPTS="${RPC_ATTEMPTS:-5}"
+RPC_RETRY_SLEEP="${RPC_RETRY_SLEEP:-5}"
+call_tool_retry() {
+  local attempt=1 out
+  while [ "$attempt" -le "$RPC_ATTEMPTS" ]; do
+    out=$(call_tool "$1")
+    if [ -n "$out" ]; then printf '%s' "$out"; return 0; fi
+    attempt=$((attempt + 1))
+    [ "$attempt" -le "$RPC_ATTEMPTS" ] && sleep "$RPC_RETRY_SLEEP"
+  done
+  return 0  # echo nothing; the caller's empty-check is the guard
+}
+
+# Echo "true"/"false" for a tool result's .success field (the .success projection of a tool result).
 ok_of() { printf '%s' "$1" | jq -r '.success // false' 2>/dev/null || echo false; }
 
 # Echo the hub's VERBATIM error/note text from a tool result, for loud surfacing.
@@ -100,12 +117,12 @@ err_of() { printf '%s' "$1" | jq -r '.error // .message // .errorMessage // empt
 
 # Resolve the source-bearing Apps Code CLASS id for (namespace, name) via
 # hub_list_apps scope=types. The class id (NOT the running instance id) is what
-# hub_update_app's appId must reference. Modeled on the class-id lookup in
-# mcp_deploy_source.sh / mcp_install_bundle_hpm.sh. Echoes the id; exits 1 loudly
-# if the watchdog response is unusable or the class isn't found.
+# hub_update_app's appId must reference. Echoes the id; exits 1 loudly if the
+# watchdog response is unusable or the class isn't found. Retries the read so a
+# single relay 504 doesn't hard-fail the install after libraries+bundle landed.
 resolve_class_id() {
   local list_text class_id
-  list_text=$(call_tool '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}')
+  list_text=$(call_tool_retry '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}')
   if [ -z "$list_text" ]; then
     echo "::error::hub_list_apps (scope=types) returned no MCP content from the watchdog endpoint -- cannot resolve the Apps Code class id for ${APP_NAMESPACE}:${APP_NAME}." >&2
     exit 1
@@ -125,32 +142,33 @@ resolve_class_id() {
 }
 
 # Echo the app code class's current source character length (totalLength) for a
-# given class id, or empty if it can't be read. Used to assert the APP version
-# advanced (the source actually changed) after the importUrl install. A 1-byte
-# read is enough -- totalLength comes back in the first chunk's metadata.
+# given class id, or empty if it can't be read. Used to detect when the importUrl
+# install's new source has landed. A 1-char read is enough -- totalLength comes
+# back in the first chunk's metadata. noSave:true is CRITICAL: without it,
+# hub_get_source auto-saves the full live source to the dead-man restore cache
+# (mcp-source-app-<id>.groovy), overwriting cached MAIN with the just-deployed PR
+# code mid-run -- which would make the disarm "restore" PR code. Retries the read.
 app_total_length() {
   local id="$1" rpc text
   rpc=$(jq -nc --arg id "$id" \
-    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:1}}}')
-  text=$(call_tool "$rpc")
+    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:1,noSave:true}}}')
+  text=$(call_tool_retry "$rpc")
   printf '%s' "$text" | jq -r '.totalLength // empty' 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
-# Destructive WRITE tools (hub_update_library / hub_create_library / hub_install_bundle /
-# hub_update_app) are confirm-gated: confirm:true PLUS a hub backup within 24h. Refresh
-# the timestamp best-effort; the gate is timestamp-cached so a failure here is tolerated
-# (CI keeps the window warm). Same posture as the scripts this replaces.
-echo "Triggering hub backup via watchdog (best-effort; the <24h destructive gate is timestamp-cached)..."
+# The watchdog's destructive WRITE tools require ONLY confirm:true -- unlike the main server it DROPS
+# the 24h-backup requirement (see the watchdog's SECURITY banner). This hub_create_backup call is a
+# best-effort DEFENSIVE snapshot, NOT a gate prerequisite, so a failure here is tolerated.
+echo "Triggering a defensive hub backup via the watchdog (best-effort; not a write-gate prerequisite)..."
 mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true}}}' >/dev/null \
-  || echo "::warning::hub_create_backup call failed/timed out; relying on the cached <24h backup timestamp"
+  || echo "::warning::hub_create_backup call failed/timed out; continuing (the backup is a defensive snapshot, not required for writes)"
 
 # ===========================================================================
 # 1) LIBRARIES FIRST -- install/update every library the app #includes so the
 #    `#include` directives resolve when the app compiles (issue #209). Matches
 #    each #include to its library file by the (namespace, name) declared in the
-#    library() block (NOT by filename, mirroring the hub), exactly as
-#    mcp_install_libraries.sh did.
+#    library() block (NOT by filename, mirroring how the hub resolves #includes).
 # ===========================================================================
 mapfile -t INCLUDES < <(
   grep -hoE '^[[:space:]]*#include[[:space:]]+[A-Za-z0-9_]+\.[A-Za-z0-9_]+' "$APP_FILE" \
@@ -269,7 +287,7 @@ fi
 #    ~10s relay window comes back success:true; a rejected save comes back
 #    success:false WITH the hub's verbatim errorMessage. But the ~1.6MB app deploy
 #    usually runs ~200s hub-side and the relay drops its response -- so when the
-#    response is empty we tolerate it and POLL get_app_source until the saved source
+#    response is empty we tolerate it and POLL hub_get_source until the saved source
 #    advances to this PR's length (lastSelfDeploy is a secondary compile-error source).
 #    VERIFY = the app's code version (source totalLength) advanced to this PR's length.
 # ===========================================================================
@@ -280,70 +298,80 @@ APP_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/$(basename "$APP_FILE")"
 NEW_BYTES=$(wc -c < "$APP_FILE")
 # The hub's totalLength is a CHARACTER count (Groovy String.length() = UTF-16 code units), not bytes.
 # wc -m gives codepoints, which equals UTF-16 units for all BMP characters (everything but rare non-BMP
-# like emoji) -- a good-enough no-op approximation for Groovy source. success=true is the primary signal.
+# like emoji). NEW_CHARS is LOAD-BEARING: in the dropped-response poll below there is no synchronous
+# success to fall back on, so the length transition to NEW_CHARS (plus a fresh lastSelfDeploy) IS the
+# landing proof. An all-BMP source is required for the exact-equality match (the repo source is ASCII).
 NEW_CHARS=$(LC_ALL=C.UTF-8 wc -m < "$APP_FILE" | tr -d '[:space:]')
 
-# Baseline the live app source length BEFORE the deploy. The post-deploy assertion
-# is "totalLength changed", proving the new source actually landed -- not just that
-# the tool returned success:true. A read failure here leaves the baseline empty,
-# which only relaxes that one extra assertion (success:true is still required); it
-# never turns a real failure into a pass.
+# Baseline BEFORE the deploy: (1) the live app source length -- the landed-source check wants a
+# TRANSITION to this PR's length, not a bare equality; and (2) the watchdog's lastSelfDeploy.at, so a
+# poll that can't use a length transition (PR length == baseline length) can require a FRESH record
+# (at > baseline) written by THIS deploy, never a stale one from a prior run. A read failure here only
+# relaxes assertions; it never turns a real failure into a pass.
 PRE_LEN="$(app_total_length "$CLASS_ID")"
-echo "Pre-deploy app source totalLength baseline: ${PRE_LEN:-<unreadable>}"
+PRE_LSD_AT="$(call_tool_retry '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' | jq -r '.lastSelfDeploy.at // 0' 2>/dev/null || echo 0)"
+[ -z "$PRE_LSD_AT" ] && PRE_LSD_AT=0
+echo "Pre-deploy app source totalLength baseline: ${PRE_LEN:-<unreadable>} (lastSelfDeploy.at baseline ${PRE_LSD_AT})"
 
 echo "Deploying app class ${CLASS_ID} via importUrl (hub fetches ${NEW_BYTES} bytes from ${APP_URL}) through the watchdog endpoint..."
 DEPLOY_RPC=$(jq -nc --arg id "$CLASS_ID" --arg url "$APP_URL" \
   '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_update_app",arguments:{appId:$id,importUrl:$url,confirm:true}}}')
 DEPLOY_TEXT=$(call_tool "$DEPLOY_RPC")
 
+RECOVERED=""
 if [ -z "$DEPLOY_TEXT" ]; then
   # The ~1.6MB importUrl deploy (hub-side fetch + loopback POST + recompile, ~200s) outlives the cloud
   # relay's ~10s response window, so the watchdog's synchronous result is lost in transit even though the
-  # deploy proceeds hub-side. This is the SAME situation the live MCP server's self-deploy hits, and the
-  # proven recovery is identical: tolerate the dropped response and POLL hub_get_source until the new
-  # source actually lands (the saved source length advances to this PR's length). We do NOT depend on the
-  # post-POST lastSelfDeploy stash for success -- it is not written until the deploy finishes, so it can
-  # never confirm an in-flight deploy -- but we DO consult it as a secondary source for the hub's verbatim
-  # compile error if the source never lands.
+  # deploy proceeds hub-side -- the SAME situation the live MCP server's self-deploy hits. Tolerate the
+  # dropped response and confirm the deploy actually landed via TWO independent signals:
+  #   1. A FRESH lastSelfDeploy record for this class (at > PRE_LSD_AT): success -> landed; failure ->
+  #      hub REJECTED it (surface the verbatim compile error and fail). The freshness guard prevents a
+  #      stale prior-run record from confirming/condemning this deploy.
+  #   2. The saved source length TRANSITIONING from the baseline to this PR's length -- but ONLY when the
+  #      baseline differs from this PR's length. If they are equal (a same-length source is already live),
+  #      length proves nothing (P1: a silently-failed deploy would look "landed"), so signal 1 is required.
   WAIT_S=420
-  echo "::notice::No deploy response within the cloud relay window (expected for the ~1.6MB importUrl deploy). Polling hub_get_source for up to ${WAIT_S}s until the new source lands (this PR's totalLength=${NEW_CHARS})..."
+  if [ -n "$PRE_LEN" ] && [ "$PRE_LEN" = "$NEW_CHARS" ]; then
+    echo "::notice::No deploy response; baseline length already equals this PR's length (${NEW_CHARS}), so a length match cannot prove the deploy landed. Requiring a FRESH successful lastSelfDeploy (at > ${PRE_LSD_AT}) for up to ${WAIT_S}s..."
+  else
+    echo "::notice::No deploy response within the cloud relay window (expected for the ~1.6MB importUrl deploy). Confirming via a length transition (${PRE_LEN:-<unknown>} -> ${NEW_CHARS}) or a fresh lastSelfDeploy, up to ${WAIT_S}s..."
+  fi
   LANDED=""
   POLL_DEADLINE=$(( $(date +%s) + WAIT_S ))
   while [ "$(date +%s)" -lt "$POLL_DEADLINE" ]; do
     sleep 15
+    # Signal 2 (cheap) first, but ONLY honor it as a transition (baseline != PR length).
     CUR_LEN="$(app_total_length "$CLASS_ID")"
-    if [ -z "$CUR_LEN" ] || [ "$CUR_LEN" = "0" ]; then
-      echo "  ...hub_get_source not readable yet (watchdog busy fetching/recompiling); retrying..."
-      continue
+    if [ -n "$PRE_LEN" ] && [ "$PRE_LEN" != "$NEW_CHARS" ] && [ -n "$CUR_LEN" ] && [ "$CUR_LEN" = "$NEW_CHARS" ]; then
+      echo "Source landed: app class ${CLASS_ID} totalLength transitioned ${PRE_LEN} -> ${CUR_LEN} (this PR's ${NEW_CHARS})."
+      LANDED="yes"; break
     fi
-    if [ "$CUR_LEN" = "$NEW_CHARS" ]; then
-      echo "Source landed: app class ${CLASS_ID} totalLength is now ${CUR_LEN} (matches this PR's ${NEW_CHARS})."
-      LANDED="yes"
-      break
-    fi
-    if [ -n "$PRE_LEN" ] && [ "$CUR_LEN" != "$PRE_LEN" ]; then
-      echo "  ...source changed (${PRE_LEN} -> ${CUR_LEN}) but not yet this PR's length (${NEW_CHARS}); recompile in progress, retrying..."
-    else
-      echo "  ...source still at baseline (${CUR_LEN}); deploy not landed yet, retrying..."
-    fi
-  done
-  if [ -z "$LANDED" ]; then
-    # The saved source never reached this PR's length within the window. Pull the watchdog's
-    # lastSelfDeploy (issue #237) as a SECONDARY source for the hub's verbatim compile error.
-    FINAL_LEN="$(app_total_length "$CLASS_ID")"
-    INFO_TEXT=$(call_tool '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}')
+    # Signal 1: a FRESH lastSelfDeploy for this class (success -> landed; failure -> hub rejected it).
+    INFO_TEXT="$(call_tool '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}')"
     LSD_APP=$(printf '%s' "$INFO_TEXT" | jq -r '.lastSelfDeploy.appId // empty' 2>/dev/null || true)
+    LSD_AT=$(printf '%s' "$INFO_TEXT" | jq -r '(.lastSelfDeploy.at // 0) | floor' 2>/dev/null || echo 0)
     LSD_OK=$(printf '%s' "$INFO_TEXT" | jq -r '.lastSelfDeploy.success // empty' 2>/dev/null || true)
     LSD_ERR=$(printf '%s' "$INFO_TEXT" | jq -r '.lastSelfDeploy.error // empty' 2>/dev/null || true)
-    if [ "$LSD_APP" = "$CLASS_ID" ] && [ "$LSD_OK" = "false" ] && [ -n "$LSD_ERR" ] && [ "$LSD_ERR" != "null" ]; then
-      echo "::error::App deploy did not land (source totalLength ${FINAL_LEN:-<unreadable>}, expected ${NEW_CHARS}). Hub REJECTED it -- verbatim compile error (from the watchdog's lastSelfDeploy): ${LSD_ERR}"
-    else
-      echo "::error::App deploy did not land within ${WAIT_S}s: source totalLength ${FINAL_LEN:-<unreadable>} never reached this PR's length ${NEW_CHARS} (baseline ${PRE_LEN:-<unknown>}), and the watchdog recorded no verbatim compile error for class ${CLASS_ID}. The deploy may still be compiling, or the loopback POST / source fetch failed -- re-run; if it persists, check the watchdog app logs."
+    if [ "$LSD_APP" = "$CLASS_ID" ] && [ "${LSD_AT:-0}" -gt "${PRE_LSD_AT:-0}" ] 2>/dev/null; then
+      if [ "$LSD_OK" = "false" ]; then
+        echo "::error::Hub REJECTED the app deploy (fresh lastSelfDeploy for class ${CLASS_ID}, at ${LSD_AT} > baseline ${PRE_LSD_AT}). Verbatim compile error: ${LSD_ERR:-<none>}"
+        exit 1
+      fi
+      if [ "$LSD_OK" = "true" ]; then
+        echo "Deploy confirmed: fresh lastSelfDeploy(success) for class ${CLASS_ID} (at ${LSD_AT} > baseline ${PRE_LSD_AT})."
+        LANDED="yes"; break
+      fi
     fi
+    echo "  ...not confirmed yet (curLen=${CUR_LEN:-?}, baseline=${PRE_LEN:-?}, target=${NEW_CHARS}, lsd.at=${LSD_AT:-?}/${PRE_LSD_AT}); waiting for a length transition or a fresh lastSelfDeploy..."
+  done
+  if [ -z "$LANDED" ]; then
+    FINAL_LEN="$(app_total_length "$CLASS_ID")"
+    echo "::error::App deploy did not land within ${WAIT_S}s: no FRESH successful lastSelfDeploy for class ${CLASS_ID} (at > ${PRE_LSD_AT}), and the saved source length (${FINAL_LEN:-<unreadable>}) did not transition to this PR's length ${NEW_CHARS} from baseline ${PRE_LEN:-<unknown>}. The deploy may still be compiling, or the loopback POST / source fetch failed -- re-run; if it persists, check the watchdog app logs."
     exit 1
   fi
-  echo "Deploy confirmed by the landed-source poll (the relay dropped the response; the new source is live on the hub)."
-  # Synthesize a success result so the downstream no-op/version verification runs and re-confirms.
+  RECOVERED="yes"
+  echo "Deploy confirmed by the dropped-response recovery (the relay dropped the response; the new source is live on the hub)."
+  # Synthesize a success result; the redundant POST_LEN re-check below is skipped for the recovered path.
   DEPLOY_TEXT='{"success":true,"recovered":true}'
 fi
 
@@ -361,29 +389,33 @@ if [ "$(ok_of "$DEPLOY_TEXT")" != "true" ]; then
   exit 1
 fi
 
-# success:true. Confirm the app code version actually advanced (source changed),
-# so a stale-but-"ok" response can't pass the gate. Only enforced when the
-# baseline was readable AND the source genuinely differs in length.
-POST_LEN="$(app_total_length "$CLASS_ID")"
-echo "Post-deploy app source totalLength: ${POST_LEN:-<unreadable>} (baseline ${PRE_LEN:-<unreadable>})"
-
-if [ -n "$PRE_LEN" ] && [ -n "$POST_LEN" ] && [ "$POST_LEN" != "0" ]; then
-  if [ "$POST_LEN" = "$PRE_LEN" ]; then
-    # Identical length CAN be a legitimate no-op (the hub already held byte-identical
-    # source, or a whitespace-only / coincidentally length-matching diff). Distinguish
-    # the two: if this PR's local source length matches the hub's, it's a real no-op
-    # (already deployed); otherwise the version did NOT advance and the deploy is bad.
-    if [ "$POST_LEN" = "$NEW_CHARS" ]; then
-      echo "::notice::App source totalLength unchanged (${POST_LEN}) but character-length-identical to this PR's source -- a legitimate no-op (the hub already held this PR's app). Treating as deployed."
+# Synchronous-success path only: confirm the source actually changed, so a stale-but-"ok" response
+# can't pass the gate. SKIPPED for the dropped-response recovered path -- the poll above already proved
+# landing (a length transition or a fresh lastSelfDeploy success); re-reading POST_LEN here could only
+# turn that confirmed pass into a spurious fail (e.g. an implausible stale read), never strengthen it.
+if [ "$RECOVERED" = "yes" ]; then
+  echo "Recovered deploy already confirmed by the poll; skipping the redundant POST_LEN re-check."
+else
+  POST_LEN="$(app_total_length "$CLASS_ID")"
+  echo "Post-deploy app source totalLength: ${POST_LEN:-<unreadable>} (baseline ${PRE_LEN:-<unreadable>})"
+  if [ -n "$PRE_LEN" ] && [ -n "$POST_LEN" ] && [ "$POST_LEN" != "0" ]; then
+    if [ "$POST_LEN" = "$PRE_LEN" ]; then
+      # Identical length CAN be a legitimate no-op (the hub already held byte-identical
+      # source, or a whitespace-only / coincidentally length-matching diff). Distinguish
+      # the two: if this PR's local source length matches the hub's, it's a real no-op
+      # (already deployed); otherwise the version did NOT advance and the deploy is bad.
+      if [ "$POST_LEN" = "$NEW_CHARS" ]; then
+        echo "::notice::App source totalLength unchanged (${POST_LEN}) but character-length-identical to this PR's source -- a legitimate no-op (the hub already held this PR's app). Treating as deployed."
+      else
+        echo "::error::hub_update_app reported success=true but the app's code version did NOT advance: source totalLength is still ${POST_LEN} (baseline ${PRE_LEN}), and it does not match this PR's local source character length (${NEW_CHARS}). The new source did not take effect on the hub."
+        exit 1
+      fi
     else
-      echo "::error::hub_update_app reported success=true but the app's code version did NOT advance: source totalLength is still ${POST_LEN} (baseline ${PRE_LEN}), and it does not match this PR's local source character length (${NEW_CHARS}). The new source did not take effect on the hub."
-      exit 1
+      echo "App version advanced: source totalLength ${PRE_LEN} -> ${POST_LEN}."
     fi
   else
-    echo "App version advanced: source totalLength ${PRE_LEN} -> ${POST_LEN}."
+    echo "::warning::Could not read both pre/post source lengths to confirm the version advanced; relying on hub_update_app success=true alone (the watchdog returned the hub's synchronous compile result). The independent landed-source check was skipped due to an unreadable pre/post length."
   fi
-else
-  echo "::warning::Could not read both pre/post source lengths to confirm the version advanced; relying on hub_update_app success=true alone (the watchdog returned the hub's synchronous compile result). The independent landed-source check was skipped due to an unreadable pre/post length."
 fi
 
 echo "Deploy succeeded via watchdog: PR app source (${NEW_BYTES} bytes) compiled and is live on the hub at class ${CLASS_ID}."

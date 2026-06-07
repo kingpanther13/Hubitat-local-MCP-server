@@ -31,9 +31,8 @@ set -euo pipefail
 : "${PR_HEAD_SHA_RESOLVED:?PR_HEAD_SHA_RESOLVED env var required -- 40-hex PR head SHA}"
 : "${GITHUB_RUN_ID:?GITHUB_RUN_ID env var required}"
 
-# The MCP server app's Apps Code CLASS id (resolved by namespace+name, exactly as
-# mcp_deploy_source.sh does). The watchdog's restore targets this CODE CLASS id, NOT the running
-# instance id the main-server MCP URL carries.
+# The MCP server app's Apps Code CLASS id (resolved by namespace+name). The watchdog's restore targets
+# this CODE CLASS id, NOT the running instance id the main-server MCP URL carries.
 APP_NAMESPACE="mcp"
 APP_NAME="MCP Rule Server"
 
@@ -54,16 +53,23 @@ mcp_call() {
     --data-binary "$1"
 }
 
-# Prints the inner tool text on stdout; returns 0 on a parseable envelope (text may be empty ->
-# caller checks), 1 only if every attempt was non-JSON (the ~10s cloud-gateway timeout). A valid
-# JSON envelope -- including a real hub error -- is returned immediately and never retried.
+# Prints the inner tool-result text on stdout and returns 0 on a successful tool envelope (text may be
+# empty -> the caller's .success / existence gate decides). A JSON-RPC ERROR envelope ({"error":...},
+# no .result) is a real hub/protocol failure: surface it loudly and return 1 (do NOT pass it off as
+# empty-success text). A non-JSON body (the ~10s cloud-gateway timeout) is retried up to RPC_ATTEMPTS.
 RPC_ATTEMPTS=5
 RPC_RETRY_SLEEP=6
 mcp_tool_call_text() {
-  local label="$1" rpc="$2" attempt=1 resp text
+  local label="$1" rpc="$2" attempt=1 resp text err
   while [ "$attempt" -le "$RPC_ATTEMPTS" ]; do
     resp=$(mcp_call "$rpc" || true)
-    if text=$(printf '%s' "$resp" | jq -r '.result.content[0].text // ""' 2>/dev/null); then
+    if printf '%s' "$resp" | jq -e . >/dev/null 2>&1; then
+      err=$(printf '%s' "$resp" | jq -r '.error.message // (.error | strings) // empty' 2>/dev/null || true)
+      if [ -n "$err" ] && [ "$err" != "null" ]; then
+        echo "::error::${label}: JSON-RPC error envelope from the watchdog: $(printf '%s' "$err" | head -c 200)" >&2
+        return 1
+      fi
+      text=$(printf '%s' "$resp" | jq -r '.result.content[0].text // ""' 2>/dev/null || true)
       printf '%s' "$text"
       return 0
     fi
@@ -258,15 +264,20 @@ for TOKEN in "${INCLUDE_TOKENS[@]:-}"; do
     exit 1
   fi
   echo "Library backup '$LIB_RESTORE_FILE' present (totalLength=$LIB_BACKUP_LEN bytes)."
+  # Carry namespace+name so restorePackage can re-resolve the library's CURRENT id from live hub state
+  # (the deploy may delete+recreate a bundle-managed library, changing its id out from under this manifest).
   LIB_MANIFEST_JSON=$(jq -nc \
     --argjson acc "$LIB_MANIFEST_JSON" \
     --arg id "$LIB_ID" \
     --arg file "$LIB_RESTORE_FILE" \
-    '$acc + [{id:$id, file:$file}]')
+    --arg ns "$NS" \
+    --arg name "$NM" \
+    '$acc + [{id:$id, file:$file, namespace:$ns, name:$name}]')
 done
 
-# Assemble the restore manifest: {app:{classId,file}, libraries:[{id,file}]} -- the exact shape
-# restorePackage() reads (libraries first, app last).
+# Assemble the restore manifest: {app:{classId,file}, libraries:[{id,file,namespace,name}]} -- the
+# exact shape restorePackage() reads (libraries first, app last; namespace/name let it re-resolve a
+# library id that the deploy changed via delete+recreate).
 MANIFEST_JSON=$(jq -nc \
   --arg classId "$CLASS_ID" \
   --arg appFile "$APP_RESTORE_FILE" \
