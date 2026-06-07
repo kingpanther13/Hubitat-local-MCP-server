@@ -1593,6 +1593,14 @@ class TestRunner:
             assert any(str(d.get("id")) == dev_id for d in got_devices), \
                 f"hub_get_room did not list the assigned device {dev_id}: {got}"
 
+            # hub_get_room also resolves by NAME (not just id).
+            got_by_name = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_get_room",
+                "args": {"room": name},
+            })
+            assert str(got_by_name.get("id")) == room_id, \
+                f"hub_get_room by name did not resolve to the same room: {got_by_name}"
+
             # hub_update_room (rename).
             renamed_res = self.client.call_tool("hub_manage_rooms", {
                 "tool": "hub_update_room",
@@ -1627,6 +1635,116 @@ class TestRunner:
                     })
                 except Exception as exc:
                     print(f"  [WARN] rooms flow cleanup: delete {room_id} failed: {exc}")
+
+    @test("system_tools")
+    def test_manage_rooms_error_contracts(self) -> None:
+        """Issue #209: validate the McpRoomsLib tools' error/validation contracts live.
+
+        The round-trip proves the happy paths; this proves the failure modes traverse
+        the MCP transport correctly on a real hub: not-found lookup, the duplicate-name
+        and rename-collision guards, and the confirm safety gate on the destructive room
+        writes (create + delete). These are unit-covered in ToolRoomsSpec; here we confirm
+        the same contracts end-to-end. Self-cleaning (finally + Layer-6 sweep).
+        """
+        name_a = f"{PREFIX}RoomErrA"
+        name_b = f"{PREFIX}RoomErrB"
+        ghost = f"{PREFIX}RoomGhostNope"
+        created_ids = []
+        try:
+            # Pre-sweep same-named strands from a doubly-crashed prior run.
+            pre = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            for r in (pre.get("rooms", []) if isinstance(pre, dict) else []):
+                if r.get("name") in (name_a, name_b):
+                    try:
+                        self.client.call_tool("hub_manage_rooms", {
+                            "tool": "hub_delete_room",
+                            "args": {"room": str(r.get("id")), "confirm": True},
+                        })
+                    except Exception:
+                        pass
+
+            # 1) hub_get_room on a non-existent room -> -32602 (McpError).
+            try:
+                self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_get_room", "args": {"room": ghost},
+                })
+                assert False, "hub_get_room on a non-existent room should have raised"
+            except McpError as e:
+                assert "not found" in str(e).lower(), f"hub_get_room error was not a not-found: {e}"
+
+            # 2) confirm safety gate: hub_create_room without confirm -> refused, no room created.
+            try:
+                self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_create_room", "args": {"name": name_a},
+                })
+                assert False, "hub_create_room without confirm should have raised"
+            except McpError as e:
+                assert "confirm" in str(e).lower() or "safety check" in str(e).lower(), \
+                    f"hub_create_room no-confirm error was not a safety-gate refusal: {e}"
+            after = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            assert not any(
+                r.get("name") == name_a
+                for r in (after.get("rooms", []) if isinstance(after, dict) else [])
+            ), "hub_create_room without confirm must NOT create the room"
+
+            # 3) duplicate-name guard: create roomA, then a second create with the same name -> refused.
+            created = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_create_room", "args": {"name": name_a, "confirm": True},
+            })
+            assert created.get("success") is True, f"setup create roomA failed: {created}"
+            id_a = str((created.get("room") or {}).get("id") or "")
+            assert id_a, f"setup create roomA returned no id: {created}"
+            created_ids.append(id_a)
+            try:
+                self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_create_room", "args": {"name": name_a, "confirm": True},
+                })
+                assert False, "duplicate hub_create_room should have raised"
+            except McpError as e:
+                assert "already exists" in str(e).lower(), f"duplicate-create error unexpected: {e}"
+
+            # 4) rename-collision guard: create roomB, rename it to roomA's name -> refused.
+            created_b = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_create_room", "args": {"name": name_b, "confirm": True},
+            })
+            assert created_b.get("success") is True, f"setup create roomB failed: {created_b}"
+            id_b = str((created_b.get("room") or {}).get("id") or "")
+            assert id_b, f"setup create roomB returned no id: {created_b}"
+            created_ids.append(id_b)
+            try:
+                self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_update_room",
+                    "args": {"room": id_b, "newName": name_a, "confirm": True},
+                })
+                assert False, "renaming roomB to roomA's name should have raised"
+            except McpError as e:
+                assert "already exists" in str(e).lower(), f"collision-rename error unexpected: {e}"
+
+            # 5) confirm safety gate on delete: hub_delete_room without confirm -> refused, room survives.
+            try:
+                self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_delete_room", "args": {"room": id_a},
+                })
+                assert False, "hub_delete_room without confirm should have raised"
+            except McpError as e:
+                assert "confirm" in str(e).lower() or "safety check" in str(e).lower(), \
+                    f"hub_delete_room no-confirm error was not a safety-gate refusal: {e}"
+            still = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            assert any(
+                str(r.get("id")) == id_a
+                for r in (still.get("rooms", []) if isinstance(still, dict) else [])
+            ), "roomA must survive a no-confirm delete attempt"
+
+            print("    ROOMS_LIB_ERRORS not-found + confirm-gate + duplicate + collision OK")
+        finally:
+            for rid in created_ids:
+                try:
+                    self.client.call_tool("hub_manage_rooms", {
+                        "tool": "hub_delete_room",
+                        "args": {"room": rid, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] rooms error-contract cleanup: delete {rid} failed: {exc}")
 
     # -----------------------------------------------------------------------
     # GROUP 10: developer_mode (10 tests — Section 12 of BAT-v2.md + review-fix coverage)
