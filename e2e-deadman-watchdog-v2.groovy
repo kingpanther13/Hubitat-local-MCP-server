@@ -25,6 +25,13 @@
  * The admin-tool logic is copied from hubitat-mcp-server.groovy (cited per method) and
  * adapted from its hubInternalGet/PostForm/PostJson to this app's hubGet/hubPostForm/
  * hubPostJson loopback helpers.
+ *
+ * !! SECURITY: this is a DELIBERATELY UNGUARDED full deploy controller for the e2e TEST HUB
+ * ONLY. Unlike the main server it DROPS the Developer-Mode self-update guard, the Read/Write
+ * masters, the per-tool overrides, and the 24h-backup requirement -- the sole boundary is the
+ * OAuth access_token (whoever holds WATCHDOG_MCP_URL can deploy arbitrary code to ANY app class
+ * on this hub) plus a confirm=true flag on writes. NEVER install this on a production/user hub,
+ * and never expose its token. It is intended for the donated level99 e2e hub and nothing else.
  */
 definition(
     name: "E2E Dead-Man Watchdog v2",
@@ -142,11 +149,14 @@ private void actAndRecord(Map flag, String trigger) {
         int attempts = ((flag.fireAttempts ?: 0) as int) + 1
         flag.fireAttempts = attempts
         flag.restoreDetail = res.detail
-        if (trigger == "fire" && attempts < 5) {
+        // Retry BOTH triggers up to the cap -- a transient miss must not latch the restore "failed".
+        // (fire: armed+deadline re-fires next tick; disarm: intent=disarm with restoreFor still
+        // unstamped re-runs next tick.)
+        if (attempts < 5) {
             flag.lastAttemptAt = now()
-            log.warn "E2E Dead-Man Watchdog v2 restore attempt ${attempts} FAILED; staying armed to retry next check. ${res.detail}"
+            log.warn "E2E Dead-Man Watchdog v2 restore attempt ${attempts} (trigger=${trigger}) FAILED; will retry next check. ${res.detail}"
             if (!writeFlag(flag)) {
-                log.error "E2E Dead-Man Watchdog v2: could not persist retry state (attempt ${attempts}); the still-armed flag retries next check regardless."
+                log.error "E2E Dead-Man Watchdog v2: could not persist retry state (attempt ${attempts}); will retry next check regardless."
             }
             return
         }
@@ -217,19 +227,25 @@ boolean restoreApp(String classId, String restoreFileName) {
         log.error "restoreApp: hub did not report success; body=${resp?.data?.toString()?.take(300)}"
         return false
     }
-    // A real code-class save advances the version; a reported success that doesn't bump it means
-    // the push didn't land (don't claim 'restored' on a silent no-op).
+    // A real code-class save advances the version -- but Hubitat may NOT bump it on a byte-identical
+    // save, which is a legitimate no-op (the live app already equals what we pushed; common when a PR
+    // triggers e2e WITHOUT changing hubitat-mcp-server.groovy). So: version-advanced -> restored; else
+    // re-read the live source and treat a length match as a no-op success; only a genuine mismatch
+    // (the push silently dropped) fails. Mirrors mcp_watchdog_deploy.sh's no-op handling.
     def newVersion = appCodeVersion(classId)
-    boolean confirmed = false
     String oldStr = oldVersion?.toString()?.trim()
     String newStr = newVersion?.toString()?.trim()
-    if (newStr?.isLong() && oldStr?.isLong()) {
-        confirmed = newStr.toLong() > oldStr.toLong()
-    } else {
-        log.error "restoreApp: version not numeric (old=${oldVersion}, new=${newVersion}); cannot confirm the advance."
+    if (newStr?.isLong() && oldStr?.isLong() && newStr.toLong() > oldStr.toLong()) {
+        logInfo "restoreApp: pushed ${source.length()} chars to class ${classId}; version ${oldVersion}->${newVersion}, confirmed."
+        return true
     }
-    logInfo "restoreApp: pushed ${source.length()} chars to class ${classId}; reported=${reported}, version ${oldVersion}->${newVersion}, confirmed=${confirmed}"
-    return confirmed
+    String live = readAppSource(classId)
+    if (live != null && live.length() == source.length()) {
+        logInfo "restoreApp: class ${classId} version unchanged (${oldVersion}) but live source length matches the pushed source -- legitimate no-op, treating as restored."
+        return true
+    }
+    log.error "restoreApp: reported success but version did not advance (old=${oldVersion}, new=${newVersion}) and the live source does not match the pushed source -- the restore did not land for class ${classId}."
+    return false
 }
 
 // ---- restore one library: read cached source, POST it to the LOCAL /library/saveOrUpdateJson ----
@@ -257,8 +273,25 @@ boolean restoreLibrary(String libId, String fileName) {
     boolean ok = false
     try {
         def parsed = new groovy.json.JsonSlurper().parseText(resp.data ?: "{}")
-        // saveOrUpdateJson returns {success, id, version}; success is absent-or-true on the happy path.
-        ok = (parsed?.success != false) && (parsed?.id != null)
+        // Confirm the restore actually landed (don't trust success+id alone): the version advanced, OR
+        // -- on a byte-identical no-op the hub may not bump it -- the live library source length matches
+        // what we pushed.
+        if (parsed?.success == false || parsed?.id == null) {
+            log.error "restoreLibrary ${libId}: hub reported failure or no id (${resp?.data?.toString()?.take(200)})"
+        } else {
+            def newVer = parsed?.version
+            if (newVer != null && curVer != null && (newVer as Integer) > curVer) {
+                ok = true
+            } else {
+                String live = readLibrarySource(libId)
+                if (live != null && live.length() == source.length()) {
+                    ok = true
+                    logInfo "restoreLibrary ${libId}: version unchanged but live source length matches the pushed source -- legitimate no-op."
+                } else {
+                    log.error "restoreLibrary ${libId}: success reported but version did not advance and live source != pushed -- did not land."
+                }
+            }
+        }
     } catch (Exception e) {
         log.error "restoreLibrary: could not parse update response (${e.message}); body=${resp?.data?.toString()?.take(300)}"
     }
@@ -285,6 +318,24 @@ Integer libraryVersion(String libId) {
     return null
 }
 
+// Full current source of an app class / library -- for the restore no-op check (a reported success
+// that doesn't bump the version is legitimate when the live source already equals what we pushed).
+String readAppSource(String classId) {
+    String body = hubGet("/app/ajax/code", [id: classId])
+    if (body == null) return null
+    try { return (new groovy.json.JsonSlurper().parseText(body)).source }
+    catch (Exception e) { log.error "readAppSource: parse failed: ${e.message}"; return null }
+}
+String readLibrarySource(String libId) {
+    String body = hubGet("/library/list/single/data/${libId}", [:])
+    if (body == null) return null
+    try {
+        def parsed = new groovy.json.JsonSlurper().parseText(body)
+        if (parsed instanceof List && !parsed.isEmpty()) return parsed[0]?.source
+    } catch (Exception e) { log.error "readLibrarySource: parse failed: ${e.message}" }
+    return null
+}
+
 // ==================== MCP JSON-RPC HANDLERS (deploy controller) ====================
 //
 // handleMcpGet: copied from hubitat-mcp-server.groovy line 693 -- this endpoint is
@@ -296,7 +347,7 @@ def handleMcpGet() {
 }
 
 // handleMcpRequest: envelope handling copied/condensed from hubitat-mcp-server.groovy
-// lines 705-784 + processJsonRpcMessage 789-826. Parses request.JSON, dispatches
+// lines 705-784 + processJsonRpcMessage 786-825. Parses request.JSON, dispatches
 // initialize / tools/list / tools/call / ping, and renders a JSON-RPC envelope.
 // NO per-call token check: Hubitat OAuth validates ?access_token first (server 705-784).
 def handleMcpRequest() {
@@ -347,7 +398,7 @@ def handleMcpRequest() {
     return render(contentType: "application/json", data: jsonResponse)
 }
 
-// processJsonRpcMessage: copied from hubitat-mcp-server.groovy lines 789-826.
+// processJsonRpcMessage: copied from hubitat-mcp-server.groovy lines 786-825.
 def processJsonRpcMessage(msg) {
     if (!msg) return jsonRpcError(null, -32600, "Invalid Request: empty message")
     if (msg.jsonrpc != "2.0") return jsonRpcError(msg?.id, -32600, "Invalid Request: must use JSON-RPC 2.0")
@@ -391,7 +442,7 @@ def handleInitialize(msg) {
 
 // handleToolsCall: dispatch params.name -> tool impl, wrap result in the MCP
 // {jsonrpc,id,result:{content:[{type:text,text:<json>}]}} envelope.
-// Copied/condensed from hubitat-mcp-server.groovy lines 826-990 (handleToolsCall).
+// Copied/condensed from hubitat-mcp-server.groovy lines 896-988 (handleToolsCall).
 def handleToolsCall(msg) {
     def toolName = msg.params?.name
     def args = msg.params?.arguments ?: [:]
@@ -609,6 +660,7 @@ def adminGetSource(args) {
     }
     def id = (args.id != null) ? args.id : (type == "app" ? args.appId : (type == "driver" ? args.driverId : args.libraryId))
     if (!id) throw new IllegalArgumentException("id is required")
+    if (!id.toString().isInteger() || id.toString().toInteger() <= 0) throw new IllegalArgumentException("id must be a positive integer (got: '${id}')")
 
     def maxChunkSize = 64000
     def requestedOffset = args.offset ? args.offset as int : 0
@@ -800,6 +852,7 @@ def adminDeleteItem(args) {
     }
     def id = (args.id != null) ? args.id : (type == "app" ? args.appId : (type == "driver" ? args.driverId : args.libraryId))
     if (!id) throw new IllegalArgumentException("id is required")
+    if (!id.toString().isInteger() || id.toString().toInteger() <= 0) throw new IllegalArgumentException("id must be a positive integer (got: '${id}')")
 
     if (type == "library") {
         mcpAdminLog "Deleting library ID ${id}"
@@ -1019,7 +1072,8 @@ def adminListLibraries(args) {
 }
 
 // hub_get_jobs: condensed from toolGetHubJobs (hubitat-mcp-server.groovy 11532-11578). Reads the
-// scheduled-jobs JSON over loopback (the server's fetchLogsJson hits /hub/scheduledJobs or similar).
+// scheduled-jobs JSON over loopback. (The main server's toolGetHubJobs reads jobs a different way;
+// this app reads /hub/scheduledJobs/json directly -- verify the path + shape on the test hub firmware.)
 def adminGetJobs(args) {
     def responseText = hubGet("/hub/scheduledJobs/json", [:])
     if (!responseText) return [error: "Empty response from hub jobs endpoint"]
