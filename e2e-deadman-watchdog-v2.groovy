@@ -593,8 +593,16 @@ def adminUpdateApp(args) {
             } catch (Exception parseErr) {
                 errorMsg = "Unexpected response format -- update may have succeeded but could not be confirmed. Check the app in the Hubitat web UI."
             }
-        } else {
+        } else if (isSelfUpdate) {
+            // Self-update ONLY: /app/ajax/update reloads THIS app mid-request, so an empty/dropped
+            // response is the expected success signal (issue #237). A normal deploy (the watchdog
+            // updating the MAIN server, not itself) does NOT reload the watchdog, so an empty/null
+            // response there means the loopback POST FAILED (hubPostForm returns data:null on a thrown
+            // POST) -- it must never false-green the deploy.
             success = true
+        } else {
+            success = false
+            errorMsg = "No/empty response from /app/ajax/update (HTTP ${result?.status}) -- the loopback POST failed (not a self-update, so an empty response is a real failure, not a reload)."
         }
 
         // issue #237 lastSelfDeploy record (server 13125-13135): persists across app reloads.
@@ -920,7 +928,7 @@ def adminInstallBundle(args) {
         def respBody
         if (modern) {
             // bundle2 is a GET with the url/pwd/private query (server 13577). `private` quoted (keyword).
-            respBody = hubGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": primary.toString()])
+            respBody = hubGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": primary.toString()], 300)
         } else {
             def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: primary, pwd: ""])
             def resp = hubPostJson("/bundle/uploadZipFromUrl", body)
@@ -1334,9 +1342,12 @@ String readHubFileText(String name) {
 }
 
 // ---- minimal hub-internal loopback (mirrors the main app's _hubRequest, trimmed) ----
-String hubGet(String path, Map query) {
+String hubGet(String path, Map query, int timeoutSec = 30) {
+    // timeoutSec defaults to 30 (fast loopback reads); the bundle-install GET passes ~300, since the
+    // hub fetches + unpacks the zip server-side and that can exceed 30s (matches the main server's
+    // 300s bundle timeout).
     def params = [uri: "http://127.0.0.1:8080", path: path, query: query,
-                  textParser: true, ignoreSSLIssues: true, timeout: 30]
+                  textParser: true, ignoreSSLIssues: true, timeout: timeoutSec]
     def cookie = secCookie()
     if (cookie) params.headers = [Cookie: cookie]
     String out = null

@@ -54,10 +54,18 @@ LIB_DIR="$(dirname "$APP_FILE")/libraries"
 APP_NAMESPACE="mcp"
 APP_NAME="MCP Rule Server"
 
-# The package's bundle .zip, by the same convention mcp_install_bundle_hpm.sh used.
-# Installed only if the file actually exists in the checkout (no bundle -> skip step 2).
-BUNDLE_REL="bundles/mcp-smoke-test.zip"
-BUNDLE_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/${BUNDLE_REL}"
+# The package's bundle .zip(s), DERIVED from packageManifest.json -- never hardcoded. The bundle
+# name changes with the #209 modularization, and a hardcoded name would silently stop proving HPM
+# delivery once it drifts. Each manifest bundles[].location is a full raw URL; strip the
+# host/owner/repo/ref prefix to the repo-relative path. The deploy installs every manifest bundle and
+# FAILS if the manifest declares one whose file is missing from the checkout (a real drift, not a
+# "no bundle" no-op).
+MANIFEST_FILE="$(dirname "$APP_FILE")/packageManifest.json"
+BUNDLE_RELS=""
+if [ -f "$MANIFEST_FILE" ]; then
+  BUNDLE_RELS=$(jq -r '.bundles[]?.location // empty' "$MANIFEST_FILE" \
+    | sed -E 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+/##')
+fi
 
 # ---------------------------------------------------------------------------
 # mcp_call -- POST one JSON-RPC body to the watchdog endpoint and echo the raw
@@ -222,23 +230,34 @@ else
 fi
 
 # ===========================================================================
-# 2) BUNDLE -- if the package ships a bundle .zip, install it the HPM way (HPM
+# 2) BUNDLE(S) -- install every bundle the manifest declares, the HPM way (HPM
 #    "install bundles", run BEFORE "install apps"). hub_install_bundle has the
-#    hub fetch + unpack the zip into Libraries/Apps/Drivers Code. Skipped when
-#    the checkout carries no bundle, so a package without one is a clean no-op.
+#    hub fetch + unpack the zip into Libraries/Apps/Drivers Code. A manifest with
+#    no bundles is a clean no-op; a manifest bundle whose file is missing from the
+#    checkout is a HARD failure (manifest/repo drift -- CI must not pass green
+#    while silently failing to prove HPM delivery).
 # ===========================================================================
-if [ -f "$(dirname "$APP_FILE")/${BUNDLE_REL}" ]; then
-  echo "Installing package bundle from ${BUNDLE_URL} via hub_install_bundle ..."
-  BUN_RPC=$(jq -nc --arg url "$BUNDLE_URL" \
-    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_install_bundle",arguments:{importUrl:$url,confirm:true}}}')
-  BUN_TEXT=$(call_tool "$BUN_RPC")
-  if [ "$(ok_of "$BUN_TEXT")" != "true" ]; then
-    echo "::error::hub_install_bundle did not report success -- HPM would fail to deliver this package's bundle. Hub verbatim: $(err_of "$BUN_TEXT") -- full: $(printf '%s' "$BUN_TEXT" | jq -c '{success,error,endpoint,rawResponse}' 2>/dev/null || printf '%s' "$BUN_TEXT" | head -c 400)"
-    exit 1
-  fi
-  echo "Bundle installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint,message}' 2>/dev/null || true)"
+if [ -z "$BUNDLE_RELS" ]; then
+  echo "packageManifest.json declares no bundles -- skipping the bundle step (clean no-op)."
 else
-  echo "No package bundle at $(dirname "$APP_FILE")/${BUNDLE_REL} -- skipping the bundle step."
+  while IFS= read -r BUNDLE_REL; do
+    [ -z "$BUNDLE_REL" ] && continue
+    BUNDLE_PATH="$(dirname "$APP_FILE")/${BUNDLE_REL}"
+    if [ ! -f "$BUNDLE_PATH" ]; then
+      echo "::error::packageManifest.json declares bundle '${BUNDLE_REL}' but it is not in the checkout ($BUNDLE_PATH). Manifest/repo drift -- CI cannot prove HPM bundle delivery. Failing instead of passing as 'no bundle'."
+      exit 1
+    fi
+    BUNDLE_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/${BUNDLE_REL}"
+    echo "Installing package bundle '${BUNDLE_REL}' from ${BUNDLE_URL} via hub_install_bundle ..."
+    BUN_RPC=$(jq -nc --arg url "$BUNDLE_URL" \
+      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_install_bundle",arguments:{importUrl:$url,confirm:true}}}')
+    BUN_TEXT=$(call_tool "$BUN_RPC")
+    if [ "$(ok_of "$BUN_TEXT")" != "true" ]; then
+      echo "::error::hub_install_bundle did not report success for '${BUNDLE_REL}' -- HPM would fail to deliver this package's bundle. Hub verbatim: $(err_of "$BUN_TEXT") -- full: $(printf '%s' "$BUN_TEXT" | jq -c '{success,error,endpoint,rawResponse}' 2>/dev/null || printf '%s' "$BUN_TEXT" | head -c 400)"
+      exit 1
+    fi
+    echo "Bundle '${BUNDLE_REL}' installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint,message}' 2>/dev/null || true)"
+  done <<< "$BUNDLE_RELS"
 fi
 
 # ===========================================================================
