@@ -11,15 +11,18 @@
 #
 # Why one script can do all four cleanly: the WATCHDOG endpoint ($WATCHDOG_URL,
 # from secret WATCHDOG_MCP_URL) is a SECOND MCP driver of the same loopback
-# code-install plumbing, but unlike the primary cloud endpoint it returns the
-# hub's VERBATIM compile/save result SYNCHRONOUSLY -- there is no ~10s cloud
-# gateway ceiling and no 504 while the app self-recompiles (the watchdog app is
-# a different running app, so installing the MCP package does NOT reload the app
-# answering the request). That removes the entire reason the old scripts needed
-# 5xx tolerance, get_app_source length polling, lastSelfDeploy recovery, and a
-# separate byte-compare verify pass. VERIFY here is simply: parse each tool
+# code-install plumbing. Its advantage over self-deploying through the primary
+# endpoint is that the watchdog is a DIFFERENT running app, so installing the MCP
+# package does NOT reload the app answering the request -- it never bricks itself
+# and stays queryable throughout. Small/fast calls (the libraries, the bundle,
+# get_source, get_info) return the hub's VERBATIM compile/save result synchronously,
+# within the ~10s cloud relay window, so VERIFY for those is simply: parse the tool
 # response and fail loudly -- surfacing the hub's verbatim errorMessage -- if
-# success != true, or (for the app) if the app's code version did not advance.
+# success != true. The one exception is the ~1.6MB APP deploy: it runs ~200s
+# hub-side, so the relay drops its response even though the deploy proceeds, exactly
+# like the live server's self-deploy. For that case we tolerate the dropped response
+# and poll get_app_source until the new source lands, consulting lastSelfDeploy only
+# as a secondary source for the hub's verbatim compile error if it never does.
 #
 # Install order (HPM's order; #include deps must exist before the app compiles):
 #   1. LIBRARIES  hub_update_library / hub_create_library  importUrl=<lib raw url>  confirm:true
@@ -262,11 +265,13 @@ fi
 
 # ===========================================================================
 # 3) APP LAST -- deploy the app via hub_update_app importUrl (the hub fetches the
-#    ~1.5MB raw source itself; issue #228). The watchdog returns the hub's
-#    VERBATIM compile/save result synchronously, so there is NO 504 to tolerate:
-#    a rejected save comes back as success:false WITH the real errorMessage, and
-#    a clean compile comes back success:true. VERIFY = success:true AND the app's
-#    code version (source totalLength) advanced from the pre-deploy baseline.
+#    ~1.5MB raw source itself; issue #228). A clean compile that returns within the
+#    ~10s relay window comes back success:true; a rejected save comes back
+#    success:false WITH the hub's verbatim errorMessage. But the ~1.6MB app deploy
+#    usually runs ~200s hub-side and the relay drops its response -- so when the
+#    response is empty we tolerate it and POLL get_app_source until the saved source
+#    advances to this PR's length (lastSelfDeploy is a secondary compile-error source).
+#    VERIFY = the app's code version (source totalLength) advanced to this PR's length.
 # ===========================================================================
 CLASS_ID="$(resolve_class_id)"
 echo "Resolved Apps Code class id for ${APP_NAMESPACE}:${APP_NAME}: ${CLASS_ID}"
@@ -292,41 +297,53 @@ DEPLOY_RPC=$(jq -nc --arg id "$CLASS_ID" --arg url "$APP_URL" \
 DEPLOY_TEXT=$(call_tool "$DEPLOY_RPC")
 
 if [ -z "$DEPLOY_TEXT" ]; then
-  # Expected for the ~1.6MB app: the deploy (hub-side fetch + 1.6MB loopback POST + recompile, ~200s)
-  # exceeds the cloud relay's ~10s response window, so the watchdog's synchronous result is lost in
-  # transit even though the deploy completes hub-side. The watchdog is NOT the app being recompiled, so
-  # unlike the old MCP-server self-deploy it is never bricked -- its persisted lastSelfDeploy record (and
-  # hub_get_info) stay queryable. Recover the outcome + verbatim compile error by polling it.
-  echo "::notice::No deploy response within the cloud relay window (expected for the ~1.6MB app deploy). Polling the watchdog's lastSelfDeploy record to recover the outcome..."
-  REC_OK=""; REC_ERR=""
-  POLL_DEADLINE=$(( $(date +%s) + 300 ))
+  # The ~1.6MB importUrl deploy (hub-side fetch + loopback POST + recompile, ~200s) outlives the cloud
+  # relay's ~10s response window, so the watchdog's synchronous result is lost in transit even though the
+  # deploy proceeds hub-side. This is the SAME situation the live MCP server's self-deploy hits, and the
+  # proven recovery is identical: tolerate the dropped response and POLL hub_get_source until the new
+  # source actually lands (the saved source length advances to this PR's length). We do NOT depend on the
+  # post-POST lastSelfDeploy stash for success -- it is not written until the deploy finishes, so it can
+  # never confirm an in-flight deploy -- but we DO consult it as a secondary source for the hub's verbatim
+  # compile error if the source never lands.
+  WAIT_S=420
+  echo "::notice::No deploy response within the cloud relay window (expected for the ~1.6MB importUrl deploy). Polling hub_get_source for up to ${WAIT_S}s until the new source lands (this PR's totalLength=${NEW_CHARS})..."
+  LANDED=""
+  POLL_DEADLINE=$(( $(date +%s) + WAIT_S ))
   while [ "$(date +%s)" -lt "$POLL_DEADLINE" ]; do
     sleep 15
-    INFO_TEXT=$(call_tool '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}')
-    if [ -z "$INFO_TEXT" ]; then echo "  ...watchdog still busy (hub_get_info no response yet); retrying..."; continue; fi
-    LSD=$(printf '%s' "$INFO_TEXT" | jq -c '.lastSelfDeploy // empty' 2>/dev/null || true)
-    if [ -z "$LSD" ]; then echo "  ...no lastSelfDeploy record yet; retrying..."; continue; fi
-    LSD_APP=$(printf '%s' "$LSD" | jq -r '.appId // empty' 2>/dev/null || true)
-    LSD_AGE=$(printf '%s' "$LSD" | jq -r '(.ageMs // 999999999) | floor' 2>/dev/null || echo 999999999)
-    # Honor ONLY a FRESH record for THIS class (avoid a stale record from a prior run).
-    if [ "$LSD_APP" = "$CLASS_ID" ] && [ "$LSD_AGE" -lt 600000 ] 2>/dev/null; then
-      REC_OK=$(printf '%s' "$LSD" | jq -r '.success // false' 2>/dev/null || echo false)
-      REC_ERR=$(printf '%s' "$LSD" | jq -r '.error // empty' 2>/dev/null || true)
-      echo "Recovered lastSelfDeploy for class ${CLASS_ID}: success=${REC_OK}, ageMs=${LSD_AGE}."
+    CUR_LEN="$(app_total_length "$CLASS_ID")"
+    if [ -z "$CUR_LEN" ] || [ "$CUR_LEN" = "0" ]; then
+      echo "  ...hub_get_source not readable yet (watchdog busy fetching/recompiling); retrying..."
+      continue
+    fi
+    if [ "$CUR_LEN" = "$NEW_CHARS" ]; then
+      echo "Source landed: app class ${CLASS_ID} totalLength is now ${CUR_LEN} (matches this PR's ${NEW_CHARS})."
+      LANDED="yes"
       break
     fi
-    echo "  ...lastSelfDeploy not yet for class ${CLASS_ID} / not fresh (appId=${LSD_APP} ageMs=${LSD_AGE}); retrying..."
+    if [ -n "$PRE_LEN" ] && [ "$CUR_LEN" != "$PRE_LEN" ]; then
+      echo "  ...source changed (${PRE_LEN} -> ${CUR_LEN}) but not yet this PR's length (${NEW_CHARS}); recompile in progress, retrying..."
+    else
+      echo "  ...source still at baseline (${CUR_LEN}); deploy not landed yet, retrying..."
+    fi
   done
-  if [ -z "$REC_OK" ]; then
-    echo "::error::Deploy response lost to the cloud relay AND no fresh lastSelfDeploy record for class ${CLASS_ID} recovered from the watchdog within 300s -- deploy outcome unknown."
+  if [ -z "$LANDED" ]; then
+    # The saved source never reached this PR's length within the window. Pull the watchdog's
+    # lastSelfDeploy (issue #237) as a SECONDARY source for the hub's verbatim compile error.
+    FINAL_LEN="$(app_total_length "$CLASS_ID")"
+    INFO_TEXT=$(call_tool '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}')
+    LSD_APP=$(printf '%s' "$INFO_TEXT" | jq -r '.lastSelfDeploy.appId // empty' 2>/dev/null || true)
+    LSD_OK=$(printf '%s' "$INFO_TEXT" | jq -r '.lastSelfDeploy.success // empty' 2>/dev/null || true)
+    LSD_ERR=$(printf '%s' "$INFO_TEXT" | jq -r '.lastSelfDeploy.error // empty' 2>/dev/null || true)
+    if [ "$LSD_APP" = "$CLASS_ID" ] && [ "$LSD_OK" = "false" ] && [ -n "$LSD_ERR" ] && [ "$LSD_ERR" != "null" ]; then
+      echo "::error::App deploy did not land (source totalLength ${FINAL_LEN:-<unreadable>}, expected ${NEW_CHARS}). Hub REJECTED it -- verbatim compile error (from the watchdog's lastSelfDeploy): ${LSD_ERR}"
+    else
+      echo "::error::App deploy did not land within ${WAIT_S}s: source totalLength ${FINAL_LEN:-<unreadable>} never reached this PR's length ${NEW_CHARS} (baseline ${PRE_LEN:-<unknown>}), and the watchdog recorded no verbatim compile error for class ${CLASS_ID}. The deploy may still be compiling, or the loopback POST / source fetch failed -- re-run; if it persists, check the watchdog app logs."
+    fi
     exit 1
   fi
-  if [ "$REC_OK" != "true" ]; then
-    echo "::error::Hub REJECTED the app deploy (recovered from the watchdog's lastSelfDeploy). Hub verbatim error: ${REC_ERR:-<none>}"
-    exit 1
-  fi
-  echo "Deploy recovered as success (the relay dropped the response; the deploy landed hub-side)."
-  # Synthesize a success result so the downstream version/no-op verification runs.
+  echo "Deploy confirmed by the landed-source poll (the relay dropped the response; the new source is live on the hub)."
+  # Synthesize a success result so the downstream no-op/version verification runs and re-confirms.
   DEPLOY_TEXT='{"success":true,"recovered":true}'
 fi
 
