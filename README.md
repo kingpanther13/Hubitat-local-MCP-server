@@ -1530,6 +1530,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.0.4** - feat: installAsUserApp install-commit fix + #include smoke test + e2e dead-man watchdog (#209). PRs: [#243](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/243)
 - **v2.0.3** - feat: hub_update_package dev tool — one-call app+library deploy at a git ref (#209). PRs: [#242](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/242)
 - **v2.0.2** - feat: add hub_list_libraries read tool. PRs: [#241](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/241)
 - **v2.0.1** - docs: hub firmware-update research notes + resilience plan; chore: HPM bundle smoke-test library for issue #209 modularization. PRs: [#240](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/240), [#239](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/239)
