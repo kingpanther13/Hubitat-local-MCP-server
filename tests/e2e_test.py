@@ -506,7 +506,7 @@ class TestRunner:
                 "confirm": True,
             })
             vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
-            dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
+            dev_list = vdevs if isinstance(vdevs, list) else (vdevs.get("devices", []) if isinstance(vdevs, dict) else [])
             for d in dev_list:
                 if f"{PREFIX}AttrProbe" in (d.get("label") or d.get("name") or ""):
                     switch_dev = d
@@ -1002,8 +1002,9 @@ class TestRunner:
     # GROUP 4c: deadman (1 test) -- the issue #243 install-commit fix, the exact
     # bug the E2E Dead-Man Watchdog tripped on. installAsUserApp must actually
     # COMMIT the install (submit Done) so initialize() runs and the instance is
-    # live -- the pre-#243 path left an inert shell (committed reported true but
-    # app.installed==false, schedules never registered). This installs the
+    # live -- the pre-#243 path returned success:true / "installed() fired" yet left
+    # an inert shell (app.installed==false, schedules never registered; the `committed`
+    # field is introduced by this PR). This installs the
     # throwaway tests/fixtures/deadman-test-target.groovy (so a misfire can't
     # touch anything real), then asserts BOTH the tool's committed flag AND, via
     # an independent hub_get_app_config read, app.installed==true -- the shell
@@ -1044,7 +1045,7 @@ class TestRunner:
                 "tool": "hub_get_app_config",
                 "args": {"appId": instance_app_id},
             })
-            app_obj = cfg.get("app") or {}
+            app_obj = (cfg.get("app") or {}) if isinstance(cfg, dict) else {}
             installed_flag = app_obj.get("installed")
             assert installed_flag is True, \
                 f"hub_get_app_config reports app.installed={installed_flag!r} -- the instance is an inert shell, not a committed install: {app_obj}"

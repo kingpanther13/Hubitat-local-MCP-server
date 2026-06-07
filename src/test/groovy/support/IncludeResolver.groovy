@@ -85,8 +85,8 @@ class IncludeResolver {
             // search the way a `[^)]*` regex would.
             String args = libraryDeclArgs(text)
             if (args == null) continue
-            String ns = firstGroup(args, ~/\bnamespace:\s*["']([^"']+)["']/)
-            String name = firstGroup(args, ~/\bname:\s*["']([^"']+)["']/)
+            String ns = firstGroup(args, ~/\bnamespace\s*:\s*["']([^"']+)["']/)
+            String name = firstGroup(args, ~/\bname\s*:\s*["']([^"']+)["']/)
             if (ns != null && name != null) {
                 index[ns + '.' + name] = stripLibraryDeclaration(text)
             }
@@ -120,6 +120,16 @@ class IncludeResolver {
             if (inStr) {
                 if (c == ('\\' as char)) { i += 2; continue }
                 if (c == quote) inStr = false
+            } else if (c == ('/' as char) && i + 1 < n && libSource.charAt(i + 1) == ('/' as char)) {
+                // Line comment -- skip to EOL so a quote/paren inside it can't desync the scan.
+                int nl = libSource.indexOf('\n', i + 2)
+                i = (nl < 0) ? n : nl
+                continue
+            } else if (c == ('/' as char) && i + 1 < n && libSource.charAt(i + 1) == ('*' as char)) {
+                // Block comment -- skip past the closing */.
+                int end = libSource.indexOf('*/', i + 2)
+                i = (end < 0) ? n : end + 2
+                continue
             } else if (c == ('"' as char) || c == ("'" as char)) {
                 inStr = true
                 quote = c

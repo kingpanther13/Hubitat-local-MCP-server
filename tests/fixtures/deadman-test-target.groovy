@@ -1,12 +1,8 @@
 /**
- * Throwaway target app for exercising the E2E Dead-Man Watchdog safely.
- *
- * NOT a production component. The watchdog test restores THIS app (never the real
- * MCP Rule Server) so a misfire can't touch anything that matters. This file is the
- * "v1 / known-good" source; the test deploys it, mutates the installed copy to a "v2"
- * marker, arms the watchdog at this app's class, and verifies the watchdog restores
- * the v1 marker. Lives under tests/fixtures so the groovy-parse lane (root *.groovy +
- * libraries/**) never treats it as a production file.
+ * Throwaway fixture for the e2e install-commit regression test (@test("deadman")). NOT a production
+ * component: the test installs it via hub_create_app(installAsUserApp:), asserts the install
+ * committed (app.installed==true), then deletes it. Lives under tests/fixtures so the groovy-parse
+ * lane never treats it as a production file.
  */
 definition(
     name: "Deadman Test Target",
@@ -27,5 +23,6 @@ preferences {
 def installed() {}
 def updated() {}
 
-// The test asserts this marker flips back to V1 after the watchdog restores.
+// Placeholder content rendered on the install page; no test asserts the value (the watchdog
+// fire-test that once checked it was removed after being proven on the e2e hub).
 def targetMarker() { return "DEADMAN-TARGET-V1" }

@@ -2,7 +2,8 @@
 # Disarm the E2E Dead-Man Watchdog at the end of a run (the dead-man's "I'm alive" signal).
 #
 # Writes {armed:false} to the watchdog flag file so a clean run can't leave the watchdog armed to
-# fire its 20-minute auto-restore. This runs as an always() step BEFORE the lease is released, so the
+# fire its auto-restore (the ARM_WINDOW_MS deadline, ~35 min). This runs as an always() step BEFORE
+# the lease is released, so the
 # next run can never inherit an armed flag. A silently-failed disarm is the dangerous case (the
 # watchdog would fire mid-next-run and revert the server), so every write is READ BACK and asserted
 # -- this step succeeds only when armed==false is confirmed on the hub, else it fails loudly.
@@ -42,7 +43,8 @@ mcp_tool_call_text() {
 }
 
 # --- write {armed:false}, then READ IT BACK and assert -------------------------------
-DISARMED_AT_MS=$(date +%s%3N)
+# `date +%s` * 1000 (not %s%3N): %3N is a GNU-only extension; portable + sub-second precision is moot.
+DISARMED_AT_MS=$(( $(date +%s) * 1000 ))
 FLAG_JSON=$(jq -nc \
   --arg runId "$GITHUB_RUN_ID" \
   --argjson disarmedAt "$DISARMED_AT_MS" \
@@ -52,7 +54,7 @@ echo "Disarming the watchdog: writing {armed:false} to '$FLAG_FILE'..."
 WRITE_RPC=$(jq -nc --arg fn "$FLAG_FILE" --arg content "$FLAG_JSON" \
   '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:$content,confirm:true}}}')
 if ! mcp_tool_call_text "hub_write_file (disarm flag)" "$WRITE_RPC" >/dev/null; then
-  echo "::error::hub_write_file('$FLAG_FILE') returned non-JSON $RPC_ATTEMPTS times -- could not confirm the disarm write. The watchdog may still be ARMED and could fire its auto-restore within 20 minutes. Investigate / re-run."
+  echo "::error::hub_write_file('$FLAG_FILE') returned non-JSON $RPC_ATTEMPTS times -- could not confirm the disarm write. The watchdog may still be ARMED and could fire its auto-restore (~35 min). Investigate / re-run."
   exit 1
 fi
 
@@ -65,7 +67,7 @@ if ! READBACK_TEXT=$(mcp_tool_call_text "hub_read_file (disarm read-back)" "$REA
 fi
 RB_ARMED=$(echo "$READBACK_TEXT" | jq -r '.content | fromjson | .armed' 2>/dev/null || echo "")
 if [ "$RB_ARMED" != "false" ]; then
-  echo "::error::Disarm did NOT land: flag read back armed=$RB_ARMED (expected false). The write may have silently no-opped, leaving the watchdog ARMED to fire within 20 minutes. Response: $(printf '%s' "$READBACK_TEXT" | head -c 600)"
+  echo "::error::Disarm did NOT land: flag read back armed=$RB_ARMED (expected false). The write may have silently no-opped, leaving the watchdog ARMED to fire (~35 min). Response: $(printf '%s' "$READBACK_TEXT" | head -c 600)"
   exit 1
 fi
 

@@ -1,0 +1,559 @@
+diff --git a/hubitat-mcp-server.groovy b/hubitat-mcp-server.groovy
+index 3dbfb92..5ea5541 100644
+--- a/hubitat-mcp-server.groovy
++++ b/hubitat-mcp-server.groovy
+@@ -29,6 +29,14 @@ definition(
+     singleInstance: true
+ )
+ 
++// issue #209 modularization smoke test: pulls in mcpSmokeTestMarker() from the McpSmokeTestLib
++// library. The library is delivered to real hubs by the required HPM bundle (and is installable
++// on the fly via hub_update_package); CI installs it ahead of the app (the e2e library-install
++// step; the unit/parse lanes resolve the #include via support.IncludeResolver). Proves the
++// #include load path works end to end -- the marker is surfaced in hub_get_info. Throwaway
++// canary; removed once the split architecture is validated.
++#include mcp.McpSmokeTestLib
++
+ preferences {
+     page(name: "mainPage")
+     page(name: "confirmDeletePage")
+@@ -1183,7 +1191,7 @@ def getGatewayConfig() {
+         ],
+         hub_manage_code: [
+             description: "Install, update, and delete hub apps, drivers, and libraries. All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
+-            tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_restore_backup", "hub_create_library", "hub_update_library"],
++            tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_restore_backup", "hub_create_library", "hub_update_library", "hub_install_bundle"],
+             summaries: [
+                 hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with installAsUserApp=<codeAppId> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",
+                 hub_create_driver: "Install new driver. To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. For 1: source|sourceFile|importUrl. For >1: USE BULK (single round-trip: installs=[{source|sourceFile|importUrl},...]). confirm=true",
+@@ -1192,7 +1200,8 @@ def getGatewayConfig() {
+                 hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), id, confirm=true",
+                 hub_restore_backup: "Restore app/driver to backed-up version. Args: backupKey, confirm=true",
+                 hub_create_library: "Install new Groovy library (#include namespace.Name). To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. Args: source|sourceFile|importUrl, confirm=true",
+-                hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true"
++                hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true",
++                hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code). Args: importUrl (zip), primary?, confirm=true"
+             ],
+             searchHints: [
+                 hub_create_app: "add new application integration groovy",
+@@ -1202,7 +1211,8 @@ def getGatewayConfig() {
+                 hub_delete_item: "remove uninstall application integration device handler driver type groovy library shared",
+                 hub_restore_backup: "rollback revert undo previous version",
+                 hub_create_library: "add new shared groovy library include namespace",
+-                hub_update_library: "modify change edit groovy library shared code push deploy"
++                hub_update_library: "modify change edit groovy library shared code push deploy",
++                hub_install_bundle: "install bundle zip package hpm hubitat package manager uploadZipFromUrl library delivery deploy code"
+             ]
+         ],
+         // Option B: manage_logs_diagnostics split into logs + diagnostics
+@@ -2347,6 +2357,8 @@ Verify rule after creation.""",
+                     writeEnabled: [type: "boolean", description: "Write master toggle state (default ON)"],
+                     customRuleEngineEnabled: [type: "boolean", description: "Custom rule engine toggle state"],
+                     developerModeEnabled: [type: "boolean", description: "Developer Mode toggle state"],
++                    smokeTestMarker: [type: "string", description: "issue #209 #include canary -- 'smoke-ok-v1' from the McpSmokeTestLib library; throwaway, removed after the modularization split is validated"],
++                    lastSelfDeploy: [type: "object", description: "issue #237: outcome of the last hub_update_app self-update (the MCP server updating its own app). Recovers the result that can't return on the deploy call (success reloads the app; a big-file compile failure 504s). Keys: success (bool), error (hub's verbatim message or null), sourceMode, importUrl, sourceLength, at (epoch ms), ageMs (ms since `at`, computed at read). PERSISTS in atomicState across app reloads -- it is NOT cleared on update, so a read can return a STALE record from an earlier deploy; check ageMs (or baseline `at` across your own deploy) for freshness before trusting it. Absent until the first self-update."],
+                     name: [type: "string", description: "Hub name (Read master only)"],
+                     localIP: [type: "string", description: "Hub local IP (Read master only)"],
+                     timeZone: [type: "string", description: "Time zone ID (Read master only)"],
+@@ -3825,7 +3837,7 @@ Verifies install succeeded: if the hub accepted the request but the app failed t
+                     source: [type: "string", description: "Inline Groovy source. Stubs only -- fills agent transcript. For non-trivial apps prefer sourceFile or importUrl."],
+                     sourceFile: [type: "string", description: "File Manager filename (upload first via curl per tool description; bypasses agent transcript)."],
+                     importUrl: [type: "string", description: "URL the hub fetches directly. Mirrors the editor's Import Code from Website + Save. http:// or https://. Mutually exclusive with source/sourceFile."],
+-                    installAsUserApp: [type: "integer", description: "Second-step mode: create a running instance from already-installed code (the codeAppId returned by a prior hub_create_app call). Mutually exclusive with code-install args (source/sourceFile/importUrl). Fires installed() on the new instance."],
++                    installAsUserApp: [type: "integer", description: "Second-step mode: create a running instance from already-installed code (the codeAppId returned by a prior hub_create_app call) AND commit the install (submits the config page's Done), firing installed()/initialize() so schedules/subscriptions actually register. Mutually exclusive with code-install args (source/sourceFile/importUrl). Targets apps whose first page installs with defaults; a required first-page input with no default blocks the auto-Done (same as the UI)."],
+                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                 ],
+                 required: ["confirm"]
+@@ -3842,6 +3854,9 @@ Verifies install succeeded: if the hub accepted the request but the app failed t
+                     verifyError: [type: "string", description: "Verification fetch error; present when verify could not run"],
+                     codeAppId: [description: "installAsUserApp mode: source code app ID"],
+                     instanceAppId: [description: "installAsUserApp mode: new running instance ID"],
++                    committed: [type: "boolean", description: "installAsUserApp mode: whether the install was committed (Done submitted). false means an inert shell was left behind -- delete it and retry"],
++                    scheduledJobCount: [type: "integer", description: "installAsUserApp mode: scheduled jobs registered by initialize() (evidence the install committed)"],
++                    eventSubscriptionCount: [type: "integer", description: "installAsUserApp mode: event subscriptions registered by initialize()"],
+                     mode: [type: "string", description: "installAsUserApp mode marker"],
+                     note: [type: "string", description: "Recovery/source-mode guidance"],
+                     lastBackup: [type: "string", description: "Timestamp of most recent backup"]
+@@ -4139,6 +4154,36 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""
+                 required: ["success"]
+             ]
+         ],
++        [
++            name: "hub_install_bundle",
++            description: """Install a Hubitat code bundle (.zip) from a URL, exactly the way Hubitat Package Manager delivers a required bundle. The hub fetches the zip itself and unpacks it into Libraries/Apps/Drivers Code -- the same mechanism HPM uses to install the libraries an app #includes.
++
++Use this to validate, on the real hub, that a package installs the HPM way (e.g. CI proving a #include'd library is delivered and the app compiles, before users HPM-update). Mirrors HPM's installBundle: firmware >= 2.3.8.108 uses /bundle2/uploadZipFromUrl, older uses /bundle/uploadZipFromUrl.
++
++Requires Write master + confirm=true + a recent backup. The hub does not deep-validate the zip at install time; verify the result with hub_list_libraries / hub_get_source.""",
++            inputSchema: [
++                type: "object",
++                properties: [
++                    importUrl: [type: "string", description: "URL of the bundle .zip the hub fetches and installs (http:// or https://)."],
++                    primary: [type: "boolean", description: "OPTIONAL. Mark the bundle's contents as installed-by-this-package (HPM's installer/private flag). Default false."],
++                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved installing this bundle."]
++                ],
++                required: ["importUrl", "confirm"]
++            ],
++            outputSchema: [
++                type: "object",
++                properties: [
++                    success: [type: "boolean", description: "Whether the bundle installed"],
++                    message: [type: "string", description: "Human-readable result"],
++                    endpoint: [type: "string", description: "Hub endpoint used (/bundle2/uploadZipFromUrl or /bundle/uploadZipFromUrl)"],
++                    primary: [type: "boolean", description: "Whether the bundle was marked primary/installer"],
++                    error: [type: "string", description: "Failure detail; present on failure"],
++                    rawResponse: [type: "string", description: "Raw hub response (truncated); present on a no-success result"],
++                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
++                ],
++                required: ["success"]
++            ]
++        ],
+         // ==================== Item Backup Tools ====================
+         [
+             name: "hub_list_backups",
+@@ -5365,6 +5410,7 @@ def executeTool(toolName, args) {
+         // Hub Admin Library Management
+         case "hub_create_library": return toolInstallLibrary(args)
+         case "hub_update_library": return toolUpdateLibraryCode(args)
++        case "hub_install_bundle": return toolInstallBundle(args)
+ 
+         // Item Backup Tools
+         case "hub_list_backups": return toolListItemBackups(args)
+@@ -7019,6 +7065,28 @@ def toolGetHubInfo(args = null) {
+     info.writeEnabled = settings.enableWrite != false
+     info.customRuleEngineEnabled = settings.enableCustomRuleEngine == true
+     info.developerModeEnabled = settings.enableDeveloperMode ?: false
++    // issue #209 #include smoke test: this method is supplied by the McpSmokeTestLib library via
++    // `#include mcp.McpSmokeTestLib` at the top of the file. Its presence here -- returning
++    // "smoke-ok-v1" rather than throwing MissingMethodException -- proves the include resolved and
++    // the library loaded. Throwaway canary; removed once the modularization split is validated.
++    info.smokeTestMarker = mcpSmokeTestMarker()
++
++    // Last self-deploy outcome (issue #237): hub_update_app on the MCP server's own app can't return
++    // its result on the call (success reloads the app; a big-file compile failure 504s), so it records
++    // the hub's verbatim outcome here for a follow-up read to recover -- e.g. CI surfacing the real
++    // compile error after a failed self-deploy. Null until the first self-update.
++    //
++    // STALENESS (important for any consumer, e.g. the e2e recover step): this record lives in
++    // atomicState and PERSISTS across app code reloads/restores -- it is NOT cleared on an app update.
++    // So a read can return a record left by an EARLIER deploy (even a prior session) and be mistaken
++    // for the latest outcome. Two freshness aids: `ageMs` (now - at) is added here so age is visible at
++    // a glance, and a consumer comparing across its own deploy should baseline `at` first and require it
++    // to advance (see .github/scripts/mcp_deploy_source.sh recover_self_deploy_error).
++    if (atomicState.lastSelfDeploy != null) {
++        def lsd = [:] + atomicState.lastSelfDeploy
++        if (lsd.at instanceof Number) lsd.ageMs = now() - (lsd.at as long)
++        info.lastSelfDeploy = lsd
++    }
+ 
+     // PII/location data requires the Read master (default ON)
+     if (settings.enableRead != false) {
+@@ -8933,13 +9001,22 @@ private Map _httpFetchUrl(String url) {
+ }
+ 
+ /**
+- * Create a running user-app instance from already-installed code. Replicates
+- * the hub UI's "Add user app -> select code -> Done" flow in one HTTP call.
++ * Create a running user-app instance from already-installed code and COMMIT the
++ * install, replicating the hub UI's "Add user app -> select code -> Done" flow.
++ *
++ * Two HTTP steps, because the hub splits the flow exactly as the UI does:
++ *   1. GET /installedapp/create/<codeId> creates a PENDING instance shell and
++ *      302-redirects to /installedapp/configure/<newId>/<firstPage>. This step
++ *      alone does NOT fire installed()/initialize() -- the instance stays an
++ *      inert, uninstalled shell (no schedules/subscriptions). The Vue add-app
++ *      wrapper just loads that config page in an iframe and waits for "Done".
++ *   2. POST /installedapp/update/json with _action_update=Done commits the
++ *      install, which is what actually fires installed()->initialize() (e.g.
++ *      registering runEvery* schedules). Without step 2 the instance is dead.
+  *
+- * The hub creates the instance (firing installed()) on GET to
+- * /installedapp/create/<codeId>, then 302-redirects to
+- * /installedapp/configure/<newInstanceId>/mainPage. We don't follow the
+- * redirect -- the new instance id is parsed from the Location header.
++ * Required first-page inputs with no default would block the auto-"Done" the
++ * same way they block the UI; this path targets apps whose first page installs
++ * with defaults (the common case for standalone utility apps).
+  *
+  * Returns a structured envelope on every input. Caller (toolInstallApp) is
+  * responsible for range-checking codeAppId before this is called.
+@@ -8985,7 +9062,7 @@ private Map _createUserAppInstance(Integer codeAppId) {
+             hubResponse: result?.data?.toString()?.take(500)
+         ]
+     }
+-    def m = (result.location =~ /\/installedapp\/configure\/(\d+)/)
++    def m = (result.location =~ /\/installedapp\/configure\/(\d+)(?:\/([^\/?#]+))?/)
+     if (!m) {
+         mcpLog("warn", "hub-admin", "_createUserAppInstance(${codeAppId}): could not parse instance id from Location ${result.location}")
+         return [
+@@ -8995,16 +9072,132 @@ private Map _createUserAppInstance(Integer codeAppId) {
+         ]
+     }
+     def newId = m[0][1] as Integer
+-    mcpLog("info", "hub-admin", "_createUserAppInstance: created instance ${newId} from codeAppId ${codeAppId}")
++    def firstPage = m[0][2]
++    mcpLog("info", "hub-admin", "_createUserAppInstance: created shell instance ${newId} from codeAppId ${codeAppId} (page=${firstPage ?: 'default'}); committing install")
++
++    // Step 2: commit the install ("Done"). The GET above only made a pending
++    // shell -- this is what fires installed()/initialize().
++    def commit
++    try {
++        commit = _commitUserAppInstall(newId, firstPage)
++    } catch (Exception ce) {
++        mcpLog("warn", "hub-admin", "_createUserAppInstance: install-commit for instance ${newId} threw: ${ce.toString()}")
++        return [
++            success: false,
++            error: "Instance ${newId} was created from codeAppId ${codeAppId} but the install-commit (Done) failed: ${ce.toString()}. The instance is an uninstalled shell -- delete it via hub_delete_native_app(appId:${newId}, confirm:true) and retry.",
++            codeAppId: codeAppId,
++            instanceAppId: newId,
++            committed: false
++        ]
++    }
++    if (!commit?.success) {
++        return [
++            success: false,
++            error: "Instance ${newId} was created but the install did not commit: ${commit?.error}. It is an uninstalled shell -- delete via hub_delete_native_app(appId:${newId}, confirm:true) and retry.",
++            codeAppId: codeAppId,
++            instanceAppId: newId,
++            committed: false
++        ]
++    }
++    mcpLog("info", "hub-admin", "_createUserAppInstance: committed install of instance ${newId} (scheduledJobs=${commit.scheduledJobCount}, subscriptions=${commit.eventSubscriptionCount})")
+     return [
+         success: true,
+-        message: "User app instance created and installed() fired",
++        message: "User app instance created and install committed (Done submitted; installed()/initialize() fired). scheduledJobCount/eventSubscriptionCount reflect what initialize() registered.",
+         codeAppId: codeAppId,
+         instanceAppId: newId,
++        committed: true,
++        scheduledJobCount: commit.scheduledJobCount,
++        eventSubscriptionCount: commit.eventSubscriptionCount,
+         mode: "installAsUserApp"
+     ]
+ }
+ 
++/**
++ * Commit a freshly-created user-app instance's install by submitting its first
++ * config page's "Done" -- POST /installedapp/update/json with _action_update=Done.
++ * This is the step that fires installed()->initialize(); the GET that produced
++ * the instance only made a pending shell.
++ *
++ * Mirrors the wire format _rmSubmitMainPageDone uses (proven live), but
++ * parameterized by the instance's actual first page: a standalone app's first
++ * page may be named anything (e.g. "p"), not always "mainPage". Reuses the
++ * shared config/settings primitives (not the RM-specific flow handlers).
++ *
++ * Returns [success, scheduledJobCount, eventSubscriptionCount, error?]. The
++ * counts are read back from statusJson after the commit as evidence that
++ * initialize() ran (e.g. a runEvery* schedule registering).
++ */
++private Map _commitUserAppInstall(Integer instanceId, String pageName) {
++    def cfg = _rmFetchConfigJson(instanceId, pageName)
++    def page = pageName ?: (cfg?.configPage?.name?.toString()) ?: "mainPage"
++    def schema = _rmCollectInputSchema(cfg?.configPage)
++    // The UI's Done submits each input's rendered value -- its default on a fresh
++    // shell (e.g. a bool's "true"/"false"). Sending "" for a typed input, notably
++    // a bool, makes the hub's update handler 500. Read each value straight from the
++    // configPage inputs (value, else defaultValue).
++    def pageValues = [:]
++    for (s in (cfg?.configPage?.sections ?: [])) {
++        for (i in (s?.input ?: [])) {
++            if (i instanceof Map && i.name) {
++                def nm = i.name.toString()
++                if (i.value != null) pageValues[nm] = i.value
++                else if (i.defaultValue != null) pageValues[nm] = i.defaultValue
++            }
++        }
++    }
++    def settingsMap = [:]
++    schema.each { name, meta ->
++        settingsMap[name] = pageValues.containsKey(name) ? pageValues[name] : ""
++    }
++    def body = _rmBuildSettingsBody(instanceId, settingsMap, schema)
++    body.formAction = "update"
++    body.currentPage = page
++    body._action_update = "Done"
++    body.pageBreadcrumbs = "[]"
++    // Per-type sidecars the form-encoded UI emits (matches _rmSubmitMainPageDone).
++    schema.each { name, meta ->
++        def t = meta?.type?.toString()
++        if (meta?.multiple != true) {
++            body["${name}.multiple".toString()] = "false"
++        }
++        if (t == "bool") {
++            body["checkbox[${name}]".toString()] = "on"
++        } else if (t == "time") {
++            body["hours[${name}]".toString()] = ""
++            body["minutes[${name}]".toString()] = ""
++            body["amPm[${name}]".toString()] = "AM"
++        }
++    }
++    if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
++    // Fields the classic "Done" form also submits. _rmSubmitMainPageDone (RM)
++    // omits them and gets away with it because RM commits via updateRule first
++    // and tolerates a failing Done; a standalone app's Done is the ONLY commit,
++    // and the hub's update handler 500s without these (verified live). The UI's
++    // referrer/url fields are navigation hints only and are NOT required.
++    body.appTypeId = ""
++    body.appTypeName = ""
++    body._cancellable = "false"
++
++    def resp = hubInternalPostForm("/installedapp/update/json", body)
++    def st = resp?.status
++    if (st != null && st >= 400) {
++        return [
++            success: false,
++            error: "Done POST to /installedapp/update/json returned status ${st}",
++            scheduledJobCount: 0,
++            eventSubscriptionCount: 0
++        ]
++    }
++    // Read back runtime state as evidence installed()/initialize() ran.
++    def post = null
++    try { post = _rmFetchStatusJson(instanceId) } catch (Exception se) {
++        mcpLog("debug", "hub-admin", "_commitUserAppInstall: post-commit statusJson read for ${instanceId} failed (${se.message}) -- reporting zero counts")
++    }
++    def schedCount = (post?.scheduledJobs instanceof List) ? post.scheduledJobs.size() : 0
++    def subCount = (post?.eventSubscriptions instanceof List) ? post.eventSubscriptions.size() : 0
++    return [success: true, scheduledJobCount: schedCount, eventSubscriptionCount: subCount]
++}
++
+ /**
+  * Make an authenticated POST request to the hub's internal API.
+  * Automatically includes Hub Security cookie if configured.
+@@ -12593,32 +12786,38 @@ private Map toolInstallItemSingle(String type, args) {
+         throw new IllegalArgumentException("One of 'source' (inline Groovy code), 'sourceFile' (File Manager filename), or 'importUrl' (URL the hub will fetch) is required")
+     }
+ 
+-    def savePath = (type == "app") ? "/app/save" : "/driver/save"
+-    def editorPath = (type == "app") ? "/app/editor/" : "/driver/editor/"
++    def savePath = (type == "app") ? "/app/saveOrUpdateJson" : "/driver/saveOrUpdateJson"
+     def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
+ 
+     mcpLog("info", "hub-admin", "Installing new ${type} (mode: ${sourceMode}, sourceLength: ${sourceCode.length()})...")
+     try {
+-        def result = hubInternalPostForm(savePath, [
+-            id: "",
+-            version: "",
+-            create: "",
+-            source: sourceCode
+-        ])
+-
+-        def newItemId = null
+-        if (result?.location) {
+-            newItemId = result.location.replaceAll(".*?${editorPath}", "").split("[?#/]")[0]
+-            if (!newItemId) newItemId = null  // reject empty string if path segment was absent
++        // Firmware 2.5.x creates app/driver code via POST /app/saveOrUpdateJson (JSON) -- the same
++        // endpoint the Vue editor uses and the twin of /library/saveOrUpdateJson. id:null => create;
++        // response is {success, id, message}. (The old form POST /app/save returns an HTML page and
++        // creates nothing on 2.5.0.143 -- this is the hub_create_app fix.)
++        def saveBody = groovy.json.JsonOutput.toJson([id: null, source: sourceCode, version: 1])
++        def parsed = hubInternalPostJson(savePath, saveBody)
++
++        if (parsed == null || parsed.success != true) {
++            def hubMsg = (parsed instanceof Map) ? (parsed.message ?: parsed.errorMessage) : null
++            mcpLog("warn", "hub-admin", "${type.capitalize()} create rejected: ${hubMsg ?: 'no/unparseable response'}")
++            return [
++                success: false,
++                error: "${type.capitalize()} installation failed: ${hubMsg ?: 'the hub rejected the source or returned no parseable response'}",
++                (idField): null,
++                note: "The hub validates the source on create. Fix the reported issue -- e.g. a Groovy compile error, or a required definition() field such as a non-empty iconUrl/iconX2Url (enforced on create) -- and retry.",
++                lastBackup: formatTimestamp(state.lastBackupTimestamp)
++            ]
+         }
+ 
++        def newItemId = parsed.id?.toString()
+         if (!newItemId) {
+-            mcpLog("warn", "hub-admin", "${type.capitalize()} install: no ID in Location header -- install may have silently failed")
++            mcpLog("warn", "hub-admin", "${type.capitalize()} create returned success but no id: ${parsed}")
+             return [
+                 success: false,
+-                error: "Could not confirm ${type} installation -- hub returned no item ID. The ${type} may have a compile error or the hub rejected the source.",
++                error: "${type.capitalize()} install reported success but returned no item id.",
+                 (idField): null,
+-                note: "Check Hubitat > Apps Code (or Drivers Code) for error details. The source may have syntax errors.",
++                note: "Unexpected /app/saveOrUpdateJson response shape. Check Hubitat > Apps Code (or Drivers Code).",
+                 lastBackup: formatTimestamp(state.lastBackupTimestamp)
+             ]
+         }
+@@ -12842,6 +13041,26 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
+         }
+     }
+ 
++    // Self-update detection: when the MCP server updates its OWN app code, a SUCCESS reloads the app
++    // (dropping our in-flight cloud response) and a big-file FAILURE 504s before the hub returns --
++    // either way the result can't ride back on this call. Record it to atomicState so a later
++    // hub_get_info read recovers the hub's verbatim outcome (incl. compile errors). See issue #237.
++    //
++    // Match BOTH ids: app.id is the installed-INSTANCE id, but a code deploy targets the Apps Code
++    // CLASS id (from /hub2/userAppTypes), which differs -- matching only app.id would miss the real
++    // self-deploy. Resolve the class id only when the cheap instance check misses (app-code updates
++    // are rare); _resolveSelfAppClassId returns null on any failure (incl. unstubbed in tests), so a
++    // miss simply leaves isSelfUpdate=false.
++    boolean isSelfUpdate = false
++    if (type == "app") {
++        def selfInstanceId = app?.id?.toString()
++        if (selfInstanceId != null && itemId?.toString() == selfInstanceId) {
++            isSelfUpdate = true
++        } else {
++            def selfClassId = _resolveSelfAppClassId()
++            if (selfClassId != null && itemId?.toString() == selfClassId.toString()) isSelfUpdate = true
++        }
++    }
+     mcpLog("info", "hub-admin", "Updating ${type} ID: ${itemId} (version: ${currentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
+     try {
+         def result = hubInternalPostForm(updatePath, [
+@@ -12868,6 +13087,21 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
+             success = true
+         }
+ 
++        // Persist the self-deploy outcome (incl. the hub's verbatim errorMessage) so it survives the
++        // post-success app reload AND the failure-case cloud 504 -- a later hub_get_info read recovers it.
++        if (isSelfUpdate) {
++            try {
++                atomicState.lastSelfDeploy = [
++                    success: success,
++                    error: success ? null : (errorMsg ?: "Update failed -- the hub returned an error"),
++                    sourceMode: sourceMode,
++                    importUrl: (args.importUrl ?: null),
++                    sourceLength: sourceCode.length(),
++                    at: now()
++                ]
++            } catch (Exception ignore) { /* bookkeeping must never break the deploy */ }
++        }
++
+         if (success) {
+             mcpLog("info", "hub-admin", "${type} ID ${itemId} updated successfully (mode: ${sourceMode})")
+             def successResult = [
+@@ -12936,6 +13170,18 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
+         }
+     } catch (Exception e) {
+         mcpLogError("hub-admin", "${type} update failed", e)
++        if (isSelfUpdate) {
++            try {
++                atomicState.lastSelfDeploy = [
++                    success: false,
++                    error: "${type.capitalize()} update failed: ${e.message}",
++                    sourceMode: sourceMode,
++                    importUrl: (args.importUrl ?: null),
++                    sourceLength: (sourceCode != null ? sourceCode.length() : 0),
++                    at: now()
++                ]
++            } catch (Exception ignore) { }
++        }
+         return [
+             success: false,
+             error: "${type.capitalize()} update failed: ${e.message}",
+@@ -13257,6 +13503,112 @@ def toolGetLibrarySource(args) {
+     }
+ }
+ 
++/**
++ * Install a Hubitat code bundle (.zip) from a URL, EXACTLY the way Hubitat Package Manager's
++ * installBundle() does (issue #209). The hub fetches the zip itself and unpacks it into Libraries/
++ * Apps/Drivers Code -- this is how a `required` HPM bundle delivers a library. Used to validate, on
++ * the real hub, that a package installs the HPM way before users HPM-install/update it.
++ *
++ * Mirrors HPM: firmware >= 2.3.8.108 -> GET /bundle2/uploadZipFromUrl?url=&pwd=&private=<primary>;
++ * older firmware -> POST /bundle/uploadZipFromUrl with JSON {url, installer:<primary>, pwd:""}.
++ */
++def toolInstallBundle(args) {
++    requireDestructiveConfirm(args.confirm)
++    def importUrl = args.importUrl
++    if (!(importUrl instanceof String) || !importUrl.trim()) {
++        throw new IllegalArgumentException("importUrl is required: the URL of the bundle .zip the hub fetches and installs.")
++    }
++    importUrl = importUrl.trim()
++    def lower = importUrl.toLowerCase()
++    if (!(lower.startsWith("http://") || lower.startsWith("https://"))) {
++        throw new IllegalArgumentException("importUrl scheme must be http or https (got '${importUrl.take(40)}')")
++    }
++    boolean primary = (args.primary == true)
++
++    String fw = null
++    try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception ignored) { }
++    // bundle2 endpoint exists on firmware >= 2.3.8.108 (matches HPM's gate). Compare
++    // segments numerically, NOT lexically -- string compare breaks once a segment
++    // reaches two digits (e.g. "2.3.10.0" sorts BELOW "2.3.8.0" as strings, which would
++    // wrongly route a newer hub to the removed legacy endpoint).
++    boolean modern = _firmwareAtLeast(fw, "2.3.8.108")
++    String endpoint = modern ? "/bundle2/uploadZipFromUrl" : "/bundle/uploadZipFromUrl"
++
++    mcpLog("info", "hub-admin", "Installing bundle (endpoint: ${endpoint}, fw: ${fw}, primary: ${primary}, url: ${importUrl})")
++    try {
++        def resp
++        if (modern) {
++            // hubInternalGet passes the query map to httpGet, which URL-encodes the values. `private`
++            // is quoted because it is a Groovy keyword. 300s timeout matches HPM's bundle install.
++            resp = hubInternalGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": primary.toString()], 300)
++        } else {
++            def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: primary, pwd: ""])
++            resp = hubInternalPostJson("/bundle/uploadZipFromUrl", body)
++        }
++        boolean ok = _bundleResponseSucceeded(resp)
++        if (!ok) {
++            mcpLog("warn", "hub-admin", "Bundle install did not report success (endpoint ${endpoint})")
++            return [
++                success: false,
++                error: "Bundle install failed: the hub returned no success signal. The zip may be malformed/unreachable, or the firmware endpoint unavailable.",
++                endpoint: endpoint,
++                rawResponse: resp?.toString()?.take(500),
++                lastBackup: formatTimestamp(state.lastBackupTimestamp)
++            ]
++        }
++        mcpLog("info", "hub-admin", "Bundle installed successfully from ${importUrl}")
++        return [
++            success: true,
++            message: "Bundle installed from ${importUrl}. Its libraries/apps/drivers are now in Code -- verify with hub_list_libraries / hub_list_apps.",
++            endpoint: endpoint,
++            primary: primary,
++            lastBackup: formatTimestamp(state.lastBackupTimestamp)
++        ]
++    } catch (Exception e) {
++        mcpLog("warn", "hub-admin", "Bundle install threw: ${e.toString()}")
++        return [
++            success: false,
++            error: "Bundle install failed: ${e.message ?: e.toString()}",
++            endpoint: endpoint,
++            lastBackup: formatTimestamp(state.lastBackupTimestamp)
++        ]
++    }
++}
++
++// The bundle endpoints signal success as {"success":true} (bundle2 returns JSON; the older endpoint
++// is parsed by hubInternalPostJson). hubInternalGet hands back the raw body String, so normalize both
++// a parsed Map and a raw String/JSON; success only on an explicit truthy signal.
++def _bundleResponseSucceeded(resp) {
++    if (resp == null) return false
++    if (resp instanceof Map) return resp.success == true || resp.success?.toString() == "true"
++    String text = resp.toString().trim()
++    if (!text) return false
++    try {
++        def parsed = new groovy.json.JsonSlurper().parseText(text)
++        if (parsed instanceof Map) return parsed.success == true || parsed.success?.toString() == "true"
++    } catch (Exception ignored) { }
++    return text.equalsIgnoreCase("true")
++}
++
++// Compare dotted firmware versions segment-by-segment, numerically. Returns true when
++// fw >= target. Missing/blank/unparseable fw returns true (assume modern): every hub
++// running this server today is well past the 2.3.8.108 bundle2 cutoff, so the current
++// endpoint is the safe default when the version can't be read.
++def _firmwareAtLeast(fw, String target) {
++    if (fw == null || !fw.toString().trim()) return true
++    def fwParts = fw.toString().trim().split("\\.")
++    def tgtParts = target.split("\\.")
++    int n = Math.max(fwParts.size(), tgtParts.size())
++    for (int i = 0; i < n; i++) {
++        String fwSeg = (i < fwParts.size()) ? fwParts[i] : "0"
++        String tgtSeg = (i < tgtParts.size()) ? tgtParts[i] : "0"
++        int a = fwSeg.isInteger() ? fwSeg.toInteger() : 0
++        int b = tgtSeg.isInteger() ? tgtSeg.toInteger() : 0
++        if (a != b) return a > b
++    }
++    return true  // all segments equal -> >= holds
++}
++
+ /**
+  * Install a new Groovy library from inline source or a File Manager file.
+  * Hub endpoint: POST /library/saveOrUpdateJson with {id: null, source, version: null}

@@ -40,6 +40,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GROOVY_FILES = [
     REPO_ROOT / "hubitat-mcp-server.groovy",
     REPO_ROOT / "hubitat-mcp-rule.groovy",
+    # Standalone e2e safety-net app: it runs in the Hubitat sandbox on the e2e hub, so lint it for
+    # forbidden patterns here rather than discovering a violation only at live install time.
+    REPO_ROOT / "e2e-deadman-watchdog.groovy",
     *sorted((REPO_ROOT / "libraries").glob("*.groovy")),
 ]
 

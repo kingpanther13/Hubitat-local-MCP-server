@@ -85,12 +85,32 @@ def checkDeadman() {
     log.warn "E2E Dead-Man Watchdog FIRING: armed flag expired ${((now() - deadline) / 1000) as long}s ago. Restoring app class ${flag.classId} from '${flag.restoreFileName}'."
     boolean ok = restoreApp(flag.classId?.toString(), flag.restoreFileName?.toString())
 
-    // Disarm unconditionally after a fire attempt so we don't loop-restore every minute.
-    flag.armed = false
-    flag.firedAt = now()
-    flag.fireResult = ok ? "restored" : "failed"
+    if (ok) {
+        // Success: disarm so we don't re-push good code every minute.
+        flag.armed = false
+        flag.firedAt = now()
+        flag.fireResult = "restored"
+    } else {
+        // A FAILED restore is exactly when recovery matters -- retry on the next 1-minute tick up to a
+        // cap, rather than latching the dead-man switch off after a single (possibly transient) miss.
+        int attempts = ((flag.fireAttempts ?: 0) as int) + 1
+        flag.fireAttempts = attempts
+        if (attempts < 5) {
+            flag.lastAttemptAt = now()
+            log.warn "E2E Dead-Man Watchdog restore attempt ${attempts} FAILED; staying armed to retry next check."
+            if (!writeFlag(flag)) {
+                log.error "E2E Dead-Man Watchdog: could not persist retry state (attempt ${attempts}); the still-armed flag retries next check regardless."
+            }
+            return
+        }
+        // Give up after the cap so a permanently-failing target can't loop-restore forever.
+        flag.armed = false
+        flag.firedAt = now()
+        flag.fireResult = "failed"
+        log.error "E2E Dead-Man Watchdog: restore FAILED ${attempts} times; latching disarmed (fireResult=failed). Manual recovery required."
+    }
     if (!writeFlag(flag)) {
-        log.error "E2E Dead-Man Watchdog: FAILED to persist disarm flag after fire (fireResult=${flag.fireResult}); the still-armed flag will re-fire next check until the write succeeds."
+        log.error "E2E Dead-Man Watchdog: FAILED to persist flag after fire (fireResult=${flag.fireResult}); the still-armed flag will re-fire next check until the write succeeds."
     }
     log.warn "E2E Dead-Man Watchdog fire complete: ${flag.fireResult}."
 }
@@ -104,6 +124,12 @@ boolean restoreApp(String classId, String restoreFileName) {
     String source = readHubFileText(restoreFileName)
     if (source == null || source.length() < 50) {
         log.error "restoreApp: backup '${restoreFileName}' missing/empty/too-small -- refusing to push it."
+        return false
+    }
+    // If Hub Security is on, a failed login leaves secCookie() null. Don't fire an unauthenticated POST
+    // that fails later with a misleading 302/401 -- surface the auth cause here (the caller retries).
+    if (settings?.hubSecurityEnabled == true && secCookie() == null) {
+        log.error "restoreApp: Hub Security is enabled but authentication failed (no cookie) -- refusing to send an unauthenticated restore POST."
         return false
     }
     def oldVersion = appCodeVersion(classId)
@@ -128,8 +154,13 @@ boolean restoreApp(String classId, String restoreFileName) {
     // (the watchdog must not claim 'restored' on a silent no-op).
     def newVersion = appCodeVersion(classId)
     boolean confirmed = false
-    try { confirmed = (newVersion != null) && ((newVersion as Long) > (oldVersion as Long)) }
-    catch (Exception e) { log.error "restoreApp: version compare failed (${oldVersion} -> ${newVersion}): ${e.message}" }
+    String oldStr = oldVersion?.toString()?.trim()
+    String newStr = newVersion?.toString()?.trim()
+    if (newStr?.isLong() && oldStr?.isLong()) {
+        confirmed = newStr.toLong() > oldStr.toLong()
+    } else {
+        log.error "restoreApp: version not numeric (old=${oldVersion}, new=${newVersion}); cannot confirm the advance -- treating as unconfirmed (the caller retries)."
+    }
     logInfo "restoreApp: pushed ${source.length()} chars to class ${classId}; reported=${reported}, version ${oldVersion}->${newVersion}, confirmed=${confirmed}"
     return confirmed
 }

@@ -260,10 +260,10 @@ jobs:
 
       # Arm the standing dead-man watchdog for THIS run. Placed here -- AFTER the authoritative
       # "Verify deployed source matches this PR" gate AND the "Install bundle the HPM way" recompile
-      # -- so the server is confirmed working and the server's PRE-deploy backup
-      # (mcp-backup-app-<CLASS_ID>.groovy) already exists for the watchdog to restore from. The arm
-      # script asserts that backup is present and >1MB before writing a 20-min armed flag; the
-      # always() "Disarm dead-man watchdog (final)" step below clears it before the lease is released.
+      # -- so the server is confirmed working. The arm script refreshes the known-good backup via
+      # hub_get_source (which writes mcp-source-app-<CLASS_ID>.groovy hub-side) and asserts it is
+      # present and >1MB before writing the armed flag (ARM_WINDOW_MS deadline, 35 min); the always()
+      # "Disarm dead-man watchdog (final)" step below clears it before the lease is released.
       - name: Arm dead-man watchdog
         if: steps.gate.outputs.available == 'true'
         env:

@@ -112,7 +112,7 @@ mcp_tool_call_text() {
 # and reports failure, stash the real error in DEPLOY_ERROR_FILE for the verify gate to surface --
 # no guessing. (issue #237)
 recover_self_deploy_error() {
-  local attempt=1 text ok url err at
+  local attempt=1 text ok url err at is_fresh=0
   while [ "$attempt" -le 3 ]; do
     text=$(mcp_tool_call_text "hub_get_info (recover self-deploy error, try $attempt)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}') || text=""
     # NOTE: `.success // empty` is WRONG here -- jq's // treats a `false` boolean like null, so a
@@ -122,10 +122,20 @@ recover_self_deploy_error() {
     url=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.importUrl // empty' 2>/dev/null || true)
     err=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.error // empty' 2>/dev/null || true)
     at=$(printf '%s' "$text" | jq -r '.lastSelfDeploy.at // empty' 2>/dev/null || true)
-    # Honor ONLY a record that is for THIS deploy (importUrl), reports failure, AND is
-    # FRESH -- its `at` advanced past the pre-deploy baseline. A stale success:false
-    # record left by a prior run with the same PR_SOURCE_URL must NOT fail a good deploy.
-    if [ "$url" = "$PR_SOURCE_URL" ] && [ "$ok" = "false" ] && [ -n "$err" ] && [ -n "$at" ] && [ "$at" != "${PRE_LSD_AT:-}" ]; then
+    # FRESH = its `at` advanced past the pre-deploy baseline. With a known baseline that's at!=baseline.
+    # With an EMPTY baseline, honor it ONLY if the baseline READ succeeded (PRE_LSD_OK=1 = genuinely "no
+    # prior record"); a FAILED baseline read leaves freshness unknowable, so we don't trust a same-URL
+    # stale record (else a prior run's success:false would be reported as this deploy's error).
+    is_fresh=0
+    if [ -n "$at" ]; then
+      if [ -n "${PRE_LSD_AT:-}" ]; then
+        [ "$at" != "$PRE_LSD_AT" ] && is_fresh=1
+      elif [ "${PRE_LSD_OK:-0}" = "1" ]; then
+        is_fresh=1
+      fi
+    fi
+    # Honor ONLY a record that is for THIS deploy (importUrl), reports failure, AND is fresh.
+    if [ "$url" = "$PR_SOURCE_URL" ] && [ "$ok" = "false" ] && [ -n "$err" ] && [ "$is_fresh" = "1" ]; then
       printf '%s' "$err" > "$DEPLOY_ERROR_FILE"
       echo "::error::Hub REJECTED the self-deploy. Hub error (recovered via hub_get_info.lastSelfDeploy): ${err}"
       return 0
@@ -133,7 +143,7 @@ recover_self_deploy_error() {
     attempt=$((attempt + 1))
     [ "$attempt" -le 3 ] && sleep 5
   done
-  echo "::notice::Could not recover a FRESH matching failed self-deploy record from hub_get_info.lastSelfDeploy (last seen success=${ok:-none}, importUrl match=$([ "$url" = "$PR_SOURCE_URL" ] && echo yes || echo no), fresh=$([ -n "$at" ] && [ "$at" != "${PRE_LSD_AT:-}" ] && echo yes || echo no)). The verify step will report the stale source without the hub's verbatim error."
+  echo "::notice::Could not recover a FRESH matching failed self-deploy record from hub_get_info.lastSelfDeploy (last seen success=${ok:-none}, importUrl match=$([ "$url" = "$PR_SOURCE_URL" ] && echo yes || echo no), fresh=$([ "${is_fresh:-0}" = "1" ] && echo yes || echo no), baselineReadOk=${PRE_LSD_OK:-0}). The verify step will report the stale source without the hub's verbatim error."
   return 0
 }
 
@@ -246,12 +256,20 @@ echo "Deploying class $CLASS_ID via importUrl (hub fetches ${NEW_BYTES} bytes fr
 # it forward). Self-update recompiles the MCP app mid-call, so the call may
 # not return cleanly -- the 5xx / curl-failure tolerance and the
 # hub_get_source verify below already handle that.
-# Baseline the existing lastSelfDeploy.at BEFORE the deploy so recover_self_deploy_error
-# can tell a FRESH record (written by THIS deploy) from a STALE one a prior run with the
-# same PR_SOURCE_URL left behind. Best-effort: an empty baseline (no prior record / lookup
-# 504'd) just falls back to the importUrl+success guard -- no regression.
-PRE_LSD_AT=$(mcp_tool_call_text "hub_get_info (pre-deploy lastSelfDeploy baseline)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' 2>/dev/null | jq -r '.lastSelfDeploy.at // empty' 2>/dev/null || true)
-echo "Pre-deploy lastSelfDeploy.at baseline: ${PRE_LSD_AT:-<none>}"
+# Baseline the existing lastSelfDeploy.at BEFORE the deploy so recover_self_deploy_error can tell a
+# FRESH record (written by THIS deploy) from a STALE one a prior run with the same PR_SOURCE_URL left
+# behind. PRE_LSD_OK records whether the baseline READ itself succeeded: an empty PRE_LSD_AT means
+# "no prior record" ONLY when PRE_LSD_OK=1. If the baseline read 504'd we can't tell freshness, so
+# recover must NOT honor a same-URL stale record (else it would report a prior run's error as this
+# deploy's). The authoritative byte-compare in mcp_verify_deploy.sh is the staleness backstop.
+PRE_LSD_OK=0
+if PRE_LSD_RAW=$(mcp_tool_call_text "hub_get_info (pre-deploy lastSelfDeploy baseline)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' 2>/dev/null); then
+  PRE_LSD_AT=$(printf '%s' "$PRE_LSD_RAW" | jq -r '.lastSelfDeploy.at // empty' 2>/dev/null || true)
+  PRE_LSD_OK=1
+else
+  PRE_LSD_AT=""
+fi
+echo "Pre-deploy lastSelfDeploy.at baseline: ${PRE_LSD_AT:-<none>} (baseline read ok=${PRE_LSD_OK})"
 
 DEPLOY_RPC_FILE="${RUNNER_TEMP:-/tmp}/mcp_deploy_rpc.json"
 jq -nc \

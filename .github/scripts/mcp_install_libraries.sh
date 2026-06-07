@@ -26,6 +26,10 @@ set -euo pipefail
 : "${PR_HEAD_SHA_RESOLVED:?PR_HEAD_SHA_RESOLVED env var required}"
 
 APP_FILE="${1:-hubitat-mcp-server.groovy}"
+if [ ! -f "$APP_FILE" ]; then
+  echo "::error::App file not found: $APP_FILE (wrong working directory or bad path arg). Refusing to silently report 'no #include directives'."
+  exit 1
+fi
 LIB_DIR="$(dirname "$APP_FILE")/libraries"
 
 mcp_call() {

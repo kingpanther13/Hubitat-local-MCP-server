@@ -70,7 +70,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
      * success tests run end-to-end: the configure/json + statusJson reads and the
      * Done POST to /installedapp/update/json. Returns a capture map (donePath /
      * doneBody / configPaths / statusPaths). opts: scheduledJobs, eventSubscriptions,
-     * doneStatus.
+     * doneStatus, installedFlag (post-commit app.installed read-back, default true),
+     * statusThrows (make the post-commit statusJson read throw).
      */
     private Map stubInstallCommit(Map opts = [:]) {
         def cap = [donePath: null, doneBody: null, configPaths: [], statusPaths: []]
@@ -78,10 +79,16 @@ class ToolImportUrlSpec extends ToolSpecBase {
         def subs = opts.containsKey('eventSubscriptions') ? opts.eventSubscriptions : []
         int doneStatus = opts.containsKey('doneStatus') ? (opts.doneStatus as int) : 200
         def sections = opts.containsKey('sections') ? opts.sections : []
+        def installedFlag = opts.containsKey('installedFlag') ? opts.installedFlag : true
+        boolean statusThrows = opts.containsKey('statusThrows') ? (opts.statusThrows as boolean) : false
         script.metaClass.hubInternalGet = { String path, Map q = null, int t = 30, boolean r = false ->
             if (path.contains('/installedapp/configure/json/')) {
                 cap.configPaths << path
-                return groovy.json.JsonOutput.toJson([app: [version: 1], configPage: [name: 'mainPage', sections: sections]])
+                return groovy.json.JsonOutput.toJson([app: [version: 1, installed: installedFlag], configPage: [name: 'mainPage', sections: sections]])
+            }
+            if (statusThrows && path.contains('/installedapp/statusJson/')) {
+                cap.statusPaths << path
+                throw new RuntimeException('statusJson read failed (transient)')
             }
             if (path.contains('/installedapp/statusJson/')) {
                 cap.statusPaths << path
@@ -398,6 +405,67 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.instanceAppId == 7777
         result.error.contains('shell')
         result.error.contains('7777')
+    }
+
+    def "hub_create_app installAsUserApp rejects a shell that 200s the Done but reads app.installed=false"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/7373/mainPage', data: '']
+        }
+        // The hub can return HTTP 200 on a rejected/re-rendered Done -- "didn't 4xx" is NOT proof the
+        // commit took. The independent app.installed read-back is the real gate.
+        stubInstallCommit(installedFlag: false)
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: 314, confirm: true])
+
+        then:
+        result.success == false
+        result.committed == false
+        result.instanceAppId == 7373
+        result.error.contains('app.installed=false')
+        result.error.contains('shell')
+    }
+
+    def "hub_create_app installAsUserApp still reports committed when the post-commit statusJson read fails (zero counts)"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/4646/mainPage', data: '']
+        }
+        // app.installed confirms true, but the runtime-evidence read (statusJson) flakes -- a committed
+        // install must still report committed, just with zero counts (don't fail a real install).
+        stubInstallCommit(statusThrows: true)
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: 312, confirm: true])
+
+        then:
+        result.success == true
+        result.committed == true
+        result.installedConfirmed == true
+        result.scheduledJobCount == 0
+        result.eventSubscriptionCount == 0
+    }
+
+    def "hub_create_app installAsUserApp falls back to the config page name when the create redirect omits the page segment"() {
+        given:
+        enableWrite()
+        // Location with NO trailing page segment -> firstPage parses to null -> page resolves from configPage.name.
+        script.metaClass.hubInternalGetRaw = { String path, Map query = null, int timeout = 30, boolean isRetry = false ->
+            [status: 302, location: '/installedapp/configure/8989', data: '']
+        }
+        def commit = stubInstallCommit()  // configPage.name == 'mainPage'
+
+        when:
+        def result = script.toolInstallApp([installAsUserApp: 312, confirm: true])
+
+        then:
+        result.success == true
+        result.committed == true
+        result.instanceAppId == 8989
+        commit.doneBody.currentPage == 'mainPage'
     }
 
     def "hub_create_app installAsUserApp submits each input's value in the Done body (bool as true/false, not empty)"() {

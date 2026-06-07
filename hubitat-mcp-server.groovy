@@ -3854,7 +3854,8 @@ Verifies install succeeded: if the hub accepted the request but the app failed t
                     verifyError: [type: "string", description: "Verification fetch error; present when verify could not run"],
                     codeAppId: [description: "installAsUserApp mode: source code app ID"],
                     instanceAppId: [description: "installAsUserApp mode: new running instance ID"],
-                    committed: [type: "boolean", description: "installAsUserApp mode: whether the install was committed (Done submitted). false means an inert shell was left behind -- delete it and retry"],
+                    committed: [type: "boolean", description: "installAsUserApp mode: whether the install was committed (Done submitted AND the instance reads app.installed=true). false means an inert shell was left behind -- delete it and retry"],
+                    installedConfirmed: [type: "boolean", description: "installAsUserApp mode: the committed instance's app.installed flag was independently re-read as true (false here with committed=true means the confirmation read failed -- see note)"],
                     scheduledJobCount: [type: "integer", description: "installAsUserApp mode: scheduled jobs registered by initialize() (evidence the install committed)"],
                     eventSubscriptionCount: [type: "integer", description: "installAsUserApp mode: event subscriptions registered by initialize()"],
                     mode: [type: "string", description: "installAsUserApp mode marker"],
@@ -9099,17 +9100,20 @@ private Map _createUserAppInstance(Integer codeAppId) {
             committed: false
         ]
     }
-    mcpLog("info", "hub-admin", "_createUserAppInstance: committed install of instance ${newId} (scheduledJobs=${commit.scheduledJobCount}, subscriptions=${commit.eventSubscriptionCount})")
-    return [
+    mcpLog("info", "hub-admin", "_createUserAppInstance: committed install of instance ${newId} (scheduledJobs=${commit.scheduledJobCount}, subscriptions=${commit.eventSubscriptionCount}, installedConfirmed=${commit.installedConfirmed})")
+    def out = [
         success: true,
         message: "User app instance created and install committed (Done submitted; installed()/initialize() fired). scheduledJobCount/eventSubscriptionCount reflect what initialize() registered.",
         codeAppId: codeAppId,
         instanceAppId: newId,
         committed: true,
+        installedConfirmed: (commit.installedConfirmed == true),
         scheduledJobCount: commit.scheduledJobCount,
         eventSubscriptionCount: commit.eventSubscriptionCount,
         mode: "installAsUserApp"
     ]
+    if (commit.note) out.note = commit.note
+    return out
 }
 
 /**
@@ -9188,6 +9192,24 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
             eventSubscriptionCount: 0
         ]
     }
+    // Independent commit confirmation: a committed install reads app.installed==true; an inert shell
+    // reads false. Gate success on THIS -- the hub can return HTTP 200 on a rejected/re-rendered Done,
+    // so "the POST didn't 4xx" is not proof the commit took.
+    def installedConfirmed = null   // null = read failed -> committed-but-unconfirmed
+    try {
+        def postCfg = _rmFetchConfigJson(instanceId, page)
+        installedConfirmed = (postCfg?.app?.installed == true)
+    } catch (Exception ce) {
+        mcpLog("warn", "hub-admin", "_commitUserAppInstall: post-commit installed-confirmation read for ${instanceId} failed (${ce.message}) -- reporting committed but unconfirmed")
+    }
+    if (installedConfirmed == false) {
+        return [
+            success: false,
+            error: "Done POST returned ${st} but the instance still reads app.installed=false -- the commit did not take (inert shell). Delete via hub_delete_native_app(appId:${instanceId}, confirm:true) and retry.",
+            scheduledJobCount: 0,
+            eventSubscriptionCount: 0
+        ]
+    }
     // Read back runtime state as evidence installed()/initialize() ran.
     def post = null
     try { post = _rmFetchStatusJson(instanceId) } catch (Exception se) {
@@ -9195,7 +9217,12 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     }
     def schedCount = (post?.scheduledJobs instanceof List) ? post.scheduledJobs.size() : 0
     def subCount = (post?.eventSubscriptions instanceof List) ? post.eventSubscriptions.size() : 0
-    return [success: true, scheduledJobCount: schedCount, eventSubscriptionCount: subCount]
+    def out = [success: true, scheduledJobCount: schedCount, eventSubscriptionCount: subCount,
+               installedConfirmed: (installedConfirmed == true)]
+    if (installedConfirmed == null) {
+        out.note = "Install commit submitted but app.installed could not be independently confirmed (config read failed); scheduledJobCount/eventSubscriptionCount are the lifecycle evidence."
+    }
+    return out
 }
 
 /**
@@ -13059,6 +13086,12 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
         } else {
             def selfClassId = _resolveSelfAppClassId()
             if (selfClassId != null && itemId?.toString() == selfClassId.toString()) isSelfUpdate = true
+            else if (selfClassId == null && sourceCode.length() > 500000) {
+                // A self-deploy-shaped update (large source) whose class-id lookup flaked: #237 compile-
+                // error capture won't arm, so a failed self-deploy would lose the hub's verbatim error.
+                // Surface it instead of silently downgrading to a non-self update.
+                mcpLog("warn", "hub-admin", "hub_update_app: large app-source update to id ${itemId} but the self app-class lookup returned null -- if this IS the MCP server, #237 self-deploy error capture is disabled for this deploy.")
+            }
         }
     }
     mcpLog("info", "hub-admin", "Updating ${type} ID: ${itemId} (version: ${currentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
@@ -13962,7 +13995,8 @@ def _resolveSelfAppClassId() {
         def match = parsed.find { it?.namespace == "mcp" && it?.name == "MCP Rule Server" }
         return match?.id?.toString()
     } catch (Exception e) {
-        mcpLog("warn", "developer-mode", "hub_update_package: self app-class lookup failed: ${e.toString()}")
+        // Reached from the code-update path too (not just hub_update_package); keep the label neutral.
+        mcpLog("warn", "hub-admin", "_resolveSelfAppClassId: self app-class lookup failed (${e.toString()}) -- self-deploy detection / #237 compile-error capture is skipped for this update")
         return null
     }
 }

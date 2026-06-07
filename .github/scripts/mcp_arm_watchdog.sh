@@ -4,8 +4,8 @@
 # The watchdog is a STANDALONE on-hub app whose only job is to auto-restore the MCP Rule Server's
 # code from a known-good File Manager backup if an e2e session bricks the hub and can't disarm. This
 # script (1) ensures the watchdog is installed AND has a live runEvery1Minute schedule, (2) asserts a
-# real >1MB pre-deploy backup exists to restore from, then (3) writes the armed flag with a 20-minute
-# deadline. The matching "Disarm dead-man watchdog (final)" always() step writes {armed:false}; if a
+# real >1MB known-good backup exists to restore from, then (3) writes the armed flag with the ARM_WINDOW_MS
+# deadline (35 min). The matching "Disarm dead-man watchdog (final)" always() step writes {armed:false}; if a
 # run crashes before that, the watchdog fires and restores the server on its own.
 #
 # All hub I/O is through the cloud MCP endpoint ($MCP_URL). Every flag write is READ BACK and
@@ -204,7 +204,9 @@ fi
 echo "Backup '$RESTORE_FILE' present (totalLength=$BACKUP_LEN bytes)."
 
 # --- 4) Write the armed flag, then READ IT BACK and assert -------------------------------
-DEADLINE_MS=$(( $(date +%s%3N) + ARM_WINDOW_MS ))
+# `date +%s` * 1000 (not %s%3N): %3N is a GNU-only extension; this stays portable (the second-
+# granularity is irrelevant for a 35-minute deadline).
+DEADLINE_MS=$(( $(date +%s) * 1000 + ARM_WINDOW_MS ))
 FLAG_JSON=$(jq -nc \
   --argjson deadline "$DEADLINE_MS" \
   --arg classId "$CLASS_ID" \
@@ -212,7 +214,7 @@ FLAG_JSON=$(jq -nc \
   --arg runId "$GITHUB_RUN_ID" \
   '{armed:true, deadline:$deadline, classId:$classId, restoreFileName:$restoreFileName, runId:$runId}')
 
-echo "Writing armed flag to '$FLAG_FILE' (deadline=$DEADLINE_MS, ~20min)..."
+echo "Writing armed flag to '$FLAG_FILE' (deadline=$DEADLINE_MS, ~35min)..."
 WRITE_RPC=$(jq -nc --arg fn "$FLAG_FILE" --arg content "$FLAG_JSON" \
   '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:$content,confirm:true}}}')
 if ! mcp_tool_call_text "hub_write_file (arm flag)" "$WRITE_RPC" >/dev/null; then

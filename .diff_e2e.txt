@@ -1,0 +1,243 @@
+diff --git a/tests/e2e_test.py b/tests/e2e_test.py
+index c682193..983f0e1 100644
+--- a/tests/e2e_test.py
++++ b/tests/e2e_test.py
+@@ -496,7 +496,26 @@ class TestRunner:
+                 switch_dev = d
+                 break
+         if switch_dev is None:
+-            raise SkipTest("No switch device found on hub")
++            # No switch on the hub -- provision a throwaway virtual one so this test ALWAYS runs
++            # (never skips; skips are failures). Labeled with the BAT_E2E_ prefix so the standard
++            # cleanup sweep removes it.
++            self.client.call_tool("hub_manage_virtual_device", {
++                "action": "create",
++                "deviceType": "Virtual Switch",
++                "deviceLabel": f"{PREFIX}AttrProbe",
++                "confirm": True,
++            })
++            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
++            dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
++            for d in dev_list:
++                if f"{PREFIX}AttrProbe" in (d.get("label") or d.get("name") or ""):
++                    switch_dev = d
++                    dni = str(d.get("deviceNetworkId", d.get("dni", "")))
++                    if dni:
++                        self.created_device_dnis.append(dni)
++                    break
++            assert switch_dev is not None, \
++                "no switch on the hub and could not provision a virtual one for the attribute read"
+         result = self.client.call_tool("hub_get_device_attribute", {
+             "deviceId": str(switch_dev["id"]),
+             "attribute": "switch",
+@@ -558,7 +577,7 @@ class TestRunner:
+                 target = d
+                 break
+         if target is None:
+-            raise SkipTest(f"Could not find {PREFIX}Switch_Test virtual device")
++            raise AssertionError(f"Could not find {PREFIX}Switch_Test virtual device -- the upstream create test must have failed")
+ 
+         dev_id = str(target["id"])
+ 
+@@ -600,7 +619,7 @@ class TestRunner:
+                 target_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                 break
+         if not target_dni:
+-            raise SkipTest(f"{PREFIX}Switch_Test not found for deletion")
++            raise AssertionError(f"{PREFIX}Switch_Test not found for deletion -- the upstream create test must have failed")
+ 
+         self.client.call_tool("hub_manage_virtual_device", {
+             "action": "delete",
+@@ -637,7 +656,7 @@ class TestRunner:
+         # Use the rule created in test_create_rule (last tracked rule)
+         rule_id = self._last_rule_id()
+         if not rule_id:
+-            raise SkipTest("No rule created to get")
++            raise AssertionError("No rule created to get -- the upstream create-rule test must have failed")
+         result = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
+         assert result.get("name", "").startswith(PREFIX), \
+             f"Rule name mismatch: {result.get('name')}"
+@@ -648,7 +667,7 @@ class TestRunner:
+     def test_update_rule(self) -> None:
+         rule_id = self._last_rule_id()
+         if not rule_id:
+-            raise SkipTest("No rule created to update")
++            raise AssertionError("No rule created to update -- the upstream create-rule test must have failed")
+         self.client.call_tool("hub_update_custom_rule", {
+             "ruleId": rule_id,
+             "name": f"{PREFIX}Rule_CRUD_Updated",
+@@ -661,7 +680,7 @@ class TestRunner:
+     def test_delete_rule(self) -> None:
+         rule_id = self._last_rule_id()
+         if not rule_id:
+-            raise SkipTest("No rule created to delete")
++            raise AssertionError("No rule created to delete -- the upstream create-rule test must have failed")
+         self.client.call_tool("hub_delete_custom_rule", {"ruleId": rule_id, "confirm": True})
+         if rule_id in self.created_rule_ids:
+             self.created_rule_ids.remove(rule_id)
+@@ -979,6 +998,77 @@ class TestRunner:
+         assert edited.get("success") is not False, f"hub_set_native_app button edit failed: {edited}"
+         self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
+ 
++    # -----------------------------------------------------------------------
++    # GROUP 4c: deadman (1 test) -- the issue #243 install-commit fix, the exact
++    # bug the E2E Dead-Man Watchdog tripped on. installAsUserApp must actually
++    # COMMIT the install (submit Done) so initialize() runs and the instance is
++    # live -- the pre-#243 path left an inert shell (committed reported true but
++    # app.installed==false, schedules never registered). This installs the
++    # throwaway tests/fixtures/deadman-test-target.groovy (so a misfire can't
++    # touch anything real), then asserts BOTH the tool's committed flag AND, via
++    # an independent hub_get_app_config read, app.installed==true -- the shell
++    # would report installed:false, the old silent false-pass.
++    # -----------------------------------------------------------------------
++
++    @test("deadman")
++    def test_install_as_user_app_commits(self) -> None:
++        fixture = (Path(__file__).resolve().parent
++                   / "fixtures" / "deadman-test-target.groovy")
++        source = fixture.read_text(encoding="utf-8")
++
++        code_app_id = None
++        instance_app_id = None
++        try:
++            # 1) Install the throwaway app CODE (inline source) -> code class id.
++            created_code = self.client.call_tool("hub_manage_code", {
++                "tool": "hub_create_app",
++                "args": {"source": source, "confirm": True},
++            })
++            code_app_id = created_code.get("appId")
++            assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created_code}"
++
++            # 2) Create a RUNNING instance from that code -> the #243 commit path.
++            installed = self.client.call_tool("hub_manage_code", {
++                "tool": "hub_create_app",
++                "args": {"installAsUserApp": code_app_id, "confirm": True},
++            })
++            instance_app_id = installed.get("instanceAppId")
++            committed = installed.get("committed")
++            assert committed is True, \
++                f"installAsUserApp did not commit (committed={committed!r}) -- the #243 install fix regressed, leaving an inert shell: {installed}"
++            assert instance_app_id, f"installAsUserApp committed but returned no instanceAppId: {installed}"
++
++            # 3) INDEPENDENT verification: hub_get_app_config must report app.installed==true.
++            # A shell (the old false-pass) reads installed:false even though the tool said committed.
++            cfg = self.client.call_tool("hub_read_apps_code", {
++                "tool": "hub_get_app_config",
++                "args": {"appId": instance_app_id},
++            })
++            app_obj = cfg.get("app") or {}
++            installed_flag = app_obj.get("installed")
++            assert installed_flag is True, \
++                f"hub_get_app_config reports app.installed={installed_flag!r} -- the instance is an inert shell, not a committed install: {app_obj}"
++
++            print(f"    DEADMAN_INSTALL_COMMIT committed={committed} installed={installed_flag}")
++        finally:
++            # Clean up: delete the running instance first, then the code class.
++            if instance_app_id:
++                try:
++                    self.client.call_tool("hub_manage_native_rules_and_apps", {
++                        "tool": "hub_delete_native_app",
++                        "args": {"appId": instance_app_id, "force": True, "confirm": True},
++                    })
++                except Exception as exc:
++                    print(f"  [WARN] deadman cleanup: delete instance {instance_app_id} failed: {exc}")
++            if code_app_id:
++                try:
++                    self.client.call_tool("hub_manage_code", {
++                        "tool": "hub_delete_item",
++                        "args": {"type": "app", "id": code_app_id, "confirm": True},
++                    })
++                except Exception as exc:
++                    print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
++
+     # -----------------------------------------------------------------------
+     # GROUP 5: trigger_types (6 tests)
+     # -----------------------------------------------------------------------
+@@ -1277,6 +1367,17 @@ class TestRunner:
+         result = self.client.call_tool("hub_get_info")
+         assert result is not None, "hub_get_info returned None"
+         assert isinstance(result, dict), f"hub_get_info returned {type(result)}"
++        # issue #209 load-bearing #include proof: the deployed app `#include mcp.McpSmokeTestLib`,
++        # so mcpSmokeTestMarker() must be callable and folded into the info output. By the time this
++        # test runs, the "Install bundle the HPM way" CI step has re-delivered McpSmokeTestLib via the
++        # bundle .zip and resaved the app, so this marker rides on the BUNDLE-delivered library. If the
++        # include had not resolved on the hub, the app would not have compiled or this field would be
++        # missing -- either way this assertion catches a broken library load.
++        # Removed together with the smoke test once the modularization split is validated.
++        assert result.get("smokeTestMarker") == "smoke-ok-v1", (
++            "hub_get_info.smokeTestMarker missing/wrong -- the #include of McpSmokeTestLib did not "
++            f"resolve on the hub (got {result.get('smokeTestMarker')!r})"
++        )
+ 
+     @test("system_tools")
+     def test_list_libraries(self) -> None:
+@@ -1289,6 +1390,13 @@ class TestRunner:
+         for lib in libs:
+             assert "id" in lib and "name" in lib, "library summary missing id/name"
+             assert "source" not in lib, "hub_list_libraries should omit source (read it via hub_get_source)"
++        # issue #209: the "Install bundle the HPM way" CI step delivers McpSmokeTestLib (mcp namespace)
++        # into Libraries Code via the bundle .zip (the #include's library leg), so it must be present
++        # here. Proves the library was actually added to Libraries Code on the hub (not just that the
++        # app compiled). Removed with the smoke test.
++        assert any(
++            lib.get("name") == "McpSmokeTestLib" and lib.get("namespace") == "mcp" for lib in libs
++        ), f"McpSmokeTestLib not found in hub libraries (got {[lib.get('name') for lib in libs]})"
+ 
+     @test("system_tools")
+     def test_manage_diagnostics(self) -> None:
+@@ -1926,6 +2034,35 @@ class TestRunner:
+         except Exception as exc:
+             print(f"  [WARN] Native rule sweep failed: {exc}")
+ 
++        # Layer 5: stranded deadman install-fix throwaway. The @test("deadman") test installs
++        # 'Deadman Test Target' (namespace mcptest) + its code class; neither carries the BAT_E2E_
++        # prefix, so a crash/kill between its create and finally would strand it past the other
++        # sweeps. Reclaim instance(s) + code class by namespace+name (idempotent across runs).
++        try:
++            dtypes = self.client.call_tool("hub_read_apps_code",
++                                           {"tool": "hub_list_apps", "args": {"scope": "types"}})
++            for a in (dtypes.get("apps", []) if isinstance(dtypes, dict) else []):
++                if a.get("namespace") == "mcptest" and str(a.get("name") or "").startswith("Deadman Test Target"):
++                    for u in a.get("usedBy", []) or []:
++                        try:
++                            print(f"  Sweep: deleting stranded deadman instance {u.get('id')}")
++                            self.client.call_tool("hub_manage_native_rules_and_apps", {
++                                "tool": "hub_delete_native_app",
++                                "args": {"appId": str(u.get("id")), "force": True, "confirm": True},
++                            })
++                        except Exception as exc:
++                            print(f"  [WARN] deadman sweep: instance delete failed: {exc}")
++                    try:
++                        print(f"  Sweep: deleting stranded deadman code class {a.get('id')}")
++                        self.client.call_tool("hub_manage_code", {
++                            "tool": "hub_delete_item",
++                            "args": {"type": "app", "id": str(a.get("id")), "confirm": True},
++                        })
++                    except Exception as exc:
++                        print(f"  [WARN] deadman sweep: code-class delete failed: {exc}")
++        except Exception as exc:
++            print(f"  [WARN] deadman target sweep failed: {exc}")
++
+         print("--- Cleanup complete ---\n")
+ 
+     # -----------------------------------------------------------------------
+@@ -2007,8 +2144,18 @@ class TestRunner:
+             for r in failures:
+                 print(f"  - {r['name']}: {r['message']}")
+ 
++        # List skips loudly. A skip means a test could NOT prove what it set out to (a missing
++        # precondition, a failed upstream create, etc.) -- it is NOT a pass. The run fails on any
++        # skip so the e2e can never go green while silently not validating something.
++        skips = [r for r in self.results if r["status"] == "skip"]
++        if skips:
++            print("\nSkipped (treated as FAILURES -- nothing may be silently skipped):")
++            for r in skips:
++                print(f"  - {r['name']}: {r['message']}")
++
+         print("=" * 60)
+-        return total_fail == 0
++        # Green ONLY when every test ran AND passed -- zero failures and zero skips.
++        return total_fail == 0 and total_skip == 0
+ 
+ 
+ # ---------------------------------------------------------------------------
