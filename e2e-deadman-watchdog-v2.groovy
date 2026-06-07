@@ -85,8 +85,16 @@ def initialize() {
     // Copied from hubitat-mcp-server.groovy lines 404-408: create the OAuth access token
     // (idempotent) BEFORE scheduling, so the /mcp endpoint can serve immediately.
     if (!state.accessToken) {
-        createAccessToken()
-        log.info "E2E Dead-Man Watchdog v2: created MCP access token"
+        // createAccessToken() THROWS until OAuth is enabled in the Apps Code editor UI (level99's
+        // one-time step). Never let that kill initialize() -- the dead-man TIMER below must still
+        // register (the brick-proof floor needs no token or endpoint). A re-save after enabling
+        // OAuth mints the token.
+        try {
+            createAccessToken()
+            log.info "E2E Dead-Man Watchdog v2: created MCP access token"
+        } catch (Exception e) {
+            log.warn "E2E Dead-Man Watchdog v2: createAccessToken() failed -- enable OAuth in the app's code editor (${e.message}). The /mcp endpoint is unavailable until then; the dead-man timer is still scheduled."
+        }
     }
     runEvery1Minute("checkDeadman")
     logInfo "E2E Dead-Man Watchdog v2 initialized; checking '${flagFileName ?: 'e2e-deadman-v2.json'}' every minute. /mcp endpoint armed."
@@ -975,8 +983,8 @@ def adminListLibraries(args) {
             try {
                 def parsed = new groovy.json.JsonSlurper().parseText(responseText)
                 if (parsed instanceof List) {
-                    result.libraries = parsed.collect { lib ->
-                        [id: lib.id?.toString(), name: lib.name, namespace: lib.namespace, version: lib.version]
+                    result.libraries = parsed.findAll { it != null }.collect { lib ->
+                        [id: lib?.id?.toString(), name: lib?.name, namespace: lib?.namespace, version: lib?.version]
                     }
                     result.count = result.libraries.size()
                     result.source = "hub_api"
@@ -1019,14 +1027,14 @@ def adminGetJobs(args) {
     try { data = new groovy.json.JsonSlurper().parseText(responseText) }
     catch (Exception e) { return [error: "Failed to parse hub jobs: ${e.message}", rawResponse: responseText?.take(500)] }
 
-    def scheduledJobs = (data.jobs ?: []).collect { job ->
-        [id: job.id, name: job.name, recurring: job.recurring, method: job.methodName, nextRun: job.nextRun]
+    def scheduledJobs = (data?.jobs ?: []).findAll { it != null }.collect { job ->
+        [id: job?.id, name: job?.name, recurring: job?.recurring, method: job?.methodName, nextRun: job?.nextRun]
     }
-    def runningJobs = (data.runningJobs ?: []).collect { job ->
-        [id: job.id, name: job.name, method: job.methodName]
+    def runningJobs = (data?.runningJobs ?: []).findAll { it != null }.collect { job ->
+        [id: job?.id, name: job?.name, method: job?.methodName]
     }
     return [
-        uptime: data.uptime,
+        uptime: data?.uptime,
         scheduledJobs: [count: scheduledJobs.size(), jobs: scheduledJobs],
         runningJobs: [count: runningJobs.size(), jobs: runningJobs]
     ]
@@ -1242,7 +1250,11 @@ def _parseJsonBody(data) {
 Map readFlag() {
     String txt = readHubFileText(flagFileName ?: "e2e-deadman-v2.json")
     if (txt == null) return null
-    try { return (Map) new groovy.json.JsonSlurper().parseText(txt) }
+    try {
+        def parsed = new groovy.json.JsonSlurper().parseText(txt)
+        if (!(parsed instanceof Map)) { log.error "readFlag: flag JSON is not a JSON object -- ignoring."; return null }
+        return (Map) parsed
+    }
     catch (Exception e) { log.error "readFlag: flag is not valid JSON: ${e.message}"; return null }
 }
 
@@ -1329,7 +1341,11 @@ String secCookie() {
         httpPost([uri: "http://127.0.0.1:8080", path: "/login",
                   body: [username: settings?.hubSecurityUser, password: settings?.hubSecurityPassword],
                   textParser: true, ignoreSSLIssues: true]) { resp ->
-            cookie = resp?.headers?.'Set-Cookie'?.split(';')?.getAt(0)
+            // Set-Cookie may be a String or, when several cookies are set, a List -- normalize first
+            // (calling .split on a List throws MissingMethodException).
+            def sc = resp?.headers?.'Set-Cookie'
+            if (sc instanceof List) { sc = sc ? sc[0] : null }
+            cookie = sc?.toString()?.split(';')?.getAt(0)
         }
     } catch (Exception e) { log.error "secCookie: hub security auth failed: ${e.message}" }
     if (cookie) { atomicState.secCookie = cookie; atomicState.secCookieExp = now() + (30 * 60 * 1000) }
