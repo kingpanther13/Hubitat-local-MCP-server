@@ -134,9 +134,71 @@ else
   echo "::warning::Could not confirm a live 'checkDeadman' scheduled job via hub_get_jobs (the /hub/scheduledJobs/json shape may differ on this firmware). Proceeding to arm -- the disarm-restore poll will surface a genuinely-dead timer. If the dead-man never fires, re-check the watchdog's runEvery1Minute schedule."
 fi
 
+# --- 2c) Refresh the hub to CANONICAL main if main changed or the hub drifted -----------------------
+# The cache we take below must be canonical main, NOT whatever happens to be live (a prior run could
+# have left PR/broken code, or main may have advanced on GitHub). Compare the hub to the BASE repo's
+# main on TWO axes: length (did the hub drift?) and SHA (did main change? -- catches a same-length edit
+# a length check would miss). If either differs, deploy canonical main through the watchdog (importUrl,
+# same as the install) and CONFIRM via a fresh lastSelfDeploy success (works even for a same-length
+# change a length poll can't see), then record main's SHA so an UNCHANGED main is skipped next run (no
+# needless 1.6MB redeploy -- the cache-and-skip design). MAIN_* absent (older workflow) -> skip silently.
+MAIN_SHA_FILE="mcp-main-deployed-sha.txt"
+if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA:-}" ]; then
+  LIVE_MAIN_LEN=$(mcp_tool_call_text "hub_get_source (live main length, noSave)" \
+    "$(jq -nc --arg id "$CLASS_ID" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:1,noSave:true}}}')" \
+    | jq -r '.totalLength // empty' 2>/dev/null || true)
+  STORED_MAIN_SHA=$(mcp_tool_call_text "hub_read_file (last deployed-main sha)" \
+    "$(jq -nc --arg fn "$MAIN_SHA_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')" \
+    | jq -r '.content // ""' 2>/dev/null | tr -d '[:space:]' || true)
+  if [ "$LIVE_MAIN_LEN" = "$MAIN_CHARS" ] && [ "$STORED_MAIN_SHA" = "$MAIN_SHA" ]; then
+    echo "Hub already on canonical main (length ${LIVE_MAIN_LEN}, sha ${MAIN_SHA:0:12}) -- no download needed."
+  else
+    echo "Refreshing hub to canonical main: live length=${LIVE_MAIN_LEN:-<unreadable>} vs main=${MAIN_CHARS}; stored sha=${STORED_MAIN_SHA:-<none>} vs main=${MAIN_SHA}. Deploying ${MAIN_SOURCE_URL} ..."
+    # Baseline lastSelfDeploy.at so we can confirm THIS deploy completed (a fresh record) -- the reliable
+    # signal for a same-length change. Require the baseline read to succeed (else we can't tell a fresh
+    # deploy from a stale record).
+    if ! PRE_INFO=$(mcp_tool_call_text "hub_get_info (main-refresh baseline)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}'); then
+      echo "::error::e2e HALT: could not read hub_get_info to baseline the main refresh. Re-run."
+      exit 1
+    fi
+    PRE_LSD_AT=$(printf '%s' "$PRE_INFO" | jq -r '(.lastSelfDeploy.at // 0) | floor' 2>/dev/null || echo 0)
+    DM_RPC=$(jq -nc --arg id "$CLASS_ID" --arg url "$MAIN_SOURCE_URL" \
+      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_update_app",arguments:{appId:$id,importUrl:$url,confirm:true}}}')
+    mcp_tool_call_text "hub_update_app (refresh canonical main)" "$DM_RPC" >/dev/null || true
+    DM_LANDED=""
+    DM_DEADLINE=$(( $(date +%s) + 420 ))
+    while [ "$(date +%s)" -lt "$DM_DEADLINE" ]; do
+      sleep 15
+      DM_INFO=$(mcp_tool_call_text "hub_get_info (main-refresh poll)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' || true)
+      DM_APP=$(printf '%s' "$DM_INFO" | jq -r '.lastSelfDeploy.appId // empty' 2>/dev/null || true)
+      DM_AT=$(printf '%s' "$DM_INFO" | jq -r '(.lastSelfDeploy.at // 0) | floor' 2>/dev/null || echo 0)
+      DM_OK=$(printf '%s' "$DM_INFO" | jq -r '.lastSelfDeploy.success // empty' 2>/dev/null || true)
+      DM_ERR=$(printf '%s' "$DM_INFO" | jq -r '.lastSelfDeploy.error // empty' 2>/dev/null || true)
+      if [ "$DM_APP" = "$CLASS_ID" ] && [ "${DM_AT:-0}" -gt "${PRE_LSD_AT:-0}" ] 2>/dev/null; then
+        if [ "$DM_OK" = "false" ]; then
+          echo "::error::e2e HALT: canonical main deploy REJECTED by the hub (fresh lastSelfDeploy). Verbatim: ${DM_ERR:-<none>}. Cannot establish a canonical-main baseline."
+          exit 1
+        fi
+        if [ "$DM_OK" = "true" ]; then echo "Canonical main landed (fresh lastSelfDeploy success, at ${DM_AT})."; DM_LANDED="yes"; break; fi
+      fi
+      echo "  ...main refresh in progress (lsd.at=${DM_AT:-?}/${PRE_LSD_AT}); waiting for a fresh lastSelfDeploy..."
+    done
+    if [ -z "$DM_LANDED" ]; then
+      echo "::error::e2e HALT: canonical main deploy did not confirm within 420s (no fresh lastSelfDeploy success for class $CLASS_ID). Refusing to arm against a non-canonical baseline."
+      exit 1
+    fi
+    mcp_tool_call_text "hub_write_file (record deployed-main sha)" \
+      "$(jq -nc --arg fn "$MAIN_SHA_FILE" --arg c "$MAIN_SHA" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:$c,confirm:true}}}')" >/dev/null \
+      || echo "::warning::could not record the deployed-main SHA; next run will re-evaluate by length/sha. Continuing."
+    echo "WATCHDOG_MAIN_REFRESHED sha=${MAIN_SHA} chars=${MAIN_CHARS}"
+  fi
+else
+  echo "::notice::MAIN_* not provided -- skipping the canonical-main refresh (the cache will be whatever is live at arm)."
+fi
+
 # --- 3) BACK UP main: cache the app + each #include'd library, assembling the restore manifest -----
 # The watchdog's hub_get_source(type,id) writes mcp-source-<type>-<id>.groovy = the current
-# (just-deployed + verified-working) source as a File-Manager side effect, returning .sourceFile when
+# (canonical main, refreshed just above) source as a File-Manager side effect, returning .sourceFile when
 # it cached. We back up the APP first, then resolve its #include directives to library ids and back up
 # each library, so the manifest restores libraries-first/app-last exactly like restorePackage().
 

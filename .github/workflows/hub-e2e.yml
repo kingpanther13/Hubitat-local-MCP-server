@@ -287,6 +287,23 @@ jobs:
           echo "PR_RAW_BASE=https://raw.githubusercontent.com/$REPO" >> "$GITHUB_ENV"
           echo "PR_HEAD_SHA_RESOLVED=$SHA" >> "$GITHUB_ENV"
           echo "::notice::importUrl deploy source: $URL"
+          # CANONICAL MAIN: resolve the BASE repo's main-branch HEAD (the known-good baseline the hub
+          # should hold). The arm refreshes the hub to this when main's SHA changes or the hub has drifted,
+          # so the cache it then takes is canonical main -- not whatever happened to be live. MAIN_CHARS is
+          # main's source character length (the deploy landing target); MAIN_SHA gates "did main change?".
+          MAIN_SHA=$(gh api "repos/$DEFAULT_REPO/branches/main" --jq '.commit.sha')
+          if ! printf '%s' "$MAIN_SHA" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::unexpected main-branch SHA shape: $MAIN_SHA"; exit 1
+          fi
+          MAIN_URL="https://raw.githubusercontent.com/$DEFAULT_REPO/$MAIN_SHA/hubitat-mcp-server.groovy"
+          MAIN_CHARS=$(curl -fsSL "$MAIN_URL" | LC_ALL=C.UTF-8 wc -m | tr -d '[:space:]')
+          if ! printf '%s' "$MAIN_CHARS" | grep -qE '^[0-9]+$' || [ "$MAIN_CHARS" -lt 100000 ]; then
+            echo "::error::canonical main source char count looks wrong ($MAIN_CHARS) -- refusing to drive a main refresh"; exit 1
+          fi
+          echo "MAIN_SOURCE_URL=$MAIN_URL" >> "$GITHUB_ENV"
+          echo "MAIN_SHA=$MAIN_SHA" >> "$GITHUB_ENV"
+          echo "MAIN_CHARS=$MAIN_CHARS" >> "$GITHUB_ENV"
+          echo "::notice::canonical main: $MAIN_URL (${MAIN_CHARS} chars)"
 
       # Self-update the dead-man watchdog to THIS PR's version BEFORE it is used to arm/install, so e2e
       # always exercises the watchdog the PR ships (not whatever level99 first imported). Skips when the
@@ -311,6 +328,9 @@ jobs:
         env:
           PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
+          MAIN_SOURCE_URL: ${{ env.MAIN_SOURCE_URL }}
+          MAIN_SHA: ${{ env.MAIN_SHA }}
+          MAIN_CHARS: ${{ env.MAIN_CHARS }}
         run: bash .github/scripts/mcp_arm_watchdog.sh
 
       # Install THIS PR's source + libraries + bundle onto the test hub through the watchdog's
