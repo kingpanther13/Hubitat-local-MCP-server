@@ -605,19 +605,22 @@ def adminUpdateApp(args) {
             errorMsg = "No/empty response from /app/ajax/update (HTTP ${result?.status}) -- the loopback POST failed (not a self-update, so an empty response is a real failure, not a reload)."
         }
 
-        // issue #237 lastSelfDeploy record (server 13125-13135): persists across app reloads.
-        if (isSelfUpdate) {
-            try {
-                atomicState.lastSelfDeploy = [
-                    success: success,
-                    error: success ? null : (errorMsg ?: "Update failed -- the hub returned an error"),
-                    sourceMode: sourceMode,
-                    importUrl: (args.importUrl ?: null),
-                    sourceLength: sourceCode.length(),
-                    at: now()
-                ]
-            } catch (Exception ignore) { /* bookkeeping must never break the deploy */ }
-        }
+        // Deploy-outcome record (generalized from the issue #237 lastSelfDeploy; persists across reloads).
+        // Stashed for EVERY app update (with appId), not just self-update: the ~1.6MB app deploy exceeds
+        // the cloud relay's response window, so CI recovers success + the verbatim compile error by polling
+        // hub_get_info.lastSelfDeploy. The watchdog is stable (deploying the MAIN server never bricks IT),
+        // so this record is always queryable -- the whole point of routing deploys through the watchdog.
+        try {
+            atomicState.lastSelfDeploy = [
+                appId: itemId?.toString(),
+                success: success,
+                error: success ? null : (errorMsg ?: "Update failed -- the hub returned an error"),
+                sourceMode: sourceMode,
+                importUrl: (args.importUrl ?: null),
+                sourceLength: sourceCode.length(),
+                at: now()
+            ]
+        } catch (Exception ignore) { /* bookkeeping must never break the deploy */ }
 
         if (success) {
             mcpAdminLog "App ID ${itemId} updated successfully (mode ${sourceMode})"
@@ -640,19 +643,18 @@ def adminUpdateApp(args) {
             ]
         }
     } catch (Exception e) {
-        // Failure-case self-deploy capture (server 13205-13218): record before returning.
-        if (isSelfUpdate) {
-            try {
-                atomicState.lastSelfDeploy = [
-                    success: false,
-                    error: "App update failed: ${e.message}",
-                    sourceMode: sourceMode,
-                    importUrl: (args.importUrl ?: null),
-                    sourceLength: (sourceCode != null ? sourceCode.length() : 0),
-                    at: now()
-                ]
-            } catch (Exception ignore) { }
-        }
+        // Failure-case deploy-outcome capture (always, with appId -- see the success branch above).
+        try {
+            atomicState.lastSelfDeploy = [
+                appId: itemId?.toString(),
+                success: false,
+                error: "App update failed: ${e.message}",
+                sourceMode: sourceMode,
+                importUrl: (args.importUrl ?: null),
+                sourceLength: (sourceCode != null ? sourceCode.length() : 0),
+                at: now()
+            ]
+        } catch (Exception ignore) { }
         log.error "adminUpdateApp: app update failed: ${e.message}"
         return [success: false, error: "App update failed: ${e.message}"]
     }

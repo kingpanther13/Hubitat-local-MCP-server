@@ -292,8 +292,42 @@ DEPLOY_RPC=$(jq -nc --arg id "$CLASS_ID" --arg url "$APP_URL" \
 DEPLOY_TEXT=$(call_tool "$DEPLOY_RPC")
 
 if [ -z "$DEPLOY_TEXT" ]; then
-  echo "::error::hub_update_app returned no parseable MCP content from the watchdog endpoint. The watchdog answers synchronously (no 504), so an empty body is a transient transport failure -- re-run the job."
-  exit 1
+  # Expected for the ~1.6MB app: the deploy (hub-side fetch + 1.6MB loopback POST + recompile, ~200s)
+  # exceeds the cloud relay's ~10s response window, so the watchdog's synchronous result is lost in
+  # transit even though the deploy completes hub-side. The watchdog is NOT the app being recompiled, so
+  # unlike the old MCP-server self-deploy it is never bricked -- its persisted lastSelfDeploy record (and
+  # hub_get_info) stay queryable. Recover the outcome + verbatim compile error by polling it.
+  echo "::notice::No deploy response within the cloud relay window (expected for the ~1.6MB app deploy). Polling the watchdog's lastSelfDeploy record to recover the outcome..."
+  REC_OK=""; REC_ERR=""
+  POLL_DEADLINE=$(( $(date +%s) + 300 ))
+  while [ "$(date +%s)" -lt "$POLL_DEADLINE" ]; do
+    sleep 15
+    INFO_TEXT=$(call_tool '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}')
+    if [ -z "$INFO_TEXT" ]; then echo "  ...watchdog still busy (hub_get_info no response yet); retrying..."; continue; fi
+    LSD=$(printf '%s' "$INFO_TEXT" | jq -c '.lastSelfDeploy // empty' 2>/dev/null || true)
+    if [ -z "$LSD" ]; then echo "  ...no lastSelfDeploy record yet; retrying..."; continue; fi
+    LSD_APP=$(printf '%s' "$LSD" | jq -r '.appId // empty' 2>/dev/null || true)
+    LSD_AGE=$(printf '%s' "$LSD" | jq -r '(.ageMs // 999999999) | floor' 2>/dev/null || echo 999999999)
+    # Honor ONLY a FRESH record for THIS class (avoid a stale record from a prior run).
+    if [ "$LSD_APP" = "$CLASS_ID" ] && [ "$LSD_AGE" -lt 600000 ] 2>/dev/null; then
+      REC_OK=$(printf '%s' "$LSD" | jq -r '.success // false' 2>/dev/null || echo false)
+      REC_ERR=$(printf '%s' "$LSD" | jq -r '.error // empty' 2>/dev/null || true)
+      echo "Recovered lastSelfDeploy for class ${CLASS_ID}: success=${REC_OK}, ageMs=${LSD_AGE}."
+      break
+    fi
+    echo "  ...lastSelfDeploy not yet for class ${CLASS_ID} / not fresh (appId=${LSD_APP} ageMs=${LSD_AGE}); retrying..."
+  done
+  if [ -z "$REC_OK" ]; then
+    echo "::error::Deploy response lost to the cloud relay AND no fresh lastSelfDeploy record for class ${CLASS_ID} recovered from the watchdog within 300s -- deploy outcome unknown."
+    exit 1
+  fi
+  if [ "$REC_OK" != "true" ]; then
+    echo "::error::Hub REJECTED the app deploy (recovered from the watchdog's lastSelfDeploy). Hub verbatim error: ${REC_ERR:-<none>}"
+    exit 1
+  fi
+  echo "Deploy recovered as success (the relay dropped the response; the deploy landed hub-side)."
+  # Synthesize a success result so the downstream version/no-op verification runs.
+  DEPLOY_TEXT='{"success":true,"recovered":true}'
 fi
 
 if [ "$(ok_of "$DEPLOY_TEXT")" != "true" ]; then
