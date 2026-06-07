@@ -281,8 +281,9 @@ done
 MANIFEST_JSON=$(jq -nc \
   --arg classId "$CLASS_ID" \
   --arg appFile "$APP_RESTORE_FILE" \
+  --arg mainChars "$APP_BACKUP_LEN" \
   --argjson libs "$LIB_MANIFEST_JSON" \
-  '{app:{classId:$classId, file:$appFile}, libraries:$libs}')
+  '{app:{classId:$classId, file:$appFile, mainChars:$mainChars}, libraries:$libs}')
 echo "Assembled restore manifest: $MANIFEST_JSON"
 
 # --- 4) Write the manifest-shaped armed flag, then READ IT BACK and assert ------------------------

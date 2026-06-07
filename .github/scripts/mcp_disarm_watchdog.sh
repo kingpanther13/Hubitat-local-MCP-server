@@ -32,8 +32,7 @@ FLAG_FILE="e2e-deadman-v2.json"
 RESTORE_POLL_ATTEMPTS=18
 RESTORE_POLL_SLEEP=20
 
-# --- helpers copied verbatim from mcp_deploy_source.sh (the proven cloud-gateway wrappers) -------
-# Every call here targets $WATCHDOG_URL (the watchdog's own MCP endpoint), not the main $MCP_URL.
+# --- cloud-gateway wrappers (target $WATCHDOG_URL, the watchdog's own MCP endpoint, not $MCP_URL) ----
 
 mcp_call() {
   curl -sS --max-time 120 -X POST "$WATCHDOG_URL" \
@@ -58,6 +57,30 @@ mcp_tool_call_text() {
   return 1
 }
 
+# Independent post-restore check: the live app source length must be back to the arm-stamped MAIN
+# baseline (mainChars, captured BEFORE any PR deploy, so it is immune to a poisoned cache). If the restore
+# had pushed PR code, the live length would be the PR's, not main's. Reads with noSave:true so the check
+# itself does not re-cache. Uses MAIN_CHARS/APP_CLASS extracted from the manifest below.
+assert_hub_on_main() {
+  if [ -z "${MAIN_CHARS:-}" ] || [ "${MAIN_CHARS:-0}" = "0" ] || [ -z "${APP_CLASS:-}" ]; then
+    echo "::warning::Post-disarm: no mainChars/classId baseline in the manifest -- skipping the independent hub-on-main length assertion (older arm flag)."
+    return 0
+  fi
+  local live
+  live=$(mcp_tool_call_text "hub_get_source (post-disarm hub-on-main check)" \
+    "$(jq -nc --arg id "$APP_CLASS" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:1,noSave:true}}}')" \
+    | jq -r '.totalLength // empty' 2>/dev/null || true)
+  if [ -z "$live" ]; then
+    echo "::warning::Post-disarm: could not read the live app source length to assert hub-on-main (transient). The watchdog reported restored; proceeding."
+    return 0
+  fi
+  if [ "$live" != "$MAIN_CHARS" ]; then
+    echo "::error::Post-disarm hub-on-main assertion FAILED: live app source length ${live} != arm-stamped MAIN baseline ${MAIN_CHARS} (class ${APP_CLASS}). The disarm reported 'restored' but the hub is NOT on main -- a poisoned/incorrect restore. Investigate before the next run."
+    exit 1
+  fi
+  echo "Post-disarm hub-on-main assertion OK: live app source length ${live} == MAIN baseline ${MAIN_CHARS}."
+}
+
 # --- 1) Read the current (armed) flag to reuse its manifest -----------------------------------------
 # The watchdog's disarm-path restore reads flag.manifest, so the disarm flag MUST carry the same
 # manifest the arm wrote. Rather than re-deriving it, we read the armed flag and reuse its manifest +
@@ -73,10 +96,21 @@ fi
 CUR_CONTENT=$(echo "$CUR_TEXT" | jq -r '.content // ""')
 MANIFEST_JSON=$(printf '%s' "$CUR_CONTENT" | jq -c '.manifest // empty' 2>/dev/null || echo "")
 MAIN_SHA=$(printf '%s' "$CUR_CONTENT" | jq -r '.mainSha // ""' 2>/dev/null || echo "")
+FLAG_RUN_ID=$(printf '%s' "$CUR_CONTENT" | jq -r '.runId // ""' 2>/dev/null || echo "")
 if [ -z "$MANIFEST_JSON" ] || [ "$MANIFEST_JSON" = "null" ]; then
   echo "::error::The flag '$FLAG_FILE' has no manifest -- arm never ran or the flag was wiped. The watchdog cannot restore main on disarm. Response: $(printf '%s' "$CUR_TEXT" | head -c 600)"
   exit 1
 fi
+# Defense-in-depth: the flag we are about to reuse should belong to THIS run (the lease serializes runs,
+# so a mismatch means arm didn't run this run or a stale flag survived). The manifest still points at a
+# known-good main cache, so we proceed (restoring SOME main beats failing the teardown), but flag it.
+if [ -n "$FLAG_RUN_ID" ] && [ "$FLAG_RUN_ID" != "$GITHUB_RUN_ID" ]; then
+  echo "::warning::Disarm: the flag's runId ($FLAG_RUN_ID) != this run ($GITHUB_RUN_ID). Reusing its manifest to restore main anyway, but arm may not have run this run -- investigate if this recurs."
+fi
+# Arm-stamped MAIN baseline (length captured BEFORE any PR deploy) + app class, for the post-restore
+# hub-on-main assertion in assert_hub_on_main.
+MAIN_CHARS=$(printf '%s' "$MANIFEST_JSON" | jq -r '.app.mainChars // ""' 2>/dev/null || echo "")
+APP_CLASS=$(printf '%s' "$MANIFEST_JSON" | jq -r '.app.classId // ""' 2>/dev/null || echo "")
 
 # --- 2) Write {armed:false, intent:"disarm", ...manifest...}, then READ IT BACK and assert ----------
 # `date +%s` * 1000 (not %s%3N): %3N is a GNU-only extension; portable + sub-second precision is moot.
@@ -132,6 +166,9 @@ while [ "$attempt" -le "$RESTORE_POLL_ATTEMPTS" ]; do
       # The watchdog has acted on THIS run's disarm. Assert it restored (vs. latched "failed").
       if [ "$RESTORE_RESULT" = "restored" ]; then
         echo "WATCHDOG_DISARMED runId=$GITHUB_RUN_ID restoreResult=restored restoreFor=$RESTORE_FOR detail=$RESTORE_DETAIL"
+        # Independently confirm the hub is actually back on MAIN (not a poisoned/PR restore) before we
+        # let teardown + the next run proceed.
+        assert_hub_on_main
         exit 0
       fi
       echo "::error::Watchdog clean-finish restore FAILED for run $GITHUB_RUN_ID (restoreResult=$RESTORE_RESULT, restoreFor=$RESTORE_FOR). Main may NOT be restored to the known-good cache. Detail: $RESTORE_DETAIL"

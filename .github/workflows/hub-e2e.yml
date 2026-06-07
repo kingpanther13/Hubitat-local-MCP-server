@@ -37,6 +37,7 @@ on:
       - '.github/scripts/mcp_restore_env.sh'
       - '.github/scripts/mcp_validate_package_tool.sh'
       - '.github/scripts/mcp_watchdog_deploy.sh'
+      - '.github/scripts/mcp_watchdog_self_update.sh'
       - '.github/scripts/mcp_arm_watchdog.sh'
       - '.github/scripts/mcp_disarm_watchdog.sh'
       - 'libraries/**'
@@ -287,6 +288,17 @@ jobs:
           echo "PR_HEAD_SHA_RESOLVED=$SHA" >> "$GITHUB_ENV"
           echo "::notice::importUrl deploy source: $URL"
 
+      # Self-update the dead-man watchdog to THIS PR's version BEFORE it is used to arm/install, so e2e
+      # always exercises the watchdog the PR ships (not whatever level99 first imported). Skips when the
+      # live watchdog already matches this PR (no needless reload); brick-safe (a compile error keeps the
+      # old watchdog). level99 never has to re-import. Blocking: a broken watchdog must fail the run.
+      - name: Self-update watchdog to PR version
+        if: steps.gate.outputs.available == 'true'
+        env:
+          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
+          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
+        run: bash .github/scripts/mcp_watchdog_self_update.sh
+
       # Backup the known-good MCP server source and ARM the standing v2 dead-man watchdog for THIS
       # run, both driven over the watchdog's own endpoint ($WATCHDOG_URL). The arm script captures a
       # fresh >1MB known-good backup hub-side and asserts it is present before writing the armed flag
@@ -335,30 +347,33 @@ jobs:
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
         run: bash .github/scripts/mcp_validate_package_tool.sh
 
+      # Disarm the v2 dead-man watchdog -- this is also what RESTORES main: it pushes the pre-deploy
+      # known-good snapshot back through the watchdog's own restore plumbing ($WATCHDOG_URL) (replacing
+      # both the old disarm AND the old "Restore previous app source" step). It runs FIRST in teardown,
+      # BEFORE the MCP_URL-based cleanup/settings-restore below, on purpose: if the PR compiled but broke
+      # the main MCP runtime, those MCP_URL steps would fail against the broken PR app -- restoring main
+      # first means they operate on a healthy server. It reads the flag back and asserts armed==false +
+      # restoreResult==restored, AND that the live app source length is back to the arm-stamped MAIN
+      # baseline (not this PR's), failing loudly otherwise -- a silently-failed/poisoned restore is the
+      # dangerous case. A clean disarm also prevents handing the next run an armed flag.
+      - name: Disarm dead-man watchdog (restore main)
+        if: always() && steps.gate.outputs.available == 'true'
+        run: bash .github/scripts/mcp_disarm_watchdog.sh
+
       - name: Cleanup BAT_E2E_ artifacts
         if: always() && steps.gate.outputs.available == 'true'
         # Defensive — e2e_test.py cleans up after itself in the happy path,
         # but a crashed run can strand virtual devices / rules / variables
-        # under the BAT_E2E_ prefix. This sweeps anything left over.
+        # under the BAT_E2E_ prefix. This sweeps anything left over. Runs AFTER the
+        # disarm restored main, so it operates on a healthy server over MCP_URL.
         run: python tests/e2e_test.py --cleanup-only
 
       - name: Restore test environment (settings back to pre-run state)
         if: always() && steps.gate.outputs.available == 'true'
         # Tolerant of missing pre-state file (early-exit no-op) so a setup
-        # failure before capture doesn't propagate here.
+        # failure before capture doesn't propagate here. Runs after the disarm so
+        # MCP_URL points at restored main, not a possibly-broken PR app.
         run: bash .github/scripts/mcp_restore_env.sh
-
-      # Disarm the v2 dead-man watchdog as the final always() action BEFORE the lease is released, so a
-      # clean run can never hand the next run an armed flag (the watchdog would otherwise fire its
-      # auto-restore mid-next-run). The v2 clean disarm ALSO restores main: it pushes the pre-deploy
-      # known-good snapshot back through the watchdog's own restore plumbing ($WATCHDOG_URL), so this
-      # one step replaces both the old disarm AND the old "Restore previous app source" step (return-to-
-      # main is now handled here). It reads the flag back and asserts armed==false, failing loudly if it
-      # can't confirm -- a silently-failed disarm is exactly the dangerous case. Runs before lease
-      # release so the next run can't be left unprotected.
-      - name: Disarm dead-man watchdog (final)
-        if: always() && steps.gate.outputs.available == 'true'
-        run: bash .github/scripts/mcp_disarm_watchdog.sh
 
       - name: Release test hub lease
         if: always() && steps.gate.outputs.available == 'true'
