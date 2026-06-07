@@ -5,12 +5,22 @@ name: Hub E2E (test hub)
 #
 # Failure mode: BLOCKING. Per the maintainer this check is required for merge --
 # a red e2e means the change could not be proven against a real hub, so it gates.
-# When the job genuinely can't run (fork PR with no secret, or no test hub
-# configured) it skips cleanly rather than failing (see the secret gate below);
-# a confirmed infra/flake failure is triaged by the maintainer, not auto-ignored.
+#
+# Trigger is pull_request_target (NOT pull_request) so the run executes in the base
+# repo's trusted context and therefore has the hub secret even for fork PRs -- the
+# only way to auto-run e2e on a contributor's fork. The workflow file itself always
+# comes from the base branch under pull_request_target, so a PR cannot alter the CI
+# logic; it can only change the app source / tests that get deployed and run, which
+# is gated for untrusted authors by the `approve` job below.
+#
+# Who runs automatically vs. who waits for approval is decided by the `approve` job's
+# environment selection. When the hub secret genuinely isn't configured (someone
+# forked the whole project without a donated test hub) the e2e job skips cleanly
+# rather than failing -- see the secret gate inside it. A confirmed infra/flake
+# failure is triaged by the maintainer, not auto-ignored.
 
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
     # Skip when only docs / non-test files change. Cuts CI cost on
     # README-only / SKILL-only PRs that can't break the hub-side surface.
@@ -40,24 +50,63 @@ on:
         description: 'PR number to test (blank = current ref)'
         required: false
 
-# Serialize concurrent runs against the shared test hub. Don't cancel
-# in-progress — they hold the lease and need to release it cleanly via
-# the `if: always()` cleanup step. A cancelled run that leaves a
-# stranded lease will eventually expire via the 30-min TTL, but it's
-# better to let things finish and release explicitly.
-concurrency:
-  group: hub-e2e
-  cancel-in-progress: false
-
 permissions:
   contents: read
 
 jobs:
-  e2e:
+  # The hub-less self-deploy recovery guard (issue #237) is NOT here: running untrusted
+  # PR code in this privileged pull_request_target workflow is a cache-poisoning vector,
+  # so it lives in the unprivileged self-deploy-recovery.yml (pull_request) instead --
+  # it needs no secret and no hub, and runs on every PR there in a safe context.
+
+  # Approval gate. The environment NAME is chosen from the PR author's relationship to
+  # the repo:
+  #   - trusted (repo owner / org member / write-access collaborator, plus @level99 and
+  #     @kingpanther13 named explicitly, and any maintainer workflow_dispatch) -> the
+  #     `e2e-auto` environment, which has no protection rules, so this job passes
+  #     immediately and e2e runs automatically.
+  #   - everyone else -> the `e2e-approval` environment, whose required-reviewer rule
+  #     pauses the run behind GitHub's "Review pending deployments" button until the
+  #     maintainer approves. Permanent (every run, not just first-time), e2e-only.
+  # author_association is computed server-side and can't be spoofed, and the workflow
+  # file is taken from the base branch under pull_request_target, so a PR can't edit
+  # this gate to promote itself.
+  #
+  # SEPARATE job from `e2e` on purpose: it holds no hub lease and no concurrency group,
+  # so an outside PR sitting unapproved can't stall the shared test hub for trusted
+  # runs. e2e starts only once this job succeeds (`needs`).
+  approve:
     runs-on: ubuntu-latest
-    # Must match the lease duration in lease_acquire.sh so the job can't
-    # outlive the lease and let another run trample state mid-test.
+    environment:
+      name: ${{ (github.event_name == 'workflow_dispatch' || github.event.pull_request.author_association == 'OWNER' || github.event.pull_request.author_association == 'MEMBER' || github.event.pull_request.author_association == 'COLLABORATOR' || github.event.pull_request.user.login == 'level99' || github.event.pull_request.user.login == 'kingpanther13') && 'e2e-auto' || 'e2e-approval' }}
+    steps:
+      - name: Gate
+        run: echo "e2e approved to run against the shared test hub"
+
+  e2e:
+    needs: [approve]
+    runs-on: ubuntu-latest
+    # Bounds the whole job (lease wait + hold). Kept equal to the lease TTL in
+    # lease_acquire.sh: the lease is claimed only AFTER any wait, so the
+    # post-acquisition window always stays within the 30-min TTL and the job can't
+    # outlive its own lease and let another run trample state mid-test. lease_acquire.sh
+    # now WAITS for a busy lease (LEASE_WAIT_TIMEOUT_S, default 600s) and claims it when
+    # it frees instead of failing fast; that wait spends part of this same window, so a
+    # run that waits out most of it for a stuck lease times out red rather than running a
+    # truncated test.
     timeout-minutes: 30
+
+    # Serialize against the shared test hub at the JOB level (not workflow level) so the
+    # `approve` gate -- which may sit waiting on a human reviewer -- never holds this
+    # group. This group is the PRIMARY serializer: it stops two CI e2e jobs from running
+    # against the single-tenant hub at once, so they never even both enter lease_acquire's
+    # wait loop. lease_acquire.sh's in-script wait (it polls a busy lease, it does NOT
+    # abort on sight) is the SECONDARY net -- it covers a manual hub session GitHub's
+    # `concurrency` can't see. Don't cancel in-progress: a running job holds the lease and
+    # needs to release it cleanly via its `if: always()` cleanup step.
+    concurrency:
+      group: hub-e2e
+      cancel-in-progress: false
 
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
@@ -65,31 +114,21 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.ref }}
-
-      # Hub-less unit test of the self-deploy error-recovery extraction (issue #237). Runs ALWAYS
-      # (no hub / no secret needed) so the jq `// empty`-on-false bug -- which silently broke the
-      # verbatim-error recovery and that Spock can't catch -- cannot regress unnoticed.
-      - name: Unit-test self-deploy recovery extraction (hub-less)
-        run: bash .github/scripts/test_self_deploy_recovery.sh
+          ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.event.pull_request.head.sha || github.ref }}
 
       - name: Check secret availability + skip if absent
-        # Two cases where MCP_URL is empty (and we want to skip silently
-        # rather than fail red):
-        #   - PRs from forks: GitHub's security policy strips secrets from
-        #     fork-PR workflow runs, even when the secret is set on the
-        #     upstream repo. The job runs but the env var is empty.
-        #   - Secret intentionally not configured (no donated test hub,
-        #     maintainer-private fork without test infra).
-        # The fork-dispatch path (workflow_dispatch from level99's fork)
-        # DOES have access to the secret, so this gate doesn't block the
-        # intended "run via fork dispatch" use case.
-        # GitHub doesn't allow `secrets` in job-level `if:` conditions, so
-        # the check happens here as a step output and gates everything below.
+        # MCP_URL is empty only when the secret isn't configured at all -- e.g. someone
+        # forked the whole project to a repo without the donated test hub. (Under
+        # pull_request_target on the upstream repo the run is in trusted context, so the
+        # secret IS present for both trusted and approved fork PRs; fork-PR secret
+        # stripping does NOT apply here the way it does to a plain pull_request trigger.)
+        # In the no-secret case we skip cleanly rather than fail red. GitHub doesn't allow
+        # `secrets` in job-level `if:` conditions, so the check happens here as a step
+        # output and gates everything below.
         id: gate
         run: |
           if [ -z "$MCP_URL" ]; then
-            echo "::notice::LEVEL99_TEST_HUB_MCP_URL secret not available — skipping E2E (expected on fork PRs and on repos without the test hub configured)"
+            echo "::notice::LEVEL99_TEST_HUB_MCP_URL secret not available — skipping E2E (expected on repos without the test hub configured)"
             echo "available=false" >> "$GITHUB_OUTPUT"
           else
             echo "available=true" >> "$GITHUB_OUTPUT"
@@ -177,7 +216,10 @@ jobs:
           DEFAULT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = "pull_request" ]; then
+          # pull_request_target carries the same pull_request payload (head repo + sha),
+          # so treat it identically to pull_request -- otherwise we'd fall through to the
+          # base repo/sha and deploy BASE source instead of the PR's.
+          if [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "pull_request_target" ]; then
             REPO="$PR_HEAD_REPO"; SHA="$PR_HEAD_SHA"
           elif [ -n "${PR_INPUT:-}" ]; then
             # Validate the dispatch input before it reaches gh api.

@@ -1,0 +1,27 @@
+name: Self-deploy recovery (hub-less)
+
+# Hub-less unit test of the self-deploy error-recovery extraction (issue #237). Runs on
+# PRs in the UNPRIVILEGED pull_request context (no secret, no hub, contents:read), so the
+# jq `// empty`-on-false bug -- which silently broke the verbatim-error recovery and that
+# Spock can't catch -- cannot regress unnoticed. It deliberately does NOT live in
+# hub-e2e.yml: that workflow is pull_request_target (privileged), where checking out and
+# running PR code is a cache-poisoning / untrusted-execution vector (CodeQL critical/high).
+
+on:
+  pull_request:
+    branches: [main]
+    # The extraction logic under test lives in the deploy scripts, so guard that surface.
+    paths:
+      - '.github/scripts/**'
+      - '.github/workflows/self-deploy-recovery.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  self-deploy-recovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Unit-test self-deploy recovery extraction (hub-less)
+        run: bash .github/scripts/test_self_deploy_recovery.sh
