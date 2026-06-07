@@ -167,6 +167,46 @@ PR #202 (merged 2026-05-19) established the annotation-hints baseline on every s
 
 `hubitat-mcp-rule.groovy` (the MCP child app, surfaced through the `custom_*` tools) is **legacy**. It still ships and still gets bug fixes, but it is **closed to new feature work** — Hubitat's native Rule Machine is the supported path now and exposes equivalent functionality through `hub_set_rule` (in the `hub_manage_rule_machine` gateway) plus `hub_set_native_app` / `hub_delete_native_app` and the rest of the `hub_manage_native_rules_and_apps` group. New rule-related capabilities should land on the parent app's native-RM tools, not on the child app. If a feature request lands on the child app, propose it for the native side instead.
 
+## Library modules (`#include`) — the modularization path (issue #209)
+
+The server is being split out of the single `hubitat-mcp-server.groovy` monolith into Groovy `#include` libraries under `libraries/`. `#include` is a **textual paste**: the library body is inlined into the app's compiled class at parse time (no method boundary, no separate runtime), so library methods, `state`/`atomicState`, and string-literal `subscribe`/`schedule` handlers all resolve as if written in the app. Read this before adding or moving code into a library.
+
+### The impl-only rule (load-bearing)
+
+When you extract a tool group, **only the implementation methods (and their private helpers) move to the library.** The tool **definitions** (the `getToolDefinitions()` entries), the **gateway config** entries in `getGatewayConfig()`, the `executeTool()` **dispatch cases**, and the `getReadOnlyToolNames()` membership all **stay in `hubitat-mcp-server.groovy`**. Reason: `tests/sandbox_lint.py`'s TOOL_COUNT parser reads tool definitions and gateway config from the main file and does NOT resolve `#include`s — move a definition into a library and the count check breaks. Keeping defs in main also means the Spock specs pass unchanged (the harness re-inlines the impl). Shared helpers (`hubInternalGet`/`hubInternalGetRaw`/the `hubInternal*` family, `mcpLog`, `requireDestructiveConfirm`, `_paginateList`, `formatTimestamp`, `getHubSecurityCookie`, `findDevice`, etc.) also stay in main; libraries call them (resolved after the textual inline). Do NOT cross-`#include` one library from another.
+
+New tools MAY be authored **library-first**: put their impls in a library from day one, with their definition + gateway entry + dispatch case in the main file (the bundle-management tools — `McpBundlesLib` — were built this way).
+
+The **definitions** move into the library too (next to the impl) via a `_getAllToolDefinitions_part<Name>()` chunk method that `getAllToolDefinitions()` in the main app concatenates. So the per-tool split is: **library** = definition + implementation (+ any domain-private helper); **main** = gateway membership (which gateway lists the tool) + the one-line `executeTool` dispatch case + `getReadOnlyToolNames()` membership. `sandbox_lint`'s count parser resolves the library modules, so the canonical count includes library-contributed defs.
+
+### Library granularity + helper placement
+
+- **Group by cohesion + shared domain helpers, not one library per tiny group.** A library is a cohesive *domain* (e.g. all room tools, all bundle tools). Tools that share a domain-specific helper belong in the SAME library so the helper isn't duplicated or cross-`#include`d. Multiple small tool groups MAY share one library when they're cohesive.
+- **Helper placement:** a **generic** helper used across many domains (`hubInternalGet`, `mcpLog`, `requireDestructiveConfirm`, `_paginateList`, `formatTimestamp`, …) stays in **main** so any library can call it (textual paste means library code calls main methods, and vice versa, within the one compiled class). A helper used by only **one** library's tools lives **in that library** (e.g. `_parseBundleContent` in `McpBundlesLib`). Place each helper where it minimizes confusion; don't relocate a shared helper into a library that makes other callers reach across modules.
+
+### HPM delivery — bundles, not `libraries[]`
+
+Libraries are delivered to real hubs via an HPM **bundle** (a `.zip`), declared in `packageManifest.json` `bundles[]`. Do NOT use the manifest `libraries[]` array — HPM silently drops it on update (verified upstream). One bundle, `bundles/mcp-libraries.zip`, carries every library; it is built deterministically by `tools/build-bundle.py` and committed. The `sandbox-lint` workflow re-runs the builder and fails if `bundles/` drifts, so always rebuild + commit the zip after touching any `libraries/*.groovy`.
+
+### BP20 — library file hygiene (avoids a Hubitat parser `Internal error`)
+
+- The `library(...)` declaration MUST be the **first line** of the file. **Zero file-scope commentary before it.**
+- Keep comments **inside method bodies**. Avoid file-scope `/* */` / `/** */` blocks and any file-scope comment containing the literal text `library(` or `/* */` — these can fail the hub's parser on save.
+- Use **string-literal** handler names for `subscribe`/`schedule` (never bare identifiers).
+- Do NOT move `preferences {}`, `mappings {}`, or the RM wizard-walker closures into a library (root-level DSL / unverified closure binding under `#include`).
+
+### Adding (or extracting into) a library — checklist
+
+1. Create `libraries/<name>.groovy` starting with `library(name: "<Name>", namespace: "mcp", author: "...", description: "...")`, then the impl methods.
+2. Add `#include mcp.<Name>` near the top of `hubitat-mcp-server.groovy`.
+3. Register it in `getPackageLibraryRegistry()` (the `hub_update_package` dev-deploy leg).
+4. Add it to `LIBS` in `tools/build-bundle.py`.
+5. Run `python tools/build-bundle.py` and **commit** the regenerated `bundles/*.zip` (the drift gate enforces this).
+6. The Spock harness auto-resolves `#include` via `src/test/groovy/support/IncludeResolver.groovy` — no harness edit needed. Add an `IncludeResolverSpec` case asserting the real library resolves.
+7. Keep tool defs/gateway/dispatch/readonly-names in main (impl-only rule above).
+
+Steps 3 + 4 must stay in lockstep (an unmapped `#include` aborts `hub_update_package`; a missing `LIBS` entry ships a stale bundle). When updating a library on a hub by hand during dev, **update the existing library, don't install a second copy** — a duplicate name+namespace creates a second library at a new id and `#include` binds to only one (HPM's normal install flow avoids this).
+
 ## PR workflow
 
 Use `.github/pull_request_template.md` — keep every section.

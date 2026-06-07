@@ -256,3 +256,143 @@ def toolRenameRoom(args) {
         message: "Room renamed from '${oldName}' to '${newName}'."
     ]
 }
+
+// Tool DEFINITIONS for the room tools (issue #209: schema lives with the impl). Concatenated
+// into getAllToolDefinitions() in the main app; gateway membership + dispatch stay in main.
+def _getAllToolDefinitions_partRooms() {
+    return [
+        [
+            name: "hub_list_rooms",
+            description: "List all rooms on the hub, each with its ID, name, device count, and assigned device IDs. Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only — call hub_get_room for per-device states.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    rooms: [type: "array", description: "Rooms on the hub", items: [type: "object", properties: [
+                        id: [type: "string", description: "Room ID"],
+                        name: [type: "string", description: "Room name"],
+                        deviceCount: [type: "integer", description: "Devices assigned"],
+                        deviceIds: [type: "array", description: "Assigned device IDs", items: [type: "string"]]
+                    ]]],
+                    count: [type: "integer", description: "Rooms returned this page"],
+                    total: [type: "integer", description: "Total rooms; present only in paginated mode"],
+                    nextCursor: [type: "string", description: "Pagination cursor; present when more results remain"],
+                    message: [type: "string", description: "Present when no rooms configured"]
+                ],
+                required: ["rooms", "count"]
+            ]
+        ],
+        [
+            name: "hub_get_room",
+            description: "Get one room's details: its ID, name, and the full list of assigned devices with each device's current attribute states. Use when you need device-level detail for a single room; for a name-and-count overview of all rooms use hub_list_rooms instead. Read-only and parallel-safe. Devices unreachable via MCP are returned with accessible=false and no states.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    room: [type: "string", description: "Room name (case-insensitive) or room ID, e.g. \"Living Room\" or \"5\""]
+                ],
+                required: ["room"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    id: [type: "string", description: "Room ID"],
+                    name: [type: "string", description: "Room name"],
+                    deviceCount: [type: "integer", description: "Devices in room"],
+                    devices: [type: "array", description: "Assigned devices", items: [type: "object", properties: [
+                        id: [type: "string", description: "Device ID"],
+                        label: [type: "string", description: "Device label"],
+                        name: [type: "string", description: "Device name"],
+                        currentStates: [type: "object", description: "Current attribute values; present when accessible"],
+                        accessible: [type: "boolean", description: "False when device not reachable via MCP"]
+                    ]]]
+                ],
+                required: ["id", "name", "deviceCount", "devices"]
+            ]
+        ],
+        [
+            name: "hub_create_room",
+            description: "Create a new room on the hub, optionally assigning devices to it at creation. Use when a needed room does not yet exist; to only move devices into an existing room, use hub_update_room/room-assignment flows instead. Write operation: requires Write master, a backup taken within the last 24h, and confirm=true. Returns the new room's ID and assigned device count.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    name: [type: "string", description: "Name for the new room, e.g. \"Garage\""],
+                    deviceIds: [type: "array", description: "Optional device IDs to assign to the room at creation, e.g. [\"12\",\"34\"]. Omit to create an empty room.", items: [type: "string"]],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved creating this room."]
+                ],
+                required: ["name", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether creation succeeded"],
+                    room: [type: "object", description: "Created room", properties: [
+                        id: [type: "string", description: "New room ID"],
+                        name: [type: "string", description: "Room name"],
+                        deviceCount: [type: "integer", description: "Devices assigned"]
+                    ]],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
+            ]
+        ],
+        [
+            name: "hub_delete_room",
+            description: """⚠️ DESTRUCTIVE: Permanently deletes a room. Devices become unassigned (not deleted).
+
+PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true
+Requires Write master.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    room: [type: "string", description: "Room name (case-insensitive) or room ID to delete, e.g. \"Garage\" or \"5\""],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]
+                ],
+                required: ["room", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether deletion succeeded"],
+                    deletedRoom: [type: "object", description: "Deleted room", properties: [
+                        id: [type: "string", description: "Room ID"],
+                        name: [type: "string", description: "Room name"]
+                    ]],
+                    devicesUnassigned: [type: "integer", description: "Devices now unassigned"],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
+            ]
+        ],
+        [
+            name: "hub_update_room",
+            description: "Rename a room. Device assignments preserved. Automations/dashboards referencing room by name may need updating. Requires Write master + confirm + backup <24h.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    room: [type: "string", description: "Current room name (case-insensitive) or room ID, e.g. \"Garage\" or \"5\""],
+                    newName: [type: "string", description: "New name for the room, e.g. \"Workshop\""],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                ],
+                required: ["room", "newName", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether rename succeeded"],
+                    room: [type: "object", description: "Renamed room", properties: [
+                        id: [type: "string", description: "Room ID"],
+                        name: [type: "string", description: "New room name"],
+                        previousName: [type: "string", description: "Prior room name"]
+                    ]],
+                    message: [type: "string", description: "Human-readable result"]
+                ],
+                required: ["success"]
+            ]
+        ]
+    ]
+}

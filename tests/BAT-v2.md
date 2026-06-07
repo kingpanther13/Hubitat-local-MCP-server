@@ -3040,6 +3040,40 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 **Expected**: Gateway (or tool) returns an error (isError or -32602) containing "scheme must be http or https". AI recognizes that `hub_install_bundle` needs a full URL the hub can fetch, not a File Manager filename, and corrects to a raw https URL.
 
+### T512 — hub_list_bundles lists installed code bundles
+
+```json
+{
+  "setup_prompt": "the Read master enabled. The MCP libraries bundle (mcp-libraries.zip) is installed -- it ships McpRoomsLib, McpBundlesLib, and McpSmokeTestLib.",
+  "test_prompt": "List the code bundles installed on the hub and tell me which libraries the mcp bundle contains."
+}
+```
+
+**Expected**: AI calls `hub_read_apps_code(tool='hub_list_bundles')` (or the flat tool). Result includes a bundle with namespace `mcp` whose `contains.libraries` lists `McpRoomsLib` / `McpBundlesLib` / `McpSmokeTestLib`, each entry carrying an `id`. AI explains bundles are the Bundle-Manager containers HPM delivers code in — distinct from the Libraries Code entries (`hub_list_libraries`).
+
+### T513 — hub_export_bundle saves a bundle .zip to the File Manager
+
+```json
+{
+  "setup_prompt": "the Write master enabled. Identify an installed bundle's id with hub_list_bundles (e.g. the mcp libraries bundle).",
+  "test_prompt": "Export that bundle's zip to the File Manager and tell me where to download it.",
+  "teardown_prompt": "Optionally delete the exported .zip from the File Manager with hub_delete_file."
+}
+```
+
+**Expected**: AI calls `hub_manage_code(tool='hub_export_bundle', args={bundleId:<id>})`. Result `{success:true, fileName:'<name>.zip', bytes:>0, directDownload:'/local/<name>.zip'}`; AI points the user at the `/local/...` URL. No `confirm` is required — export is a non-destructive write (it only creates a File Manager file).
+
+### T514 — hub_delete_bundle removes a bundle container (DESTRUCTIVE)
+
+```json
+{
+  "setup_prompt": "the Write master enabled, recent backup exists. Identify a DISPOSABLE bundle's id with hub_list_bundles -- do NOT target the required mcp libraries bundle.",
+  "test_prompt": "Delete that disposable bundle by id and confirm it's gone."
+}
+```
+
+**Expected**: AI calls `hub_manage_code(tool='hub_delete_bundle', args={bundleId:<id>, confirm:true})`. Result `{success:true, verified:true, bundleId:'<id>'}`. AI notes that deleting the bundle CONTAINER may leave the libraries/apps/drivers it delivered in Code (remove those separately with `hub_delete_item`). Without `confirm=true` the tool refuses with "SAFETY CHECK FAILED".
+
 ---
 
 ## Section 15: HPM Package State Tests

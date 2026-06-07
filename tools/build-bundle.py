@@ -55,6 +55,10 @@ LIBS = [
         "source": LIB_DIR / "mcp-rooms-lib.groovy",
         "dest": f"{NAMESPACE}.McpRoomsLib.groovy",
     },
+    {
+        "source": LIB_DIR / "mcp-bundles-lib.groovy",
+        "dest": f"{NAMESPACE}.McpBundlesLib.groovy",
+    },
 ]
 
 # Fixed DOS-epoch timestamp + stored (uncompressed) entries make rebuilds

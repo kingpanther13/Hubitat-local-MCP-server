@@ -1747,6 +1747,109 @@ class TestRunner:
                     print(f"  [WARN] rooms error-contract cleanup: delete {rid} failed: {exc}")
 
     # -----------------------------------------------------------------------
+    # Bundle tools (issue #209): McpBundlesLib-backed hub_list_bundles /
+    # hub_export_bundle / hub_delete_bundle. These prove that, after the
+    # modularization, the libraries actually load as a bundle on the real hub
+    # and the new tools work end-to-end. They ride on the CI "Install bundle the
+    # HPM way" step that delivers the mcp-libraries bundle before tests run.
+    # -----------------------------------------------------------------------
+
+    @test("system_tools")
+    def test_list_bundles(self) -> None:
+        """hub_list_bundles lists installed bundles, and the package's libraries bundle (delivered
+        by the CI HPM-install step) is present with its libraries -- proof the split libraries load
+        as a bundle on the real hub."""
+        result = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+        assert result.get("source") == "hub_api", \
+            f"hub_list_bundles did not return the populated hub API shape (source={result.get('source')!r})"
+        bundles = result.get("bundles", []) if isinstance(result, dict) else []
+        mcp_bundle = next(
+            (b for b in bundles if b.get("namespace") == "mcp"
+             and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
+            None,
+        )
+        assert mcp_bundle and mcp_bundle.get("id"), \
+            f"the mcp libraries bundle (containing McpRoomsLib) was not found: {[b.get('name') for b in bundles]}"
+        print(f"    BUNDLES_LIST ok -- '{mcp_bundle.get('name')}' contains {(mcp_bundle.get('contains') or {}).get('libraries')}")
+
+    @test("system_tools")
+    def test_export_bundle(self) -> None:
+        """hub_export_bundle saves a bundle's .zip to the File Manager (independently confirmed via
+        hub_list_files). Self-cleaning."""
+        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+        bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
+        target = next(
+            (b for b in bundles if b.get("namespace") == "mcp"
+             and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
+            None,
+        )
+        assert target and target.get("id"), "no mcp libraries bundle available to export"
+        bid = str(target["id"])
+        fname = f"{PREFIX}bundle_export_{bid}.zip"
+        try:
+            result = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_export_bundle",
+                "args": {"bundleId": bid, "saveAs": fname},
+            })
+            assert result.get("success") is True, f"hub_export_bundle did not succeed: {result}"
+            assert (result.get("bytes") or 0) > 0, f"hub_export_bundle saved 0 bytes: {result}"
+            assert result.get("fileName") == fname, f"hub_export_bundle filename mismatch: {result}"
+            files = self.client.call_tool("hub_read_files", {"tool": "hub_list_files"})
+            names = [f.get("name") for f in (files.get("files", []) if isinstance(files, dict) else [])]
+            assert fname in names, f"exported bundle file {fname} not found in File Manager: {names}"
+            print(f"    BUNDLE_EXPORT ok -- {fname} ({result.get('bytes')} B)")
+        finally:
+            try:
+                self.client.call_tool("hub_manage_files", {
+                    "tool": "hub_delete_file", "args": {"fileName": fname, "confirm": True},
+                })
+            except Exception as exc:
+                print(f"  [WARN] bundle export cleanup: delete {fname} failed: {exc}")
+
+    @test("system_tools")
+    def test_delete_bundle(self) -> None:
+        """hub_delete_bundle removes a bundle, verified by re-list. Uses a self-contained throwaway
+        bundle (mcptest namespace, fetched from the PR head) so it NEVER touches the live mcp
+        libraries bundle. Skipped on local runs where the PR raw URL env isn't set."""
+        raw_base = os.environ.get("PR_RAW_BASE")
+        sha = os.environ.get("PR_HEAD_SHA_RESOLVED")
+        if not (raw_base and sha):
+            print("    SKIP test_delete_bundle: PR_RAW_BASE/PR_HEAD_SHA_RESOLVED not set (local run)")
+            return
+        url = f"{raw_base}/{sha}/tests/fixtures/mcp-e2e-throwaway-bundle.zip"
+        bid = None
+        try:
+            installed = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_install_bundle", "args": {"importUrl": url, "confirm": True},
+            })
+            assert installed.get("success") is True, f"throwaway bundle install failed: {installed}"
+            listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+            bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
+            tw = next((b for b in bundles if b.get("namespace") == "mcptest"), None)
+            assert tw and tw.get("id"), \
+                f"throwaway bundle not listed after install: {[b.get('name') for b in bundles]}"
+            bid = str(tw["id"])
+            deleted = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_delete_bundle", "args": {"bundleId": bid, "confirm": True},
+            })
+            assert deleted.get("success") is True, f"hub_delete_bundle did not succeed: {deleted}"
+            assert deleted.get("verified") is True, f"hub_delete_bundle did not verify the id gone: {deleted}"
+            relisted = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+            rb = relisted.get("bundles", []) if isinstance(relisted, dict) else []
+            assert not any(b.get("namespace") == "mcptest" for b in rb), \
+                "throwaway bundle still present after hub_delete_bundle"
+            bid = None
+            print("    BUNDLE_DELETE ok -- throwaway installed, listed, deleted, verified gone")
+        finally:
+            if bid:
+                try:
+                    self.client.call_tool("hub_manage_code", {
+                        "tool": "hub_delete_bundle", "args": {"bundleId": bid, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] throwaway bundle cleanup: delete {bid} failed: {exc}")
+
+    # -----------------------------------------------------------------------
     # GROUP 10: developer_mode (10 tests — Section 12 of BAT-v2.md + review-fix coverage)
     # -----------------------------------------------------------------------
     # Preconditions (provided by .github/scripts/mcp_setup_env.sh in CI, or
@@ -2308,6 +2411,23 @@ class TestRunner:
                             print(f"  [WARN] Room sweep delete failed for '{rname}': {exc}")
         except Exception as exc:
             print(f"  [WARN] Room sweep failed: {exc}")
+
+        # Layer 7: throwaway bundle from the hub_delete_bundle e2e (mcptest namespace). The test
+        # deletes it in its own finally; this reclaims one a crashed run stranded.
+        try:
+            bres = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+            for b in (bres.get("bundles", []) if isinstance(bres, dict) else []):
+                if b.get("namespace") == "mcptest" and b.get("id"):
+                    try:
+                        print(f"  Sweep: deleting throwaway bundle '{b.get('name')}' (id={b.get('id')})")
+                        self.client.call_tool("hub_manage_code", {
+                            "tool": "hub_delete_bundle",
+                            "args": {"bundleId": str(b.get("id")), "confirm": True},
+                        })
+                    except Exception as exc:
+                        print(f"  [WARN] throwaway bundle sweep delete failed for '{b.get('name')}': {exc}")
+        except Exception as exc:
+            print(f"  [WARN] throwaway bundle sweep failed: {exc}")
 
         print("--- Cleanup complete ---\n")
 

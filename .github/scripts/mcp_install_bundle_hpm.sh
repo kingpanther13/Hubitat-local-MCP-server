@@ -47,6 +47,7 @@ BUNDLE_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/bundles/mcp-libraries.zip"
 LIB_SPECS=(
   "mcp|McpSmokeTestLib|smoke-ok-v1|libraries/mcp-smoke-test-lib.groovy"
   "mcp|McpRoomsLib||libraries/mcp-rooms-lib.groovy"
+  "mcp|McpBundlesLib||libraries/mcp-bundles-lib.groovy"
 )
 
 mcp_call() {

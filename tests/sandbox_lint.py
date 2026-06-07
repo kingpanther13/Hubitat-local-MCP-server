@@ -656,6 +656,16 @@ def _extract_canonical_counts() -> dict | None:
         return None
     src = srv_path.read_text(encoding="utf-8", errors="replace")
 
+    # Tool DEFINITIONS now live partly in #include'd library modules (issue #209): a domain's defs
+    # sit in its libraries/*.groovy alongside its impl, contributed via _getAllToolDefinitions_part<Name>()
+    # chunk methods. The app #includes every library module, so the canonical tool surface =
+    # main + all library modules; concatenate them so those def chunks are parsed + counted. The
+    # gateway config (getGatewayConfig) lives only in main, so the first-match carve below is unaffected.
+    _lib_dir = REPO_ROOT / "libraries"
+    if _lib_dir.is_dir():
+        for _lib in sorted(_lib_dir.glob("*.groovy")):
+            src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
+
     # Comment-stripping intentionally NOT done. Reasoning: this codebase's
     # tool description heredocs commonly contain both `//` (URLs like
     # `https://...`) and `/* ... */`-shaped tokens (regex example syntax,
@@ -726,7 +736,7 @@ def _extract_canonical_counts() -> dict | None:
     # (The dispatcher body carries no `name:` lines, so including it is harmless;
     # a pre-split source with all defs in getAllToolDefinitions() still matches.)
     all_bodies = re.findall(
-        r"^def (?:getAllToolDefinitions|_getAllToolDefinitions_part\d+)\(\) \{(.*?)^}",
+        r"^def (?:getAllToolDefinitions|_getAllToolDefinitions_part\w+)\(\) \{(.*?)^}",
         src,
         re.DOTALL | re.MULTILINE,
     )
@@ -1978,6 +1988,14 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
         if not server.exists():
             return findings
         src = server.read_text(encoding="utf-8", errors="replace")
+        # Tool defs now live partly in #include'd library modules (issue #209); the app includes
+        # every libraries/*.groovy, so append them so moved def chunks (e.g.
+        # _getAllToolDefinitions_partRooms) are seen by the gateway-vs-defs reachability checks
+        # below. The src_override path stays main-only for the synthetic self-test corpora.
+        _lib_dir = REPO_ROOT / "libraries"
+        if _lib_dir.is_dir():
+            for _lib in sorted(_lib_dir.glob("*.groovy")):
+                src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
 
     rel = str(server.relative_to(REPO_ROOT))
 
@@ -2033,7 +2051,7 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
     #    PR1C split the defs across _getAllToolDefinitions_part1..N() chunk
     #    methods (64KB-method-bytecode cap); gather names from all of them.
     all_bodies = re.findall(
-        r"^def (?:getAllToolDefinitions|_getAllToolDefinitions_part\d+)\(\) \{(.*?)^}",
+        r"^def (?:getAllToolDefinitions|_getAllToolDefinitions_part\w+)\(\) \{(.*?)^}",
         src, re.DOTALL | re.MULTILINE,
     )
     if not all_bodies:
@@ -3165,6 +3183,98 @@ def run_self_test() -> int:
     return 0
 
 
+def check_include_library_lockstep() -> list[dict]:
+    """Every `#include mcp.X` in the app must stay in lockstep with its delivery (issue #209):
+    (1) a libraries/*.groovy whose library() declares (namespace=X.ns, name=X.name),
+    (2) a tools/build-bundle.py LIBS entry (else the HPM bundle won't deliver it), and
+    (3) a getPackageLibraryRegistry() entry (else hub_update_package aborts before deploy).
+
+    A gap means the library can't load on a user's hub, so the app's #include fails to compile.
+    Catches it cheaply here (no hub) instead of at install/recompile time.
+    """
+    findings: list[dict] = []
+    server = REPO_ROOT / "hubitat-mcp-server.groovy"
+    if not server.exists():
+        return findings
+    src = server.read_text(encoding="utf-8", errors="replace")
+    rel = "hubitat-mcp-server.groovy"
+
+    includes = re.findall(
+        r"(?m)^[ \t]*#include[ \t]+([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)[ \t]*$", src
+    )
+    if not includes:
+        return findings
+
+    # (1) libraries declared by (namespace, name) from each libraries/*.groovy library() call.
+    declared: dict[tuple[str, str], str] = {}
+    lib_dir = REPO_ROOT / "libraries"
+    if lib_dir.is_dir():
+        for lib in sorted(lib_dir.glob("*.groovy")):
+            text = lib.read_text(encoding="utf-8", errors="replace")
+            m = re.search(r"(?m)^library\s*\((.*)\)\s*$", text)
+            if not m:
+                continue
+            decl = m.group(1)
+            nm = re.search(r"name:\s*['\"]([^'\"]+)['\"]", decl)
+            ns = re.search(r"namespace:\s*['\"]([^'\"]+)['\"]", decl)
+            if nm and ns:
+                declared[(ns.group(1), nm.group(1))] = lib.name
+
+    # (2) build-bundle.py LIBS dest names ({NAMESPACE}.<Name>.groovy).
+    bb = REPO_ROOT / "tools" / "build-bundle.py"
+    bundled_names: set[str] = set()
+    if bb.exists():
+        bundled_names = set(
+            re.findall(r"\{NAMESPACE\}\.(\w+)\.groovy", bb.read_text(encoding="utf-8", errors="replace"))
+        )
+
+    # (3) getPackageLibraryRegistry() keys ("ns.Name").
+    reg_match = re.search(
+        r"def getPackageLibraryRegistry\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE
+    )
+    registry_keys: set[str] = set()
+    if reg_match:
+        registry_keys = set(re.findall(r'"([A-Za-z0-9_]+\.[A-Za-z0-9_]+)"\s*:', reg_match.group(1)))
+
+    include_line: dict[str, int] = {}
+    for i, line in enumerate(src.splitlines(), 1):
+        m = re.match(r"^[ \t]*#include[ \t]+([A-Za-z0-9_]+\.[A-Za-z0-9_]+)", line)
+        if m:
+            include_line.setdefault(m.group(1), i)
+
+    for ns, name in includes:
+        token = f"{ns}.{name}"
+        ln = include_line.get(token, 1)
+        if (ns, name) not in declared:
+            findings.append({
+                "file": rel, "line": ln, "severity": "error", "rule": "INCLUDE_LOCKSTEP", "source": "",
+                "message": (
+                    f"#include {token} has no matching libraries/*.groovy "
+                    f"(a library() with namespace='{ns}', name='{name}'). The app won't compile -- "
+                    f"add the library file."
+                ),
+            })
+            continue  # downstream checks are moot without the file
+        if name not in bundled_names:
+            findings.append({
+                "file": rel, "line": ln, "severity": "error", "rule": "INCLUDE_LOCKSTEP", "source": "",
+                "message": (
+                    f"#include {token} ({declared[(ns, name)]}) is not in tools/build-bundle.py LIBS -- "
+                    f"the HPM bundle won't deliver it, so the app fails to compile on a user's hub after "
+                    f"update. Add it to LIBS and rebuild the bundle."
+                ),
+            })
+        if token not in registry_keys:
+            findings.append({
+                "file": rel, "line": ln, "severity": "error", "rule": "INCLUDE_LOCKSTEP", "source": "",
+                "message": (
+                    f"#include {token} is not in getPackageLibraryRegistry() -- hub_update_package would "
+                    f'abort before deploying. Add the "{token}" entry.'
+                ),
+            })
+    return findings
+
+
 def main() -> int:
     if "--self-test" in sys.argv[1:]:
         return run_self_test()
@@ -3212,6 +3322,11 @@ def main() -> int:
     # "a read got added to a manage gateway but never surfaced on the read side"
     # class, which mislabels the read as a write and hides it from the read path.
     all_findings.extend(check_read_write_split())
+
+    # Issue #209 lockstep: every #include'd library must have a libraries/ file + a build-bundle.py
+    # LIBS entry + a getPackageLibraryRegistry() entry, so a broken/undelivered library fails CI
+    # here instead of failing the app's compile on a user's hub.
+    all_findings.extend(check_include_library_lockstep())
 
     # Sort by file, then line
     all_findings.sort(key=lambda f: (f["file"], f["line"]))
