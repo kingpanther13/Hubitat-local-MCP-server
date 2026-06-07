@@ -1000,6 +1000,14 @@ class TestRunner:
             assert not bad, f"unexpected RelrDev_<N> not_in_schema skip on the doActPage walker enum path: {bad}"
             assert not result.get("partial"), \
                 f"doActPage walker enum condition falsely flagged partial: {result}"
+            # Close the IF block (THEN body + endIf) before the whole-rule health
+            # check. An ifThen opener added alone is a valid intermediate tool state,
+            # but it leaves the rule with an unclosed IF that the live hub's
+            # rule-health check correctly flags -- the enum-condition contract under
+            # test is already proven by the assertions above; completing the block is
+            # what makes the end-to-end health assertion meaningful.
+            self._set_rule(app_id, {"addAction": {"capability": "log", "message": "fired"}})
+            self._set_rule(app_id, {"addAction": {"capability": "endIf"}})
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
