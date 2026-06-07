@@ -102,10 +102,11 @@ echo "Resolved MCP server class ID: $CLASS_ID"
 # present + current at arm time, and assemble the manifest's app entry to point at it.
 APP_RESTORE_FILE="mcp-source-app-${CLASS_ID}.groovy"
 
-# --- 2) Ensure the watchdog is installed AND has a live checkDeadman schedule (idempotent) --------
-# Look for the standing install by name. If present, do NOT reinstall -- just assert its
-# runEvery1Minute schedule survived. If absent (first time), install the code class + create the
-# instance and assert the #243 install fix committed (committed==true, scheduledJobCount>=1).
+# --- 2) Assert the (manually-installed) watchdog is present AND has a live checkDeadman schedule -----
+# The watchdog is a one-time MANUAL install by @level99 (it owns the /mcp endpoint this script talks
+# to, so it cannot install itself through its own endpoint). Look it up by name: if present, assert
+# its runEvery1Minute schedule survived; if absent, HALT (inconsistent -- the health check already
+# proved the endpoint is up).
 echo "Checking for the standing '$WATCHDOG_NAME' install..."
 INST_RPC='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"instances"}}}'
 if ! INST_TEXT=$(mcp_tool_call_text "hub_list_apps (watchdog instance lookup)" "$INST_RPC"); then
@@ -135,49 +136,13 @@ if [ -n "$WATCHDOG_INSTANCE_ID" ] && [ "$WATCHDOG_INSTANCE_ID" != "null" ]; then
   fi
   echo "WATCHDOG_PRESENT instanceAppId=$WATCHDOG_INSTANCE_ID scheduleAlive=true"
 else
-  echo "No standing watchdog found -- first-time install from $WATCHDOG_SOURCE_URL ..."
-  CREATE_CODE_RPC=$(jq -nc --arg url "$WATCHDOG_SOURCE_URL" \
-    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_create_app",arguments:{importUrl:$url,confirm:true}}}')
-  if ! CREATE_CODE_TEXT=$(mcp_tool_call_text "hub_create_app (install watchdog code class)" "$CREATE_CODE_RPC"); then
-    echo "::error::hub_create_app(importUrl) for the watchdog returned non-JSON $RPC_ATTEMPTS times -- transient relay/timeout. Re-run the job."
-    exit 1
-  fi
-  # Gate on success==true FIRST: the hub returns a non-empty appId on several
-  # success:false partial-failure paths (unparseable/empty verify body, compile
-  # error), so trusting appId alone would proceed against a broken code class.
-  CREATE_CODE_OK=$(echo "$CREATE_CODE_TEXT" | jq -r '.success // false')
-  if [ "$CREATE_CODE_OK" != "true" ]; then
-    echo "::error::hub_create_app(importUrl) for the watchdog reported failure (success=$CREATE_CODE_OK): $(echo "$CREATE_CODE_TEXT" | jq -r '.error // .message // empty'). Response: $(printf '%s' "$CREATE_CODE_TEXT" | head -c 600)"
-    exit 1
-  fi
-  CODE_APP_ID=$(echo "$CREATE_CODE_TEXT" | jq -r '.appId // empty')
-  if [ -z "$CODE_APP_ID" ]; then
-    echo "::error::hub_create_app(importUrl) did not return an appId for the watchdog code class. Response: $(printf '%s' "$CREATE_CODE_TEXT" | head -c 600)"
-    exit 1
-  fi
-  echo "Watchdog code class installed (codeAppId=$CODE_APP_ID). Creating the user-app instance..."
-  CREATE_INST_RPC=$(jq -nc --argjson code "$CODE_APP_ID" \
-    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_create_app",arguments:{installAsUserApp:$code,confirm:true}}}')
-  if ! CREATE_INST_TEXT=$(mcp_tool_call_text "hub_create_app (install watchdog instance)" "$CREATE_INST_RPC"); then
-    echo "::error::hub_create_app(installAsUserApp) for the watchdog returned non-JSON $RPC_ATTEMPTS times -- transient relay/timeout. Re-run the job."
-    exit 1
-  fi
-  COMMITTED=$(echo "$CREATE_INST_TEXT" | jq -r '.committed // false')
-  SCHED_COUNT=$(echo "$CREATE_INST_TEXT" | jq -r '.scheduledJobCount // 0')
-  INSTANCE_APP_ID=$(echo "$CREATE_INST_TEXT" | jq -r '.instanceAppId // empty')
-  # This is the live validation of the #243 install fix: a shell install would report committed
-  # !=true / scheduledJobCount 0 (no runEvery1Minute fired). Fail loudly on either.
-  if [ "$COMMITTED" != "true" ]; then
-    echo "::error::Watchdog install did NOT commit (committed=$COMMITTED). The #243 install fix regressed -- installAsUserApp returned a shell, not a live instance. Response: $(printf '%s' "$CREATE_INST_TEXT" | head -c 600)"
-    exit 1
-  fi
-  # Fail-CLOSED on any non-numeric scheduledJobCount (the `! [ -ge 1 ]` idiom
-  # treats a "null"/garbage value as a failure, unlike `[ -lt 1 ] || ...`).
-  if ! [ "${SCHED_COUNT:-0}" -ge 1 ] 2>/dev/null; then
-    echo "::error::Watchdog install committed but scheduledJobCount=$SCHED_COUNT (<1 or non-numeric). Its runEvery1Minute did not register, so the dead-man check would never run. Response: $(printf '%s' "$CREATE_INST_TEXT" | head -c 600)"
-    exit 1
-  fi
-  echo "WATCHDOG_INSTALLED instanceAppId=${INSTANCE_APP_ID:-unknown} scheduledJobCount=$SCHED_COUNT"
+  # No standing watchdog instance -- but this script talks to the watchdog's OWN /mcp endpoint, which
+  # only exists once the watchdog is installed, and the "Watchdog health check" step already HALTs the
+  # run if that endpoint is unreachable. So reaching here means the endpoint answered but no instance
+  # was found: an inconsistent state. The watchdog is a one-time MANUAL install by @level99 -- it
+  # cannot install itself through its own endpoint and does not expose hub_create_app. Fail loudly.
+  echo "::error::e2e HALT: the watchdog /mcp endpoint answered but no standing '$WATCHDOG_NAME' instance was found (inconsistent state). It is a one-time manual install -- @level99 must (re)install e2e-deadman-watchdog-v2.groovy on the test hub. Refusing to arm."
+  exit 1
 fi
 
 # --- 3) BACK UP main: cache the app + each #include'd library, assembling the restore manifest -----
@@ -187,7 +152,8 @@ fi
 # each library, so the manifest restores libraries-first/app-last exactly like restorePackage().
 
 # 3a) Refresh + cache the APP source. The >64KB total triggers the File-Manager auto-save (full body
-# saved hub-side, no 1.6MB cloud transfer), and length:65000 returns the source HEAD so 3c can parse
+# saved hub-side, no 1.6MB cloud transfer), and length:65000 (the tool caps the returned chunk at
+# 64000) returns the source HEAD so 3c can parse
 # the #include directives (which live at the top of the file) from this same call.
 echo "Backing up the MCP app: watchdog hub_get_source(type=app, id=$CLASS_ID)..."
 APP_SRC_RPC=$(jq -nc --arg id "$CLASS_ID" \
@@ -222,7 +188,7 @@ echo "App backup '$APP_RESTORE_FILE' present (totalLength=$APP_BACKUP_LEN bytes)
 
 # 3c) Parse the app's #include directives (namespace.Name) so we back up exactly the libraries main
 # depends on. #include directives live at the TOP of the file (before/around the definition block),
-# so the 65000-char head fetched in 3a (APP_SRC_CHUNK) carries all of them -- no full-file read needed.
+# so the ~64000-char head fetched in 3a (APP_SRC_CHUNK) carries all of them -- no full-file read needed.
 echo "Parsing #include directives from the app source head..."
 APP_FULL_SRC="$APP_SRC_CHUNK"
 # tokens like:  #include mcp.McpSomeLib   -> "mcp.McpSomeLib"
@@ -243,8 +209,9 @@ if [ "${#INCLUDE_TOKENS[@]}" -gt 0 ]; then
 fi
 
 # 3d) Back up each #include'd library: cache it via hub_get_source(library,id), then assert the cache
-# file landed. Each library MUST cache (>64KB triggers the auto-save) or the manifest restore would
-# fail -- so a missing sourceFile is a HALT, same logic as the app.
+# file landed. Three-way: a >64KB library auto-saves to .sourceFile; a <=64KB library comes back inline
+# with NO auto-save, so we write the cache file explicitly via hub_write_file; a >64KB library that did
+# NOT auto-save (can't cache in one inline read) is a HALT.
 LIB_MANIFEST_JSON="[]"   # JSON array of {id,file} accumulated for the manifest
 for TOKEN in "${INCLUDE_TOKENS[@]:-}"; do
   [ -z "$TOKEN" ] && continue

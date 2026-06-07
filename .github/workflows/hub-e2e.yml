@@ -304,8 +304,9 @@ jobs:
       # Install THIS PR's source + libraries + bundle onto the test hub through the watchdog's
       # install plumbing ($WATCHDOG_URL). Replaces the old separate install-libraries / deploy-source /
       # verify-deploy / install-bundle-HPM steps: the watchdog endpoint is a single driver of the
-      # same loopback restore/install plumbing, so it resolves #include libraries, lands the app
-      # source, verifies the deploy landed, and installs the bundle the HPM way in one step. Blocking:
+      # same loopback restore/install plumbing, so it installs the #include libraries, then the bundle
+      # the HPM way, then lands + verifies the app source last (HPM's libraries -> bundle -> app order)
+      # in one step. Blocking:
       # a failed PR install means the tests would run against stale/broken hub code.
       - name: Watchdog - install PR
         if: steps.gate.outputs.available == 'true'

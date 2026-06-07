@@ -254,8 +254,9 @@ echo "Resolved Apps Code class id for ${APP_NAMESPACE}:${APP_NAME}: ${CLASS_ID}"
 
 APP_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/$(basename "$APP_FILE")"
 NEW_BYTES=$(wc -c < "$APP_FILE")
-# The hub's totalLength is a CHARACTER count, not bytes -- compare the no-op check against the
-# source's UTF-8 codepoint count so a non-ASCII source can't trip a false "version did not advance".
+# The hub's totalLength is a CHARACTER count (Groovy String.length() = UTF-16 code units), not bytes.
+# wc -m gives codepoints, which equals UTF-16 units for all BMP characters (everything but rare non-BMP
+# like emoji) -- a good-enough no-op approximation for Groovy source. success=true is the primary signal.
 NEW_CHARS=$(LC_ALL=C.UTF-8 wc -m < "$APP_FILE" | tr -d '[:space:]')
 
 # Baseline the live app source length BEFORE the deploy. The post-deploy assertion
@@ -312,7 +313,7 @@ if [ -n "$PRE_LEN" ] && [ -n "$POST_LEN" ] && [ "$POST_LEN" != "0" ]; then
     echo "App version advanced: source totalLength ${PRE_LEN} -> ${POST_LEN}."
   fi
 else
-  echo "::notice::Could not read both pre/post source lengths to confirm the version advanced; relying on hub_update_app success=true (the watchdog returned the hub's synchronous compile result)."
+  echo "::warning::Could not read both pre/post source lengths to confirm the version advanced; relying on hub_update_app success=true alone (the watchdog returned the hub's synchronous compile result). The independent landed-source check was skipped due to an unreadable pre/post length."
 fi
 
 echo "Deploy succeeded via watchdog: PR app source (${NEW_BYTES} bytes) compiled and is live on the hub at class ${CLASS_ID}."
