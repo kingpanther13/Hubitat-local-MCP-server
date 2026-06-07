@@ -1,27 +1,29 @@
 #!/usr/bin/env bash
-# Install/update every library the PR's app #includes, BEFORE the app is deployed, so the
-# `#include` directives resolve when the app compiles on the hub (issue #209).
+# Deliver every library the PR's app #includes, BEFORE the app is deployed, so the `#include`
+# directives resolve when the app compiles on the hub (issue #209).
 #
-# Design: load whatever libraries the CURRENT PR carries, every run, without ever stranding the hub
-# or depending on a tool that might not be present. The REQUIRED path uses only the always-available
-# baseline code tools -- hub_list_libraries + hub_create_library / hub_update_library -- so it can
-# never chicken-and-egg on hub_update_package, and the crucial code/package-loading tools are never
-# required to pre-exist. As a BEST-EFFORT extra (never required), it first tries hub_delete_bundle to
-# clear a stale bundle-managed copy so libraries refresh cleanly before deploy; if that tool isn't on
-# the deployed app yet, it no-ops and the baseline path still runs. Idempotent: a library already on
-# the hub is updated to the PR's source; a missing one is created. No `#include` -> no-op.
+# Design: deliver libraries the SAME way HPM/users do -- via the bundle. `hub_install_bundle`
+# (present since #243) creates each library fresh AND updates an existing bundle-managed copy IN
+# PLACE, in one atomic op. That is the robust path: it can't be tripped by a bundle-managed copy and
+# it can't misclassify a cloud-relay timeout as "can't reconcile" and silently strand a library --
+# the failure mode that previously left McpRoomsLib deleted and the deploy failing "library not
+# found". (Verified on a real hub: installing the bundle over an existing one updates same-(ns,name)
+# libraries in place with no duplicate, and updates a bundle-managed library cleanly.) Per-library
+# create is kept only as a FALLBACK for anything the bundle didn't deliver (e.g. a deployed app that
+# predates hub_install_bundle); a missing library is a plain create, so no edit/delete dance.
+# Idempotent. No `#include` -> no-op.
 #
 # Runs in the GHA runner (the repo is checked out): it reads the LOCAL app + library files to
-# discover what to install, matches each #include to its library file by the (namespace, name)
-# in its library() declaration (NOT by filename, mirroring the hub), and builds each library's
-# importUrl from the PR head SHA so the hub fetches the source itself.
+# discover what to install, matches each #include to its library file by the (namespace, name) in
+# its library() declaration (NOT by filename, mirroring the hub), and builds URLs from the PR head
+# SHA so the hub fetches the source itself.
 #
 # Usage: mcp_install_libraries.sh [path/to/hubitat-mcp-server.groovy]
 # Env:   MCP_URL               -- full cloud OAuth URL with access_token
 #        PR_RAW_BASE           -- https://raw.githubusercontent.com/<owner>/<repo>
 #        PR_HEAD_SHA_RESOLVED  -- 40-hex PR head SHA
 
-set -euo pipefail
+set -uo pipefail
 
 : "${MCP_URL:?MCP_URL env var required}"
 : "${PR_RAW_BASE:?PR_RAW_BASE env var required}"
@@ -33,6 +35,7 @@ if [ ! -f "$APP_FILE" ]; then
   exit 1
 fi
 LIB_DIR="$(dirname "$APP_FILE")/libraries"
+BUNDLE_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/bundles/mcp-libraries.zip"
 
 mcp_call() {
   curl -sS --max-time 120 -X POST "$MCP_URL" \
@@ -40,7 +43,7 @@ mcp_call() {
 }
 
 # Echo the inner MCP tool-result text for an RPC body. `|| true` so a transient relay
-# failure doesn't bare-exit under `set -e` before the caller inspects the (empty) result.
+# failure doesn't bare-exit before the caller inspects the (empty) result.
 call_tool() {
   local resp
   resp=$(mcp_call "$1" || true)
@@ -49,6 +52,21 @@ call_tool() {
 
 # Echo "true"/"false" for a tool result's .success field.
 ok_of() { printf '%s' "$1" | jq -r '.success // false' 2>/dev/null || echo false; }
+
+# Echo the current hub library list as a compact JSON array (the tool's `.libraries`), or "[]".
+list_libraries_json() {
+  local text
+  text=$(call_tool '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}')
+  printf '%s' "$text" | jq -c '.libraries // []' 2>/dev/null || printf '[]'
+}
+
+# Return 0 if (ns,name) is present in a pre-fetched library list JSON array.
+lib_present_in() {
+  local libs_json="$1" ns="$2" name="$3" id
+  id=$(printf '%s' "$libs_json" | jq -r --arg ns "$ns" --arg name "$name" \
+    'map(select(.namespace==$ns and .name==$name)) | (.[0].id // empty)' 2>/dev/null || true)
+  [ -n "$id" ]
+}
 
 # Parse `#include namespace.Name` directives (one per line) from the app source.
 mapfile -t INCLUDES < <(
@@ -62,114 +80,76 @@ if [ "${#INCLUDES[@]}" -eq 0 ]; then
 fi
 echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]}"
 
-# Library writes are destructive-gated (confirm + <24h backup). Refresh the timestamp best-effort;
-# the gate is timestamp-cached so a 504 here is tolerated (CI keeps the window warm).
+# Library/bundle writes are destructive-gated (confirm + <24h backup). Refresh the timestamp
+# best-effort; the gate is timestamp-cached so a 504 here is tolerated (CI keeps the window warm).
 echo "Triggering hub backup (best-effort; the <24h gate is timestamp-cached)..."
 mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true}}}' >/dev/null \
   || echo "::warning::hub_create_backup call failed/timed out; relying on cached <24h backup timestamp"
 
-# Positive refresh BEFORE the snapshot: if a prior issue #209 bundle run left an mcp bundle
-# installed, the libraries it delivered are bundle-managed and the baseline library tools below
-# CANNOT edit them in place. Delete the bundle first (via hub_delete_bundle, IF the
-# currently-deployed app exposes it) so the loop re-creates each library fresh from the PR source --
-# a clean library state before the app deploys, instead of compiling the app against a stale
-# bundle-managed copy. This is BEST-EFFORT and never fatal: hub_delete_bundle is not one of the
-# always-available baseline tools, so on an older deployed app the call simply no-ops and any
-# still-bundle-managed library is left in place for the loop to skip (the deploy step's verbatim
-# compile/library-error capture is the loud backstop, and the later bundle-install step refreshes it).
-delete_bundle_named_best_effort() {
-  local want="$1" list id rpc text
-  list=$(call_tool '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_bundles","arguments":{}}}')
-  id=$(printf '%s' "$list" | jq -r --arg n "$want" \
-    '(.bundles // []) | map(select(.name==$n)) | (.[0].id // empty)' 2>/dev/null || true)
-  [ -n "$id" ] || return 0
-  echo "Found pre-existing bundle '${want}' (id ${id}); deleting it so its libraries can be re-created fresh before deploy..."
-  rpc=$(jq -nc --arg id "$id" \
-    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_delete_bundle",arguments:{bundleId:$id,confirm:true}}}')
-  text=$(call_tool "$rpc")
-  if [ "$(ok_of "$text")" != "true" ]; then
-    echo "::warning::Could not delete pre-existing bundle '${want}' (it may not exist, or hub_delete_bundle isn't on the currently-deployed app yet); continuing -- any bundle-managed library is left in place and the bundle-install step will refresh it."
-  fi
-}
-delete_bundle_named_best_effort "mcp_libraries"
-delete_bundle_named_best_effort "mcp_smoke_test"
-
-# Snapshot existing hub libraries once, to choose update-vs-create per library.
-# Capture with `|| true` so a transient curl/relay failure (set -euo pipefail) does NOT
-# bare-exit before the friendly ::error:: below -- the empty-check is the real gate.
-LIST_RESP=$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}' || true)
-LIST_TEXT=$(printf '%s' "$LIST_RESP" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
-if [ -z "$LIST_TEXT" ]; then
-  echo "::error::hub_list_libraries returned no MCP content -- cannot plan create-vs-update"
-  exit 1
+# --- PRIMARY: deliver ALL #include'd libraries by installing the bundle.
+echo "Installing the libraries bundle to deliver the app's #include'd libraries: ${BUNDLE_URL}"
+BUN_RPC=$(jq -nc --arg url "$BUNDLE_URL" \
+  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_install_bundle",arguments:{importUrl:$url,confirm:true}}}')
+BUN_TEXT=$(call_tool "$BUN_RPC")
+if [ "$(ok_of "$BUN_TEXT")" = "true" ]; then
+  echo "Bundle installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint}' 2>/dev/null || true)"
+else
+  echo "::warning::hub_install_bundle did not report success (the deployed app may predate it, or a transient relay error): $(printf '%s' "$BUN_TEXT" | jq -c '{success,error}' 2>/dev/null || printf '%s' "$BUN_TEXT" | head -c 200). Falling back to per-library create for any missing library."
 fi
 
+# Verify each #include is now present; collect anything the bundle didn't deliver.
+LIBS_JSON=$(list_libraries_json)
+MISSING=()
 for tok in "${INCLUDES[@]}"; do
-  ns="${tok%%.*}"
-  name="${tok##*.}"
+  ns="${tok%%.*}"; name="${tok##*.}"
+  if lib_present_in "$LIBS_JSON" "$ns" "$name"; then
+    echo "Present after bundle install: ${tok}"
+  else
+    echo "::warning::${tok} not present after bundle install -- will create it individually."
+    MISSING+=("$tok")
+  fi
+done
 
-  # Find the local library file whose library() declares this (namespace, name).
+if [ "${#MISSING[@]}" -eq 0 ]; then
+  echo "All ${#INCLUDES[@]} PR library(ies) delivered by the bundle -- the app's #include directives will resolve on deploy."
+  exit 0
+fi
+
+# --- FALLBACK: create any library the bundle did not deliver. These are MISSING (not bundle-managed),
+# so a plain create is safe -- no edit/delete of a bundle-managed copy, hence no timeout-misclassify.
+echo "Creating ${#MISSING[@]} library(ies) the bundle did not deliver: ${MISSING[*]}"
+for tok in "${MISSING[@]}"; do
+  ns="${tok%%.*}"; name="${tok##*.}"
   libfile=""
   for f in "$LIB_DIR"/*.groovy; do
     [ -f "$f" ] || continue
     if grep -qE 'library[[:space:]]*\(' "$f" \
       && grep -qE "name:[[:space:]]*[\"']${name}[\"']" "$f" \
       && grep -qE "namespace:[[:space:]]*[\"']${ns}[\"']" "$f"; then
-      libfile="$f"
-      break
+      libfile="$f"; break
     fi
   done
   if [ -z "$libfile" ]; then
     echo "::error::#include ${tok} has no matching library file in ${LIB_DIR}"
     exit 1
   fi
-  rel="${libfile#./}"
-  url="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/${rel}"
-
-  existing_id=$(echo "$LIST_TEXT" | jq -r --arg ns "$ns" --arg name "$name" \
-    '(.libraries // []) | map(select(.namespace==$ns and .name==$name)) | (.[0].id // empty)')
-
-  if [ -n "$existing_id" ] && [ "$existing_id" != "null" ]; then
-    echo "Updating existing library ${tok} (id ${existing_id}) from ${url} ..."
-    UPD_RPC=$(jq -nc --arg id "$existing_id" --arg url "$url" \
-      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_update_library",arguments:{libraryId:$id,importUrl:$url,confirm:true}}}')
-    UPD_TEXT=$(call_tool "$UPD_RPC")
-    if [ "$(ok_of "$UPD_TEXT")" = "true" ]; then
-      echo "Library ${tok} updated."
-      continue
-    fi
-    # Update failed. The existing copy may be BUNDLE-MANAGED -- a prior run's hub_install_bundle
-    # (the issue #209 HPM e2e) delivers this same library via a bundle, and a bundle-managed copy
-    # can be non-editable in place. Self-heal so a previous bundle run can never strand this step on
-    # an innocent later PR: delete the existing copy and create it fresh from the PR source.
-    echo "::warning::hub_update_library failed for ${tok}; deleting + recreating (existing copy may be bundle-managed): $(printf '%s' "$UPD_TEXT" | jq -c '{success,error}' 2>/dev/null || printf '%s' "$UPD_TEXT" | head -c 200)"
-    DEL_RPC=$(jq -nc --arg id "$existing_id" \
-      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_delete_item",arguments:{type:"library",id:$id,confirm:true}}}')
-    DEL_TEXT=$(call_tool "$DEL_RPC")
-    if [ "$(ok_of "$DEL_TEXT")" != "true" ]; then
-      # The existing copy is bundle-managed (a prior issue #209 bundle run delivered it) and the
-      # baseline library tools can neither edit nor delete it. That is fine for THIS step's only job:
-      # the library already EXISTS, so the app's #include resolves and the first deploy compiles. The
-      # later "Install bundle the HPM way" step deletes the old bundle (via hub_delete_bundle) and
-      # reinstalls it fresh, refreshing this library's content. Warn and move on -- do NOT create a
-      # second copy (a duplicate name+namespace makes #include bind ambiguously) and do NOT strand an
-      # innocent later PR on prior-run cruft.
-      echo "::warning::${tok} (id ${existing_id}) is bundle-managed; baseline tools can't reconcile it -- leaving it in place (the bundle-install step refreshes it). $(printf '%s' "$DEL_TEXT" | jq -c '{success,error}' 2>/dev/null || true)"
-      continue
-    fi
-    echo "Deleted stale ${tok}; will recreate from source."
-  else
-    echo "Creating library ${tok} from ${url} ..."
-  fi
-
+  url="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/${libfile#./}"
+  echo "Creating library ${tok} from ${url} ..."
   CRT_RPC=$(jq -nc --arg url "$url" \
     '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_create_library",arguments:{importUrl:$url,confirm:true}}}')
   CRT_TEXT=$(call_tool "$CRT_RPC")
-  if [ "$(ok_of "$CRT_TEXT")" != "true" ]; then
-    echo "::error::Library ${tok} create failed (transient relay error or a hub-side rejection): $(printf '%s' "$CRT_TEXT" | jq -c '{success,error,note,verified}' 2>/dev/null || printf '%s' "$CRT_TEXT" | head -c 400)"
+  if [ "$(ok_of "$CRT_TEXT")" = "true" ]; then
+    echo "Library ${tok} created."
+    continue
+  fi
+  # A create that times out on the relay may have landed on the hub -- re-verify before failing,
+  # rather than trusting the (possibly lost) response.
+  if lib_present_in "$(list_libraries_json)" "$ns" "$name"; then
+    echo "Library ${tok} present on re-check (create response was lost to a timeout)."
+  else
+    echo "::error::Library ${tok} create failed: $(printf '%s' "$CRT_TEXT" | jq -c '{success,error,note}' 2>/dev/null || printf '%s' "$CRT_TEXT" | head -c 300)"
     exit 1
   fi
-  echo "Library ${tok} OK."
 done
 
-echo "All ${#INCLUDES[@]} PR library(ies) installed/updated -- the app's #include directives will resolve on deploy."
+echo "All ${#INCLUDES[@]} PR library(ies) present -- the app's #include directives will resolve on deploy."

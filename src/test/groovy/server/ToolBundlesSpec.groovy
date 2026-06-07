@@ -345,6 +345,23 @@ class ToolBundlesSpec extends ToolSpecBase {
         result.directDownload == "/local/mcp_libraries.zip"
     }
 
+    def "hub_export_bundle reads a stream body via duck-typed .bytes (no InputStream class reference)"() {
+        given:
+        settingsMap.enableWrite = true
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([bundle(id: 4)]) }
+        // httpGet with textParser:false often hands back a stream, not a byte[]. The impl must read
+        // it WITHOUT naming java.io.InputStream (sandbox-blocked); this exercises that duck-typed path.
+        nextExportData = new ByteArrayInputStream([0x50, 0x4B, 0x03, 0x04, 0x05] as byte[])
+
+        when:
+        def result = script.toolExportBundle([bundleId: "4"])
+
+        then:
+        result.success == true
+        result.bytes == 5
+        savedFiles["mcp_libraries.zip"]?.length == 5
+    }
+
     def "hub_export_bundle honors saveAs and appends .zip"() {
         given:
         settingsMap.enableWrite = true

@@ -216,9 +216,29 @@ def toolExportBundle(args) {
         httpGet(params) { resp ->
             httpStatus = resp?.status
             def d = resp?.data
-            if (d instanceof byte[]) zipBytes = d
-            else if (d instanceof InputStream) zipBytes = d.bytes
-            else if (d != null) unexpectedBodyDesc = (d instanceof CharSequence) ? "likely an HTML error page" : "an unrecognized type"
+            if (d instanceof byte[]) {
+                zipBytes = d
+            } else if (d instanceof CharSequence) {
+                // A text body (e.g. an HTML error/login page) -- not a zip.
+                unexpectedBodyDesc = "likely an HTML error page"
+            } else if (d != null) {
+                // Binary body delivered as a stream (httpGet textParser:false). Read its bytes via
+                // the .bytes property WITHOUT naming java.io.InputStream -- referencing that class is
+                // blocked by the Hubitat sandbox (ClassExpression not allowed). Guard the result: a
+                // non-stream object (e.g. a parsed Map) resolves `.bytes` to a Groovy key lookup -> null
+                // (no exception), so only accept an actual non-empty byte[]; anything else is unknown.
+                def streamBytes = null
+                try {
+                    streamBytes = d.bytes
+                } catch (Exception streamErr) {
+                    streamBytes = null
+                }
+                if (streamBytes instanceof byte[] && streamBytes.length > 0) {
+                    zipBytes = streamBytes
+                } else {
+                    unexpectedBodyDesc = "an unrecognized type"
+                }
+            }
         }
     } catch (Exception e) {
         mcpLog("warn", "hub-admin", "hub_export_bundle fetch threw: ${e.toString()}")

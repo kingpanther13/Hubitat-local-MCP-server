@@ -165,6 +165,22 @@ RULES = [
         "message": "Bare '{ }' block right after 'case X:' is rejected by the hub's Groovy 2.4 parser (ambiguous closure vs open block) even though hubitat_ci's Groovy 3.0 accepts it -- extract the case body to a method or remove the braces",
         "severity": "error",
     },
+    {
+        # The Hubitat sandbox forbids referencing a java.io stream/reader/writer class as a
+        # ClassExpression (e.g. `instanceof InputStream`, a cast, or a typed declaration). The hub
+        # rejects the app at PARSE time: "Expression [ClassExpression] is not allowed:
+        # java.io.InputStream". Both hubitat_ci's Groovy 3.0 (real JVM) and a plain regex compile
+        # such code fine, so ONLY a real-hub deploy catches it otherwise -- which is exactly how an
+        # `instanceof InputStream` shipped this far. Duck-type instead: branch on byte[]/CharSequence
+        # and read remaining bodies via `.bytes` / `.text` (see _readRespText), never naming the
+        # class. Scans run on comment/string-stripped source, so doc mentions of these classes are
+        # unaffected. (This is a curated list of the realistic accidental classes; the real-hub e2e
+        # deploy remains the comprehensive compile gate for sandbox ClassExpressions not listed here.)
+        "id": "SANDBOX-015",
+        "pattern": r"\b(?:InputStream|OutputStream|FileInputStream|FileOutputStream|ByteArrayInputStream|ByteArrayOutputStream|DataInputStream|DataOutputStream|BufferedInputStream|BufferedOutputStream|BufferedReader|BufferedWriter|FileReader|FileWriter|InputStreamReader|OutputStreamWriter|RandomAccessFile|PushbackInputStream|PrintStream|PrintWriter)\b",
+        "message": "java.io stream/reader/writer class referenced as a ClassExpression -- blocked by the Hubitat sandbox at parse time ('ClassExpression not allowed'). Duck-type instead: branch on byte[]/CharSequence and read via .bytes/.text rather than naming the class (e.g. avoid `instanceof InputStream`).",
+        "severity": "error",
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -2429,6 +2445,36 @@ SELF_TEST_CASES = [
         "GroovyShell mentioned in a string literal is NOT flagged",
         'log.warn "do not use GroovyShell here"',
         [("SANDBOX-013", False)],
+    ),
+    (
+        "instanceof InputStream (the ClassExpression the hub rejected) is flagged",
+        "else if (d instanceof InputStream) zipBytes = d.bytes",
+        [("SANDBOX-015", True)],
+    ),
+    (
+        "a (BufferedReader) cast is flagged",
+        "def r = (BufferedReader) resp.data",
+        [("SANDBOX-015", True)],
+    ),
+    (
+        "a typed FileOutputStream declaration is flagged",
+        "FileOutputStream out = openIt()",
+        [("SANDBOX-015", True)],
+    ),
+    (
+        "duck-typed .bytes read (the safe replacement) is NOT flagged",
+        "zipBytes = d.bytes",
+        [("SANDBOX-015", False)],
+    ),
+    (
+        "instanceof CharSequence (sandbox-allowed) is NOT flagged",
+        "if (d instanceof CharSequence) unexpectedBodyDesc = 'text'",
+        [("SANDBOX-015", False)],
+    ),
+    (
+        "InputStream mentioned only in a comment is NOT flagged",
+        "return d.text  // Reader/InputStream -- may throw mid-stream",
+        [("SANDBOX-015", False)],
     ),
 ]
 
