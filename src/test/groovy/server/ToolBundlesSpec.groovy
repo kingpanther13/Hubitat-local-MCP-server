@@ -23,8 +23,10 @@ import support.ToolSpecBase
 class ToolBundlesSpec extends ToolSpecBase {
 
     // httpGet (used only by hub_export_bundle) dispatches through the appExecutor mock. One
-    // spec-scope stub reads these per-test fields; setup() resets them.
-    @Shared byte[] nextExportData = ([0x50, 0x4B, 0x03, 0x04] as byte[])
+    // spec-scope stub reads these per-test fields; setup() resets them. nextExportData is untyped
+    // so tests can hand back a non-binary body (a Map) to exercise the unexpected-type guard.
+    @Shared def nextExportData = ([0x50, 0x4B, 0x03, 0x04] as byte[])
+    @Shared int nextExportStatus = 200
     @Shared Throwable nextExportThrow = null
     @Shared Map exportCaptured = [:]
 
@@ -34,14 +36,17 @@ class ToolBundlesSpec extends ToolSpecBase {
             Map params = args[0] as Map
             Closure handler = args[1] as Closure
             exportCaptured.path = params?.path
-            handler.call([data: nextExportData])
+            exportCaptured.headers = params?.headers
+            handler.call([status: nextExportStatus, data: nextExportData])
         }
     }
 
     def setup() {
         nextExportData = ([0x50, 0x4B, 0x03, 0x04] as byte[])
+        nextExportStatus = 200
         nextExportThrow = null
         exportCaptured.clear()
+        savedFiles.clear()
         script.metaClass.getHubSecurityCookie = { -> null }
         script.metaClass.uploadHubFile = { String name, byte[] content -> savedFiles[name] = content }
     }
@@ -315,7 +320,7 @@ class ToolBundlesSpec extends ToolSpecBase {
         result.error.contains("returned no data")
     }
 
-    def "hub_export_bundle flags a non-zip body but still saves it"() {
+    def "hub_export_bundle fails on a non-zip body and does NOT save it"() {
         given:
         settingsMap.enableWrite = true
         hubGet.register('/hub2/userBundles') { params -> bundlesJson([bundle(id: 4)]) }
@@ -325,8 +330,26 @@ class ToolBundlesSpec extends ToolSpecBase {
         def result = script.toolExportBundle([bundleId: "4"])
 
         then:
-        result.success == true
-        result.note.contains("ZIP signature")
+        result.success == false
+        result.error.contains("PK signature")
+        savedFiles.isEmpty()   // a corrupt/non-zip body is never written to the File Manager
+    }
+
+    def "hub_export_bundle fails on a non-2xx response without saving"() {
+        given:
+        settingsMap.enableWrite = true
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([bundle(id: 4)]) }
+        nextExportStatus = 500
+        nextExportData = ("<html>500 error</html>".getBytes("UTF-8"))
+
+        when:
+        def result = script.toolExportBundle([bundleId: "4"])
+
+        then:
+        result.success == false
+        result.error.contains("HTTP 500")
+        result.status == 500
+        savedFiles.isEmpty()
     }
 
     @Unroll
@@ -348,5 +371,142 @@ class ToolBundlesSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
+    }
+
+    // -------- delete: degraded re-list cannot confirm removal --------
+
+    def "hub_delete_bundle returns unverified (success=false) when the post-delete list is degraded"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/userBundles') { params -> "<html>not json</html>" }  // degraded list
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            [status: 302, location: "/bundle/list", data: null]
+        }
+
+        when:
+        def result = script.toolDeleteBundle([bundleId: "4", confirm: true])
+
+        then:
+        result.success == false
+        result.verified == false
+        result.error.contains("could not be verified")
+    }
+
+    // -------- export: error branches + cookie + unexpected body --------
+
+    def "hub_export_bundle returns a fetch error when httpGet throws"() {
+        given:
+        settingsMap.enableWrite = true
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([bundle(id: 4)]) }
+        nextExportThrow = new RuntimeException("connection refused")
+
+        when:
+        def result = script.toolExportBundle([bundleId: "4"])
+
+        then:
+        result.success == false
+        result.error.contains("Failed to fetch")
+        savedFiles.isEmpty()
+    }
+
+    def "hub_export_bundle returns a save error when uploadHubFile throws"() {
+        given:
+        settingsMap.enableWrite = true
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([bundle(id: 4)]) }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> throw new RuntimeException("disk full") }
+
+        when:
+        def result = script.toolExportBundle([bundleId: "4"])
+
+        then:
+        result.success == false
+        result.error.contains("saving to File Manager")
+    }
+
+    def "hub_export_bundle attaches the Hub Security cookie when present"() {
+        given:
+        settingsMap.enableWrite = true
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([bundle(id: 4)]) }
+        script.metaClass.getHubSecurityCookie = { -> "HUBSESSION=abc" }
+
+        when:
+        def result = script.toolExportBundle([bundleId: "4"])
+
+        then:
+        result.success == true
+        exportCaptured.headers?.Cookie == "HUBSESSION=abc"
+    }
+
+    def "hub_export_bundle fails on an unexpected non-binary body without saving"() {
+        given:
+        settingsMap.enableWrite = true
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson([bundle(id: 4)]) }
+        nextExportData = [unexpected: "not bytes"]   // a Map -- not byte[]/InputStream
+
+        when:
+        def result = script.toolExportBundle([bundleId: "4"])
+
+        then:
+        result.success == false
+        result.error.contains("non-binary body")
+        savedFiles.isEmpty()
+    }
+
+    // -------- list: degraded source, no-id note, raw-content fallback, pagination --------
+
+    def "hub_list_bundles reports source=unavailable when the hub API throws"() {
+        given:
+        hubGet.register('/hub2/userBundles') { params -> throw new RuntimeException("boom") }
+
+        when:
+        def result = script.toolListBundles([:])
+
+        then:
+        result.bundles == []
+        result.source == "unavailable"
+        result.note.contains("Hub internal API unavailable")
+    }
+
+    def "hub_list_bundles notes bundles returned without an id"() {
+        given:
+        hubGet.register('/hub2/userBundles') { params ->
+            bundlesJson([[name: "noid", namespace: "mcp", "private": false, content: "apps [], drivers [], libraries []"]])
+        }
+
+        when:
+        def result = script.toolListBundles([:])
+
+        then:
+        result.source == "hub_api"
+        result.note?.contains("cannot be targeted")
+    }
+
+    def "hub_list_bundles surfaces raw content when the content shape is unrecognized"() {
+        given:
+        hubGet.register('/hub2/userBundles') { params ->
+            bundlesJson([[id: 9, name: "weird", namespace: "mcp", "private": false, content: "totally different shape"]])
+        }
+
+        when:
+        def result = script.toolListBundles([:])
+        def b = result.bundles[0]
+
+        then:
+        b.content == "totally different shape"
+        !b.containsKey("contains")
+    }
+
+    def "hub_list_bundles paginates when a cursor is supplied"() {
+        given:
+        def many = (1..60).collect { bundle(id: it, name: "b${it}") }
+        hubGet.register('/hub2/userBundles') { params -> bundlesJson(many) }
+
+        when:
+        def page1 = script.toolListBundles([cursor: ''])
+
+        then:
+        page1.total == 60
+        page1.count == 50
+        page1.nextCursor != null
     }
 }

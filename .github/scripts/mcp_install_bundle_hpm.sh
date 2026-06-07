@@ -62,22 +62,33 @@ tool_text() {
   printf '%s' "$resp" | jq -r '.result.content[0].text // empty' 2>/dev/null || true
 }
 
-# Echo the hub library id for (ns, name), or empty if not present.
-lib_id() {
-  local ns="$1" name="$2" text
+# Echo the hub's library list as a compact JSON array (the tool's `.libraries`), or "[]".
+# Fetch this ONCE per phase and look ids up locally with lib_id_in -- hub_list_libraries is a
+# cloud-relay round-trip, so re-listing per (ns,name) would multiply slow, flaky calls for no gain
+# (the list is stable within a phase; deleting one spec doesn't change another's lookup).
+list_libraries_json() {
+  local text
   text=$(tool_text '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}')
-  printf '%s' "$text" | jq -r --arg ns "$ns" --arg name "$name" \
-    '(.libraries // []) | map(select(.namespace==$ns and .name==$name)) | (.[0].id // empty)' 2>/dev/null || true
+  printf '%s' "$text" | jq -c '.libraries // []' 2>/dev/null || printf '[]'
+}
+
+# Echo the hub library id for (ns, name) from a pre-fetched library list (see list_libraries_json),
+# or empty if not present.
+lib_id_in() {
+  local libs_json="$1" ns="$2" name="$3"
+  printf '%s' "$libs_json" | jq -r --arg ns "$ns" --arg name "$name" \
+    'map(select(.namespace==$ns and .name==$name)) | (.[0].id // empty)' 2>/dev/null || true
 }
 
 # Safety net: re-create any bundle-managed library that's missing at exit (bundle install failed
 # after we deleted it), from the PR source, so restore-source can re-save the app without a
 # dangling #include.
 ensure_libs_present() {
-  local spec ns name _marker src url rpc
+  local spec ns name _marker src url rpc libs_json
+  libs_json="$(list_libraries_json)"
   for spec in "${LIB_SPECS[@]}"; do
     IFS='|' read -r ns name _marker src <<<"$spec"
-    if [ -z "$(lib_id "$ns" "$name")" ]; then
+    if [ -z "$(lib_id_in "$libs_json" "$ns" "$name")" ]; then
       url="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/${src}"
       echo "::warning::${ns}.${name} absent at exit -- re-creating from PR source to keep the hub safe for restore."
       rpc=$(jq -nc --arg url "$url" \
@@ -94,9 +105,10 @@ mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_cr
   || echo "::warning::hub_create_backup failed/timed out; relying on cached <24h backup timestamp"
 
 # --- 1) Remove the bootstrap user-libraries so the bundle is the SOLE deliverer (fresh-install mimic).
+PRE_LIBS_JSON="$(list_libraries_json)"  # one list for the whole deletion phase
 for spec in "${LIB_SPECS[@]}"; do
   IFS='|' read -r ns name _marker _src <<<"$spec"
-  existing_id="$(lib_id "$ns" "$name")"
+  existing_id="$(lib_id_in "$PRE_LIBS_JSON" "$ns" "$name")"
   if [ -n "$existing_id" ]; then
     echo "Deleting bootstrap library ${ns}.${name} (id ${existing_id}) so the bundle delivers it cleanly..."
     del_rpc=$(jq -nc --arg id "$existing_id" \
@@ -126,9 +138,10 @@ fi
 echo "Bundle installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint,message}' 2>/dev/null || true)"
 
 # --- 3) Verify the bundle delivered EACH library into Libraries Code (presence + marker content).
+POST_LIBS_JSON="$(list_libraries_json)"  # one list for the whole verification phase
 for spec in "${LIB_SPECS[@]}"; do
   IFS='|' read -r ns name marker _src <<<"$spec"
-  new_id="$(lib_id "$ns" "$name")"
+  new_id="$(lib_id_in "$POST_LIBS_JSON" "$ns" "$name")"
   if [ -z "$new_id" ]; then
     echo "::error::Bundle install reported success but ${ns}.${name} is not in the hub library list -- the zip did not deliver this library."
     exit 1

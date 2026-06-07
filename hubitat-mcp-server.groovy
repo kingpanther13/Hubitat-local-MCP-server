@@ -39,14 +39,16 @@ definition(
 
 // issue #209 modularization: room-management tool implementations live in the McpRoomsLib
 // library (libraries/mcp-rooms-lib.groovy), delivered to real hubs by the required HPM bundle
-// and installable on the fly via hub_update_package. The tool definitions, gateway entries, and
-// dispatch cases stay in this file; only the impl methods moved. First real module of the split.
+// and installable on the fly via hub_update_package. The gateway entries and dispatch cases stay
+// in this file; the tool definitions (_getAllToolDefinitions_partRooms) and impl methods live in
+// the library. First real module of the split.
 #include mcp.McpRoomsLib
 
 // issue #209 modularization: bundle-management tool implementations (hub_list_bundles /
 // hub_delete_bundle / hub_export_bundle) live in the McpBundlesLib library
-// (libraries/mcp-bundles-lib.groovy). New tools authored library-first -- their definitions,
-// gateway entries, and dispatch cases stay in this file; the impl methods live in the library.
+// (libraries/mcp-bundles-lib.groovy). New tools authored library-first -- their gateway entries
+// and dispatch cases stay in this file; the tool definitions (_getAllToolDefinitions_partBundles)
+// and impl methods live in the library.
 #include mcp.McpBundlesLib
 
 preferences {
@@ -14858,8 +14860,9 @@ def toolUpdateDevice(args) {
 // ==================== ROOM MANAGEMENT ====================
 // Tool implementations (toolListRooms / toolGetRoom / toolCreateRoom / toolDeleteRoom /
 // toolRenameRoom) live in the McpRoomsLib library (libraries/mcp-rooms-lib.groovy),
-// #include'd near the top of this file. The tool definitions, the hub_manage_rooms /
-// hub_read_rooms gateway entries, and the executeTool dispatch cases stay here in the app.
+// #include'd near the top of this file. The hub_manage_rooms / hub_read_rooms gateway entries
+// and the executeTool dispatch cases stay here in the app; the tool definitions
+// (_getAllToolDefinitions_partRooms) live alongside the impl in the library.
 
 // ==================== INSTALLED APPS & RULE MACHINE INTEGRATION ====================
 

@@ -143,6 +143,23 @@ jobs:
         if: steps.gate.outputs.available == 'true'
         run: pip install requests
 
+      - name: Verify committed bundle is fresh (e2e installs the committed zip)
+        if: steps.gate.outputs.available == 'true'
+        # e2e installs bundles/mcp-libraries.zip at THIS PR's head SHA, fetched from
+        # raw.githubusercontent (a faithful HPM mimic -- real users get the committed zip).
+        # Rebuild it from the checked-out library source and fail if it drifts, so e2e can never
+        # silently install a STALE bundle and "pass" against outdated library code. The .githooks
+        # pre-commit hook keeps this fresh automatically; sandbox-lint.yml enforces the same drift
+        # gate PR-wide -- this makes the e2e job self-guarding so the bundle it tests is the real one.
+        run: |
+          python tools/build-bundle.py
+          if ! git diff --quiet -- bundles/; then
+            echo "::error::Committed bundles/ is stale vs the library source at this commit -- e2e would install an OUTDATED bundle. Run 'python tools/build-bundle.py' and commit the updated zip (or enable the .githooks pre-commit hook: git config core.hooksPath .githooks)."
+            git --no-pager diff --stat -- bundles/
+            exit 1
+          fi
+          echo "Committed bundle matches the library source -- e2e will install the proper full bundle."
+
       - name: Mask access token in subsequent log lines
         if: steps.gate.outputs.available == 'true'
         # Secrets are auto-masked, but the URL parsing below can split the

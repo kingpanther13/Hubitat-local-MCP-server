@@ -52,16 +52,15 @@ That's it! HPM will install the parent app, the child app, and the required Groo
 
 ### Option B: Manual Installation
 
-The parent app `#include`s Groovy **libraries**, so you must install the libraries **first** — otherwise the parent app fails to compile when you Save it. Install in this order: libraries, then the parent app, then the child app.
+The parent app `#include`s Groovy **libraries**, which are all shipped together in one **bundle** (`mcp-libraries.zip`). Install that bundle **first** — otherwise the parent app fails to compile when you Save it. Install in this order: the libraries bundle, then the parent app, then the child app.
 
-**1. Install the Libraries:**
+**1. Install the libraries bundle:**
 
-For each URL below, go to the Hubitat web UI > **Libraries Code** > **+ New Library**, click **Import**, paste the URL, then **Import** > **OK** > **Save**:
+In the Hubitat web UI go to **Bundles** > **Import**, and import the bundle from this repo:
    ```
-   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/libraries/mcp-rooms-lib.groovy
-   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/libraries/mcp-smoke-test-lib.groovy
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/bundles/mcp-libraries.zip
    ```
-   (`mcp-smoke-test-lib` is a small internal canary the app currently `#include`s; it will be removed in a future release. Until then, both libraries are required for the app to compile. HPM installs them for you — this manual step only applies to Option B.)
+   If your hub's Bundle Manager only accepts a file upload, download that `.zip` first and upload it. Importing the bundle installs **every** library the app needs in one step (they appear under **Libraries Code**) — there's no need to add libraries individually. (HPM / Option A does this automatically.)
 
 **2. Install the Parent App (MCP Rule Server):**
 1. Go to Hubitat web UI > **Apps Code** > **+ New App**

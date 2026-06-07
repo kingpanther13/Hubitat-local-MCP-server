@@ -1670,7 +1670,12 @@ class TestRunner:
                 })
                 assert False, "hub_get_room on a non-existent room should have raised"
             except McpError as e:
-                assert "not found" in str(e).lower(), f"hub_get_room error was not a not-found: {e}"
+                # Both are valid "the room isn't there" errors: "not found" when other rooms
+                # exist, "no rooms configured" when the hub has none (the e2e hub often has zero).
+                msg = str(e).lower()
+                assert "not found" in msg or "no rooms configured" in msg, (
+                    f"hub_get_room error was not a not-found: {e}"
+                )
 
             # 2) confirm safety gate: hub_create_room without confirm -> refused, no room created.
             try:

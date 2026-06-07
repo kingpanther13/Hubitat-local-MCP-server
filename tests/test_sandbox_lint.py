@@ -569,3 +569,146 @@ def test_check_tool_guide_pointers_8space_indent_required(monkeypatch, tmp_path)
     broken = [f for f in findings if f["rule"] == "tool-guide-broken-pointer"]
     assert broken, f"expected the nested_fake_key pointer to flag as broken, got: {findings}"
     assert "nested_fake_key" in broken[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# check_include_library_lockstep — #include <-> library file <-> build-bundle
+# LIBS <-> getPackageLibraryRegistry() lockstep (issue #209)
+# ---------------------------------------------------------------------------
+# This check is the safety net that keeps the modularization shippable: every
+# `#include mcp.X` in the app must have (1) a libraries/*.groovy declaring it,
+# (2) a tools/build-bundle.py LIBS entry (so the HPM bundle delivers it), and
+# (3) a getPackageLibraryRegistry() entry (so hub_update_package doesn't abort).
+# A gap means the app won't compile on a user's hub. These hermetic tmp_path
+# corpora exercise the clean path and each of the three failure branches via
+# the REAL check, so a regex typo or path bug can't silently no-op in CI.
+
+def _write_lockstep_repo(tmp_path, *, includes, libraries, libs, registry):
+    """Lay down the four lockstep sources under tmp_path and point REPO_ROOT at it.
+
+    includes  -- list of (ns, name) -> one `#include ns.name` line in the app
+    libraries -- list of (filename, ns, name) -> one libraries/<filename> with a
+                 matching library(name:.., namespace:..) declaration
+    libs      -- list of names -> one `{NAMESPACE}.<name>.groovy` LIBS dest in
+                 tools/build-bundle.py (the regex the check scans for)
+    registry  -- list of "ns.Name" tokens -> keys in getPackageLibraryRegistry()
+    """
+    include_lines = "\n".join(f"#include {ns}.{name}" for ns, name in includes)
+    registry_entries = "\n".join(f'        "{key}": "url{i}",'
+                                 for i, key in enumerate(registry))
+    server = (
+        f"{include_lines}\n\n"
+        "def getPackageLibraryRegistry() {\n"
+        "    return [\n"
+        f"{registry_entries}\n"
+        "    ]\n"
+        "}\n"
+    )
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(server)
+
+    lib_dir = tmp_path / "libraries"
+    lib_dir.mkdir()
+    for filename, ns, name in libraries:
+        (lib_dir / filename).write_text(
+            f'library(name: "{name}", namespace: "{ns}", '
+            f'author: "x", description: "y")\n'
+        )
+
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir()
+    libs_block = "\n".join(f'        "dest": f"{{NAMESPACE}}.{name}.groovy",'
+                           for name in libs)
+    (tools_dir / "build-bundle.py").write_text(
+        'NAMESPACE = "mcp"\nLIBS = [\n' + libs_block + "\n]\n"
+    )
+
+
+# A complete, in-lockstep quartet for one library.
+_LOCKSTEP_OK = {
+    "includes": [("mcp", "McpFooLib")],
+    "libraries": [("mcp-foo-lib.groovy", "mcp", "McpFooLib")],
+    "libs": ["McpFooLib"],
+    "registry": ["mcp.McpFooLib"],
+}
+
+
+def test_lockstep_complete_quartet_clean(monkeypatch, tmp_path):
+    """All four sources agree -> zero findings."""
+    _write_lockstep_repo(tmp_path, **_LOCKSTEP_OK)
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    assert sl.check_include_library_lockstep() == []
+
+
+def test_lockstep_missing_library_file_flagged(monkeypatch, tmp_path):
+    """#include with no libraries/*.groovy declaring it -> a single
+    'no matching libraries' finding, and the downstream LIBS/registry checks
+    are skipped (the `continue`) so the one root cause isn't triple-reported."""
+    _write_lockstep_repo(tmp_path, **{**_LOCKSTEP_OK, "libraries": []})
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    findings = sl.check_include_library_lockstep()
+    assert len(findings) == 1, f"expected exactly one finding, got: {findings}"
+    assert findings[0]["rule"] == "INCLUDE_LOCKSTEP"
+    assert "no matching libraries" in findings[0]["message"]
+    assert "add the library file" in findings[0]["message"]
+
+
+def test_lockstep_missing_libs_entry_flagged(monkeypatch, tmp_path):
+    """Library present but absent from build-bundle.py LIBS -> the bundle won't
+    deliver it; flagged with the LIBS-specific message."""
+    _write_lockstep_repo(tmp_path, **{**_LOCKSTEP_OK, "libs": []})
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    findings = sl.check_include_library_lockstep()
+    libs_findings = [f for f in findings if "tools/build-bundle.py LIBS" in f["message"]]
+    assert libs_findings, f"expected a LIBS finding, got: {findings}"
+    assert libs_findings[0]["rule"] == "INCLUDE_LOCKSTEP"
+
+
+def test_lockstep_missing_registry_entry_flagged(monkeypatch, tmp_path):
+    """Library present but absent from getPackageLibraryRegistry() ->
+    hub_update_package would abort; flagged with the registry-specific message."""
+    _write_lockstep_repo(tmp_path, **{**_LOCKSTEP_OK, "registry": []})
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    findings = sl.check_include_library_lockstep()
+    reg_findings = [f for f in findings if "getPackageLibraryRegistry()" in f["message"]]
+    assert reg_findings, f"expected a registry finding, got: {findings}"
+    assert reg_findings[0]["rule"] == "INCLUDE_LOCKSTEP"
+
+
+def test_lockstep_both_legs_missing_reports_both(monkeypatch, tmp_path):
+    """When the library file IS present but BOTH the LIBS and registry legs are
+    missing, the check reports both (it only short-circuits on a missing file)."""
+    _write_lockstep_repo(tmp_path, **{**_LOCKSTEP_OK, "libs": [], "registry": []})
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    findings = sl.check_include_library_lockstep()
+    msgs = " ".join(f["message"] for f in findings)
+    assert "tools/build-bundle.py LIBS" in msgs
+    assert "getPackageLibraryRegistry()" in msgs
+    assert len(findings) == 2, f"expected exactly two findings, got: {findings}"
+
+
+def test_lockstep_no_includes_is_clean(monkeypatch, tmp_path):
+    """An app with no #include lines -> early return, zero findings (even with
+    no libraries/ dir or build-bundle.py)."""
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(
+        "def getPackageLibraryRegistry() {\n    return [:]\n}\n"
+    )
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    assert sl.check_include_library_lockstep() == []
+
+
+def test_lockstep_missing_server_file_is_clean(monkeypatch, tmp_path):
+    """No hubitat-mcp-server.groovy at all -> early return, zero findings (the
+    file-scan check reports the missing file; this one stays quiet)."""
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    assert sl.check_include_library_lockstep() == []
+
+
+def test_lockstep_real_source_clean():
+    """The real shipped repo must satisfy the lockstep in all three legs. Guards
+    against a future PR adding an #include without the library file / LIBS entry /
+    registry entry (the exact 'app won't compile on a user's hub' regression)."""
+    findings = sl.check_include_library_lockstep()
+    assert findings == [], (
+        "INCLUDE_LOCKSTEP violation(s) in the shipped source:\n  "
+        + "\n  ".join(f["message"] for f in findings)
+    )

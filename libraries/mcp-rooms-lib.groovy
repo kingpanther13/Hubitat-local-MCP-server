@@ -1,11 +1,11 @@
-library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", description: "Room management tool implementations for the MCP Rule Server (hub_list_rooms/hub_get_room/hub_create_room/hub_delete_room/hub_update_room); #include'd by the main app. Tool definitions, gateway entries, and dispatch stay in the app.")
+library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", description: "Room management tool implementations for the MCP Rule Server (hub_list_rooms/hub_get_room/hub_create_room/hub_delete_room/hub_update_room); #include'd by the main app. Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.")
 
 def toolListRooms(args = null) {
     def rooms = getRooms()
     if (!rooms) {
         return [rooms: [], count: 0, message: "No rooms configured on this hub."]
     }
-    def roomList = rooms.collect { room ->
+    def roomList = rooms.findAll { it != null }.collect { room ->
         [
             id: room.id?.toString(),
             name: room.name,
@@ -30,11 +30,11 @@ def toolGetRoom(String roomIdentifier) {
     if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
 
     // Find room by ID or name (case-insensitive)
-    def room = rooms.find { it.id?.toString() == roomIdentifier } ?:
-               rooms.find { it.name?.toLowerCase() == roomIdentifier.toLowerCase() }
+    def room = rooms.find { it?.id?.toString() == roomIdentifier } ?:
+               rooms.find { it?.name?.toLowerCase() == roomIdentifier.toLowerCase() }
 
     if (!room) {
-        def available = rooms.collect { it.name }.sort()
+        def available = rooms.collect { it?.name }.sort()
         throw new IllegalArgumentException("Room '${roomIdentifier}' not found. Available rooms: ${available.join(', ')}")
     }
 
@@ -46,7 +46,7 @@ def toolGetRoom(String roomIdentifier) {
     childDevs.each { cd -> if (!selectedIds.contains(cd.id.toString())) { allDevices.add(cd) } }
 
     room.deviceIds?.each { devId ->
-        def device = allDevices?.find { it.id?.toString() == devId.toString() }
+        def device = allDevices?.find { it?.id?.toString() == devId.toString() }
         if (device) {
             def devInfo = [
                 id: device.id.toString(),
@@ -59,7 +59,9 @@ def toolGetRoom(String roomIdentifier) {
                 device.currentStates?.each { st ->
                     states[st.name] = st.value
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                mcpLog("debug", "room", "hub_get_room: currentStates read failed for device ${device.id}: ${e.message}")
+            }
             if (states) devInfo.currentStates = states
             devices << devInfo
         } else {
@@ -85,7 +87,7 @@ def toolCreateRoom(args) {
 
     // Check for duplicate name
     def rooms = getRooms()
-    if (rooms?.find { it.name?.toLowerCase() == roomName.toLowerCase() }) {
+    if (rooms?.find { it?.name?.toLowerCase() == roomName.toLowerCase() }) {
         throw new IllegalArgumentException("A room named '${roomName}' already exists")
     }
 
@@ -111,7 +113,7 @@ def toolCreateRoom(args) {
 
     // Verify creation (case-insensitive to handle any normalization)
     def updatedRooms = getRooms()
-    def newRoom = updatedRooms?.find { it.name?.toLowerCase() == roomName.toLowerCase() }
+    def newRoom = updatedRooms?.find { it?.name?.toLowerCase() == roomName.toLowerCase() }
     if (!newRoom) {
         throw new RuntimeException("Room creation endpoint returned success but room '${roomName}' not found in rooms list")
     }
@@ -133,10 +135,10 @@ def toolDeleteRoom(args) {
     def rooms = getRooms()
     if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
 
-    def room = rooms.find { it.id?.toString() == args.room.trim() } ?:
-               rooms.find { it.name?.toLowerCase() == args.room.trim().toLowerCase() }
+    def room = rooms.find { it?.id?.toString() == args.room.trim() } ?:
+               rooms.find { it?.name?.toLowerCase() == args.room.trim().toLowerCase() }
     if (!room) {
-        def available = rooms.collect { it.name }.sort()
+        def available = rooms.collect { it?.name }.sort()
         throw new IllegalArgumentException("Room '${args.room}' not found. Available rooms: ${available.join(', ')}")
     }
 
@@ -180,7 +182,7 @@ def toolDeleteRoom(args) {
 
     // Verify deletion
     def updatedRooms = getRooms()
-    def stillExists = updatedRooms?.find { it.id?.toString() == roomId.toString() }
+    def stillExists = updatedRooms?.find { it?.id?.toString() == roomId.toString() }
     if (stillExists) {
         throw new RuntimeException("Delete endpoint returned success but room '${roomName}' still exists")
     }
@@ -209,15 +211,15 @@ def toolRenameRoom(args) {
     def rooms = getRooms()
     if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
 
-    def room = rooms.find { it.id?.toString() == args.room.trim() } ?:
-               rooms.find { it.name?.toLowerCase() == args.room.trim().toLowerCase() }
+    def room = rooms.find { it?.id?.toString() == args.room.trim() } ?:
+               rooms.find { it?.name?.toLowerCase() == args.room.trim().toLowerCase() }
     if (!room) {
-        def available = rooms.collect { it.name }.sort()
+        def available = rooms.collect { it?.name }.sort()
         throw new IllegalArgumentException("Room '${args.room}' not found. Available rooms: ${available.join(', ')}")
     }
 
     // Check for name conflict
-    if (rooms.find { it.name?.toLowerCase() == newName.toLowerCase() && it.id != room.id }) {
+    if (rooms.find { it?.name?.toLowerCase() == newName.toLowerCase() && it.id != room.id }) {
         throw new IllegalArgumentException("A room named '${newName}' already exists")
     }
 
@@ -244,7 +246,7 @@ def toolRenameRoom(args) {
 
     // Verify rename
     def updatedRooms = getRooms()
-    def updatedRoom = updatedRooms?.find { it.id?.toString() == roomId.toString() }
+    def updatedRoom = updatedRooms?.find { it?.id?.toString() == roomId.toString() }
     if (!updatedRoom || updatedRoom.name != newName) {
         throw new RuntimeException("Rename endpoint returned success but room name did not change")
     }

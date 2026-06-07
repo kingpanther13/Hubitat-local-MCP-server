@@ -171,13 +171,13 @@ PR #202 (merged 2026-05-19) established the annotation-hints baseline on every s
 
 The server is being split out of the single `hubitat-mcp-server.groovy` monolith into Groovy `#include` libraries under `libraries/`. `#include` is a **textual paste**: the library body is inlined into the app's compiled class at parse time (no method boundary, no separate runtime), so library methods, `state`/`atomicState`, and string-literal `subscribe`/`schedule` handlers all resolve as if written in the app. Read this before adding or moving code into a library.
 
-### The impl-only rule (load-bearing)
+### What moves to the library vs stays in the app
 
-When you extract a tool group, **only the implementation methods (and their private helpers) move to the library.** The tool **definitions** (the `getToolDefinitions()` entries), the **gateway config** entries in `getGatewayConfig()`, the `executeTool()` **dispatch cases**, and the `getReadOnlyToolNames()` membership all **stay in `hubitat-mcp-server.groovy`**. Reason: `tests/sandbox_lint.py`'s TOOL_COUNT parser reads tool definitions and gateway config from the main file and does NOT resolve `#include`s — move a definition into a library and the count check breaks. Keeping defs in main also means the Spock specs pass unchanged (the harness re-inlines the impl). Shared helpers (`hubInternalGet`/`hubInternalGetRaw`/the `hubInternal*` family, `mcpLog`, `requireDestructiveConfirm`, `_paginateList`, `formatTimestamp`, `getHubSecurityCookie`, `findDevice`, etc.) also stay in main; libraries call them (resolved after the textual inline). Do NOT cross-`#include` one library from another.
+When you extract a tool group, **both** its tool **definitions** and its **implementation methods** (plus any domain-private helpers) move into the library. The definitions go in a `_getAllToolDefinitions_part<Name>()` chunk method that `getAllToolDefinitions()` in the main app concatenates. What **stays in `hubitat-mcp-server.groovy`**: the **gateway config** entries in `getGatewayConfig()` (gateway membership is cross-domain), the `executeTool()` **dispatch cases** (one line per tool), and the `getReadOnlyToolNames()` membership. So the per-tool split is: **library** = definition + implementation (+ domain-private helpers); **main** = gateway membership + the one-line dispatch case + readonly membership.
 
-New tools MAY be authored **library-first**: put their impls in a library from day one, with their definition + gateway entry + dispatch case in the main file (the bundle-management tools — `McpBundlesLib` — were built this way).
+`tests/sandbox_lint.py` resolves the `#include`'d library modules before its TOOL_COUNT / read-write-split checks (so library-contributed defs are counted), and the Spock harness re-inlines the library so its specs compile unchanged. Shared **generic** helpers (`hubInternalGet`/`hubInternalGetRaw`/the `hubInternal*` family, `mcpLog`, `requireDestructiveConfirm`, `_paginateList`, `formatTimestamp`, `getHubSecurityCookie`, `findDevice`, etc.) stay in main; libraries call them (resolved after the textual inline). Do NOT cross-`#include` one library from another.
 
-The **definitions** move into the library too (next to the impl) via a `_getAllToolDefinitions_part<Name>()` chunk method that `getAllToolDefinitions()` in the main app concatenates. So the per-tool split is: **library** = definition + implementation (+ any domain-private helper); **main** = gateway membership (which gateway lists the tool) + the one-line `executeTool` dispatch case + `getReadOnlyToolNames()` membership. `sandbox_lint`'s count parser resolves the library modules, so the canonical count includes library-contributed defs.
+New tools MAY be authored **library-first**: definition + impl in a library from day one, with only the gateway entry + dispatch case added to the main file (the bundle-management tools — `McpBundlesLib` — were built this way).
 
 ### Library granularity + helper placement
 
@@ -186,7 +186,7 @@ The **definitions** move into the library too (next to the impl) via a `_getAllT
 
 ### HPM delivery — bundles, not `libraries[]`
 
-Libraries are delivered to real hubs via an HPM **bundle** (a `.zip`), declared in `packageManifest.json` `bundles[]`. Do NOT use the manifest `libraries[]` array — HPM silently drops it on update (verified upstream). One bundle, `bundles/mcp-libraries.zip`, carries every library; it is built deterministically by `tools/build-bundle.py` and committed. The `sandbox-lint` workflow re-runs the builder and fails if `bundles/` drifts, so always rebuild + commit the zip after touching any `libraries/*.groovy`.
+Libraries are delivered to real hubs via an HPM **bundle** (a `.zip`), declared in `packageManifest.json` `bundles[]`. Do NOT use the manifest `libraries[]` array — HPM silently drops it on update (verified upstream). One bundle, `bundles/mcp-libraries.zip`, carries every library; it is built deterministically by `tools/build-bundle.py` and committed. The committed zip is the artifact real users (and the CI e2e job) install, so it must never drift from `libraries/*.groovy`. Three things keep it honest: the `.githooks/pre-commit` hook **auto-rebuilds and stages** the zip whenever a library is committed (enable once per clone with `git config core.hooksPath .githooks`); the `sandbox-lint` workflow re-runs the builder and fails if `bundles/` drifts; and the `hub-e2e` job re-verifies freshness before install so e2e always tests the real bundle. With the hook on, the rebuild is automatic — you only rebuild by hand (`python tools/build-bundle.py`) if you skip the hook.
 
 ### BP20 — library file hygiene (avoids a Hubitat parser `Internal error`)
 
@@ -201,9 +201,9 @@ Libraries are delivered to real hubs via an HPM **bundle** (a `.zip`), declared 
 2. Add `#include mcp.<Name>` near the top of `hubitat-mcp-server.groovy`.
 3. Register it in `getPackageLibraryRegistry()` (the `hub_update_package` dev-deploy leg).
 4. Add it to `LIBS` in `tools/build-bundle.py`.
-5. Run `python tools/build-bundle.py` and **commit** the regenerated `bundles/*.zip` (the drift gate enforces this).
+5. Rebuild + **commit** `bundles/*.zip`. With the `.githooks` pre-commit hook enabled (`git config core.hooksPath .githooks`) this is automatic on commit; otherwise run `python tools/build-bundle.py` yourself. The `sandbox-lint` drift gate enforces it either way.
 6. The Spock harness auto-resolves `#include` via `src/test/groovy/support/IncludeResolver.groovy` — no harness edit needed. Add an `IncludeResolverSpec` case asserting the real library resolves.
-7. Keep tool defs/gateway/dispatch/readonly-names in main (impl-only rule above).
+7. Keep the gateway membership, the `executeTool` dispatch case, and `getReadOnlyToolNames()` entry in main; the tool **definitions** move to the library next to the impl (see "What moves to the library vs stays in the app" above). `check_include_library_lockstep` (sandbox_lint) verifies the `#include` ⇄ library file ⇄ `LIBS` ⇄ registry quartet stays in sync.
 
 Steps 3 + 4 must stay in lockstep (an unmapped `#include` aborts `hub_update_package`; a missing `LIBS` entry ships a stale bundle). When updating a library on a hub by hand during dev, **update the existing library, don't install a second copy** — a duplicate name+namespace creates a second library at a new id and `#include` binds to only one (HPM's normal install flow avoids this).
 

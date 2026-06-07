@@ -1,4 +1,4 @@
-library(name: "McpBundlesLib", namespace: "mcp", author: "kingpanther13", description: "Bundle management tool implementations for the MCP Rule Server (hub_list_bundles/hub_delete_bundle/hub_export_bundle); included by the main app. Tool definitions, gateway entries, and dispatch stay in the app.")
+library(name: "McpBundlesLib", namespace: "mcp", author: "kingpanther13", description: "Bundle management tool implementations for the MCP Rule Server (hub_list_bundles/hub_delete_bundle/hub_export_bundle); included by the main app. Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.")
 
 private Map _parseBundleContent(String content) {
     // Parse the hub's bundle content summary ("apps [A, B], drivers [], libraries [L]") into
@@ -35,7 +35,9 @@ def toolListBundles(args) {
             try {
                 def parsed = new groovy.json.JsonSlurper().parseText(responseText)
                 if (parsed instanceof List) {
-                    result.bundles = parsed.collect { b ->
+                    // Defensive: skip any null / non-map element the hub API might return so a
+                    // single malformed row can't NPE the whole listing.
+                    result.bundles = parsed.findAll { it instanceof Map }.collect { b ->
                         def entry = [
                             id: b.id?.toString(),
                             name: b.name,
@@ -112,6 +114,9 @@ def toolDeleteBundle(args) {
     if (before.source == "hub_api" && !target) {
         return [success: false, error: "No bundle with id ${bundleId} found on the hub. Use hub_list_bundles to see installed bundles.", bundleId: bundleId]
     }
+    if (before.source != "hub_api") {
+        mcpLog("warn", "hub-admin", "hub_delete_bundle: could not validate bundle ${bundleId} against the live list (source=${before.source}); proceeding on the supplied id")
+    }
     def bundleName = target?.name
     mcpLog("info", "hub-admin", "Deleting bundle ${bundleId} (${bundleName ?: 'name unknown'})")
 
@@ -125,8 +130,19 @@ def toolDeleteBundle(args) {
 
     // Authoritative check: re-list and confirm the id is gone (the 302 alone isn't proof).
     def after = toolListBundles([:])
-    def stillThere = (after.source == "hub_api") ? (after.bundles ?: []).any { it.id?.toString() == bundleId } : null
-    if (stillThere == true) {
+    if (after.source != "hub_api") {
+        // Can't confirm removal from a degraded list -- do NOT report success for a destructive op.
+        return [
+            success: false,
+            verified: false,
+            error: "Delete request was sent for bundle ${bundleId}${bundleName ? " ('${bundleName}')" : ''}, but removal could not be verified -- the bundle list API returned a degraded shape (${after.source}). Re-run hub_list_bundles to check whether it was removed.",
+            bundleId: bundleId,
+            status: resp?.status,
+            lastBackup: formatTimestamp(state.lastBackupTimestamp)
+        ]
+    }
+    def stillThere = (after.bundles ?: []).any { it.id?.toString() == bundleId }
+    if (stillThere) {
         return [success: false, error: "Bundle ${bundleId}${bundleName ? " ('${bundleName}')" : ''} is still present after the delete request -- the hub may have refused it (status=${resp?.status}).", bundleId: bundleId, status: resp?.status, lastBackup: formatTimestamp(state.lastBackupTimestamp)]
     }
 
@@ -135,7 +151,7 @@ def toolDeleteBundle(args) {
         message: "Bundle ${bundleId}${bundleName ? " ('${bundleName}')" : ''} deleted. This removes the bundle container; libraries/apps/drivers it delivered may remain in Code -- verify with hub_list_libraries / hub_list_apps and delete separately if needed.",
         bundleId: bundleId,
         bundleName: bundleName,
-        verified: (stillThere == false),
+        verified: true,
         lastBackup: formatTimestamp(state.lastBackupTimestamp)
     ]
 }
@@ -166,6 +182,8 @@ def toolExportBundle(args) {
     if (!fileName.toLowerCase().endsWith(".zip")) fileName += ".zip"
 
     def zipBytes = null
+    def httpStatus = null
+    def unexpectedBodyDesc = null
     try {
         def cookie = getHubSecurityCookie()
         def params = [
@@ -177,19 +195,31 @@ def toolExportBundle(args) {
         ]
         if (cookie) params.headers = [Cookie: cookie]
         httpGet(params) { resp ->
+            httpStatus = resp?.status
             def d = resp?.data
             if (d instanceof byte[]) zipBytes = d
-            else if (d != null) zipBytes = d.getBytes()
+            else if (d instanceof InputStream) zipBytes = d.bytes
+            else if (d != null) unexpectedBodyDesc = (d instanceof CharSequence) ? "likely an HTML error page" : "an unrecognized type"
         }
     } catch (Exception e) {
         mcpLog("warn", "hub-admin", "hub_export_bundle fetch threw: ${e.toString()}")
         return [success: false, error: "Failed to fetch bundle ${bundleId} export zip: ${e.message ?: e.toString()}", bundleId: bundleId]
     }
+    // A non-2xx response (e.g. a 404/500 error PAGE) or a body that doesn't start with the ZIP
+    // signature ('PK') means the hub did not return a real bundle zip. Fail WITHOUT saving rather
+    // than writing a corrupt .zip and reporting success.
+    if (httpStatus != null && !(httpStatus >= 200 && httpStatus < 300)) {
+        return [success: false, error: "Bundle ${bundleId} export returned HTTP ${httpStatus} -- not a bundle zip. Nothing saved.", bundleId: bundleId, status: httpStatus]
+    }
+    if (unexpectedBodyDesc) {
+        return [success: false, error: "Bundle ${bundleId} export returned a non-binary body (${unexpectedBodyDesc}); nothing saved -- a binary zip was expected.", bundleId: bundleId]
+    }
     if (!zipBytes || zipBytes.length == 0) {
         return [success: false, error: "Bundle ${bundleId} export returned no data (the bundle id may not exist on the hub).", bundleId: bundleId]
     }
-    // A zip starts with the 'PK' signature (0x50 0x4B); flag a non-zip body rather than fail.
-    boolean looksZip = zipBytes.length >= 2 && zipBytes[0] == (byte) 0x50 && zipBytes[1] == (byte) 0x4B
+    if (!(zipBytes.length >= 2 && zipBytes[0] == (byte) 0x50 && zipBytes[1] == (byte) 0x4B)) {
+        return [success: false, error: "Bundle ${bundleId} export did not return a ZIP (no PK signature) -- the hub likely returned an error page. Nothing saved.", bundleId: bundleId]
+    }
     try {
         uploadHubFile(fileName, zipBytes)
     } catch (Exception e) {
@@ -197,7 +227,7 @@ def toolExportBundle(args) {
     }
 
     mcpLog("info", "hub-admin", "Exported bundle ${bundleId} to File Manager as ${fileName} (${zipBytes.length} bytes)")
-    def out = [
+    return [
         success: true,
         message: "Bundle ${bundleId}${target?.name ? " ('${target.name}')" : ''} exported to the File Manager as ${fileName} (${zipBytes.length} bytes). Download at /local/${fileName}.",
         bundleId: bundleId,
@@ -205,8 +235,6 @@ def toolExportBundle(args) {
         bytes: zipBytes.length,
         directDownload: "/local/${fileName}"
     ]
-    if (!looksZip) out.note = "Saved, but the response did not start with the ZIP signature (PK) -- verify the file is a valid bundle zip."
-    return out
 }
 
 def toolInstallBundle(args) {
@@ -227,6 +255,7 @@ def toolInstallBundle(args) {
 
     String fw = null
     try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception ignored) { }
+    if (!fw) mcpLog("warn", "hub-admin", "hub_install_bundle: could not read firmware version; defaulting bundle endpoint to modern (/bundle2/uploadZipFromUrl)")
     // bundle2 endpoint exists on firmware >= 2.3.8.108 (matches HPM's gate). Compare
     // segments numerically, NOT lexically -- string compare breaks once a segment
     // reaches two digits (e.g. "2.3.10.0" sorts BELOW "2.3.8.0" as strings, which would
