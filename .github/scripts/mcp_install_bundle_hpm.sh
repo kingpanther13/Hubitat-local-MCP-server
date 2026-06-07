@@ -104,7 +104,32 @@ echo "Triggering hub backup (best-effort)..."
 mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true}}}' >/dev/null \
   || echo "::warning::hub_create_backup failed/timed out; relying on cached <24h backup timestamp"
 
-# --- 1) Remove the bootstrap user-libraries so the bundle is the SOLE deliverer (fresh-install mimic).
+# --- 0) Remove any pre-existing mcp libraries bundle FIRST so its bundle-managed libraries don't
+# linger. A prior issue #209 run installs this bundle and leaves it; re-installing OVER a
+# bundle-managed copy can strand the bootstrap (baseline tools can't edit a bundle-managed library)
+# and risks a duplicate library that #include would bind ambiguously. The PR app is already deployed
+# by now, so the new hub_list_bundles / hub_delete_bundle tools exist. Deleting the bundle removes
+# every library it manages at once; the install below recreates them. Best-effort + non-fatal -- the
+# install overwrites regardless, but a clean delete-first makes the fresh-install mimic idempotent
+# across runs. (Covers the old "mcp_smoke_test" name too, for the rename transition.)
+delete_bundle_named() {
+  local want="$1" list id rpc text
+  list=$(tool_text '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_bundles","arguments":{}}}')
+  id=$(printf '%s' "$list" | jq -r --arg n "$want" \
+    '(.bundles // []) | map(select(.name==$n)) | (.[0].id // empty)' 2>/dev/null || true)
+  [ -n "$id" ] || return 0
+  echo "Deleting pre-existing bundle '${want}' (id ${id}) for a clean fresh-install ..."
+  rpc=$(jq -nc --arg id "$id" \
+    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_delete_bundle",arguments:{bundleId:$id,confirm:true}}}')
+  text=$(tool_text "$rpc")
+  if [ "$(printf '%s' "$text" | jq -r '.success // false' 2>/dev/null || echo false)" != "true" ]; then
+    echo "::warning::Could not delete pre-existing bundle '${want}' (continuing; install will overwrite): $(printf '%s' "$text" | jq -c '{success,error}' 2>/dev/null || printf '%s' "$text" | head -c 200)"
+  fi
+}
+delete_bundle_named "mcp_libraries"
+delete_bundle_named "mcp_smoke_test"
+
+# --- 1) Remove any leftover bootstrap user-libraries so the bundle is the SOLE deliverer.
 PRE_LIBS_JSON="$(list_libraries_json)"  # one list for the whole deletion phase
 for spec in "${LIB_SPECS[@]}"; do
   IFS='|' read -r ns name _marker _src <<<"$spec"

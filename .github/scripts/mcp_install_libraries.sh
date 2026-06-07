@@ -119,8 +119,15 @@ for tok in "${INCLUDES[@]}"; do
       '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_delete_item",arguments:{type:"library",id:$id,confirm:true}}}')
     DEL_TEXT=$(call_tool "$DEL_RPC")
     if [ "$(ok_of "$DEL_TEXT")" != "true" ]; then
-      echo "::error::Could not update OR delete existing library ${tok} (id ${existing_id}) -- it appears locked (e.g. bundle-managed) and this script cannot reconcile it. Remove it manually on the hub (FOR DEVELOPERS > Libraries code, or the bundle in Bundle Manager): $(printf '%s' "$DEL_TEXT" | jq -c '{success,error}' 2>/dev/null || printf '%s' "$DEL_TEXT" | head -c 300)"
-      exit 1
+      # The existing copy is bundle-managed (a prior issue #209 bundle run delivered it) and the
+      # baseline library tools can neither edit nor delete it. That is fine for THIS step's only job:
+      # the library already EXISTS, so the app's #include resolves and the first deploy compiles. The
+      # later "Install bundle the HPM way" step deletes the old bundle (via hub_delete_bundle) and
+      # reinstalls it fresh, refreshing this library's content. Warn and move on -- do NOT create a
+      # second copy (a duplicate name+namespace makes #include bind ambiguously) and do NOT strand an
+      # innocent later PR on prior-run cruft.
+      echo "::warning::${tok} (id ${existing_id}) is bundle-managed; baseline tools can't reconcile it -- leaving it in place (the bundle-install step refreshes it). $(printf '%s' "$DEL_TEXT" | jq -c '{success,error}' 2>/dev/null || true)"
+      continue
     fi
     echo "Deleted stale ${tok}; will recreate from source."
   else
