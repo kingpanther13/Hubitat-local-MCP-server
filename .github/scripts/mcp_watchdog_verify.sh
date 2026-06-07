@@ -92,7 +92,9 @@ if [ -z "$CLASS_ID" ] || [ "$CLASS_ID" = "null" ]; then
 fi
 echo "Resolved MCP server class ID: $CLASS_ID"
 
-RESTORE_FILE="mcp-backup-app-${CLASS_ID}.groovy"
+# hub_get_source writes mcp-source-app-<CLASS_ID>.groovy = current full source (reliable hub-side
+# copy, no 1.6MB cloud transfer), unlike the 1-hour-cached mcp-backup-app-*. Refreshed in section 3.
+RESTORE_FILE="mcp-source-app-${CLASS_ID}.groovy"
 
 # --- 2) Ensure the watchdog is installed AND has a live checkDeadman schedule (same as arm) --------
 echo "Checking for the standing '$WATCHDOG_NAME' install..."
@@ -167,25 +169,33 @@ else
   echo "WATCHDOG_INSTALLED instanceAppId=${INSTANCE_APP_ID:-unknown} scheduledJobCount=$SCHED_COUNT"
 fi
 
-# --- 3) Assert a real >1MB known-good backup exists to restore from -------------------------------
-echo "Asserting known-good backup '$RESTORE_FILE' exists and is >1MB..."
-READ_BACKUP_RPC=$(jq -nc --arg fn "$RESTORE_FILE" \
-  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')
-if ! BACKUP_TEXT=$(mcp_tool_call_text "hub_read_file (backup existence check)" "$READ_BACKUP_RPC"); then
-  echo "::error::hub_read_file('$RESTORE_FILE') returned non-JSON $RPC_ATTEMPTS times -- transient relay/timeout. Re-run the job."
+# --- 3) Refresh the known-good backup + record the pre-fire version (V) ----------------------------
+# ONE hub_get_source(CLASS_ID) call does double duty: on a >1MB source it writes
+# mcp-source-app-<CLASS_ID>.groovy = the current source (the reliable hub-side backup the watchdog
+# restores from) AND returns the version V. The restore re-pushes that source via /app/ajax/update,
+# which BUMPS the version even for identical content (verified live) -- the independent confirmation
+# that the push landed.
+echo "Reading version + refreshing known-good backup via hub_get_source($CLASS_ID)..."
+PROBE_RPC=$(jq -nc --arg id "$CLASS_ID" \
+  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:1}}}')
+if ! PROBE_TEXT=$(mcp_tool_call_text "hub_get_source (version + refresh backup)" "$PROBE_RPC"); then
+  echo "::error::hub_get_source($CLASS_ID) returned non-JSON $RPC_ATTEMPTS times -- transient relay/timeout. Re-run the job."
   exit 1
 fi
-BACKUP_LEN=$(echo "$BACKUP_TEXT" | jq -r '.totalLength // 0')
-if ! [ "$BACKUP_LEN" -gt 1000000 ] 2>/dev/null; then
-  echo "::error::No known-good backup to restore from: '$RESTORE_FILE' is missing or too small (totalLength=$BACKUP_LEN, need >1000000). Refusing to fire the watchdog against a truncated/absent backup."
+V=$(echo "$PROBE_TEXT" | jq -r '.version // empty')
+PROBE_SRCFILE=$(echo "$PROBE_TEXT" | jq -r '.sourceFile // empty')
+PROBE_LEN=$(echo "$PROBE_TEXT" | jq -r '.totalLength // 0')
+if [ -z "$V" ]; then
+  echo "::error::Could not read the current version of app class $CLASS_ID before arming -- cannot prove a version bump. Response: $(printf '%s' "$PROBE_TEXT" | head -c 600)"
   exit 1
 fi
-echo "Backup '$RESTORE_FILE' present (totalLength=$BACKUP_LEN bytes)."
+if [ "$PROBE_SRCFILE" != "$RESTORE_FILE" ] || ! [ "$PROBE_LEN" -gt 1000000 ] 2>/dev/null; then
+  echo "::error::hub_get_source($CLASS_ID) did not produce a usable >1MB backup (sourceFile=$PROBE_SRCFILE totalLength=$PROBE_LEN, expected $RESTORE_FILE >1000000). Refusing to fire against a missing/small backup. Response: $(printf '%s' "$PROBE_TEXT" | head -c 600)"
+  exit 1
+fi
+echo "Pre-fire version V=$V; known-good backup '$RESTORE_FILE' present ($PROBE_LEN bytes)."
 
-# --- 4) Record the current app-class version (the restore must BUMP it) ---------------------------
-# hub_get_source(type=app, id=CLASS_ID, offset:0, length:1) returns {version, totalLength}. The
-# watchdog's restoreApp re-pushes the backup via /app/ajax/update, which advances the version -- the
-# independent confirmation that the push actually landed (a no-op save would not bump it).
+# read_app_version: re-used in the poll loop to detect the version advancing past V.
 read_app_version() {
   local rpc text
   rpc=$(jq -nc --arg id "$CLASS_ID" \
@@ -193,13 +203,6 @@ read_app_version() {
   text=$(mcp_tool_call_text "hub_get_source (version probe)" "$rpc") || return 1
   printf '%s' "$text" | jq -r '.version // empty'
 }
-
-echo "Recording current app-class version (V) for class $CLASS_ID..."
-if ! V=$(read_app_version) || [ -z "$V" ]; then
-  echo "::error::Could not read the current version of app class $CLASS_ID before arming -- cannot prove a version bump. Re-run the job."
-  exit 1
-fi
-echo "Pre-fire version V=$V"
 
 # Defense-in-depth: from here on the flag is armed with an ALREADY-EXPIRED deadline, so if this
 # script is killed (job hard-timeout) DURING the poll, an armed-expired flag would linger and the
@@ -250,7 +253,12 @@ if [ "$RB_ARMED" != "true" ] || [ "$RB_CLASS" != "$CLASS_ID" ]; then
 fi
 echo "Watchdog armed with expired deadline. Polling up to ${POLL_TIMEOUT_S}s for the fire+restore..."
 
-# --- 6) Poll for: NV > V AND flag.fireResult == "restored" ----------------------------------------
+# --- 6) Poll the FLAG for the fire, then confirm the version advanced ------------------------------
+# Poll the flag (NOT the version): reading the version via hub_get_source rewrites the 1.6MB
+# mcp-source-app file on every call and could collide with the watchdog reading it mid-restore. The
+# hardened watchdog only writes fireResult="restored" AFTER it has itself re-read the version and
+# confirmed it advanced -- so once the flag shows a fire, we read the version ONCE (post-restore, no
+# race) to independently re-confirm NV>V.
 ELAPSED=0
 NV=""
 FIRE_RESULT=""
@@ -260,10 +268,6 @@ while [ "$ELAPSED" -lt "$POLL_TIMEOUT_S" ]; do
   sleep "$POLL_INTERVAL_S"
   ELAPSED=$(( ELAPSED + POLL_INTERVAL_S ))
 
-  # Current app-class version.
-  NV=$(read_app_version || echo "")
-
-  # Flag firedAt / fireResult.
   POLL_RPC=$(jq -nc --arg fn "$FLAG_FILE" \
     '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')
   POLL_TEXT=$(mcp_tool_call_text "hub_read_file (fire poll)" "$POLL_RPC") || POLL_TEXT=""
@@ -271,29 +275,41 @@ while [ "$ELAPSED" -lt "$POLL_TIMEOUT_S" ]; do
   FIRE_RESULT=$(printf '%s' "$LAST_FLAG" | jq -r '.fireResult // empty' 2>/dev/null || echo "")
   FIRED_AT=$(printf '%s' "$LAST_FLAG" | jq -r '.firedAt // empty' 2>/dev/null || echo "")
 
-  echo "Poll @${ELAPSED}s: version V=$V NV=${NV:-?} firedAt=${FIRED_AT:-none} fireResult=${FIRE_RESULT:-none}"
+  echo "Poll @${ELAPSED}s: firedAt=${FIRED_AT:-none} fireResult=${FIRE_RESULT:-none}"
 
-  if [ -n "$NV" ] && [ -n "$V" ] && [ "$NV" -gt "$V" ] 2>/dev/null && [ "$FIRE_RESULT" = "restored" ]; then
-    echo "WATCHDOG_VERIFY_FIRED version V=$V NV=$NV"
-    # Server must still be ALIVE after the restore -- hub_get_info proves the MCP app reloaded and
-    # answers, i.e. the restore did NOT brick it.
-    if ! INFO_TEXT=$(mcp_tool_call_text "hub_get_info (post-restore liveness)" \
-        '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}'); then
-      echo "::error::Watchdog fired and bumped the version, but hub_get_info returned non-JSON $RPC_ATTEMPTS times -- could not confirm the server is alive after the restore. WATCHDOG_VERIFY_FAIL"
-      exit 1
-    fi
-    if [ -z "$INFO_TEXT" ]; then
-      echo "::error::Watchdog fired and bumped the version, but hub_get_info returned an empty body -- the MCP server may not be alive after the restore. WATCHDOG_VERIFY_FAIL"
-      exit 1
-    fi
-    echo "WATCHDOG_VERIFY_SERVER_ALIVE"
-    echo "WATCHDOG_VERIFY_PASS"
-    exit 0
+  # Keep waiting until the watchdog records a fire outcome.
+  [ -z "$FIRED_AT" ] && continue
+
+  if [ "$FIRE_RESULT" != "restored" ]; then
+    echo "::error::Watchdog FIRED (firedAt=$FIRED_AT) but reported fireResult='$FIRE_RESULT' (not 'restored') -- the restore push did not confirm a version advance on the e2e hub. Last flag: $LAST_FLAG. WATCHDOG_VERIFY_FAIL"
+    exit 1
   fi
+
+  # Independent re-confirmation now that the restore is complete (single read, no race).
+  NV=$(read_app_version || echo "")
+  if [ -z "$NV" ] || ! [ "$NV" -gt "$V" ] 2>/dev/null; then
+    echo "::error::Watchdog reported 'restored' but the independent version check did not advance (V=$V NV=${NV:-?}). WATCHDOG_VERIFY_FAIL"
+    exit 1
+  fi
+  echo "WATCHDOG_VERIFY_FIRED version V=$V NV=$NV"
+
+  # Server must still be ALIVE after the restore -- hub_get_info proves the MCP app reloaded + answers.
+  if ! INFO_TEXT=$(mcp_tool_call_text "hub_get_info (post-restore liveness)" \
+      '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}'); then
+    echo "::error::Watchdog restored + version advanced, but hub_get_info returned non-JSON $RPC_ATTEMPTS times -- could not confirm the server is alive. WATCHDOG_VERIFY_FAIL"
+    exit 1
+  fi
+  if [ -z "$INFO_TEXT" ]; then
+    echo "::error::Watchdog restored + version advanced, but hub_get_info returned an empty body -- the server may not be alive. WATCHDOG_VERIFY_FAIL"
+    exit 1
+  fi
+  echo "WATCHDOG_VERIFY_SERVER_ALIVE"
+  echo "WATCHDOG_VERIFY_PASS"
+  exit 0
 done
 
-# --- timeout / mismatch ---------------------------------------------------------------------------
-echo "::error::Watchdog did not fire+restore within ${POLL_TIMEOUT_S}s. Expected NV>$V AND fireResult==restored; last seen NV=${NV:-?} fireResult=${FIRE_RESULT:-none} firedAt=${FIRED_AT:-none}."
+# --- timeout ---------------------------------------------------------------------------------------
+echo "::error::Watchdog did not fire within ${POLL_TIMEOUT_S}s (no firedAt recorded in the flag). last fireResult=${FIRE_RESULT:-none} firedAt=${FIRED_AT:-none}."
 echo "Last flag contents: ${LAST_FLAG:-<none>}"
 echo "WATCHDOG_VERIFY_FAIL"
 exit 1

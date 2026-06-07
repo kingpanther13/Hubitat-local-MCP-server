@@ -33,7 +33,10 @@ APP_NAME="MCP Rule Server"
 WATCHDOG_NAME="E2E Dead-Man Watchdog"
 WATCHDOG_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/e2e-deadman-watchdog.groovy"
 FLAG_FILE="e2e-deadman.json"
-ARM_WINDOW_MS=1200000   # 20 minutes
+ARM_WINDOW_MS=2100000   # 35 minutes -- deliberately > the 30-min job timeout-minutes, so the
+                        # watchdog can only fire AFTER GitHub has already killed a hung/dead job,
+                        # never mid-live-run. The always() disarm clears it in seconds on every
+                        # normal run, so the long window only matters when the session truly dies.
 
 # --- helpers copied verbatim from mcp_deploy_source.sh (the proven cloud-gateway wrappers) -------
 
@@ -85,7 +88,11 @@ if [ -z "$CLASS_ID" ] || [ "$CLASS_ID" = "null" ]; then
 fi
 echo "Resolved MCP server class ID: $CLASS_ID"
 
-RESTORE_FILE="mcp-backup-app-${CLASS_ID}.groovy"
+# The watchdog restores from this File Manager file. hub_get_source on a >1MB source writes
+# mcp-source-app-<CLASS_ID>.groovy = the CURRENT full source as a side effect -- a reliable hub-side
+# copy (no 1.6MB cloud transfer), unlike mcp-backup-app-* which a 1-hour backupItemSource cache can
+# leave absent. We refresh it just below so it is guaranteed present + current at arm time.
+RESTORE_FILE="mcp-source-app-${CLASS_ID}.groovy"
 
 # --- 2) Ensure the watchdog is installed AND has a live checkDeadman schedule (idempotent) --------
 # Look for the standing install by name. If present, do NOT reinstall -- just assert its
@@ -165,10 +172,23 @@ else
   echo "WATCHDOG_INSTALLED instanceAppId=${INSTANCE_APP_ID:-unknown} scheduledJobCount=$SCHED_COUNT"
 fi
 
-# --- 3) Assert a real >1MB known-good backup exists to restore from -------------------------------
-# The server's backupItemSource writes mcp-backup-app-<CLASS_ID>.groovy as the PRE-deploy source on
-# every hub_update_app. Arm only against a full (>1MB) backup -- a missing/truncated one means we
-# have nothing safe to restore, so arming would be reckless.
+# --- 3) Refresh the known-good backup, then assert it is real (>1MB) -------------------------------
+# hub_get_source(CLASS_ID) writes mcp-source-app-<CLASS_ID>.groovy = the current (just-deployed +
+# verified-working) source. Confirm the side-effect file matches RESTORE_FILE; if the source were too
+# small to trigger the File-Manager save, sourceFile would be empty/different and we fail loudly.
+echo "Refreshing known-good backup '$RESTORE_FILE' via hub_get_source($CLASS_ID)..."
+REFRESH_RPC=$(jq -nc --arg id "$CLASS_ID" \
+  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:1}}}')
+if ! REFRESH_TEXT=$(mcp_tool_call_text "hub_get_source (refresh known-good backup)" "$REFRESH_RPC"); then
+  echo "::error::hub_get_source($CLASS_ID) returned non-JSON $RPC_ATTEMPTS times -- could not refresh the known-good backup. Re-run the job."
+  exit 1
+fi
+REFRESH_OK=$(echo "$REFRESH_TEXT" | jq -r '.success // false')
+REFRESH_SRCFILE=$(echo "$REFRESH_TEXT" | jq -r '.sourceFile // empty')
+if [ "$REFRESH_OK" != "true" ] || [ "$REFRESH_SRCFILE" != "$RESTORE_FILE" ]; then
+  echo "::error::hub_get_source($CLASS_ID) did not write the expected backup (success=$REFRESH_OK sourceFile=$REFRESH_SRCFILE, expected $RESTORE_FILE). Response: $(printf '%s' "$REFRESH_TEXT" | head -c 600)"
+  exit 1
+fi
 echo "Asserting known-good backup '$RESTORE_FILE' exists and is >1MB..."
 READ_BACKUP_RPC=$(jq -nc --arg fn "$RESTORE_FILE" \
   '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')
