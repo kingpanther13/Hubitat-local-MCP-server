@@ -189,6 +189,17 @@ PR #202 (merged 2026-05-19) established the annotation-hints baseline on every s
 
 `hubitat-mcp-rule.groovy` (the MCP child app, surfaced through the `custom_*` tools) is **legacy**. It still ships and still gets bug fixes, but it is **closed to new feature work** — Hubitat's native Rule Machine is the supported path now and exposes equivalent functionality through `hub_set_rule` (in the `hub_manage_rule_machine` gateway) plus `hub_set_native_app` / `hub_delete_native_app` and the rest of the `hub_manage_native_rules_and_apps` group. New rule-related capabilities should land on the parent app's native-RM tools, not on the child app. If a feature request lands on the child app, propose it for the native side instead.
 
+## Vendored hub admin-UI source (`resources/hub2-source/`)
+
+When you work on the wire format for ANY hub HTTP surface — Rule Machine and the other native classic apps (the `dynamicPage` form/settings POST), Basic Rules / Visual Rules Builder, hub variables, device swap, backups, etc. — **consult the vendored hub admin-UI source first**, before re-deriving anything by hand from the live UI. Hubitat's own browser bundles are committed under `resources/hub2-source/`; string literals survive minification, so `grep` finds endpoint paths, field keys, and capability names directly.
+
+Two UIs ship in `/ui2/`, both vendored:
+
+- **`vue-hub2.min.js`** — the modern Vue 3 SPA. The contract for Vue-rewritten apps (Basic Rules, Visual Rules Builder / `VisualRuleBuilder20`, hub variables, device swap) is the JSON those components POST.
+- **`appUI.js` + `main.js`** — the classic `dynamicPage` / `submitOnChange` engine that drives Rule Machine and every other classic app. This is the genuine wire-format reference for the native-RM tools (`submitOnChange` re-POST, `stateAttribute` buttons, page transitions, `/installedapp/update/json`, `/installedapp/btn`, `/installedapp/ssr`). The Vue bundle black-boxes RM; this is where RM's protocol actually lives.
+
+The folder's `README.md` has the full file roster, an endpoint inventory (incl. `/app/ruleBuilderJson` — classic RM compiled rule state as JSON), and a refresh procedure. Update that README and re-capture the bundles when new firmware changes the UI.
+
 ## Library modules (`#include`) — the modularization path (issue #209)
 
 The server is being split out of the single `hubitat-mcp-server.groovy` monolith into Groovy `#include` libraries under `libraries/`. `#include` is a **textual paste**: the library body is inlined into the app's compiled class at parse time (no method boundary, no separate runtime), so library methods, `state`/`atomicState`, and string-literal `subscribe`/`schedule` handlers all resolve as if written in the app. Read this before adding or moving code into a library.
