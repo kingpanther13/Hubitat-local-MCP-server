@@ -142,6 +142,11 @@ fi
 # same as the install) and CONFIRM via a fresh lastSelfDeploy success (works even for a same-length
 # change a length poll can't see), then record main's SHA so an UNCHANGED main is skipped next run (no
 # needless 1.6MB redeploy -- the cache-and-skip design). MAIN_* absent (older workflow) -> skip silently.
+#
+# SCOPE: refreshes the APP (hubitat-mcp-server.groovy) only; the libraries/bundle backed up below are
+# whatever is currently installed. If canonical main ever changes its libraries/bundle, the cached
+# package could be main-app + stale libs -- the full-package canonical-main refresh is covered by the
+# bundle tooling landing in PR #247. main's #include set is stable today, so app-only is correct for now.
 MAIN_SHA_FILE="mcp-main-deployed-sha.txt"
 if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA:-}" ]; then
   LIVE_MAIN_LEN=$(mcp_tool_call_text "hub_get_source (live main length, noSave)" \
@@ -358,8 +363,9 @@ FLAG_JSON=$(jq -nc \
   --argjson deadline "$DEADLINE_MS" \
   --arg runId "$GITHUB_RUN_ID" \
   --arg armPrSha "$PR_HEAD_SHA_RESOLVED" \
+  --arg canonicalMainSha "${MAIN_SHA:-}" \
   --argjson manifest "$MANIFEST_JSON" \
-  '{armed:true, deadline:$deadline, runId:$runId, intent:"arm", armPrSha:$armPrSha, manifest:$manifest}')
+  '{armed:true, deadline:$deadline, runId:$runId, intent:"arm", armPrSha:$armPrSha, canonicalMainSha:$canonicalMainSha, manifest:$manifest}')
 
 echo "Writing armed flag to '$FLAG_FILE' (deadline=$DEADLINE_MS, ~35min)..."
 WRITE_RPC=$(jq -nc --arg fn "$FLAG_FILE" --arg content "$FLAG_JSON" \

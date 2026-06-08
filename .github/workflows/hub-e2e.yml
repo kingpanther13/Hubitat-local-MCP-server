@@ -36,6 +36,7 @@ on:
       - '.github/scripts/mcp_setup_env.sh'
       - '.github/scripts/mcp_restore_env.sh'
       - '.github/scripts/mcp_validate_package_tool.sh'
+      - '.github/scripts/mcp_watchdog_lib.sh'
       - '.github/scripts/mcp_watchdog_deploy.sh'
       - '.github/scripts/mcp_watchdog_self_update.sh'
       - '.github/scripts/mcp_arm_watchdog.sh'
@@ -306,9 +307,10 @@ jobs:
           echo "::notice::canonical main: $MAIN_URL (${MAIN_CHARS} chars)"
 
       # Self-update the dead-man watchdog to THIS PR's version BEFORE it is used to arm/install, so e2e
-      # always exercises the watchdog the PR ships (not whatever level99 first imported). Skips when the
-      # live watchdog already matches this PR (no needless reload); brick-safe (a compile error keeps the
-      # old watchdog). level99 never has to re-import. Blocking: a broken watchdog must fail the run.
+      # always exercises the watchdog the PR ships (not whatever level99 first imported). ALWAYS deploys
+      # (a length-preserving edit must not leave the old watchdog live) and confirms via a fresh
+      # lastSelfDeploy; brick-safe (a compile error keeps the old watchdog). level99 never has to
+      # re-import. Blocking: a rejected/unconfirmed or broken-transport watchdog must fail the run.
       - name: Self-update watchdog to PR version
         if: steps.gate.outputs.available == 'true'
         env:

@@ -103,6 +103,10 @@ fi
 CUR_CONTENT=$(echo "$CUR_TEXT" | jq -r '.content // ""')
 MANIFEST_JSON=$(printf '%s' "$CUR_CONTENT" | jq -c '.manifest // empty' 2>/dev/null || echo "")
 ARM_PR_SHA=$(printf '%s' "$CUR_CONTENT" | jq -r '.armPrSha // .mainSha // ""' 2>/dev/null || echo "")
+# The canonical-main SHA the hub was confirmed on at arm. We rewrite the on-hub marker to this ONLY after
+# a confirmed restore below, so a failed restore leaves the marker cleared (by the install) and the next
+# run's arm refreshes canonical main instead of skipping on a stale marker.
+CANONICAL_MAIN_SHA=$(printf '%s' "$CUR_CONTENT" | jq -r '.canonicalMainSha // ""' 2>/dev/null || echo "")
 FLAG_RUN_ID=$(printf '%s' "$CUR_CONTENT" | jq -r '.runId // ""' 2>/dev/null || echo "")
 if [ -z "$MANIFEST_JSON" ] || [ "$MANIFEST_JSON" = "null" ]; then
   echo "::error::The flag '$FLAG_FILE' has no manifest -- arm never ran or the flag was wiped. The watchdog cannot restore main on disarm. Response: $(printf '%s' "$CUR_TEXT" | head -c 600)"
@@ -176,6 +180,14 @@ while [ "$attempt" -le "$RESTORE_POLL_ATTEMPTS" ]; do
         # Independently confirm the hub is actually back on MAIN (not a poisoned/PR restore) before we
         # let teardown + the next run proceed.
         assert_hub_on_main
+        # Restore CONFIRMED -> the hub is canonical main again. Rewrite the SHA marker the install cleared,
+        # so the next run's arm can skip the main refresh (hub known-good). A FAILED restore takes the
+        # exit-1 paths below WITHOUT rewriting it, leaving it cleared -> the next run refreshes. Best-effort.
+        if [ -n "$CANONICAL_MAIN_SHA" ]; then
+          mcp_tool_call_text "hub_write_file (rewrite canonical-main marker after confirmed restore)" \
+            "$(jq -nc --arg sha "$CANONICAL_MAIN_SHA" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:"mcp-main-deployed-sha.txt",content:$sha,confirm:true}}}')" >/dev/null \
+            || echo "::warning::could not rewrite the canonical-main SHA marker after the confirmed restore; the next run will simply re-refresh main. Continuing."
+        fi
         exit 0
       fi
       echo "::error::Watchdog clean-finish restore FAILED for run $GITHUB_RUN_ID (restoreResult=$RESTORE_RESULT, restoreFor=$RESTORE_FOR). Main may NOT be restored to the known-good cache. Detail: $RESTORE_DETAIL"
