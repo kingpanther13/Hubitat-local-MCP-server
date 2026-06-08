@@ -176,6 +176,30 @@ win() {
   done
 } > "$OUT/80-misc-endpoints.txt" 2>&1
 
+############################################################
+# 90 - Vue VRB 2.0 / Basic Rules WRITE contract (runner-only; vue is device-unsafe)
+#      Now that vue.pretty.js exists (prettified on the runner), use rich -A context
+#      instead of raw windows. This is the gating evidence for the highest-value
+#      enhancement (structured-JSON rule write vs the classic wizard-walker).
+############################################################
+{
+  echo "# Visual Rule Builder 2.0 / Basic Rules structured-JSON write contract"
+  echo "## ruleBuilder20Json GET+POST + ruleJson document construction"
+  ctx "$PV" 'ruleBuilder20Json' 6 44 18000
+  echo "## ruleJson / rawJson document shape (trigger/condition/action node schema)"
+  ctx "$PV" 'rawJson|ruleJson' 3 26 15000
+  echo "## saveOrUpdateJson (app save) usage + body"
+  ctx "$PV" 'saveOrUpdateJson' 4 22 9000
+  echo "## ruleBuilderJson (classic compiled state) response field reads"
+  ctx "$PV" 'ruleBuilderJson' 4 34 11000
+  echo "## broken / eval / parens / predCapabs / ruleStateText field access"
+  ctx "$PV" '\.broken|\.predCapabs|\.parens|ruleStateText|\.eval' 2 6 9000
+  echo "## direct/hubVariables + direct/swapDevice POST bodies"
+  ctx "$PV" 'direct/hubVariables|direct/swapDevice' 4 26 10000
+  echo "## GATING Q: does VRB20 target classic RM, or only VRB/Basic child apps?"
+  ctx "$PV" 'RuleMachine|ruleType|appTypeName|isVrb|vrbVersion|basicRule|BasicRule' 2 8 10000
+} > "$OUT/90-vue-vrb-write.txt" 2>&1
+
 echo "== evidence files =="
 ls -la "$OUT"
 echo "== total evidence bytes (excl pretty sources) =="
