@@ -88,6 +88,55 @@ assert_hub_on_main() {
   echo "Post-disarm hub-on-main assertion OK: live app source length ${live} == MAIN baseline ${MAIN_CHARS}."
 }
 
+# Post-restore "no stale code" assertion (PR #247): after the watchdog restored main, the hub must carry
+# ONLY main's bundles + libraries -- nothing left over from the PR install. The arm recorded main's
+# bundle set (manifest.bundles) + library set (manifest.libraries); we list the hub now and FAIL if any
+# mcp-namespace bundle/library is present that is NOT in those sets. This is the hard gate behind
+# restorePackage's best-effort cleanup -- a PR bundle/lib that survived the restore fails the run loudly.
+# Each axis is SKIPPED when the manifest lacks that set (an older arm flag), and when the live list is
+# degraded (a transient relay shape) -- a flaky read must not false-fail the teardown.
+assert_no_stale_mcp_code() {
+  local mainBundles mainLibs
+  mainBundles=$(printf '%s' "$MANIFEST_JSON" | jq -c '[.bundles[]? | {namespace, name}]' 2>/dev/null || echo "[]")
+  mainLibs=$(printf '%s' "$MANIFEST_JSON" | jq -c '[.libraries[]? | {namespace, name}]' 2>/dev/null || echo "[]")
+
+  if [ "$(printf '%s' "$mainBundles" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]; then
+    local blist stale_b
+    blist=$(mcp_tool_call_text "hub_list_bundles (post-restore no-stale check)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_bundles","arguments":{}}}' || true)
+    if [ "$(printf '%s' "$blist" | jq -r '.source // empty' 2>/dev/null)" = "hub_api" ]; then
+      stale_b=$(printf '%s' "$blist" | jq -c --argjson keep "$mainBundles" \
+        '[.bundles[]? | select(.namespace=="mcp") | {namespace, name} | select(($keep | index(.)) == null) | .name]' 2>/dev/null || echo "[]")
+      if [ "$(printf '%s' "$stale_b" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]; then
+        echo "::error::Post-restore: STALE mcp bundle(s) remain after the overwrite-with-main restore: $(printf '%s' "$stale_b" | jq -c .). restorePackage's bundle cleanup did not remove the PR's bundle. Investigate."
+        exit 1
+      fi
+      echo "Post-restore no-stale check OK: no leftover mcp bundles (kept $(printf '%s' "$mainBundles" | jq -c '[.[].name]'))."
+    else
+      echo "::warning::Post-restore no-stale check: hub_list_bundles degraded (source=$(printf '%s' "$blist" | jq -r '.source // "?"' 2>/dev/null)) -- skipping the bundle assertion this run."
+    fi
+  else
+    echo "::notice::Post-restore no-stale check: manifest has no main bundle set -- skipping the bundle assertion (older arm flag)."
+  fi
+
+  if [ "$(printf '%s' "$mainLibs" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]; then
+    local llist stale_l
+    llist=$(mcp_tool_call_text "hub_list_libraries (post-restore no-stale check)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}' || true)
+    if [ "$(printf '%s' "$llist" | jq -r '.source // empty' 2>/dev/null)" = "hub_api" ]; then
+      stale_l=$(printf '%s' "$llist" | jq -c --argjson keep "$mainLibs" \
+        '[.libraries[]? | select(.namespace=="mcp") | {namespace, name} | select(($keep | index(.)) == null) | .name]' 2>/dev/null || echo "[]")
+      if [ "$(printf '%s' "$stale_l" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]; then
+        echo "::error::Post-restore: STALE mcp library(ies) remain after the overwrite-with-main restore: $(printf '%s' "$stale_l" | jq -c .). restorePackage's library cleanup did not remove the PR-only libraries. Investigate."
+        exit 1
+      fi
+      echo "Post-restore no-stale check OK: no leftover mcp libraries (kept $(printf '%s' "$mainLibs" | jq -c '[.[].name]'))."
+    else
+      echo "::warning::Post-restore no-stale check: hub_list_libraries degraded -- skipping the library assertion this run."
+    fi
+  else
+    echo "::notice::Post-restore no-stale check: manifest has no main library set -- skipping the library assertion (older arm flag)."
+  fi
+}
+
 # --- 1) Read the current (armed) flag to reuse its manifest -----------------------------------------
 # The watchdog's disarm-path restore reads flag.manifest, so the disarm flag MUST carry the same
 # manifest the arm wrote. Rather than re-deriving it, we read the armed flag and reuse its manifest +
@@ -180,6 +229,9 @@ while [ "$attempt" -le "$RESTORE_POLL_ATTEMPTS" ]; do
         # Independently confirm the hub is actually back on MAIN (not a poisoned/PR restore) before we
         # let teardown + the next run proceed.
         assert_hub_on_main
+        # The overwrite-with-main restore must leave NO leftover from the PR install -- assert no stale
+        # mcp-namespace bundle/library remains (PR #247), the hard gate behind restorePackage's cleanup.
+        assert_no_stale_mcp_code
         # Restore CONFIRMED -> the hub is canonical main again. Rewrite the SHA marker the install cleared,
         # so the next run's arm can skip the main refresh (hub known-good). A FAILED restore takes the
         # exit-1 paths below WITHOUT rewriting it, leaving it cleared -> the next run refreshes. Best-effort.

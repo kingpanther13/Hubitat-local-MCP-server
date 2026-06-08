@@ -184,7 +184,13 @@ private void actAndRecord(Map flag, String trigger) {
     log.warn "E2E Dead-Man Watchdog v2 ${trigger} complete: ${flag.restoreResult}."
 }
 
-// ---- restore the whole package from the cache manifest: LIBRARIES first, APP(s) last ----
+// ---- restore the whole package from the cache manifest: drop the PR's stale bundle, restore main's
+// LIBRARIES, restore the APP, then drop the PR's stale libraries. Leaves the hub carrying ONLY main's
+// bundles + libraries + app -- no leftover from the PR install (the user's "overwrite with main without
+// any stale bundles/libraries"). Every step is LOCAL (cached source + loopback deletes), so the dead-man
+// still fires when GitHub is unreachable; orphan cleanup is best-effort (it never fails the restore --
+// restoring main's libs+app is the guarantee), and the disarm step independently ASSERTS no stale
+// mcp-namespace bundle/library remains.
 private Map restorePackage(Map flag) {
     def m = flag.manifest
     if (!(m instanceof Map)) return [ok: false, detail: "no manifest in flag"]
@@ -192,7 +198,15 @@ private Map restorePackage(Map flag) {
         return [ok: false, detail: "hub security enabled but auth failed (no cookie)"]
     }
     def detail = []
-    // Libraries first so the app's #include directives resolve when it recompiles.
+
+    // (0) Remove the PR's stale bundle CONTAINER(s) FIRST (best-effort). Doing this before restoring
+    // libraries means that if deleting a bundle cascade-removes its managed libraries (incl. a main one),
+    // the restore below re-creates them; if it does NOT cascade, step (3) deletes the PR-only libraries.
+    detail << reconcileStaleBundles(m)
+
+    // (1) Libraries -- restore each to main's cached source. restoreLibrary self-heals a bundle-managed
+    // or cascade-removed library (delete+recreate / create). Libraries first so the app's #include
+    // directives resolve on recompile. This IS the restore guarantee -- a failure aborts.
     def libs = (m.libraries instanceof List) ? m.libraries : []
     for (lib in libs) {
         // Re-resolve the library's CURRENT id from its namespace.name: the deploy may have deleted +
@@ -203,7 +217,7 @@ private Map restorePackage(Map flag) {
         detail << "lib ${lib?.name ?: lib?.id}(${curId})=${ok}"
         if (!ok) return [ok: false, detail: "library ${lib?.name ?: lib?.id} restore failed [${detail.join('; ')}]"]
     }
-    // Then the app(s). manifest.app is a single {classId,file}; manifest.apps an optional list.
+    // (2) App(s). manifest.app is a single {classId,file}; manifest.apps an optional list.
     def apps = (m.apps instanceof List) ? m.apps : (m.app ? [m.app] : [])
     for (a in apps) {
         boolean ok = restoreApp(a?.classId?.toString(), a?.file?.toString())
@@ -211,7 +225,65 @@ private Map restorePackage(Map flag) {
         if (!ok) return [ok: false, detail: "app ${a?.classId} restore failed [${detail.join('; ')}]"]
     }
     if (apps.isEmpty()) return [ok: false, detail: "manifest has no app to restore [${detail.join('; ')}]"]
+
+    // (3) Remove the PR's stale LIBRARIES LAST (best-effort): any mcp-namespace library not in the
+    // manifest's main set is a PR-only module. Safe here -- main's app (restored above) does not #include
+    // them, so deleting them can't break it.
+    detail << reconcileStaleLibraries(m)
+
     return [ok: true, detail: detail.join('; ')]
+}
+
+// Delete any mcp-namespace BUNDLE not in the manifest's main bundle set (recorded by the arm = the
+// bundles present once canonical main was established, BEFORE the PR deploy). Best-effort; never throws
+// out of the restore. SKIPPED when the manifest carries no main bundle set (an older arm flag): without
+// it we can't tell main's bundle from a PR's, and deleting blindly could remove main's. Scoped to
+// namespace "mcp" so unrelated bundles on the shared test hub are never touched.
+private String reconcileStaleBundles(Map m) {
+    def mainBundles = (m?.bundles instanceof List) ? m.bundles : []
+    if (mainBundles.isEmpty()) return "bundle-cleanup:skipped(no main bundle set in manifest)"
+    def listed = adminListBundles([:])
+    if (listed?.source != "hub_api") return "bundle-cleanup:skipped(list=${listed?.source})"
+    def removed = []
+    def failed = []
+    for (b in (listed.bundles ?: [])) {
+        if (b?.namespace?.toString() != "mcp") continue
+        if (b?.id == null) continue
+        boolean keep = mainBundles.any {
+            (it?.namespace?.toString() == b.namespace?.toString()) && (it?.name?.toString() == b.name?.toString())
+        }
+        if (keep) continue
+        try {
+            def r = adminDeleteBundle([bundleId: b.id.toString(), confirm: true])
+            if (r?.success == true) removed << b.name else failed << b.name
+        } catch (Exception e) { logDebug "reconcileStaleBundles ${b?.name}: ${e.message}"; failed << b?.name }
+    }
+    return "bundle-cleanup:removed=${removed}${failed ? " failed=${failed}" : ''}"
+}
+
+// Delete any mcp-namespace LIBRARY not in the manifest's main library set. Best-effort. Scoped to
+// namespace "mcp"; runs AFTER the app restore so a still-#included main library is never removed.
+// SKIPPED when the manifest lists no main libraries (defensive -- don't blind-delete every mcp library).
+private String reconcileStaleLibraries(Map m) {
+    def mainLibs = (m?.libraries instanceof List) ? m.libraries : []
+    if (mainLibs.isEmpty()) return "lib-cleanup:skipped(no main library set in manifest)"
+    def listed = adminListLibraries([:])
+    if (listed?.source != "hub_api") return "lib-cleanup:skipped(list=${listed?.source})"
+    def removed = []
+    def failed = []
+    for (lib in (listed.libraries ?: [])) {
+        if (lib?.namespace?.toString() != "mcp") continue
+        if (lib?.id == null) continue
+        boolean keep = mainLibs.any {
+            (it?.namespace?.toString() == lib.namespace?.toString()) && (it?.name?.toString() == lib.name?.toString())
+        }
+        if (keep) continue
+        try {
+            def r = adminDeleteItem([type: "library", id: lib.id.toString(), confirm: true])
+            if (r?.success == true) removed << lib.name else failed << lib.name
+        } catch (Exception e) { logDebug "reconcileStaleLibraries ${lib?.name}: ${e.message}"; failed << lib?.name }
+    }
+    return "lib-cleanup:removed=${removed}${failed ? " failed=${failed}" : ''}"
 }
 
 // ---- restore one app class: read cached source, POST it to the LOCAL /app/ajax/update ----
@@ -264,10 +336,15 @@ boolean restoreApp(String classId, String restoreFileName) {
     return false
 }
 
-// ---- restore one library: read cached source, POST it to the LOCAL /library/saveOrUpdateJson ----
+// ---- restore one library from its LOCAL cached source (no external fetch, so the dead-man fires even
+// when GitHub is unreachable). Robust to a bundle-managed library that rejects an in-place update, and
+// to a library that no longer exists (a deploy-time delete+recreate, or a bundle delete that cascaded
+// its managed libraries): in-place update -> if not confirmed, delete+recreate -> if absent, create.
+// All three land the SAME cached source; each confirms BYTE-IDENTICAL live source (never id alone), so
+// a silently-dropped push can't false-green as restored.
 boolean restoreLibrary(String libId, String fileName) {
-    if (!libId || !fileName) {
-        log.error "restoreLibrary: missing libId (${libId}) or fileName (${fileName})"
+    if (!fileName) {
+        log.error "restoreLibrary: missing fileName"
         return false
     }
     String source = readHubFileText(fileName)
@@ -275,45 +352,85 @@ boolean restoreLibrary(String libId, String fileName) {
         log.error "restoreLibrary: cache '${fileName}' missing/empty/too-small -- refusing to push it."
         return false
     }
-    Integer curVer = libraryVersion(libId)
+    Integer curVer = (libId) ? libraryVersion(libId) : null
     if (curVer == null) {
-        log.error "restoreLibrary: could not read current version of library ${libId}"
-        return false
+        // Library not present at this id (cascade-removed / never existed) -- create it fresh from cache.
+        logInfo "restoreLibrary: library '${libId}' has no readable version -- creating fresh from cache '${fileName}'."
+        return _createLibraryFromSource(source)
     }
+    // In-place update first (the proven path; bundle-managed libs usually accept saveOrUpdateJson).
+    if (_restoreLibraryInPlace(libId, source, curVer)) return true
+    // Not confirmed -- self-heal by delete+recreate from the SAME cached source (a bundle-managed library
+    // may reject an in-place update; deleting frees it, then create re-installs it). Local only.
+    log.warn "restoreLibrary ${libId}: in-place update not confirmed -- deleting + recreating from cache (the library may be bundle-managed)."
+    try { hubGet("/library/edit/deleteJson/${libId}", [:]) }
+    catch (Exception e) { logDebug "restoreLibrary ${libId}: delete threw (continuing to recreate): ${e.message}" }
+    return _createLibraryFromSource(source)
+}
+
+// In-place library restore via /library/saveOrUpdateJson {id, source, version}. Confirms it LANDED:
+// version advanced, OR (a byte-identical no-op the hub may not bump) the live source is byte-identical
+// to what we pushed. Returns false (so the caller self-heals) on any non-confirmation -- including a
+// same-length-but-different live source (a silently-dropped push).
+private boolean _restoreLibraryInPlace(String libId, String source, Integer curVer) {
     String body = groovy.json.JsonOutput.toJson([id: libId.toInteger(), source: source, version: curVer])
     Map resp = hubPostJson("/library/saveOrUpdateJson", body)
     if (resp?.status != 200) {
-        log.error "restoreLibrary: /library/saveOrUpdateJson returned status ${resp?.status}; body=${resp?.data?.toString()?.take(300)}"
+        log.warn "restoreLibrary ${libId}: in-place /library/saveOrUpdateJson returned status ${resp?.status}; body=${resp?.data?.toString()?.take(200)}"
         return false
     }
-    boolean ok = false
     try {
         def parsed = new groovy.json.JsonSlurper().parseText(resp.data ?: "{}")
-        // Confirm the restore actually landed (don't trust success+id alone): the version advanced, OR
-        // -- on a byte-identical no-op the hub may not bump it -- the live library source is BYTE-IDENTICAL
-        // to what we pushed (NOT merely the same length -- a same-length-but-different live source means
-        // the push dropped and the library is NOT restored).
         if (parsed?.success == false || parsed?.id == null) {
-            log.error "restoreLibrary ${libId}: hub reported failure or no id (${resp?.data?.toString()?.take(200)})"
-        } else {
-            def newVer = parsed?.version
-            if (newVer != null && curVer != null && (newVer as Integer) > curVer) {
-                ok = true
-            } else {
-                String live = readLibrarySource(libId)
-                if (live != null && live == source) {
-                    ok = true
-                    logInfo "restoreLibrary ${libId}: version unchanged but live source is byte-identical to the pushed source -- legitimate no-op."
-                } else {
-                    log.error "restoreLibrary ${libId}: success reported but version did not advance and live source is not byte-identical to pushed -- did not land."
-                }
-            }
+            log.warn "restoreLibrary ${libId}: in-place update reported failure or no id (${resp?.data?.toString()?.take(200)})"
+            return false
         }
+        def newVer = parsed?.version
+        if (newVer != null && (newVer as Integer) > curVer) {
+            logInfo "restoreLibrary ${libId}: in-place update confirmed (version ${curVer}->${newVer})."
+            return true
+        }
+        String live = readLibrarySource(libId)
+        if (live != null && live == source) {
+            logInfo "restoreLibrary ${libId}: in-place update is a byte-identical no-op -- restored."
+            return true
+        }
+        log.warn "restoreLibrary ${libId}: in-place success reported but version did not advance and live source is not byte-identical -- not confirmed."
+        return false
     } catch (Exception e) {
-        log.error "restoreLibrary: could not parse update response (${e.message}); body=${resp?.data?.toString()?.take(300)}"
+        log.warn "restoreLibrary ${libId}: could not parse in-place update response (${e.message})"
+        return false
     }
-    logInfo "restoreLibrary ${libId}: pushed ${source.length()} chars (version was ${curVer}); ok=${ok}"
-    return ok
+}
+
+// Create a fresh library from source via /library/saveOrUpdateJson {id:null}. Confirms by requiring a
+// returned id AND that the live source is not a DIFFERENT source (byte-identical, or unreadable -- a
+// transient read must not false-fail a create the hub accepted with a new id).
+private boolean _createLibraryFromSource(String source) {
+    String body = groovy.json.JsonOutput.toJson([id: null, source: source, version: null])
+    Map resp = hubPostJson("/library/saveOrUpdateJson", body)
+    if (resp?.status != 200) {
+        log.error "restoreLibrary(create): /library/saveOrUpdateJson returned status ${resp?.status}; body=${resp?.data?.toString()?.take(200)}"
+        return false
+    }
+    try {
+        def parsed = new groovy.json.JsonSlurper().parseText(resp.data ?: "{}")
+        def newId = parsed?.id?.toString()
+        if (parsed?.success == false || !newId) {
+            log.error "restoreLibrary(create): hub reported failure or no id (${resp?.data?.toString()?.take(200)})"
+            return false
+        }
+        String live = readLibrarySource(newId)
+        if (live != null && live != source) {
+            log.error "restoreLibrary(create) ${newId}: created but live source differs from the pushed source -- did not land."
+            return false
+        }
+        logInfo "restoreLibrary(create): created library id ${newId} from cache (${source.length()} chars)."
+        return true
+    } catch (Exception e) {
+        log.error "restoreLibrary(create): could not parse create response (${e.message})"
+        return false
+    }
 }
 
 // Current version of an app class (optimistic-lock field on /app/ajax/update).
@@ -534,6 +651,8 @@ def executeAdminTool(String toolName, Map args) {
         case "hub_update_library":  return adminUpdateLibrary(args)
         case "hub_delete_item":     return adminDeleteItem(args)
         case "hub_install_bundle":  return adminInstallBundle(args)
+        case "hub_list_bundles":    return adminListBundles(args)
+        case "hub_delete_bundle":   return adminDeleteBundle(args)
         case "hub_get_info":        return adminGetInfo(args)
         case "hub_list_apps":       return adminListApps(args)
         case "hub_list_libraries":  return adminListLibraries(args)
@@ -1030,6 +1149,93 @@ def _bundleResponseSucceeded(resp) {
     return text.equalsIgnoreCase("true")
 }
 
+// hub_list_bundles: mirror of McpBundlesLib.toolListBundles (PR #247), adapted to hubGet. Lists the
+// installed bundle CONTAINERS (id/name/namespace), distinct from Libraries Code. Read-only. No
+// pagination -- the watchdog uses this internally (restorePackage cleanup + the disarm no-stale check)
+// and for the deploy scripts by URL swap; the test hub never has enough bundles to need paging.
+def adminListBundles(args) {
+    def result = [:]
+    try {
+        def responseText = hubGet("/hub2/userBundles", [:])
+        if (responseText) {
+            try {
+                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                if (parsed instanceof List) {
+                    result.bundles = parsed.findAll { it instanceof Map }.collect { b ->
+                        [id: b.id?.toString(), name: b.name, namespace: b.namespace, "private": (b["private"] == true)]
+                    }
+                    result.count = result.bundles.size()
+                    result.source = "hub_api"
+                } else {
+                    result.bundles = []
+                    result.count = 0
+                    result.rawResponse = responseText?.take(2000)
+                    result.source = "hub_api_raw"
+                    result.note = "Response was not a JSON array."
+                }
+            } catch (Exception parseErr) {
+                result.bundles = []
+                result.count = 0
+                result.rawResponse = responseText?.take(2000)
+                result.source = "hub_api_raw"
+                result.note = "Response was not JSON."
+            }
+        } else {
+            result.bundles = []
+            result.count = 0
+            result.source = "unavailable"
+            result.note = "Empty response from hub API"
+        }
+    } catch (Exception e) {
+        log.warn "adminListBundles: ${e.message}"
+        result.bundles = []
+        result.count = 0
+        result.source = "unavailable"
+        result.note = "Hub internal API unavailable (${e.message})."
+    }
+    return result
+}
+
+// hub_delete_bundle: mirror of McpBundlesLib.toolDeleteBundle (PR #247), adapted to hubGet. Deletes a
+// bundle CONTAINER by id (GET /bundle/delete/<id>, 302 on success), then re-lists to confirm it is
+// gone (the 302 alone is not proof). confirm:true required. restorePackage uses this to remove a PR's
+// leftover bundle so the restored hub carries only main's bundle(s).
+def adminDeleteBundle(args) {
+    requireConfirm(args)
+    def rawId = args?.bundleId
+    if (rawId == null || !rawId.toString().trim()) {
+        throw new IllegalArgumentException("bundleId is required (the numeric id from hub_list_bundles).")
+    }
+    def bundleId = rawId.toString().trim()
+    if (!(bundleId ==~ /\d+/)) {
+        throw new IllegalArgumentException("bundleId must be a positive integer (got '${bundleId.take(40)}').")
+    }
+    def before = adminListBundles([:])
+    def target = (before.bundles ?: []).find { it.id?.toString() == bundleId }
+    if (before.source == "hub_api" && !target) {
+        return [success: false, error: "No bundle with id ${bundleId} found on the hub.", bundleId: bundleId]
+    }
+    def bundleName = target?.name
+    mcpAdminLog "Deleting bundle ${bundleId} (${bundleName ?: 'name unknown'})"
+    try {
+        hubGet("/bundle/delete/${bundleId}", [:])
+    } catch (Exception e) {
+        return [success: false, error: "Bundle delete request failed: ${e.message ?: e.toString()}", bundleId: bundleId]
+    }
+    def after = adminListBundles([:])
+    if (after.source != "hub_api") {
+        return [success: false, verified: false,
+                error: "Delete request sent for bundle ${bundleId}, but removal could not be verified (list source=${after.source}).",
+                bundleId: bundleId]
+    }
+    def stillThere = (after.bundles ?: []).any { it.id?.toString() == bundleId }
+    if (stillThere) {
+        return [success: false, error: "Bundle ${bundleId} is still present after the delete request.", bundleId: bundleId]
+    }
+    return [success: true, message: "Bundle ${bundleId}${bundleName ? " ('${bundleName}')" : ''} deleted.",
+            bundleId: bundleId, bundleName: bundleName, verified: true]
+}
+
 // hub_get_info: condensed from toolGetHubInfo (hubitat-mcp-server.groovy 6986-7090), surfacing the
 // fields CI needs incl. the issue #237 lastSelfDeploy record with ageMs (server 7086-7090).
 def adminGetInfo(args) {
@@ -1342,6 +1548,10 @@ def getAdminToolDefinitions() {
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
         [name: "hub_install_bundle", description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
          inputSchema: [type: "object", properties: [importUrl: [type: "string"], primary: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
+        [name: "hub_list_bundles", description: "List installed code bundle containers (id/name/namespace). Read-only.",
+         inputSchema: [type: "object", properties: [:]]],
+        [name: "hub_delete_bundle", description: "Delete a code bundle container by id (verified by re-list). confirm:true required.",
+         inputSchema: [type: "object", properties: [bundleId: [type: "string"], confirm: [type: "boolean"]], required: ["bundleId", "confirm"]]],
         [name: "hub_get_info", description: "Hub model/firmware/memory + the issue #237 lastSelfDeploy record (with ageMs)."],
         [name: "hub_list_apps", description: "List Apps Code types (scope='types') or installed apps.",
          inputSchema: [type: "object", properties: [scope: [type: "string", enum: ["types", "instances"]]]]],

@@ -68,6 +68,7 @@ class WatchdogV2Spec extends Specification {
         script.metaClass.libraryVersion = { String id -> 5 }      // no advance -> no-op path
         script.metaClass.hubPostJson = { String p, String b -> [status: 200, data: '{"success":true,"id":119,"version":5}'] }
         script.metaClass.readLibrarySource = { String id -> live }
+        script.metaClass.hubGet = { String p, Map q -> "" }       // self-heal delete GET (no-op here)
 
         expect:
         script.restoreLibrary('119', 'mcp-source-library-119.groovy') == expected
@@ -159,5 +160,142 @@ class WatchdogV2Spec extends Specification {
         noExceptionThrown()
         appRestored                              // unparseable deadline -> treated as expired -> FIRE
         written?.restoreResult == 'restored'
+    }
+
+    // ---- PR #247: bundle tools mirrored into the watchdog + the no-stale restore cleanup ----
+
+    @Unroll
+    def "adminListBundles parses the hub bundle list (#scenario)"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> body }
+
+        expect:
+        def r = script.adminListBundles([:])
+        r.source == src
+        r.bundles*.name == names
+
+        where:
+        scenario    | body                                                    || src           | names
+        'json list' | '[{"id":1,"name":"mcp_libraries","namespace":"mcp"}]'   || 'hub_api'     | ['mcp_libraries']
+        'not array' | '{"oops":true}'                                         || 'hub_api_raw' | []
+        'not json'  | '<html>error</html>'                                    || 'hub_api_raw' | []
+    }
+
+    @Unroll
+    def "adminDeleteBundle confirms removal by re-list (#scenario)"() {
+        given:
+        int calls = 0
+        script.metaClass.adminListBundles = { Map a ->
+            calls++
+            (calls == 1)
+                ? [source: 'hub_api', bundles: [[id: '5', name: 'mcp_libraries', namespace: 'mcp']]]
+                : [source: 'hub_api', bundles: afterList]
+        }
+        script.metaClass.hubGet = { String p, Map q -> "" }   // the /bundle/delete GET
+
+        expect:
+        script.adminDeleteBundle([bundleId: '5', confirm: true]).success == expected
+
+        where:
+        scenario               | afterList                                              || expected
+        'gone after delete'    | []                                                     || true
+        'still present -> fail' | [[id: '5', name: 'mcp_libraries', namespace: 'mcp']]   || false
+    }
+
+    def "adminDeleteBundle refuses a missing id without sending a delete"() {
+        given:
+        script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: [[id: '5', name: 'x', namespace: 'mcp']]] }
+
+        expect:
+        script.adminDeleteBundle([bundleId: '99', confirm: true]).success == false
+    }
+
+    def "restoreLibrary self-heals a rejected in-place update via delete+recreate"() {
+        given:
+        String cached = 'library mcp.Foo source body aaaa'
+        script.metaClass.readHubFileText = { String fn -> cached }
+        script.metaClass.libraryVersion = { String id -> 7 }       // exists -> in-place attempted first
+        int posts = 0
+        script.metaClass.hubPostJson = { String p, String b ->
+            posts++
+            (posts == 1)
+                ? [status: 200, data: '{"success":false,"message":"bundle-managed; update via the bundle"}']  // in-place rejected
+                : [status: 200, data: '{"success":true,"id":222,"version":1}']                                 // recreate OK
+        }
+        script.metaClass.hubGet = { String p, Map q -> "" }        // delete GET
+        script.metaClass.readLibrarySource = { String id -> cached }  // post-create byte-confirm matches
+
+        expect:
+        script.restoreLibrary('119', 'mcp-source-library-119.groovy') == true
+    }
+
+    def "restoreLibrary creates the library when it is absent (cascade-removed)"() {
+        given:
+        String cached = 'library mcp.Foo source body bbbb'
+        script.metaClass.readHubFileText = { String fn -> cached }
+        script.metaClass.libraryVersion = { String id -> null }     // not present -> straight to create
+        script.metaClass.hubPostJson = { String p, String b -> [status: 200, data: '{"success":true,"id":333,"version":1}'] }
+        script.metaClass.readLibrarySource = { String id -> cached }
+
+        expect:
+        script.restoreLibrary('119', 'mcp-source-library-119.groovy') == true
+    }
+
+    def "restorePackage drops the PR's stale bundle + library, keeps main's and untouched namespaces"() {
+        given:
+        def deletedBundles = []
+        def deletedLibs = []
+        // Hub holds main's mcp_smoke_test bundle + the PR's mcp_libraries bundle; main's McpSmokeTestLib +
+        // the PR's McpRoomsLib + an unrelated 'other'-namespace library. The manifest's main sets list
+        // only mcp_smoke_test + McpSmokeTestLib, so the PR's bundle/library are the stale ones to drop.
+        script.metaClass.hubGet = { String p, Map q -> null }       // resolveLibraryId -> falls back to manifest id
+        script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: [
+            [id: '1', name: 'mcp_smoke_test', namespace: 'mcp'],
+            [id: '2', name: 'mcp_libraries', namespace: 'mcp']]] }
+        script.metaClass.adminDeleteBundle = { Map a -> deletedBundles << a.bundleId; [success: true, verified: true] }
+        script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: [
+            [id: '10', name: 'McpSmokeTestLib', namespace: 'mcp'],
+            [id: '11', name: 'McpRoomsLib', namespace: 'mcp'],
+            [id: '12', name: 'Unrelated', namespace: 'other']]] }
+        script.metaClass.adminDeleteItem = { Map a -> deletedLibs << a.id; [success: true] }
+        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.restoreApp = { String c, String f -> true }
+        Map written = null
+        script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9', manifest: [
+            app: [classId: '178', file: 'mcp-source-app-178.groovy'],
+            libraries: [[namespace: 'mcp', name: 'McpSmokeTestLib', id: '10', file: 'mcp-source-library-10.groovy']],
+            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test']]]] }
+        script.metaClass.writeFlag = { Map fl -> written = fl; true }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        written?.restoreResult == 'restored'
+        deletedBundles == ['2']     // PR bundle dropped; main's mcp_smoke_test kept
+        deletedLibs == ['11']       // PR library dropped; main's McpSmokeTestLib kept; 'other' namespace untouched
+    }
+
+    def "restorePackage skips bundle cleanup when the manifest has no main bundle set (older flag)"() {
+        given:
+        def deletedBundles = []
+        script.metaClass.hubGet = { String p, Map q -> null }
+        script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: [[id: '2', name: 'mcp_libraries', namespace: 'mcp']]] }
+        script.metaClass.adminDeleteBundle = { Map a -> deletedBundles << a.bundleId; [success: true] }
+        script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: []] }
+        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.restoreApp = { String c, String f -> true }
+        Map written = null
+        // No 'bundles' / no 'libraries' key in the manifest -> both cleanups must SKIP (don't blind-delete).
+        script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9',
+            manifest: [app: [classId: '178', file: 'mcp-source-app-178.groovy']]] }
+        script.metaClass.writeFlag = { Map fl -> written = fl; true }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        written?.restoreResult == 'restored'
+        deletedBundles == []        // skipped -- no main bundle set to compare against
     }
 }

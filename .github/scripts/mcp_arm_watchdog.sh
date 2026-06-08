@@ -143,12 +143,48 @@ fi
 # change a length poll can't see), then record main's SHA so an UNCHANGED main is skipped next run (no
 # needless 1.6MB redeploy -- the cache-and-skip design). MAIN_* absent (older workflow) -> skip silently.
 #
-# SCOPE: refreshes the APP (hubitat-mcp-server.groovy) only; the libraries/bundle backed up below are
-# whatever is currently installed. If canonical main ever changes its libraries/bundle, the cached
-# package could be main-app + stale libs -- the full-package canonical-main refresh is covered by the
-# bundle tooling landing in PR #247. main's #include set is stable today, so app-only is correct for now.
+# SCOPE: full-package canonical main (PR #247). Before the app drift-check below, this reinstalls main's
+# BUNDLE (from main's packageManifest.json at MAIN_SHA) so the #include'd libraries are refreshed to
+# canonical main too -- not just the app. That closes the stale-library gap: a main change touching only
+# a library is caught (the app would otherwise recompile against stale libs on a coupled change), and the
+# cache taken below is the whole canonical-main package. The APP is then redeployed only when it drifted
+# (the 1.6MB redeploy stays gated on the length+SHA check). MAIN_* absent (older workflow) -> skip.
 MAIN_SHA_FILE="mcp-main-deployed-sha.txt"
 if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA:-}" ]; then
+  # (2c-i) Reinstall main's BUNDLE(s) so the libraries are canonical main, BEFORE the app refresh below
+  # recompiles against them. main's bundle URL(s) come from main's packageManifest.json at MAIN_SHA
+  # (derived from MAIN_SOURCE_URL); the hub fetches the small zip itself (importUrl). Small + fast
+  # (synchronous in the relay window), so it runs every arm -- it also re-establishes main's bundle
+  # ENTITY (a prior run's restore removed it), which the bundle-set recording + disarm no-stale check
+  # below need. HALTs on a real install failure (cannot establish canonical-main libraries).
+  MAIN_RAW_PREFIX="${MAIN_SOURCE_URL%/*}"
+  MAIN_PKG_MANIFEST=$(curl -fsSL "${MAIN_RAW_PREFIX}/packageManifest.json" 2>/dev/null || true)
+  if [ -n "$MAIN_PKG_MANIFEST" ]; then
+    MAIN_BUNDLE_RELS=$(printf '%s' "$MAIN_PKG_MANIFEST" | jq -r '.bundles[]?.location // empty' 2>/dev/null \
+      | sed -E 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+/##')
+    if [ -n "$MAIN_BUNDLE_RELS" ]; then
+      while IFS= read -r BREL; do
+        [ -z "$BREL" ] && continue
+        BURL="${MAIN_RAW_PREFIX}/${BREL}"
+        echo "Refreshing main's bundle onto the hub (canonical-main libraries): ${BURL} ..."
+        BIN_RPC=$(jq -nc --arg url "$BURL" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_install_bundle",arguments:{importUrl:$url,confirm:true}}}')
+        if ! BIN_TEXT=$(mcp_tool_call_text "hub_install_bundle (refresh main bundle ${BREL})" "$BIN_RPC"); then
+          echo "::error::e2e HALT: main bundle refresh (${BREL}) returned non-JSON ${RPC_ATTEMPTS} times -- transient relay/timeout. Re-run."
+          exit 1
+        fi
+        if [ "$(printf '%s' "$BIN_TEXT" | jq -r '.success // false' 2>/dev/null)" != "true" ]; then
+          echo "::error::e2e HALT: main bundle refresh did not report success for ${BREL}. Hub verbatim: $(printf '%s' "$BIN_TEXT" | jq -r '.error // empty' 2>/dev/null). Cannot establish canonical-main libraries."
+          exit 1
+        fi
+        echo "Main bundle ${BREL} (re)installed -- its libraries are canonical main."
+      done <<< "$MAIN_BUNDLE_RELS"
+    else
+      echo "::notice::main packageManifest.json declares no bundles -- app-only canonical main (no bundle to refresh)."
+    fi
+  else
+    echo "::warning::could not fetch main's packageManifest.json from ${MAIN_RAW_PREFIX} -- skipping the bundle refresh this run (the app refresh below still runs; a stale-library cache is possible if main changed a library)."
+  fi
+
   LIVE_MAIN_LEN=$(mcp_tool_call_text "hub_get_source (live main length, noSave)" \
     "$(jq -nc --arg id "$CLASS_ID" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:1,noSave:true}}}')" \
     | jq -r '.totalLength // empty' 2>/dev/null || true)
@@ -200,6 +236,24 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
 else
   echo "::notice::MAIN_* not provided -- skipping the canonical-main refresh (the cache will be whatever is live at arm)."
 fi
+
+# --- 2d) Record main's BUNDLE set (namespace+name) for the restore-time orphan cleanup + the disarm
+# no-stale assertion. List the hub's bundles NOW: canonical main is established and the PR is NOT yet
+# deployed (the install step runs after this arm), so every mcp-namespace bundle present is one of main's.
+# restorePackage deletes any mcp bundle NOT in this set (= the PR's bundle); the disarm asserts none
+# outside it remain. Recorded by LISTING the hub (the bundle's real namespace+name, e.g. mcp/mcp_libraries)
+# rather than from packageManifest's display name -- the two differ, and a name mismatch would delete
+# main's own bundle. A degraded/empty list -> "[]" -> cleanup + assertion both skip (safe).
+MAIN_BUNDLES_JSON="[]"
+if [ -n "${MAIN_SOURCE_URL:-}" ]; then
+  BLIST_TEXT=$(mcp_tool_call_text "hub_list_bundles (record main bundle set)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_bundles","arguments":{}}}' || true)
+  if [ "$(printf '%s' "$BLIST_TEXT" | jq -r '.source // empty' 2>/dev/null)" = "hub_api" ]; then
+    MAIN_BUNDLES_JSON=$(printf '%s' "$BLIST_TEXT" | jq -c '[.bundles[]? | select(.namespace=="mcp") | {namespace, name}]' 2>/dev/null || echo "[]")
+  else
+    echo "::warning::could not record main's bundle set (hub_list_bundles source=$(printf '%s' "$BLIST_TEXT" | jq -r '.source // "?"' 2>/dev/null)); restore-time bundle cleanup will be skipped this run."
+  fi
+fi
+echo "Main bundle set for restore cleanup: ${MAIN_BUNDLES_JSON}"
 
 # --- 3) BACK UP main: cache the app + each #include'd library, assembling the restore manifest -----
 # The watchdog's hub_get_source(type,id) writes mcp-source-<type>-<id>.groovy = the current
@@ -342,15 +396,17 @@ for TOKEN in "${INCLUDE_TOKENS[@]:-}"; do
     '$acc + [{id:$id, file:$file, namespace:$ns, name:$name}]')
 done
 
-# Assemble the restore manifest: {app:{classId,file}, libraries:[{id,file,namespace,name}]} -- the
-# exact shape restorePackage() reads (libraries first, app last; namespace/name let it re-resolve a
-# library id that the deploy changed via delete+recreate).
+# Assemble the restore manifest: {app:{classId,file}, libraries:[{id,file,namespace,name}],
+# bundles:[{namespace,name}]} -- the exact shape restorePackage() reads (drop the PR's stale bundle,
+# restore libraries first, app last, drop the PR's stale libraries; namespace/name let it re-resolve a
+# library id the deploy changed via delete+recreate, and identify main's bundles vs the PR's).
 MANIFEST_JSON=$(jq -nc \
   --arg classId "$CLASS_ID" \
   --arg appFile "$APP_RESTORE_FILE" \
   --arg mainChars "$APP_BACKUP_LEN" \
   --argjson libs "$LIB_MANIFEST_JSON" \
-  '{app:{classId:$classId, file:$appFile, mainChars:$mainChars}, libraries:$libs}')
+  --argjson bundles "${MAIN_BUNDLES_JSON:-[]}" \
+  '{app:{classId:$classId, file:$appFile, mainChars:$mainChars}, libraries:$libs, bundles:$bundles}')
 echo "Assembled restore manifest: $MANIFEST_JSON"
 
 # --- 4) Write the manifest-shaped armed flag, then READ IT BACK and assert ------------------------
