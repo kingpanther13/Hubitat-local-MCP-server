@@ -27,10 +27,13 @@ set -euo pipefail
 
 FLAG_FILE="e2e-deadman-v2.json"
 
-# Bound the wait for the watchdog's once-a-minute checkDeadman to land the restore. ~6 min covers
-# several schedule ticks plus restore time; well under the e2e job's own timeout.
-RESTORE_POLL_ATTEMPTS=18
-RESTORE_POLL_SLEEP=20
+# Bound the wait for the watchdog to land the restore. The disarm flag-write KICKS a one-shot
+# checkDeadman in ~2s (watchdog adminWriteFile -> deadmanKick), so the restore normally starts almost
+# immediately; the runEvery1Minute tick is the fallback if that kick is ever missed. Poll finely (8s)
+# so completion is observed promptly; ~6 min total still covers a retry storm on the periodic schedule
+# and stays well under the e2e job's own timeout.
+RESTORE_POLL_ATTEMPTS=45
+RESTORE_POLL_SLEEP=8
 
 # --- cloud-gateway wrappers (target $WATCHDOG_URL, the watchdog's own MCP endpoint, not $MCP_URL) ----
 

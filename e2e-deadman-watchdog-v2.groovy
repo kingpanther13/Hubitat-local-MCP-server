@@ -143,6 +143,12 @@ def checkDeadman() {
     actAndRecord(flag, "fire")
 }
 
+// One-shot accelerator scheduled by adminWriteFile right after CI writes the armed flag. A handler
+// name DISTINCT from "checkDeadman" is deliberate: it guarantees runIn() never overwrites the
+// runEvery1Minute("checkDeadman") periodic dead-man job. Delegates to the same idempotent check, so it
+// just makes the disarm restore happen ~2s after the flag write instead of on the next minute tick.
+def deadmanKick() { checkDeadman() }
+
 // Run the package restore, then record result + idempotency stamp into the flag (the signal CI
 // polls). BOTH triggers retry up to a 5-tick cap before latching "failed" (a transient miss must not
 // latch the restore failed); a success stamps restoreFor=runId so it runs at most once per run.
@@ -1405,6 +1411,13 @@ def adminWriteFile(args) {
     }
     try {
         uploadHubFile(args.fileName, args.content.getBytes("UTF-8"))
+        // Accelerate the dead-man: kick a one-shot checkDeadman ~2s after CI writes the armed flag,
+        // instead of waiting up to ~60s for the next runEvery1Minute tick (the single biggest avoidable
+        // cost in the disarm/restore step). A DEDICATED handler (deadmanKick, NOT "checkDeadman") means
+        // scheduling it can never overwrite the periodic dead-man job, so the brick/GitHub-down floor
+        // stays intact; checkDeadman is idempotent (restoreFor stamp), so an arm-write kick is a harmless
+        // no-op and only a disarm write actually restores -- ~58s sooner.
+        if (args.fileName == (flagFileName ?: "e2e-deadman-v2.json")) runIn(2, "deadmanKick")
         return [success: true, message: "File '${args.fileName}' written.", fileName: args.fileName, contentLength: args.content.length()]
     } catch (Exception e) {
         log.error "adminWriteFile: ${e.message}"
