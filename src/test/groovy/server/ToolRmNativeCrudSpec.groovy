@@ -28328,6 +28328,170 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.requiredExpression?.success == true
     }
 
+    def "create shell with Required Expression and NO actions fires a trailing updateRule AFTER the RE write so the RE is live"() {
+        // BLOCKING regression guard: _rmAddRequiredExpression only clicks
+        // hasRule+doneST -- it does NOT fire updateRule. On the create arm the
+        // RE walk runs BETWEEN the triggers' updateRule and the actions'
+        // updateRule. When actions are present the actions' updateRule
+        // reinitializes the RE for free; when NO actions follow, that updateRule
+        // never fires and the RE would stay dormant. The fix fires a trailing
+        // updateRule in the RE block itself for the no-actions path. This drives
+        // the REAL _createNativeAppShell (NOT a stubbed shell) and asserts a
+        // btn updateRule click occurs AFTER the last RE-walk POST. It goes RED
+        // if the trailing updateRule is removed.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        // _discoverParentAppId reads /hub2/appsList to find the RM parent (id 21).
+        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
+        // createchild -> 974 (302 location parsed by _rmCreateChildApp)
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapp/configure/974", data: ""]
+        }
+        // Label page (origLabel) for the fresh shell.
+        hubGet.register('/installedapp/configure/json/974') { params ->
+            ruleConfigJson(974, "", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/974') { params -> statusJson(974) }
+        // mainPage returns a baked RE paragraph so the post-commit bake check passes.
+        hubGet.register('/installedapp/configure/json/974/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 974, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF S1 is on"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/974/STPage') { params ->
+            fetchSeq++
+            stPageCondSchemaJson(974, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/974/selectActions') { params ->
+            ruleConfigJson(974, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/974/doActPage') { params ->
+            ruleConfigJson(974, "r", [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "drive the REAL create shell with a Required Expression and NO actions"
+        def result = script._createNativeAppShell([
+            appType: "rule_machine",
+            name: "BAT-create-RE-no-actions",
+            requiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
+            confirm: true
+        ])
+
+        then: "the RE committed and the result is clean (RE live)"
+        result.appId == 974
+        result.requiredExpression?.success == true
+        result.requiredExpression?.updateRuleFailed != true
+        result.success == true
+
+        and: "an updateRule btn click fires AFTER the RE-walk writes (so the RE is reinitialized)"
+        def btnClicks = []
+        def lastReWriteIdx = -1
+        posts.eachWithIndex { p, i ->
+            if (p.path == "/installedapp/btn" && p.body?.name == "updateRule") btnClicks << i
+            // RE-walk writes/clicks land on STPage / selectActions / doActPage.
+            if (p.body?.currentPage in ["STPage", "selectActions", "doActPage"]) lastReWriteIdx = i
+        }
+        lastReWriteIdx >= 0
+        btnClicks.any { it > lastReWriteIdx }
+    }
+
+    def "create shell RE-block updateRule failure degrades the result (expressionNotLive), not a silent swallow"() {
+        // Companion to the trailing-updateRule guard: when the RE-block's
+        // trailing updateRule click is REJECTED, the result must degrade
+        // honestly (updateRuleFailed/expressionNotLive/partial) rather than
+        // reporting a live RE. Mirrors the _applyNativeAppEdit edit arm's
+        // updateRuleFailed propagation. The post-RE updateRule click is the only
+        // btn-updateRule that targets selectActions context here -- we fail
+        // exactly that click.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def reWalkDone = false
+        // _discoverParentAppId reads /hub2/appsList to find the RM parent (id 21).
+        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapp/configure/975", data: ""]
+        }
+        hubGet.register('/installedapp/configure/json/975') { params ->
+            ruleConfigJson(975, "", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/975') { params -> statusJson(975) }
+        hubGet.register('/installedapp/configure/json/975/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 975, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF S1 is on"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/975/STPage') { params ->
+            fetchSeq++
+            stPageCondSchemaJson(975, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/975/selectActions') { params ->
+            ruleConfigJson(975, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/975/doActPage') { params ->
+            ruleConfigJson(975, "r", [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        // The RE walk's ghost-ifThen clear ends with a doActPage->selectActions
+        // nav; once that lands, the next updateRule btn click is the RE-block
+        // trailing one -- fail exactly it.
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.currentPage == "doActPage" &&
+                body?.any { k, v -> k?.toString()?.contains("_action_href_name|selectActions|") }) {
+                reWalkDone = true
+            }
+            if (reWalkDone && path == "/installedapp/btn" && body?.name == "updateRule") {
+                throw new RuntimeException("hub rejected updateRule")
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script._createNativeAppShell([
+            appType: "rule_machine",
+            name: "BAT-create-RE-updaterule-fail",
+            requiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
+            confirm: true
+        ])
+
+        then: "the failed re-init is surfaced -- the RE is NOT reported as live"
+        result.requiredExpression?.updateRuleFailed == true
+        result.requiredExpression?.expressionNotLive == true
+        result.requiredExpression?.partial == true
+        result.success == false
+    }
+
     def "hub_set_rule CREATE (no appId) loudly REJECTS every edit-only shortcut -- no silent-success on a dropped op"() {
         // B3 class-level completeness guard. The create arm bundles a FIXED set of authoring
         // shortcuts (CREATE_HONORED); EVERY other rule-authoring shortcut is edit-only and

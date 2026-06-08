@@ -17602,7 +17602,9 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             repairHints << "Some trigger ${settingWord} didn't land: ${skippedKeys}. Use hub_set_rule(walkStep={page:'selectTriggers', operation:'introspect'}) to see the live schema, then write the missing fields one at a time. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial trigger construction, no longer in the live input list). Verify via hub_get_app_config(appId) -- if the trigger paragraph renders the value correctly (e.g. 'Certain Time 5:30 PM'), the partial flag is cosmetic and the trigger is fully baked. Skip the repair."
         }
         if (!forceWrittenKeys.isEmpty()) {
-            repairHints << "Comparator ${forceWrittenKeys.join(', ')} was force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the trigger paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
+            def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
+            def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
+            repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the trigger paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
         }
         if (hasBrokenLabel) {
             repairHints << "Trigger row has *BROKEN* marker -- capability '${cap}' likely needs a capability-specific field (Mode: pass state='ModeName' or modeIds=['id'], NOT rawSettings.tstate; Periodic: pass periodic={} sub-spec). Re-add the trigger with the correct fields."
@@ -21183,7 +21185,9 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             repairHints << "If retries still fail, removeAction(index:${idx}) to clean up, then call addAction again with corrections."
         }
         if (!forceWrittenKeys.isEmpty()) {
-            repairHints << "Comparator ${forceWrittenKeys.join(', ')} was force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the action paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
+            def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
+            def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
+            repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the action paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
         }
         if ((health?.brokenMarkers as List)?.size() > 0) {
             repairHints << "Rule has pre-existing broken markers: ${(health.brokenMarkers as List).unique().join(', ')}. The new action committed, but run hub_get_rule_health(${appId}) and repair the existing broken trigger/action rows before this rule fires correctly."
@@ -22987,8 +22991,15 @@ def _createNativeAppShell(args) {
         // Optional Required Expression creation. Runs BEFORE actions: the RE
         // walk seals predCapabs and the helper fires a ghost ifThen clear so
         // subsequent addAction calls don't inherit an IF(**Broken Condition**)
-        // wrapper. updateRule fires inside _rmAddRequiredExpression after the
-        // expression commits.
+        // wrapper. _rmAddRequiredExpression only clicks hasRule+doneST -- it does
+        // NOT fire updateRule, so the expression is not yet live on the running
+        // rule when the helper returns. The actions path below fires its own
+        // trailing updateRule, which reinitializes the RE for free when actions
+        // are present. When NO actions follow, that updateRule never fires and
+        // the RE would stay dormant, so this block fires a trailing updateRule
+        // itself (mirroring the _applyNativeAppEdit edit-arm pattern) and
+        // surfaces an updateRuleFailed/expressionNotLive degradation if the
+        // re-init click is rejected rather than silently swallowing it.
         def reSpec = args?.requiredExpression instanceof Map ? (args.requiredExpression as Map) : null
         def reResult = null
         if (reSpec != null) {
@@ -22997,6 +23008,23 @@ def _createNativeAppShell(args) {
             } catch (Exception ree) {
                 reResult = [success: false, error: ree.message]
                 mcpLog("warn", "rm-native", "hub_set_rule: requiredExpression failed -- ${ree.message}")
+            }
+            // Reinitialize the RE on the running rule. When actions follow,
+            // their trailing updateRule (below) also covers this, but firing it
+            // here makes the no-actions path correct and an extra updateRule is
+            // harmless (triggers->updateRule->actions->updateRule already fires
+            // multiple per session). On failure, degrade reResult honestly so a
+            // dormant RE is not reported as live.
+            if (reResult instanceof Map && reResult.success != false) {
+                try {
+                    _rmClickAppButton(newId, "updateRule")
+                } catch (Exception reUpdExc) {
+                    reResult.updateRuleFailed = true
+                    reResult.expressionNotLive = true
+                    reResult.updateRuleError = reUpdExc.message
+                    reResult.partial = true
+                    mcpLog("warn", "rm-native", "hub_set_rule: requiredExpression trailing updateRule click failed for app ${newId} -- expression may not be live: ${reUpdExc.message}")
+                }
             }
         }
 
@@ -23085,12 +23113,18 @@ def _createNativeAppShell(args) {
             ],
             health: health,
             note: (triggerSpecs || actionSpecs || reSpec != null) ?
-                "Created ${appType} app (id=${newId}) with ${triggerResults.count { it?.success == true }}/${triggerSpecs.size()} triggers + ${actionResults.count { it?.success == true }}/${actionSpecs.size()} actions${reSpec != null ? " + Required Expression (${reFailed ? "failed" : (rePartial ? "partial" : "applied")})" : ""} FULLY committed${partialTriggers || partialActions || reFailed || rePartial ? " (some partial -- see partialTriggers/partialActions/requiredExpression for repair)" : ""}. updateRule fired once at the end." :
+                "Created ${appType} app (id=${newId}) with ${triggerResults.count { it?.success == true }}/${triggerSpecs.size()} triggers + ${actionResults.count { it?.success == true }}/${actionSpecs.size()} actions${reSpec != null ? " + Required Expression (${reFailed ? "failed" : (rePartial ? "partial" : "applied")})" : ""} FULLY committed${partialTriggers || partialActions || reFailed || rePartial ? " (some partial -- see partialTriggers/partialActions/requiredExpression for repair)" : ""}. updateRule fired to commit each section${reSpec != null ? (reResult?.updateRuleFailed ? " but the Required Expression re-init updateRule was REJECTED -- the expression may not be live (see requiredExpression.updateRuleError)" : " (including a trailing updateRule after the Required Expression so it is live)") : ""}." :
                 "Empty ${appType} app created (id=${newId}). Use hub_set_rule (RM rules) or hub_set_native_app (other classic apps) to populate, or hub_get_app_config to inspect."
         ]
         if (triggerSpecs) result.triggers = triggerResults
         if (actionSpecs) result.actions = actionResults
-        if (reSpec != null) result.requiredExpression = reResult
+        if (reSpec != null) {
+            result.requiredExpression = reResult
+            // Surface the schema-declared top-level field defensively, matching
+            // the _applyNativeAppEdit edit arm. Near-impossible on a fresh
+            // create, but the outputSchema promises it top-level.
+            if (reResult?.requiredExpressionAlreadyExists) result.requiredExpressionAlreadyExists = true
+        }
         // Honesty caveat: only rule_machine reliably copies origLabel -> the
         // installed-app display label on commit. For other (partial-support)
         // appTypes the requested name may NOT become the visible label, so flag
@@ -24835,7 +24869,9 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             reRepairHints << "${deg} ${cw} used a degraded write path (e.g. rhs_type_not_revealed; see settingsSkipped entries with 'reason'). Inspect via hub_get_app_config(appId, includeSettings=true) and re-run with rawSettings to fill missing fields if needed."
         }
         if (!forceWrittenKeys.isEmpty()) {
-            reRepairHints << "Comparator ${forceWrittenKeys.join(', ')} was force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the expression paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
+            def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
+            def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
+            reRepairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the expression paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
         }
         return [
             success: true,
