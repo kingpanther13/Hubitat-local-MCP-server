@@ -298,4 +298,113 @@ class WatchdogV2Spec extends Specification {
         written?.restoreResult == 'restored'
         deletedBundles == []        // skipped -- no main bundle set to compare against
     }
+
+    def "restorePackage cleanup is best-effort: a FAILED stale-bundle delete does not abort the restore"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> null }
+        script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: [
+            [id: '1', name: 'mcp_smoke_test', namespace: 'mcp'],
+            [id: '2', name: 'mcp_libraries', namespace: 'mcp']]] }
+        script.metaClass.adminDeleteBundle = { Map a -> [success: false, error: 'hub refused'] }   // delete FAILS
+        script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: []] }
+        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.restoreApp = { String c, String f -> true }
+        Map written = null
+        script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9', manifest: [
+            app: [classId: '178', file: 'app.groovy'],
+            libraries: [[namespace: 'mcp', name: 'McpSmokeTestLib', id: '10', file: 'lib.groovy']],
+            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test']]]] }
+        script.metaClass.writeFlag = { Map fl -> written = fl; true }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        written?.restoreResult == 'restored'   // restoring main's libs+app is the guarantee; a failed cleanup delete must not abort it
+    }
+
+    def "restorePackage cleanup is best-effort: a THROWING stale-library delete does not abort the restore"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> null }
+        script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: []] }
+        script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: [
+            [id: '10', name: 'McpSmokeTestLib', namespace: 'mcp'],
+            [id: '11', name: 'McpRoomsLib', namespace: 'mcp']]] }
+        script.metaClass.adminDeleteItem = { Map a -> throw new RuntimeException('boom') }   // delete THROWS
+        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.restoreApp = { String c, String f -> true }
+        Map written = null
+        script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9', manifest: [
+            app: [classId: '178', file: 'app.groovy'],
+            libraries: [[namespace: 'mcp', name: 'McpSmokeTestLib', id: '10', file: 'lib.groovy']],
+            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test']]]] }
+        script.metaClass.writeFlag = { Map fl -> written = fl; true }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        written?.restoreResult == 'restored'   // a throwing cleanup delete is caught; restore still succeeds
+    }
+
+    def "restoreLibrary(create) accepts an unreadable post-create live source (transient), but rejects a DIFFERENT one"() {
+        given:
+        String cached = 'library mcp.Foo source body cccc'
+        script.metaClass.readHubFileText = { String fn -> cached }
+        script.metaClass.libraryVersion = { String id -> null }     // not present -> straight to create
+        script.metaClass.hubPostJson = { String p, String b -> [status: 200, data: '{"success":true,"id":444,"version":1}'] }
+        script.metaClass.readLibrarySource = { String id -> live }   // post-create confirm read
+
+        expect:
+        script.restoreLibrary('119', 'mcp-source-library-119.groovy') == expected
+
+        where:
+        scenario                        | live                   || expected
+        'unreadable -> accept on id'    | null                   || true
+        'byte-identical -> restored'    | 'library mcp.Foo source body cccc' || true
+        'different live -> did not land' | 'a DIFFERENT source'   || false
+    }
+
+    def "adminDeleteBundle reports verified=false when the post-delete re-list is degraded"() {
+        given:
+        int calls = 0
+        script.metaClass.adminListBundles = { Map a ->
+            calls++
+            (calls == 1)
+                ? [source: 'hub_api', bundles: [[id: '5', name: 'mcp_libraries', namespace: 'mcp']]]   // before: present
+                : [source: 'hub_api_raw', bundles: []]                                                   // after: degraded shape
+        }
+        script.metaClass.hubGet = { String p, Map q -> "" }
+
+        when:
+        def r = script.adminDeleteBundle([bundleId: '5', confirm: true])
+
+        then:
+        r.success == false      // a destructive op must NOT claim success it couldn't verify
+        r.verified == false
+    }
+
+    def "restorePackage skips bundle cleanup when the live bundle list is degraded (no blind delete)"() {
+        given:
+        def deletedBundles = []
+        script.metaClass.hubGet = { String p, Map q -> null }
+        script.metaClass.adminListBundles = { Map a -> [source: 'hub_api_raw', bundles: []] }   // degraded -> skip
+        script.metaClass.adminDeleteBundle = { Map a -> deletedBundles << a.bundleId; [success: true] }
+        script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: []] }
+        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.restoreApp = { String c, String f -> true }
+        Map written = null
+        script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9', manifest: [
+            app: [classId: '178', file: 'app.groovy'],
+            libraries: [],
+            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test']]]] }
+        script.metaClass.writeFlag = { Map fl -> written = fl; true }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        written?.restoreResult == 'restored'
+        deletedBundles == []        // degraded list -> skip cleanup, never blind-delete
+    }
 }

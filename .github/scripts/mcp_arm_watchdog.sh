@@ -196,10 +196,15 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
             MAIN_BUNDLES_JSON="$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -c --arg ns "$B_NS" --arg nm "$B_NM" '. + [{namespace:$ns, name:$nm}]')"
             echo "Recorded main bundle identity ${B_NS}/${B_NM} (from ${BREL} install.txt)."
           else
-            echo "::warning::could not parse install.txt namespace/name from ${BREL} -- it will not be in the restore keep-set (its cleanup may be skipped)."
+            # The bundle was just installed (the install above HALTs on failure), so we MUST record its
+            # identity: an incomplete keep-set means the disarm no-stale gate can't protect main's bundle
+            # and could even flag/delete it as an orphan. A parse miss here is a hard stop, not a warning.
+            echo "::error::e2e HALT: installed main bundle ${BREL} but could not parse its install.txt namespace/name -- the restore keep-set would be incomplete. Re-run."
+            exit 1
           fi
         else
-          echo "::warning::could not download ${BURL} to read its bundle identity -- it will not be in the restore keep-set."
+          echo "::error::e2e HALT: installed main bundle ${BREL} but could not re-download ${BURL} to read its hub-registered identity -- the restore keep-set would be incomplete. Re-run."
+          exit 1
         fi
         rm -f "$ZIP_TMP"
       done <<< "$MAIN_BUNDLE_RELS"

@@ -14,11 +14,11 @@
 # code-install plumbing. Its advantage over self-deploying through the primary
 # endpoint is that the watchdog is a DIFFERENT running app, so installing the MCP
 # package does NOT reload the app answering the request -- it never bricks itself
-# and stays queryable throughout. Small/fast calls (the libraries, the CURRENT
-# small smoke-test bundle, get_source, get_info) return the hub's VERBATIM
-# compile/save result synchronously within the ~10s cloud relay window (the bundle
-# is fast only because mcp-smoke-test.zip is tiny -- a large bundle would need the
-# app's dropped-response tolerance too), so VERIFY for those is simply: parse the tool
+# and stays queryable throughout. Small/fast calls (the libraries, the package's
+# libraries bundle, get_source, get_info) return the hub's VERBATIM compile/save
+# result synchronously within the ~10s cloud relay window (a bundle install is the hub
+# fetching + unpacking a small zip, well within the window), so VERIFY for those is
+# simply: parse the tool
 # response and fail loudly -- surfacing the hub's verbatim errorMessage -- if
 # success != true. The one exception is the ~1.6MB APP deploy: it runs ~200s
 # hub-side, so the relay drops its response even though the deploy proceeds, exactly

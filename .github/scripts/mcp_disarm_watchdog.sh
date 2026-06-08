@@ -105,7 +105,7 @@ assert_no_stale_mcp_code() {
     blist=$(mcp_tool_call_text "hub_list_bundles (post-restore no-stale check)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_bundles","arguments":{}}}' || true)
     if [ "$(printf '%s' "$blist" | jq -r '.source // empty' 2>/dev/null)" = "hub_api" ]; then
       stale_b=$(printf '%s' "$blist" | jq -c --argjson keep "$mainBundles" \
-        '[.bundles[]? | select(.namespace=="mcp") | {namespace, name} | select(($keep | index(.)) == null) | .name]' 2>/dev/null || echo "[]")
+        '[.bundles[]? | select(.namespace=="mcp") | {namespace, name} | select(. as $x | ($keep | any(. == $x)) | not) | .name]' 2>/dev/null || echo "[]")
       if [ "$(printf '%s' "$stale_b" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]; then
         echo "::error::Post-restore: STALE mcp bundle(s) remain after the overwrite-with-main restore: $(printf '%s' "$stale_b" | jq -c .). restorePackage's bundle cleanup did not remove the PR's bundle. Investigate."
         exit 1
@@ -123,7 +123,7 @@ assert_no_stale_mcp_code() {
     llist=$(mcp_tool_call_text "hub_list_libraries (post-restore no-stale check)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}' || true)
     if [ "$(printf '%s' "$llist" | jq -r '.source // empty' 2>/dev/null)" = "hub_api" ]; then
       stale_l=$(printf '%s' "$llist" | jq -c --argjson keep "$mainLibs" \
-        '[.libraries[]? | select(.namespace=="mcp") | {namespace, name} | select(($keep | index(.)) == null) | .name]' 2>/dev/null || echo "[]")
+        '[.libraries[]? | select(.namespace=="mcp") | {namespace, name} | select(. as $x | ($keep | any(. == $x)) | not) | .name]' 2>/dev/null || echo "[]")
       if [ "$(printf '%s' "$stale_l" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ]; then
         echo "::error::Post-restore: STALE mcp library(ies) remain after the overwrite-with-main restore: $(printf '%s' "$stale_l" | jq -c .). restorePackage's library cleanup did not remove the PR-only libraries. Investigate."
         exit 1

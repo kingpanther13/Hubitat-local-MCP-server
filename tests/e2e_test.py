@@ -1774,15 +1774,16 @@ class TestRunner:
     # Bundle tools (issue #209): McpBundlesLib-backed hub_list_bundles /
     # hub_export_bundle / hub_delete_bundle. These prove that, after the
     # modularization, the libraries actually load as a bundle on the real hub
-    # and the new tools work end-to-end. They ride on the CI "Install bundle the
-    # HPM way" step that delivers the mcp-libraries bundle before tests run.
+    # and the new tools work end-to-end. They ride on the watchdog PR-install step
+    # (the "Watchdog - install PR" job in hub-e2e.yml) that delivers the
+    # mcp-libraries bundle before tests run.
     # -----------------------------------------------------------------------
 
     @test("system_tools")
     def test_list_bundles(self) -> None:
         """hub_list_bundles lists installed bundles, and the package's libraries bundle (delivered
-        by the CI HPM-install step) is present with its libraries -- proof the split libraries load
-        as a bundle on the real hub."""
+        by the watchdog PR-install step) is present with its libraries -- proof the split libraries
+        load as a bundle on the real hub."""
         result = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
         assert result.get("source") == "hub_api", \
             f"hub_list_bundles did not return the populated hub API shape (source={result.get('source')!r})"
