@@ -103,10 +103,13 @@ if [ "${#INCLUDES[@]}" -eq 0 ]; then
 else
   echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]}"
 
-  # Snapshot existing hub libraries once, to choose update-vs-create per library.
-  LIB_LIST_TEXT=$(call_tool '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}')
+  # Snapshot existing hub libraries once, to choose update-vs-create per library. Use the RETRYING
+  # read: this is an idempotent list, and a single cloud-relay drop here (the hub is briefly busy right
+  # after the best-effort backup above + the arm's canonical-main bundle refresh) must not hard-fail the
+  # whole deploy. (Retry is safe for reads; the create/update/delete WRITES below stay single-shot.)
+  LIB_LIST_TEXT=$(call_tool_retry '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}')
   if [ -z "$LIB_LIST_TEXT" ]; then
-    echo "::error::hub_list_libraries returned no MCP content from the watchdog endpoint -- cannot plan create-vs-update."
+    echo "::error::hub_list_libraries returned no MCP content from the watchdog endpoint after retries -- cannot plan create-vs-update. Re-run; if it persists, check the watchdog app logs."
     exit 1
   fi
 

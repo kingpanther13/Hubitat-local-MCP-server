@@ -150,6 +150,12 @@ fi
 # cache taken below is the whole canonical-main package. The APP is then redeployed only when it drifted
 # (the 1.6MB redeploy stays gated on the length+SHA check). MAIN_* absent (older workflow) -> skip.
 MAIN_SHA_FILE="mcp-main-deployed-sha.txt"
+# main's BUNDLE set (namespace+name as the hub registers them) for the restore-time orphan cleanup + the
+# disarm no-stale assertion. Derived from each main bundle .zip's own install.txt (line 1 = namespace,
+# line 2 = name) -- the authoritative hub-registered identity -- NOT from listing the hub (a prior run's
+# leftover bundle still on the hub would otherwise be misrecorded as "main's" and never cleaned up). "[]"
+# when MAIN_* is absent or the manifest/zip can't be read -> the restore cleanup + assertion skip (safe).
+MAIN_BUNDLES_JSON="[]"
 if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA:-}" ]; then
   # (2c-i) Reinstall main's BUNDLE(s) so the libraries are canonical main, BEFORE the app refresh below
   # recompiles against them. main's bundle URL(s) come from main's packageManifest.json at MAIN_SHA
@@ -177,6 +183,25 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
           exit 1
         fi
         echo "Main bundle ${BREL} (re)installed -- its libraries are canonical main."
+        # Record main's bundle identity from the zip's own install.txt (line 1 = namespace, line 2 =
+        # name) -- exactly what the hub registers in /hub2/userBundles -- so the restore KEEPS this and
+        # deletes everything else (the PR's bundle AND any stale leftover from a prior run). Reading the
+        # hub list here instead would misclassify a leftover as main's and never clean it.
+        ZIP_TMP="$(mktemp)"
+        if curl -fsSL "$BURL" -o "$ZIP_TMP" 2>/dev/null; then
+          B_INSTALL_TXT="$(unzip -p "$ZIP_TMP" install.txt 2>/dev/null || true)"
+          B_NS="$(printf '%s\n' "$B_INSTALL_TXT" | sed -n '1p' | tr -d '[:space:]')"
+          B_NM="$(printf '%s\n' "$B_INSTALL_TXT" | sed -n '2p' | tr -d '[:space:]')"
+          if [ -n "$B_NS" ] && [ -n "$B_NM" ]; then
+            MAIN_BUNDLES_JSON="$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -c --arg ns "$B_NS" --arg nm "$B_NM" '. + [{namespace:$ns, name:$nm}]')"
+            echo "Recorded main bundle identity ${B_NS}/${B_NM} (from ${BREL} install.txt)."
+          else
+            echo "::warning::could not parse install.txt namespace/name from ${BREL} -- it will not be in the restore keep-set (its cleanup may be skipped)."
+          fi
+        else
+          echo "::warning::could not download ${BURL} to read its bundle identity -- it will not be in the restore keep-set."
+        fi
+        rm -f "$ZIP_TMP"
       done <<< "$MAIN_BUNDLE_RELS"
     else
       echo "::notice::main packageManifest.json declares no bundles -- app-only canonical main (no bundle to refresh)."
@@ -237,23 +262,9 @@ else
   echo "::notice::MAIN_* not provided -- skipping the canonical-main refresh (the cache will be whatever is live at arm)."
 fi
 
-# --- 2d) Record main's BUNDLE set (namespace+name) for the restore-time orphan cleanup + the disarm
-# no-stale assertion. List the hub's bundles NOW: canonical main is established and the PR is NOT yet
-# deployed (the install step runs after this arm), so every mcp-namespace bundle present is one of main's.
-# restorePackage deletes any mcp bundle NOT in this set (= the PR's bundle); the disarm asserts none
-# outside it remain. Recorded by LISTING the hub (the bundle's real namespace+name, e.g. mcp/mcp_libraries)
-# rather than from packageManifest's display name -- the two differ, and a name mismatch would delete
-# main's own bundle. A degraded/empty list -> "[]" -> cleanup + assertion both skip (safe).
-MAIN_BUNDLES_JSON="[]"
-if [ -n "${MAIN_SOURCE_URL:-}" ]; then
-  BLIST_TEXT=$(mcp_tool_call_text "hub_list_bundles (record main bundle set)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_bundles","arguments":{}}}' || true)
-  if [ "$(printf '%s' "$BLIST_TEXT" | jq -r '.source // empty' 2>/dev/null)" = "hub_api" ]; then
-    MAIN_BUNDLES_JSON=$(printf '%s' "$BLIST_TEXT" | jq -c '[.bundles[]? | select(.namespace=="mcp") | {namespace, name}]' 2>/dev/null || echo "[]")
-  else
-    echo "::warning::could not record main's bundle set (hub_list_bundles source=$(printf '%s' "$BLIST_TEXT" | jq -r '.source // "?"' 2>/dev/null)); restore-time bundle cleanup will be skipped this run."
-  fi
-fi
-echo "Main bundle set for restore cleanup: ${MAIN_BUNDLES_JSON}"
+# main's BUNDLE set for the restore cleanup was derived above from each bundle zip's own install.txt
+# (the hub-registered namespace+name), so it is immune to a prior run's leftover bundle still on the hub.
+echo "Main bundle set for restore cleanup (from main's bundle manifests): ${MAIN_BUNDLES_JSON}"
 
 # --- 3) BACK UP main: cache the app + each #include'd library, assembling the restore manifest -----
 # The watchdog's hub_get_source(type,id) writes mcp-source-<type>-<id>.groovy = the current

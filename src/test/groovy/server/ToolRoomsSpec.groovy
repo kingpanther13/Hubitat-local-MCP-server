@@ -515,7 +515,8 @@ class ToolRoomsSpec extends ToolSpecBase {
         // JSON -- sees a refused destructive call as an error and routes a retry. This is the
         // file-wide contract ("handleToolsCall flags isError on the JSON-RPC envelope"); regression
         // guard for the bug where a returned isError stayed invisible top-level.
-        given:
+        given: 'gateway mode pinned -- this exercises handleGateway pre-validation, which only runs when useGateways is ON (the CI flat-matrix dimension defaults it OFF, where the gateway is disabled and returns a different refusal)'
+        settingsMap.useGateways = true
         enableWrite()
 
         when: 'hub_create_room is invoked via the hub_manage_rooms gateway with confirm omitted'
