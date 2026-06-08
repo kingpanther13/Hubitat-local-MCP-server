@@ -518,28 +518,14 @@ class TestRunner:
                 switch_dev = d
                 break
         if switch_dev is None:
-            # No switch on the hub -- provision a throwaway virtual one so this test ALWAYS runs
-            # (never skips; skips are failures). Labeled with the BAT_E2E_ prefix so the standard
-            # cleanup sweep removes it.
-            self.client.call_tool("hub_manage_virtual_device", {
-                "action": "create",
-                "deviceType": "Virtual Switch",
-                "deviceLabel": f"{PREFIX}AttrProbe",
-                "confirm": True,
-            })
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
-            dev_list = vdevs if isinstance(vdevs, list) else (vdevs.get("devices", []) if isinstance(vdevs, dict) else [])
-            for d in dev_list:
-                if f"{PREFIX}AttrProbe" in (d.get("label") or d.get("name") or ""):
-                    switch_dev = d
-                    dni = str(d.get("deviceNetworkId", d.get("dni", "")))
-                    if dni:
-                        self.created_device_dnis.append(dni)
-                    break
-            assert switch_dev is not None, \
-                "no switch on the hub and could not provision a virtual one for the attribute read"
+            # No real switch on the hub -- fall back to the persistent scaffolding switch
+            # (get_test_switch_id find-or-reuse) instead of provisioning + deleting a throwaway probe.
+            # This test ALWAYS runs (skips are failures).
+            switch_id = self.get_test_switch_id()
+        else:
+            switch_id = str(switch_dev["id"])
         result = self.client.call_tool("hub_get_device_attribute", {
-            "deviceId": str(switch_dev["id"]),
+            "deviceId": switch_id,
             "attribute": "switch",
         })
         # Result should contain the value (on/off or similar)
@@ -2259,6 +2245,11 @@ class TestRunner:
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
+                # Keep the persistent scaffolding switch (get_test_switch_id find-and-reuse): sweeping it
+                # would defeat the reuse and pay a create every run. Narrow suffix match, NOT a blanket
+                # prefix skip, so genuine under-test device leftovers are still reclaimed.
+                if lbl.endswith("Action_Switch"):
+                    continue
                 if PREFIX in lbl:
                     dni = str(d.get("deviceNetworkId", d.get("dni", "")))
                     if dni:
