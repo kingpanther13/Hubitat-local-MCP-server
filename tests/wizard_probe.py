@@ -52,12 +52,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 import yaml
@@ -111,7 +110,7 @@ class HubitatMcpClient:
         if self.verbose:
             print(f"    [DEBUG] {msg}", flush=True)
 
-    def _send(self, method: str, params: Optional[dict] = None) -> dict:
+    def _send(self, method: str, params: dict | None = None) -> dict:
         """Send one JSON-RPC 2.0 request. Returns the parsed result."""
         self._request_id += 1
         payload: dict[str, Any] = {
@@ -150,7 +149,7 @@ class HubitatMcpClient:
             "clientInfo": {"name": "wizard-probe", "version": "1.0.0"},
         })
 
-    def call_tool(self, name: str, arguments: Optional[dict] = None) -> Any:
+    def call_tool(self, name: str, arguments: dict | None = None) -> Any:
         """Call an MCP tool. Returns parsed content text (dict / list / str)."""
         result = self._send("tools/call", {"name": name, "arguments": arguments or {}})
 
@@ -182,7 +181,7 @@ def load_config() -> dict:
     config: dict = {}
 
     if config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
 
     config["hub_url"] = os.environ.get("HUB_URL",
@@ -221,7 +220,7 @@ def load_matrix(path: str) -> dict:
         print(f"ERROR: Matrix file not found: {path}")
         sys.exit(1)
 
-    with open(p, "r", encoding="utf-8") as f:
+    with open(p, encoding="utf-8") as f:
         matrix = yaml.safe_load(f)
 
     if not isinstance(matrix, dict):
@@ -298,7 +297,7 @@ def snapshot_rule(client: HubitatMcpClient, app_id: int,
         })
 
         paragraphs: list[str] = []
-        settings: Optional[dict] = None
+        settings: dict | None = None
 
         if isinstance(result, dict):
             # Navigate to page.sections -- the actual RM response nests here
@@ -726,7 +725,7 @@ def run_probe(client: HubitatMcpClient, probe: dict, pool: dict,
         }
 
     t0 = time.monotonic()
-    app_id: Optional[int] = None
+    app_id: int | None = None
     step_records: list[dict] = []
     final_snap: dict = {}
     failures: list[str] = []
@@ -787,7 +786,7 @@ def run_probe(client: HubitatMcpClient, probe: dict, pool: dict,
         status = "pass" if passed else "fail"
 
         if passed:
-            print(f"    PASS", flush=True)
+            print("    PASS", flush=True)
         else:
             for msg in failures:
                 print(f"    {msg}", flush=True)
@@ -1085,7 +1084,7 @@ def baseline_diff(current_results: list[dict], baseline_path: str) -> None:
         print(f"[WARN] Baseline file not found: {baseline_path}", flush=True)
         return
 
-    with open(bp, "r", encoding="utf-8") as f:
+    with open(bp, encoding="utf-8") as f:
         baseline = json.load(f)
 
     baseline_by_name: dict[str, dict] = {
@@ -1190,7 +1189,7 @@ def quick_probe(
     name: str,
     steps: list[dict],
     snapshot_each_step: bool = True,
-    device_pool: Optional[dict] = None,
+    device_pool: dict | None = None,
     verbose: bool = False,
 ) -> dict:
     """
@@ -1269,11 +1268,11 @@ def quick_probe(
         print("broken:", result["final"]["broken"])
     """
     pool = device_pool or {}
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     rule_name = f"{PROBE_PREFIX}{name}_{ts}"
 
     t0 = time.monotonic()
-    app_id: Optional[int] = None
+    app_id: int | None = None
     snapshots: list[dict] = []
     step_errors: list[str] = []
     status = "error"
@@ -1473,7 +1472,7 @@ def main() -> None:
     print(f"Running {len(probes_to_run)} probe(s)...\n", flush=True)
 
     # Run timestamp (used for rule naming + output filenames)
-    run_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    run_ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
     results: list[dict] = []
     for probe in probes_to_run:
@@ -1484,7 +1483,7 @@ def main() -> None:
     # Write output files
     json_path = write_json_report(results, run_ts)
     md_path = write_markdown_report(results, run_ts)
-    print(f"\nResults written:", flush=True)
+    print("\nResults written:", flush=True)
     print(f"  JSON: {json_path}", flush=True)
     print(f"  MD:   {md_path}", flush=True)
 

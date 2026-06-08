@@ -37,6 +37,20 @@ definition(
 // canary; removed once the split architecture is validated.
 #include mcp.McpSmokeTestLib
 
+// issue #209 modularization: room-management tool implementations live in the McpRoomsLib
+// library (libraries/mcp-rooms-lib.groovy), delivered to real hubs by the required HPM bundle
+// and installable on the fly via hub_update_package. The gateway entries and dispatch cases stay
+// in this file; the tool definitions (_getAllToolDefinitions_partRooms) and impl methods live in
+// the library. First real module of the split.
+#include mcp.McpRoomsLib
+
+// issue #209 modularization: bundle-management tool implementations (hub_list_bundles /
+// hub_delete_bundle / hub_export_bundle) live in the McpBundlesLib library
+// (libraries/mcp-bundles-lib.groovy). New tools authored library-first -- their gateway entries
+// and dispatch cases stay in this file; the tool definitions (_getAllToolDefinitions_partBundles)
+// and impl methods live in the library.
+#include mcp.McpBundlesLib
+
 preferences {
     page(name: "mainPage")
     page(name: "confirmDeletePage")
@@ -942,7 +956,17 @@ def handleToolsCall(msg) {
         // alone left a gap zone where escape-heavy payloads (every `"` becomes `\"`)
         // could slip the inner guard yet still trip the outer -32603 fallback that
         // #174 was filed to eliminate.
-        def candidateResponse = jsonRpcResult(msg.id, [content: [[type: "text", text: jsonText]]])
+        // File-wide error contract: a tool that RETURNS a result with isError:true (the gateway
+        // disabled/missing-required-param refusals, toolCloneNativeApp / native-wizard soft failures,
+        // etc.) MUST surface that on the JSON-RPC envelope so MCP clients route retries -- this
+        // function is documented to "flag isError on the JSON-RPC envelope", but until now only the
+        // throw / null / non-serializable branches set it, so a *returned* isError stayed invisible
+        // top-level (a refused destructive call read as success to a spec-compliant client).
+        def envelopeBody = [content: [[type: "text", text: jsonText]]]
+        if (result instanceof Map && result.isError == true) {
+            envelopeBody.isError = true
+        }
+        def candidateResponse = jsonRpcResult(msg.id, envelopeBody)
         // Serialize the wire form ONCE here. We measure its byte length for the inner cap,
         // then (on the common under-limit path) hand the already-built string to
         // handleMcpRequest via a __preserialized sentinel so it renders verbatim instead of
@@ -1162,13 +1186,14 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_apps_code: [
-            description: "Read-only inspection of installed apps, drivers, libraries, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
-            tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
+            description: "Read-only inspection of installed apps, drivers, libraries, code bundles, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, list installed bundles, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
+            tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
             summaries: [
                 hub_list_apps: "List installed apps. scope='types' (installed app code library) or 'instances' (running apps with parent/child tree). Args: scope, filter?, includeHidden?, cursor?",
                 hub_list_drivers: "List all installed drivers on the hub",
                 hub_get_source: "Get app/driver/library Groovy source with chunked reading. Args: type (app|driver|library), id, offset?, length?",
                 hub_list_libraries: "List installed Groovy libraries (id, name, namespace, version). Pair with hub_get_source(type='library', id) to read source. Args: cursor?",
+                hub_list_bundles: "List installed code bundles (the Bundle-Manager containers HPM delivers code in; distinct from Libraries Code). Returns id, name, namespace, private, and a contains summary. Find a bundle id for hub_delete_bundle/hub_export_bundle. Args: cursor?",
                 hub_list_backups: "List auto-created source code backups",
                 hub_get_backup: "Get source from a backup. Args: backupKey",
                 hub_list_device_dependents: "List all apps that reference a device (Room Lighting, Rule Machine, Groups, etc.). Args: deviceId",
@@ -1181,6 +1206,7 @@ def getGatewayConfig() {
                 hub_list_drivers: "show installed device handlers types",
                 hub_get_source: "view read application driver library groovy code namespace include",
                 hub_list_libraries: "list show installed groovy libraries code namespace include shared modules discover library id",
+                hub_list_bundles: "list show installed bundles bundle manager hpm package zip containers code delivery discover bundle id apps drivers libraries",
                 hub_list_backups: "show saved previous versions revisions",
                 hub_get_backup: "view read saved previous version revision",
                 hub_list_device_dependents: "which apps use device reference inUseBy appsUsing dependencies affected by",
@@ -1190,8 +1216,8 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_code: [
-            description: "Install, update, and delete hub apps, drivers, and libraries. All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
-            tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_restore_backup", "hub_create_library", "hub_update_library", "hub_install_bundle"],
+            description: "Install, update, and delete hub apps, drivers, libraries, and code bundles (install/delete/export). All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
+            tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_restore_backup", "hub_create_library", "hub_update_library", "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"],
             summaries: [
                 hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with installAsUserApp=<codeAppId> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",
                 hub_create_driver: "Install new driver. To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. For 1: source|sourceFile|importUrl. For >1: USE BULK (single round-trip: installs=[{source|sourceFile|importUrl},...]). confirm=true",
@@ -1201,7 +1227,9 @@ def getGatewayConfig() {
                 hub_restore_backup: "Restore app/driver to backed-up version. Args: backupKey, confirm=true",
                 hub_create_library: "Install new Groovy library (#include namespace.Name). To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. Args: source|sourceFile|importUrl, confirm=true",
                 hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true",
-                hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code). Args: importUrl (zip), primary?, confirm=true"
+                hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code). Args: importUrl (zip), primary?, confirm=true",
+                hub_delete_bundle: "Delete an installed code bundle container by id (DESTRUCTIVE; verifies via re-list). Code it delivered may remain in Code -- delete separately. Args: bundleId (from hub_list_bundles), confirm=true",
+                hub_export_bundle: "Export an installed bundle's .zip to the File Manager (downloadable at /local/<file>). Args: bundleId (from hub_list_bundles), saveAs?"
             ],
             searchHints: [
                 hub_create_app: "add new application integration groovy",
@@ -1212,7 +1240,9 @@ def getGatewayConfig() {
                 hub_restore_backup: "rollback revert undo previous version",
                 hub_create_library: "add new shared groovy library include namespace",
                 hub_update_library: "modify change edit groovy library shared code push deploy",
-                hub_install_bundle: "install bundle zip package hpm hubitat package manager uploadZipFromUrl library delivery deploy code"
+                hub_install_bundle: "install bundle zip package hpm hubitat package manager uploadZipFromUrl library delivery deploy code",
+                hub_delete_bundle: "delete remove uninstall bundle container bundle manager code zip package by id",
+                hub_export_bundle: "export download save bundle zip to file manager backup copy archive container"
             ]
         ],
         // Option B: manage_logs_diagnostics split into logs + diagnostics
@@ -1567,7 +1597,7 @@ def getReadOnlyToolNames() {
         // matches user expectation for a "health check" tool.
         "hub_get_device_health",
         // Apps/drivers (read)
-        "hub_list_apps", "hub_list_drivers", "hub_list_libraries",
+        "hub_list_apps", "hub_list_drivers", "hub_list_libraries", "hub_list_bundles",
         "hub_get_source",
         "hub_list_backups", "hub_get_backup",
         // Rooms (read)
@@ -1905,7 +1935,10 @@ def getToolDefinitions() {
 
 // Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)
 def getAllToolDefinitions() {
-    return _getAllToolDefinitions_part1() + _getAllToolDefinitions_part2() + _getAllToolDefinitions_part3() + _getAllToolDefinitions_part4() + _getAllToolDefinitions_part5() + _getAllToolDefinitions_part6() + _getAllToolDefinitions_part7() + _getAllToolDefinitions_part8()
+    // _partRooms / _partBundles are contributed by the McpRoomsLib / McpBundlesLib #include
+    // libraries (issue #209 modularization -- a domain's tool DEFINITIONS live with its impl in
+    // the library; only the gateway membership + dispatch case stay in this file).
+    return _getAllToolDefinitions_part1() + _getAllToolDefinitions_part2() + _getAllToolDefinitions_part3() + _getAllToolDefinitions_part4() + _getAllToolDefinitions_part5() + _getAllToolDefinitions_part6() + _getAllToolDefinitions_part7() + _getAllToolDefinitions_part8() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles()
 }
 
 // Lightweight memoized name -> inputSchema.required map for the gateway
@@ -3637,147 +3670,11 @@ Only modify devices user explicitly requested. Room/enabled require Write master
                 required: ["success", "device", "deviceId", "message"]
             ]
         ],
-
-        // Room Management Tools
-        [
-            name: "hub_list_rooms",
-            description: "List all rooms on the hub, each with its ID, name, device count, and assigned device IDs. Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only — call hub_get_room for per-device states.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
-                ]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    rooms: [type: "array", description: "Rooms on the hub", items: [type: "object", properties: [
-                        id: [type: "string", description: "Room ID"],
-                        name: [type: "string", description: "Room name"],
-                        deviceCount: [type: "integer", description: "Devices assigned"],
-                        deviceIds: [type: "array", description: "Assigned device IDs", items: [type: "string"]]
-                    ]]],
-                    count: [type: "integer", description: "Rooms returned this page"],
-                    total: [type: "integer", description: "Total rooms; present only in paginated mode"],
-                    nextCursor: [type: "string", description: "Pagination cursor; present when more results remain"],
-                    message: [type: "string", description: "Present when no rooms configured"]
-                ],
-                required: ["rooms", "count"]
-            ]
-        ],
-        [
-            name: "hub_get_room",
-            description: "Get one room's details: its ID, name, and the full list of assigned devices with each device's current attribute states. Use when you need device-level detail for a single room; for a name-and-count overview of all rooms use hub_list_rooms instead. Read-only and parallel-safe. Devices unreachable via MCP are returned with accessible=false and no states.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    room: [type: "string", description: "Room name (case-insensitive) or room ID, e.g. \"Living Room\" or \"5\""]
-                ],
-                required: ["room"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    id: [type: "string", description: "Room ID"],
-                    name: [type: "string", description: "Room name"],
-                    deviceCount: [type: "integer", description: "Devices in room"],
-                    devices: [type: "array", description: "Assigned devices", items: [type: "object", properties: [
-                        id: [type: "string", description: "Device ID"],
-                        label: [type: "string", description: "Device label"],
-                        name: [type: "string", description: "Device name"],
-                        currentStates: [type: "object", description: "Current attribute values; present when accessible"],
-                        accessible: [type: "boolean", description: "False when device not reachable via MCP"]
-                    ]]]
-                ],
-                required: ["id", "name", "deviceCount", "devices"]
-            ]
-        ],
-        [
-            name: "hub_create_room",
-            description: "Create a new room on the hub, optionally assigning devices to it at creation. Use when a needed room does not yet exist; to only move devices into an existing room, use hub_update_room/room-assignment flows instead. Write operation: requires Write master, a backup taken within the last 24h, and confirm=true. Returns the new room's ID and assigned device count.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Name for the new room, e.g. \"Garage\""],
-                    deviceIds: [type: "array", description: "Optional device IDs to assign to the room at creation, e.g. [\"12\",\"34\"]. Omit to create an empty room.", items: [type: "string"]],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved creating this room."]
-                ],
-                required: ["name", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether creation succeeded"],
-                    room: [type: "object", description: "Created room", properties: [
-                        id: [type: "string", description: "New room ID"],
-                        name: [type: "string", description: "Room name"],
-                        deviceCount: [type: "integer", description: "Devices assigned"]
-                    ]],
-                    message: [type: "string", description: "Human-readable result"]
-                ],
-                required: ["success"]
-            ]
-        ],
-        [
-            name: "hub_delete_room",
-            description: """⚠️ DESTRUCTIVE: Permanently deletes a room. Devices become unassigned (not deleted).
-
-PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true
-Requires Write master.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    room: [type: "string", description: "Room name (case-insensitive) or room ID to delete, e.g. \"Garage\" or \"5\""],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]
-                ],
-                required: ["room", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether deletion succeeded"],
-                    deletedRoom: [type: "object", description: "Deleted room", properties: [
-                        id: [type: "string", description: "Room ID"],
-                        name: [type: "string", description: "Room name"]
-                    ]],
-                    devicesUnassigned: [type: "integer", description: "Devices now unassigned"],
-                    message: [type: "string", description: "Human-readable result"]
-                ],
-                required: ["success"]
-            ]
-        ],
     ]
 }
 
 def _getAllToolDefinitions_part6() {
     return [
-        [
-            name: "hub_update_room",
-            description: "Rename a room. Device assignments preserved. Automations/dashboards referencing room by name may need updating. Requires Write master + confirm + backup <24h.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    room: [type: "string", description: "Current room name (case-insensitive) or room ID, e.g. \"Garage\" or \"5\""],
-                    newName: [type: "string", description: "New name for the room, e.g. \"Workshop\""],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
-                ],
-                required: ["room", "newName", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether rename succeeded"],
-                    room: [type: "object", description: "Renamed room", properties: [
-                        id: [type: "string", description: "Room ID"],
-                        name: [type: "string", description: "New room name"],
-                        previousName: [type: "string", description: "Prior room name"]
-                    ]],
-                    message: [type: "string", description: "Human-readable result"]
-                ],
-                required: ["success"]
-            ]
-        ],
-
         // Hub Admin App/Driver Source Read Tools
         [
             name: "hub_get_source",
@@ -4150,36 +4047,6 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""
                     sourceMode: [type: "string", description: "Source mode used: source / sourceFile / importUrl / resave"],
                     sourceLength: [type: "integer", description: "Chars written"],
                     note: [type: "string", description: "Source-mode / recovery guidance"],
-                    lastBackup: [type: "string", description: "Timestamp of most recent backup"]
-                ],
-                required: ["success"]
-            ]
-        ],
-        [
-            name: "hub_install_bundle",
-            description: """Install a Hubitat code bundle (.zip) from a URL, exactly the way Hubitat Package Manager delivers a required bundle. The hub fetches the zip itself and unpacks it into Libraries/Apps/Drivers Code -- the same mechanism HPM uses to install the libraries an app #includes.
-
-Use this to validate, on the real hub, that a package installs the HPM way (e.g. CI proving a #include'd library is delivered and the app compiles, before users HPM-update). Mirrors HPM's installBundle: firmware >= 2.3.8.108 uses /bundle2/uploadZipFromUrl, older uses /bundle/uploadZipFromUrl.
-
-Requires Write master + confirm=true + a recent backup. The hub does not deep-validate the zip at install time; verify the result with hub_list_libraries / hub_get_source.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    importUrl: [type: "string", description: "URL of the bundle .zip the hub fetches and installs (http:// or https://)."],
-                    primary: [type: "boolean", description: "OPTIONAL. Mark the bundle's contents as installed-by-this-package (HPM's installer/private flag). Default false."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved installing this bundle."]
-                ],
-                required: ["importUrl", "confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the bundle installed"],
-                    message: [type: "string", description: "Human-readable result"],
-                    endpoint: [type: "string", description: "Hub endpoint used (/bundle2/uploadZipFromUrl or /bundle/uploadZipFromUrl)"],
-                    primary: [type: "boolean", description: "Whether the bundle was marked primary/installer"],
-                    error: [type: "string", description: "Failure detail; present on failure"],
-                    rawResponse: [type: "string", description: "Raw hub response (truncated); present on a no-success result"],
                     lastBackup: [type: "string", description: "Timestamp of most recent backup"]
                 ],
                 required: ["success"]
@@ -5412,6 +5279,9 @@ def executeTool(toolName, args) {
         case "hub_create_library": return toolInstallLibrary(args)
         case "hub_update_library": return toolUpdateLibraryCode(args)
         case "hub_install_bundle": return toolInstallBundle(args)
+        case "hub_list_bundles": return toolListBundles(args)
+        case "hub_delete_bundle": return toolDeleteBundle(args)
+        case "hub_export_bundle": return toolExportBundle(args)
 
         // Item Backup Tools
         case "hub_list_backups": return toolListItemBackups(args)
@@ -7082,7 +6952,7 @@ def toolGetHubInfo(args = null) {
     // So a read can return a record left by an EARLIER deploy (even a prior session) and be mistaken
     // for the latest outcome. Two freshness aids: `ageMs` (now - at) is added here so age is visible at
     // a glance, and a consumer comparing across its own deploy should baseline `at` first and require it
-    // to advance (see .github/scripts/mcp_deploy_source.sh recover_self_deploy_error).
+    // to advance (see .github/scripts/test_self_deploy_recovery.sh recover_self_deploy_error).
     if (atomicState.lastSelfDeploy != null) {
         def lsd = [:] + atomicState.lastSelfDeploy
         if (lsd.at instanceof Number) lsd.ageMs = now() - (lsd.at as long)
@@ -13537,112 +13407,6 @@ def toolGetLibrarySource(args) {
 }
 
 /**
- * Install a Hubitat code bundle (.zip) from a URL, EXACTLY the way Hubitat Package Manager's
- * installBundle() does (issue #209). The hub fetches the zip itself and unpacks it into Libraries/
- * Apps/Drivers Code -- this is how a `required` HPM bundle delivers a library. Used to validate, on
- * the real hub, that a package installs the HPM way before users HPM-install/update it.
- *
- * Mirrors HPM: firmware >= 2.3.8.108 -> GET /bundle2/uploadZipFromUrl?url=&pwd=&private=<primary>;
- * older firmware -> POST /bundle/uploadZipFromUrl with JSON {url, installer:<primary>, pwd:""}.
- */
-def toolInstallBundle(args) {
-    requireDestructiveConfirm(args.confirm)
-    def importUrl = args.importUrl
-    if (!(importUrl instanceof String) || !importUrl.trim()) {
-        throw new IllegalArgumentException("importUrl is required: the URL of the bundle .zip the hub fetches and installs.")
-    }
-    importUrl = importUrl.trim()
-    def lower = importUrl.toLowerCase()
-    if (!(lower.startsWith("http://") || lower.startsWith("https://"))) {
-        throw new IllegalArgumentException("importUrl scheme must be http or https (got '${importUrl.take(40)}')")
-    }
-    boolean primary = (args.primary == true)
-
-    String fw = null
-    try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception ignored) { }
-    // bundle2 endpoint exists on firmware >= 2.3.8.108 (matches HPM's gate). Compare
-    // segments numerically, NOT lexically -- string compare breaks once a segment
-    // reaches two digits (e.g. "2.3.10.0" sorts BELOW "2.3.8.0" as strings, which would
-    // wrongly route a newer hub to the removed legacy endpoint).
-    boolean modern = _firmwareAtLeast(fw, "2.3.8.108")
-    String endpoint = modern ? "/bundle2/uploadZipFromUrl" : "/bundle/uploadZipFromUrl"
-
-    mcpLog("info", "hub-admin", "Installing bundle (endpoint: ${endpoint}, fw: ${fw}, primary: ${primary}, url: ${importUrl})")
-    try {
-        def resp
-        if (modern) {
-            // hubInternalGet passes the query map to httpGet, which URL-encodes the values. `private`
-            // is quoted because it is a Groovy keyword. 300s timeout matches HPM's bundle install.
-            resp = hubInternalGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": primary.toString()], 300)
-        } else {
-            def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: primary, pwd: ""])
-            resp = hubInternalPostJson("/bundle/uploadZipFromUrl", body)
-        }
-        boolean ok = _bundleResponseSucceeded(resp)
-        if (!ok) {
-            mcpLog("warn", "hub-admin", "Bundle install did not report success (endpoint ${endpoint})")
-            return [
-                success: false,
-                error: "Bundle install failed: the hub returned no success signal. The zip may be malformed/unreachable, or the firmware endpoint unavailable.",
-                endpoint: endpoint,
-                rawResponse: resp?.toString()?.take(500),
-                lastBackup: formatTimestamp(state.lastBackupTimestamp)
-            ]
-        }
-        mcpLog("info", "hub-admin", "Bundle installed successfully from ${importUrl}")
-        return [
-            success: true,
-            message: "Bundle installed from ${importUrl}. Its libraries/apps/drivers are now in Code -- verify with hub_list_libraries / hub_list_apps.",
-            endpoint: endpoint,
-            primary: primary,
-            lastBackup: formatTimestamp(state.lastBackupTimestamp)
-        ]
-    } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "Bundle install threw: ${e.toString()}")
-        return [
-            success: false,
-            error: "Bundle install failed: ${e.message ?: e.toString()}",
-            endpoint: endpoint,
-            lastBackup: formatTimestamp(state.lastBackupTimestamp)
-        ]
-    }
-}
-
-// The bundle endpoints signal success as {"success":true} (bundle2 returns JSON; the older endpoint
-// is parsed by hubInternalPostJson). hubInternalGet hands back the raw body String, so normalize both
-// a parsed Map and a raw String/JSON; success only on an explicit truthy signal.
-def _bundleResponseSucceeded(resp) {
-    if (resp == null) return false
-    if (resp instanceof Map) return resp.success == true || resp.success?.toString() == "true"
-    String text = resp.toString().trim()
-    if (!text) return false
-    try {
-        def parsed = new groovy.json.JsonSlurper().parseText(text)
-        if (parsed instanceof Map) return parsed.success == true || parsed.success?.toString() == "true"
-    } catch (Exception ignored) { }
-    return text.equalsIgnoreCase("true")
-}
-
-// Compare dotted firmware versions segment-by-segment, numerically. Returns true when
-// fw >= target. Missing/blank/unparseable fw returns true (assume modern): every hub
-// running this server today is well past the 2.3.8.108 bundle2 cutoff, so the current
-// endpoint is the safe default when the version can't be read.
-def _firmwareAtLeast(fw, String target) {
-    if (fw == null || !fw.toString().trim()) return true
-    def fwParts = fw.toString().trim().split("\\.")
-    def tgtParts = target.split("\\.")
-    int n = Math.max(fwParts.size(), tgtParts.size())
-    for (int i = 0; i < n; i++) {
-        String fwSeg = (i < fwParts.size()) ? fwParts[i] : "0"
-        String tgtSeg = (i < tgtParts.size()) ? tgtParts[i] : "0"
-        int a = fwSeg.isInteger() ? fwSeg.toInteger() : 0
-        int b = tgtSeg.isInteger() ? tgtSeg.toInteger() : 0
-        if (a != b) return a > b
-    }
-    return true  // all segments equal -> >= holds
-}
-
-/**
  * Install a new Groovy library from inline source or a File Manager file.
  * Hub endpoint: POST /library/saveOrUpdateJson with {id: null, source, version: null}
  * Returns: {success, message, id, version}
@@ -13964,7 +13728,9 @@ def getPackageSourceBase() {
 // in sync with tools/build-bundle.py's LIBS list (the parallel HPM bundle delivery path).
 def getPackageLibraryRegistry() {
     return [
-        "mcp.McpSmokeTestLib": [namespace: "mcp", name: "McpSmokeTestLib", path: "libraries/mcp-smoke-test-lib.groovy"]
+        "mcp.McpSmokeTestLib": [namespace: "mcp", name: "McpSmokeTestLib", path: "libraries/mcp-smoke-test-lib.groovy"],
+        "mcp.McpRoomsLib": [namespace: "mcp", name: "McpRoomsLib", path: "libraries/mcp-rooms-lib.groovy"],
+        "mcp.McpBundlesLib": [namespace: "mcp", name: "McpBundlesLib", path: "libraries/mcp-bundles-lib.groovy"]
     ]
 }
 
@@ -15102,263 +14868,11 @@ def toolUpdateDevice(args) {
 }
 
 // ==================== ROOM MANAGEMENT ====================
-
-def toolListRooms(args = null) {
-    def rooms = getRooms()
-    if (!rooms) {
-        return [rooms: [], count: 0, message: "No rooms configured on this hub."]
-    }
-    def roomList = rooms.collect { room ->
-        [
-            id: room.id?.toString(),
-            name: room.name,
-            deviceCount: room.deviceIds?.size() ?: 0,
-            deviceIds: room.deviceIds?.collect { it.toString() } ?: []
-        ]
-    }.sort { it.name }
-    def cursor = args?.cursor
-    def paged = _paginateList(roomList, cursor, 100, "hub_list_rooms")
-    def result = [rooms: paged.page, count: paged.page.size()]
-    if (cursor != null) {
-        result.total = roomList.size()
-        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
-    }
-    return result
-}
-
-def toolGetRoom(String roomIdentifier) {
-    if (!roomIdentifier) throw new IllegalArgumentException("Room name or ID is required")
-
-    def rooms = getRooms()
-    if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
-
-    // Find room by ID or name (case-insensitive)
-    def room = rooms.find { it.id?.toString() == roomIdentifier } ?:
-               rooms.find { it.name?.toLowerCase() == roomIdentifier.toLowerCase() }
-
-    if (!room) {
-        def available = rooms.collect { it.name }.sort()
-        throw new IllegalArgumentException("Room '${roomIdentifier}' not found. Available rooms: ${available.join(', ')}")
-    }
-
-    // Get device details for each device in the room
-    def devices = []
-    def allDevices = (settings.selectedDevices ?: []).toList()
-    def childDevs = getChildDevices() ?: []
-    def selectedIds = allDevices.collect { it.id.toString() } as Set
-    childDevs.each { cd -> if (!selectedIds.contains(cd.id.toString())) { allDevices.add(cd) } }
-
-    room.deviceIds?.each { devId ->
-        def device = allDevices?.find { it.id?.toString() == devId.toString() }
-        if (device) {
-            def devInfo = [
-                id: device.id.toString(),
-                label: device.label ?: device.name ?: "unknown",
-                name: device.name ?: "unknown"
-            ]
-            // Add common current states
-            def states = [:]
-            try {
-                device.currentStates?.each { st ->
-                    states[st.name] = st.value
-                }
-            } catch (Exception ignored) {}
-            if (states) devInfo.currentStates = states
-            devices << devInfo
-        } else {
-            devices << [id: devId.toString(), label: "(device not accessible via MCP)", name: "unknown", accessible: false]
-        }
-    }
-
-    return [
-        id: room.id?.toString(),
-        name: room.name,
-        deviceCount: devices.size(),
-        devices: devices.sort { (it.label ?: "").toLowerCase() }
-    ]
-}
-
-def toolCreateRoom(args) {
-    requireDestructiveConfirm(args.confirm)
-    if (!args.name?.trim()) {
-        throw new IllegalArgumentException("Room name is required")
-    }
-
-    def roomName = args.name.trim()
-
-    // Check for duplicate name
-    def rooms = getRooms()
-    if (rooms?.find { it.name?.toLowerCase() == roomName.toLowerCase() }) {
-        throw new IllegalArgumentException("A room named '${roomName}' already exists")
-    }
-
-    // Build device IDs list
-    def deviceIds = args.deviceIds?.collect { it as Integer } ?: []
-
-    // POST /room/save with roomId: 0 to create (Grails convention). Routed through
-    // hubInternalPostJson for the shared Hub Security cookie-refresh retry; the
-    // creation is confirmed against getRooms() below.
-    def body = [roomId: 0, name: roomName, deviceIds: deviceIds]
-    def jsonStr = groovy.json.JsonOutput.toJson(body)
-    mcpLog("debug", "room", "hub_create_room: POST /room/save body: ${jsonStr}")
-
-    def parsed
-    try {
-        parsed = hubInternalPostJson("/room/save", jsonStr, 30)
-    } catch (Exception httpErr) {
-        throw new RuntimeException("Failed to create room '${roomName}': ${httpErr.message}")
-    }
-    if (parsed?.error) {
-        throw new RuntimeException("Failed to create room: ${parsed.error}")
-    }
-
-    // Verify creation (case-insensitive to handle any normalization)
-    def updatedRooms = getRooms()
-    def newRoom = updatedRooms?.find { it.name?.toLowerCase() == roomName.toLowerCase() }
-    if (!newRoom) {
-        throw new RuntimeException("Room creation endpoint returned success but room '${roomName}' not found in rooms list")
-    }
-
-    mcpLog("info", "room", "Created room '${roomName}' (ID: ${newRoom.id})")
-    return [
-        success: true,
-        room: [id: newRoom.id?.toString(), name: newRoom.name, deviceCount: newRoom.deviceIds?.size() ?: 0],
-        message: "Room '${roomName}' created successfully."
-    ]
-}
-
-def toolDeleteRoom(args) {
-    requireDestructiveConfirm(args.confirm)
-    if (!args.room?.trim()) {
-        throw new IllegalArgumentException("Room name or ID is required")
-    }
-
-    def rooms = getRooms()
-    if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
-
-    def room = rooms.find { it.id?.toString() == args.room.trim() } ?:
-               rooms.find { it.name?.toLowerCase() == args.room.trim().toLowerCase() }
-    if (!room) {
-        def available = rooms.collect { it.name }.sort()
-        throw new IllegalArgumentException("Room '${args.room}' not found. Available rooms: ${available.join(', ')}")
-    }
-
-    def roomId = room.id
-    def roomName = room.name
-    def deviceCount = room.deviceIds?.size() ?: 0
-    mcpLog("debug", "room", "hub_delete_room: deleting room '${roomName}' (ID: ${roomId}), ${deviceCount} devices will be unassigned")
-
-    def deleteSuccess = false
-    def deleteError = null
-
-    // Try POST /room/delete/<id> first, then GET /room/delete/<id>
-    def attempts = [
-        [desc: "POST /room/delete/${roomId}", method: "POST"],
-        [desc: "GET /room/delete/${roomId}", method: "GET"],
-    ]
-    for (def att : attempts) {
-        if (deleteSuccess) break
-        try {
-            if (att.method == "POST") {
-                // Routed through hubInternalPostJson for the shared cookie-refresh retry.
-                def parsed = hubInternalPostJson("/room/delete/${roomId}", groovy.json.JsonOutput.toJson([roomId: roomId as Integer]), 30)
-                if (parsed?.error) {
-                    throw new RuntimeException("API error: ${parsed.error}")
-                }
-                deleteSuccess = true
-            } else {
-                hubInternalGet("/room/delete/${roomId}")
-                mcpLog("debug", "room", "hub_delete_room: ${att.desc} succeeded")
-                deleteSuccess = true
-            }
-        } catch (Exception e) {
-            mcpLog("debug", "room", "hub_delete_room: ${att.desc} failed: ${e.message}")
-            deleteError = e.message
-        }
-    }
-
-    if (!deleteSuccess) {
-        throw new RuntimeException("Failed to delete room '${roomName}'. Last error: ${deleteError}")
-    }
-
-    // Verify deletion
-    def updatedRooms = getRooms()
-    def stillExists = updatedRooms?.find { it.id?.toString() == roomId.toString() }
-    if (stillExists) {
-        throw new RuntimeException("Delete endpoint returned success but room '${roomName}' still exists")
-    }
-
-    mcpLog("info", "room", "Deleted room '${roomName}' (ID: ${roomId}), ${deviceCount} devices unassigned")
-    def deviceWord = deviceCount == 1 ? "device" : "devices"
-    def verbForm = deviceCount == 1 ? "is" : "are"
-    return [
-        success: true,
-        deletedRoom: [id: roomId.toString(), name: roomName],
-        devicesUnassigned: deviceCount,
-        message: "Room '${roomName}' deleted. ${deviceCount} ${deviceWord} ${verbForm} now unassigned."
-    ]
-}
-
-def toolRenameRoom(args) {
-    requireDestructiveConfirm(args.confirm)
-    if (!args.room?.trim()) {
-        throw new IllegalArgumentException("Room name or ID is required")
-    }
-    if (!args.newName?.trim()) {
-        throw new IllegalArgumentException("New room name is required")
-    }
-
-    def newName = args.newName.trim()
-    def rooms = getRooms()
-    if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
-
-    def room = rooms.find { it.id?.toString() == args.room.trim() } ?:
-               rooms.find { it.name?.toLowerCase() == args.room.trim().toLowerCase() }
-    if (!room) {
-        def available = rooms.collect { it.name }.sort()
-        throw new IllegalArgumentException("Room '${args.room}' not found. Available rooms: ${available.join(', ')}")
-    }
-
-    // Check for name conflict
-    if (rooms.find { it.name?.toLowerCase() == newName.toLowerCase() && it.id != room.id }) {
-        throw new IllegalArgumentException("A room named '${newName}' already exists")
-    }
-
-    def oldName = room.name
-    def roomId = room.id
-    def deviceIds = room.deviceIds?.collect { it as Integer } ?: []
-
-    // POST /room/save with existing roomId and new name. Routed through
-    // hubInternalPostJson for the shared cookie-refresh retry; the rename is
-    // confirmed against getRooms() below.
-    def body = [roomId: roomId as Integer, name: newName, deviceIds: deviceIds]
-    def jsonStr = groovy.json.JsonOutput.toJson(body)
-    mcpLog("debug", "room", "hub_update_room: POST /room/save body: ${jsonStr}")
-
-    def parsed
-    try {
-        parsed = hubInternalPostJson("/room/save", jsonStr, 30)
-    } catch (Exception httpErr) {
-        throw new RuntimeException("Failed to rename room '${oldName}': ${httpErr.message}")
-    }
-    if (parsed?.error) {
-        throw new RuntimeException("Failed to rename room: ${parsed.error}")
-    }
-
-    // Verify rename
-    def updatedRooms = getRooms()
-    def updatedRoom = updatedRooms?.find { it.id?.toString() == roomId.toString() }
-    if (!updatedRoom || updatedRoom.name != newName) {
-        throw new RuntimeException("Rename endpoint returned success but room name did not change")
-    }
-
-    mcpLog("info", "room", "Renamed room '${oldName}' -> '${newName}' (ID: ${roomId})")
-    return [
-        success: true,
-        room: [id: roomId.toString(), name: newName, previousName: oldName],
-        message: "Room renamed from '${oldName}' to '${newName}'."
-    ]
-}
+// Tool implementations (toolListRooms / toolGetRoom / toolCreateRoom / toolDeleteRoom /
+// toolRenameRoom) live in the McpRoomsLib library (libraries/mcp-rooms-lib.groovy),
+// #include'd near the top of this file. The hub_manage_rooms / hub_read_rooms gateway entries
+// and the executeTool dispatch cases stay here in the app; the tool definitions
+// (_getAllToolDefinitions_partRooms) live alongside the impl in the library.
 
 // ==================== INSTALLED APPS & RULE MACHINE INTEGRATION ====================
 

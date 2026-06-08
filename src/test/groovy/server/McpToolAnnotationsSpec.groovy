@@ -125,6 +125,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
             'hub_delete_item',
             'hub_create_library', 'hub_update_library', 'hub_install_bundle',
+            'hub_delete_bundle', 'hub_export_bundle',
             'hub_restore_backup',
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
@@ -310,7 +311,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_get_logs', 'hub_get_performance_stats',
             'hub_get_jobs', 'hub_get_memory_history',
             'hub_get_radio_details', 'hub_get_device_health', 'hub_get_metrics',
-            'hub_list_apps', 'hub_list_drivers', 'hub_list_libraries',
+            'hub_list_apps', 'hub_list_drivers', 'hub_list_libraries', 'hub_list_bundles',
             'hub_get_source',
             'hub_list_backups', 'hub_get_backup',
             'hub_list_rooms', 'hub_get_room',
@@ -342,6 +343,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
             'hub_delete_item',
             'hub_create_library', 'hub_update_library', 'hub_install_bundle',
+            'hub_delete_bundle', 'hub_export_bundle',
             'hub_restore_backup',
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
@@ -390,7 +392,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 91
+        names.size() == 94
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk

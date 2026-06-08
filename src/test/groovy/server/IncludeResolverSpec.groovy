@@ -118,6 +118,41 @@ class IncludeResolverSpec extends Specification {
         !out.contains('#include')
     }
 
+    def "resolving against the REAL repo libraries dir inlines the live McpRoomsLib impls"() {
+        given: 'the actual checked-in Rooms library -- first real module of the issue #209 split'
+        def realLibs = new File('libraries')
+        assert realLibs.isDirectory(), "expected the repo 'libraries' dir relative to cwd ${new File('.').absolutePath} -- run from the repo root"
+        def src = "#include mcp.McpRoomsLib\n"
+
+        when:
+        def out = IncludeResolver.resolve(src, realLibs)
+
+        then: 'the room tool impls are inlined and both the directive and the library() decl are stripped'
+        out.contains('def toolListRooms')
+        out.contains('def toolRenameRoom')
+        !out.contains('#include')
+        !out.contains('library(name: "McpRoomsLib"')
+    }
+
+    def "resolving against the REAL repo libraries dir inlines the live McpBundlesLib impls + defs"() {
+        given: 'the actual checked-in bundle library -- impl AND tool definitions live with it (Level 2)'
+        def realLibs = new File('libraries')
+        assert realLibs.isDirectory(), "expected the repo 'libraries' dir relative to cwd ${new File('.').absolutePath} -- run from the repo root"
+        def src = "#include mcp.McpBundlesLib\n"
+
+        when:
+        def out = IncludeResolver.resolve(src, realLibs)
+
+        then: 'the bundle tool impls + the def-chunk method are inlined; directive + library() decl stripped'
+        out.contains('def toolListBundles')
+        out.contains('def toolExportBundle')
+        out.contains('def _getAllToolDefinitions_partBundles')
+        // The #include DIRECTIVE line is gone (the bundle tool DESCRIPTIONS legitimately contain
+        // the text "#include", so assert on the directive line, not the substring).
+        !(out =~ /(?m)^\s*#include\b/)
+        !out.contains('library(name: "McpBundlesLib"')
+    }
+
     def "indexLibraries matches name/namespace even when a description ) appears BEFORE the keys"() {
         given: 'regression for the old [^)]* index regex, which a ) in an earlier field truncated'
         def libs = libsDir()
