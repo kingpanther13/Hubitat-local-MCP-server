@@ -189,6 +189,20 @@ PR #202 (merged 2026-05-19) established the annotation-hints baseline on every s
 
 `hubitat-mcp-rule.groovy` (the MCP child app, surfaced through the `custom_*` tools) is **legacy**. It still ships and still gets bug fixes, but it is **closed to new feature work** — Hubitat's native Rule Machine is the supported path now and exposes equivalent functionality through `hub_set_rule` (in the `hub_manage_rule_machine` gateway) plus `hub_set_native_app` / `hub_delete_native_app` and the rest of the `hub_manage_native_rules_and_apps` group. New rule-related capabilities should land on the parent app's native-RM tools, not on the child app. If a feature request lands on the child app, propose it for the native side instead.
 
+## Vendored hub admin-UI source (`resources/hub2-source/`) — READ THIS FOLDER
+
+`resources/hub2-source/` holds a large body of **reverse-engineered reference material** about Hubitat's HTTP / admin-UI surface that exists **nowhere else** — not in this server's code, not in Hubitat's published docs, not searchable from the outside. It was obtained by vendoring the hub's own browser bundles and probing a live hub, and it is catalogued in the folder's `README.md`: an **endpoint inventory**, JSON payload / data shapes, the classic-app wire format, the modern Vue data contracts, and the full UI component map. **A lot of what's in there can only be found by opening that folder and reading it** — so make a habit of checking it.
+
+**Before reverse-engineering ANY hub behaviour** — a new or undocumented endpoint, a payload/response shape, an app's data model, a native / RM wire format, how some UI feature talks to the server, what JSON a Vue page POSTs — **go read `resources/hub2-source/` (its `README.md` first) before deriving anything by hand from the live UI.** String literals survive minification, so `grep` against the bundles finds endpoint paths, field keys, and capability names directly.
+
+What's catalogued there:
+
+- **`vue-hub2.min.js`** — the modern Vue 3 SPA (~548 components). The contract for the Vue-rewritten apps (Basic Rules, Visual Rules Builder / `VisualRuleBuilder20`, hub variables, device swap, dashboards, Z-Wave/Zigbee admin, backups, …) is the JSON those components POST.
+- **`appUI.js` + `main.js`** — the classic `dynamicPage` / `submitOnChange` engine that drives Rule Machine and every other classic app. The genuine wire-format reference for the native-RM tools (`submitOnChange` re-POST, `stateAttribute` buttons, page transitions, `/installedapp/update/json`, `/installedapp/btn`, `/installedapp/ssr`). The Vue bundle black-boxes RM; this is where RM's protocol actually lives.
+- supporting bundles plus the README's growing **endpoint inventory** (e.g. `/app/ruleBuilderJson` — classic RM compiled rule state as JSON).
+
+When you discover a new endpoint, shape, or data model from these bundles, **add it to the folder's `README.md`** so the next person finds it there. Re-capture the bundles and refresh the inventory when new firmware changes the UI.
+
 ## Library modules (`#include`) — the modularization path (issue #209)
 
 The server is being split out of the single `hubitat-mcp-server.groovy` monolith into Groovy `#include` libraries under `libraries/`. `#include` is a **textual paste**: the library body is inlined into the app's compiled class at parse time (no method boundary, no separate runtime), so library methods, `state`/`atomicState`, and string-literal `subscribe`/`schedule` handlers all resolve as if written in the app. Read this before adding or moving code into a library.
