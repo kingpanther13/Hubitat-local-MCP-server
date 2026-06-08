@@ -201,6 +201,37 @@ class WatchdogV2Spec extends Specification {
         'other file -> no kick'   | 'mcp-source-app.groovy' || 0
     }
 
+    // ---- defer-native-deletes: force-delete an installed-app instance (RM rule) for the disarm sweep ----
+
+    def "adminForceDeleteInstalledApp GETs /installedapp/forcedelete/<id>/quiet (instance, not code class)"() {
+        given:
+        String calledPath = null
+        script.metaClass.hubGet = { String path, Map q -> calledPath = path; "" }
+
+        when:
+        def r = script.adminForceDeleteInstalledApp([id: "123", confirm: true])
+
+        then:
+        r.success == true
+        r.id == "123"
+        calledPath == "/installedapp/forcedelete/123/quiet"     // NOT /app/edit/deleteJsonSafe (code class)
+    }
+
+    @Unroll
+    def "adminForceDeleteInstalledApp rejects a bad instance id (#scenario)"() {
+        when:
+        script.adminForceDeleteInstalledApp([id: badId, confirm: true])
+
+        then:
+        thrown(IllegalArgumentException)
+
+        where:
+        scenario      | badId
+        'non-integer' | 'abc'
+        'zero'        | '0'
+        'missing'     | null
+    }
+
     // ---- PR #247: bundle tools mirrored into the watchdog + the no-stale restore cleanup ----
 
     @Unroll

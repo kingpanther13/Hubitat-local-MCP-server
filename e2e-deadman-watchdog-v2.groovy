@@ -663,6 +663,7 @@ def executeAdminTool(String toolName, Map args) {
         case "hub_create_library":  return adminCreateLibrary(args)
         case "hub_update_library":  return adminUpdateLibrary(args)
         case "hub_delete_item":     return adminDeleteItem(args)
+        case "hub_force_delete_app": return adminForceDeleteInstalledApp(args)
         case "hub_install_bundle":  return adminInstallBundle(args)
         case "hub_list_bundles":    return adminListBundles(args)
         case "hub_delete_bundle":   return adminDeleteBundle(args)
@@ -1083,6 +1084,25 @@ def adminDeleteItem(args) {
         log.error "adminDeleteItem(${type}): ${e.message}"
         return [success: false, error: "${type.capitalize()} deletion failed: ${e.message}"]
     }
+}
+
+// hub_force_delete_app: force-delete an INSTALLED-APP INSTANCE (e.g. an RM rule) via
+// /installedapp/forcedelete/<id>/quiet -- the same path RM's "Delete Rule" button uses, bypassing
+// child/device checks (mirrors the server's _rmForceDeleteApp). DISTINCT from hub_delete_item(type:'app'),
+// which hits /app/edit/deleteJsonSafe (an Apps Code CLASS, not a running instance). Used by the disarm-
+// time deferred-native-rule sweep; best-effort -- the GET reaching the hub triggers the delete regardless
+// of how the 302 redirect body parses, so a dropped/empty response is NOT treated as failure (the sweep
+// re-lists to confirm the rule is actually gone).
+def adminForceDeleteInstalledApp(args) {
+    requireConfirm(args)
+    def id = (args.id != null) ? args.id : args.appId
+    if (!id) throw new IllegalArgumentException("id (the installed-app instance id) is required")
+    if (!id.toString().isInteger() || id.toString().toInteger() <= 0) {
+        throw new IllegalArgumentException("id must be a positive integer (got: '${id}')")
+    }
+    mcpAdminLog "Force-deleting installed app instance ${id} (/installedapp/forcedelete/${id}/quiet)"
+    hubGet("/installedapp/forcedelete/${id}/quiet", [:])
+    return [success: true, message: "Force-delete requested for installed app ${id}.", id: id]
 }
 
 // hub_install_bundle: copied from toolInstallBundle + _firmwareAtLeast + _bundleResponseSucceeded
@@ -1566,6 +1586,8 @@ def getAdminToolDefinitions() {
             required: ["libraryId", "confirm"]]],
         [name: "hub_delete_item", description: "Delete an app/driver/library by id. confirm:true required.",
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
+        [name: "hub_force_delete_app", description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. confirm:true required.",
+         inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
         [name: "hub_install_bundle", description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
          inputSchema: [type: "object", properties: [importUrl: [type: "string"], primary: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
         [name: "hub_list_bundles", description: "List installed code bundle containers (id/name/namespace). Read-only.",

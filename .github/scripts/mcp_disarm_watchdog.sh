@@ -222,6 +222,37 @@ if [ "$RB_ARMED" != "false" ] || [ "$RB_INTENT" != "disarm" ]; then
   exit 1
 fi
 
+# --- 2.5) Reap DEFERRED native rules (E2E_DEFER_NATIVE_DELETES) over WATCHDOG_URL -------------------
+# If the test step deferred its per-test native-rule fixture deletes, it wrote the EXACT tracked instance
+# ids to 'e2e-deferred-native-rules.json'. Force-delete each (the INSTANCE, via the watchdog's
+# hub_force_delete_app) NOW -- the round-trips overlap the wall-clock the restore poll below spends
+# sleeping. Precise ids only (no /hub2/appsList shape-guessing -> no wrong-app risk). Best-effort +
+# SEQUENTIAL (RM concurrency rule): a hiccup NEVER fails the step (the post-restore --cleanup-only step
+# is the idempotent prefix backstop). Absent file / deferral-off -> clean no-op.
+DEFERRED_FILE="e2e-deferred-native-rules.json"
+if DEF_TEXT=$(mcp_tool_call_text "hub_read_file (deferred native rules)" \
+    "$(jq -nc --arg fn "$DEFERRED_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')" 2>/dev/null); then
+  DEF_IDS=$(printf '%s' "$DEF_TEXT" | jq -r '(.content // "[]") | fromjson | .[]?' 2>/dev/null || true)
+  if [ -n "$DEF_IDS" ]; then
+    def_n=0
+    while IFS= read -r rid; do
+      [ -z "$rid" ] && continue
+      def_n=$((def_n + 1))
+      echo "Deferred-rule sweep: force-deleting native rule instance ${rid} (overlapping the restore)..."
+      mcp_call "$(jq -nc --arg id "$rid" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_force_delete_app",arguments:{id:$id,confirm:true}}}')" >/dev/null 2>&1 \
+        || echo "::warning::Deferred-rule sweep: force-delete of ${rid} hiccupped (best-effort; the --cleanup-only backstop will reap it)."
+    done <<< "$DEF_IDS"
+    echo "Deferred-rule sweep: requested force-delete of ${def_n} native rule instance(s)."
+    # Empty the list so a re-run / the backstop never re-processes stale ids.
+    mcp_tool_call_text "hub_write_file (clear deferred list)" \
+      "$(jq -nc --arg fn "$DEFERRED_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:"[]",confirm:true}}}')" >/dev/null 2>&1 || true
+  else
+    echo "Deferred-rule sweep: list empty -- nothing to reap (deferral off or no fixtures left behind)."
+  fi
+else
+  echo "Deferred-rule sweep: no deferred-rule list file -- skipping (deferral was off)."
+fi
+
 # --- 3) Poll for the watchdog's clean-finish restore (restoreResult==restored && restoreFor==runId) -
 # checkDeadman runs every minute and processes intent=disarm exactly once per runId, stamping
 # restoreFor=runId + restoreResult. We poll the flag until that stamp matches THIS run, then assert it

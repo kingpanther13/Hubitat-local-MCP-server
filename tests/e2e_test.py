@@ -298,6 +298,13 @@ class TestRunner:
         self.created_device_dnis: list[str] = []
         self.created_rule_ids: list[str] = []
         self.created_native_app_ids: list[str] = []
+        # When set (the CI 'Run E2E tests' step only), per-test native-rule fixture deletes are SKIPPED
+        # (see _delete_native + cleanup Layer 4) and the rules are reaped by the disarm step's force
+        # sweep over WATCHDOG_URL, overlapping the ~100s restore poll instead of adding to the test
+        # critical path. Defaults OFF, so local runs + the post-restore --cleanup-only backstop are
+        # unchanged. The lifecycle/delete-assertion tests delete inline (not via _delete_native), so
+        # they are unaffected.
+        self.defer_native_deletes = os.environ.get("E2E_DEFER_NATIVE_DELETES") == "1"
         self.created_variable_names: list[str] = []
 
         # Cached helpers
@@ -850,6 +857,12 @@ class TestRunner:
         assert h.get("ok") is not False, f"hub_get_rule_health reports the rule broken: {h}"
 
     def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine") -> None:
+        # Fixture-teardown delete. When deferral is on, skip it (rule stays tracked) so it's reaped by
+        # the disarm sweep during the restore window, not inline on the test critical path. Tests whose
+        # delete IS the assertion call hub_delete_native_app directly (not this helper), so they keep
+        # deleting inline regardless.
+        if self.defer_native_deletes:
+            return
         self.client.call_tool(gateway, {"tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True}})
         self._untrack_native_app(app_id)
 
@@ -2284,32 +2297,50 @@ class TestRunner:
 
         # Layer 4: native RM rules / classic apps (issue #137). Tracked ids first,
         # then a list-based sweep for anything a failed native_apps test left behind.
-        for app_id in list(self.created_native_app_ids):
+        # When deferral is on, the disarm step's force sweep (over WATCHDOG_URL, overlapping the
+        # restore poll) owns these deletes, so skip them here to keep them off the test critical path.
+        # The post-restore --cleanup-only step runs WITHOUT the flag, so it's the idempotent backstop.
+        if self.defer_native_deletes:
+            deferred_ids = [str(a) for a in self.created_native_app_ids]
+            print(f"  Layer 4: deferring {len(deferred_ids)} native-rule delete(s) to the disarm sweep")
+            # Hand the EXACT tracked instance ids to the disarm sweep via File Manager so it force-deletes
+            # ONLY these (no guessing the /hub2/appsList shape -> no risk of deleting the wrong app). The
+            # post-restore --cleanup-only prefix sweep (no flag) is the backstop if this list is missed.
             try:
-                print(f"  Deleting tracked native app {app_id}")
-                self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+                self.client.call_tool("hub_manage_files", {
+                    "tool": "hub_write_file",
+                    "args": {"fileName": "e2e-deferred-native-rules.json",
+                             "content": json.dumps(deferred_ids), "confirm": True},
                 })
             except Exception as exc:
-                print(f"  [WARN] Failed to delete native app {app_id}: {exc}")
-        self.created_native_app_ids.clear()
-        try:
-            nrules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
-            nlist = nrules if isinstance(nrules, list) else nrules.get("rules", [])
-            for r in nlist:
-                rname = r.get("name") or r.get("label") or ""
-                if PREFIX in rname:
-                    rid = str(r.get("id", r.get("appId", "")))
-                    if rid:
-                        try:
-                            print(f"  Sweep: deleting native rule '{rname}' (id={rid})")
-                            self.client.call_tool("hub_manage_rule_machine", {
-                                "tool": "hub_delete_native_app", "args": {"appId": rid, "confirm": True},
-                            })
-                        except Exception as exc:
-                            print(f"  [WARN] Native rule sweep delete failed for '{rname}': {exc}")
-        except Exception as exc:
-            print(f"  [WARN] Native rule sweep failed: {exc}")
+                print(f"  [WARN] could not write the deferred-rule id list; the prefix backstop will reap them: {exc}")
+        else:
+            for app_id in list(self.created_native_app_ids):
+                try:
+                    print(f"  Deleting tracked native app {app_id}")
+                    self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] Failed to delete native app {app_id}: {exc}")
+            self.created_native_app_ids.clear()
+            try:
+                nrules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+                nlist = nrules if isinstance(nrules, list) else nrules.get("rules", [])
+                for r in nlist:
+                    rname = r.get("name") or r.get("label") or ""
+                    if PREFIX in rname:
+                        rid = str(r.get("id", r.get("appId", "")))
+                        if rid:
+                            try:
+                                print(f"  Sweep: deleting native rule '{rname}' (id={rid})")
+                                self.client.call_tool("hub_manage_rule_machine", {
+                                    "tool": "hub_delete_native_app", "args": {"appId": rid, "confirm": True},
+                                })
+                            except Exception as exc:
+                                print(f"  [WARN] Native rule sweep delete failed for '{rname}': {exc}")
+            except Exception as exc:
+                print(f"  [WARN] Native rule sweep failed: {exc}")
 
         # Layer 5: stranded deadman install-fix throwaway. The @test("deadman") test installs
         # 'Deadman Test Target' (namespace mcptest) + its code class; neither carries the BAT_E2E_
