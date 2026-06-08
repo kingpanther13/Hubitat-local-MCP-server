@@ -5,7 +5,7 @@
 # MCP server's own Apps Code class id -- the full discovery path -- without the
 # flaky self-update recompile a real deploy would trigger.
 #
-# This runs AFTER mcp_deploy_source.sh has landed THIS PR's app on the hub, so
+# This runs AFTER mcp_watchdog_deploy.sh has landed THIS PR's app on the hub, so
 # hub_update_package exists there to call.
 #
 # Usage: mcp_validate_package_tool.sh
