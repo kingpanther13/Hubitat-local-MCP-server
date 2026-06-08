@@ -200,6 +200,43 @@ win() {
   ctx "$PV" 'RuleMachine|ruleType|appTypeName|isVrb|vrbVersion|basicRule|BasicRule' 2 8 10000
 } > "$OUT/90-vue-vrb-write.txt" 2>&1
 
+############################################################
+# A0 - RULE MACHINE 5.1 ONLY (classic dynamicPage) — focused sweep across ALL bundles
+############################################################
+{
+  echo "# Rule Machine 5.1 data present in the hub2-source bundles"
+  echo
+  echo "## 1. Explicit 'Rule Machine' / Rule-5.x / Rule-4.x references (every bundle)"
+  for f in "$PA" "$PM" "$PV" "$PH" "$PU"; do
+    [ -f "$f" ] || continue
+    echo "----- $(basename "$f") -----"
+    grep -nEi 'rule[ ._-]?machine|rule[ ._-]?5|rule[ ._-]?4|ruleMachine|RM[ _]?5' "$f" 2>/dev/null | head -n 60 | head -c 9000 || true
+    echo
+  done
+  echo "## 2. RM classic-app creation / install / configure routing"
+  for f in "$PA" "$PM" "$PV"; do
+    [ -f "$f" ] || continue
+    echo "----- $(basename "$f") -----"
+    grep -noEi '.{0,30}createchild.{0,70}' "$f" 2>/dev/null | head -n 12 | head -c 3000 || true
+    grep -noEi '.{0,20}appName.{0,40}' "$f" 2>/dev/null | head -n 8 | head -c 2000 || true
+    grep -noEi '.{0,15}/installedapp/configure[^"'\'' ]{0,60}' "$f" 2>/dev/null | head -n 16 | head -c 3000 || true
+    echo
+  done
+  echo "## 3. dynamicPage wire ENVELOPE RM posts (the exact fields a Rule form submits)"
+  for tok in formAction currentPage pageBreadcrumbs paramsForPage appTypeId appTypeName stateAttribute deviceList version 'settings\['; do
+    echo "=== $tok ==="
+    grep -noEi ".{0,45}${tok}.{0,70}" "$PA" 2>/dev/null | head -n 6 | head -c 1800 || true
+    grep -noEi ".{0,45}${tok}.{0,70}" "$PM" 2>/dev/null | head -n 5 | head -c 1500 || true
+    echo
+  done
+  echo "## 4. dynamicPage INPUT field-model vocabulary (the data shape of an RM form input)"
+  echo "### appUI.pretty.js string-literal frequency (form/model keys):"
+  grep -oE '"[a-zA-Z][a-zA-Z0-9_]{2,24}"' "$PA" 2>/dev/null | sort | uniq -c | sort -rn | head -90 || true
+  echo
+  echo "### main.pretty.js dynamicPage input/model property accesses:"
+  grep -oE '"(submitOnChange|submitOnEveryChange|multiple|required|defaultValue|inputType|name|type|title|description|options|range|offerAll|disabled|textColor|backgroundColor|width|noBorder|image|hidden|placeholder|capability|attribute|command|device|append|displayDuringSetup|element|elem|section|sections|configPage|paragraph|href|page|nextPage|prevPage|install|uninstall|state|buttonSOC|inputClass|stateAttribute|hideable|target|collapse)"' "$PM" 2>/dev/null | sort | uniq -c | sort -rn | head -90 || true
+} > "$OUT/A0-rule-machine.txt" 2>&1
+
 echo "== evidence files =="
 ls -la "$OUT"
 echo "== total evidence bytes (excl pretty sources) =="
