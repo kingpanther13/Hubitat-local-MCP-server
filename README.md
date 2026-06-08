@@ -1538,6 +1538,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.1.0** - ci: auto-run e2e on trusted fork PRs, gate other contributors; lease waits for a busy hub; ci: e2e dead-man watchdog v2 as a 2nd MCP server — drive deploy through it (kills self-update 504s); docs: standalone-watchdog e2e architecture + pull_request_target trigger gotcha; feat: modularize Rooms + bundle tools into #include libraries + bundle-management tools (#209). PRs: [#246](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/246), [#248](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/248), [#249](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/249), [#247](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/247)
 - **v2.0.4** - feat: installAsUserApp install-commit fix + #include smoke test + e2e dead-man watchdog (#209). PRs: [#243](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/243)
 - **v2.0.3** - feat: hub_update_package dev tool — one-call app+library deploy at a git ref (#209). PRs: [#242](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/242)
 - **v2.0.2** - feat: add hub_list_libraries read tool. PRs: [#241](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/241)
