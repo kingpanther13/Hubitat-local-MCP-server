@@ -2585,6 +2585,13 @@ class TestRunner:
               f"{total_fail} failed, {total_skip} skipped  "
               f"({total_dur:.1f}s)")
 
+        # Slowest tests (diagnostic -- surface optimization targets; the suite is the biggest e2e cost).
+        slow = sorted(self.results, key=lambda r: r.get("duration", 0.0), reverse=True)[:15]
+        if slow:
+            print("\n  Slowest tests:")
+            for r in slow:
+                print(f"    {r.get('duration', 0.0):6.1f}s  {r.get('group', '?')}/{r['name']}")
+
         # List failures
         failures = [r for r in self.results if r["status"] == "fail"]
         if failures:
