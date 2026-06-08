@@ -1,0 +1,25 @@
+name: hub2-extract
+# One-off: extract RM / classic-dynamicPage wire-format evidence from the
+# vendored Hubitat admin-UI bundles on a beefy runner (the dev device OOMs on
+# the multi-MB minified blobs). Runs only on its own analysis branch.
+on:
+  push:
+    branches: [analysis/hub2-rm-extraction]
+permissions:
+  contents: read
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Extract RM wire-format evidence
+        run: bash .github/scripts/hub2_extract.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hub2-rm-evidence
+          path: /tmp/evidence
+          if-no-files-found: error
+          retention-days: 5
