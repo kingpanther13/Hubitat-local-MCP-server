@@ -78,6 +78,10 @@ class HubitatMcpClient:
         self.access_token = access_token
         self.verbose = verbose
         self._request_id = 0
+        # Per-op wall-clock timings (op_key, seconds) for the end-of-run "Per-op wall-clock" summary --
+        # the only place real per-operation cost (RM create vs edit vs delete, etc.) is visible, since
+        # the >> call traces are verbose-gated and never reach the CI log.
+        self.op_timings: list[tuple[str, float]] = []
         # Mask token for safe logging: show first 4 chars only
         self._masked_token = access_token[:4] + "..." if len(access_token) > 4 else "****"
 
@@ -225,7 +229,16 @@ class HubitatMcpClient:
 
     def call_tool(self, name: str, arguments: dict | None = None) -> Any:
         """Call an MCP tool. Returns parsed content text (dict/list/str)."""
-        result = self._send("tools/call", {"name": name, "arguments": arguments or {}})
+        args = arguments or {}
+        # Resolve the meaningful op key for the timing summary: for a gateway call the sub-tool
+        # (args["tool"]) is what matters, and for hub_set_rule split create (no appId) from edit so the
+        # real fixture-vs-mutation cost is separable.
+        op_key = args.get("tool", name)
+        if op_key == "hub_set_rule":
+            op_key += ":create" if not (args.get("args") or {}).get("appId") else ":edit"
+        _t0 = time.monotonic()
+        result = self._send("tools/call", {"name": name, "arguments": args})
+        self.op_timings.append((op_key, time.monotonic() - _t0))
 
         # Check for tool-level error
         if result.get("isError"):
@@ -330,9 +343,11 @@ class TestRunner:
             "deviceLabel": f"{PREFIX}Action_Switch",
             "confirm": True,
         })
-        dni = result.get("deviceNetworkId", result.get("dni", ""))
-        if dni:
-            self.created_device_dnis.append(str(dni))
+        # The test switch is PERSISTENT scaffolding, not a fixture-under-test: rule/trigger tests merely
+        # reference it. Deliberately NOT tracked in created_device_dnis, so teardown leaves it on the hub
+        # for the next run to find-and-reuse (the existing-device lookup at the top of this method) --
+        # skipping a create+delete of the switch every run. Devices that ARE under test (test_create_*)
+        # still track + delete themselves. One inert virtual switch persists on the test hub; harmless.
         dev_id = result.get("id", result.get("deviceId", ""))
 
         # Response may not include ID directly — look it up
@@ -344,9 +359,6 @@ class TestRunner:
                 lbl = d.get("label") or d.get("name") or ""
                 if f"{PREFIX}Action_Switch" in lbl:
                     dev_id = str(d["id"])
-                    found_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
-                    if found_dni and found_dni not in self.created_device_dnis:
-                        self.created_device_dnis.append(found_dni)
                     break
 
         self._test_switch_id = str(dev_id) if dev_id else ""
@@ -2591,6 +2603,19 @@ class TestRunner:
             print("\n  Slowest tests:")
             for r in slow:
                 print(f"    {r.get('duration', 0.0):6.1f}s  {r.get('group', '?')}/{r['name']}")
+
+        # Per-op wall-clock (diagnostic -- real per-operation cost, the basis for fixture/cleanup
+        # optimization: how much is RM create vs edit vs delete vs reads). Aggregated by op key.
+        ops = getattr(self.client, "op_timings", [])
+        if ops:
+            agg: dict[str, list[float]] = {}
+            for op_key, dur in ops:
+                slot = agg.setdefault(op_key, [0, 0.0])
+                slot[0] += 1
+                slot[1] += dur
+            print("\n  Per-op wall-clock (total / count / avg, slowest total first):")
+            for op_key, (cnt, tot) in sorted(agg.items(), key=lambda kv: kv[1][1], reverse=True)[:20]:
+                print(f"    {tot:6.1f}s  {int(cnt):3d}x  {tot / cnt:4.1f}s avg  {op_key}")
 
         # List failures
         failures = [r for r in self.results if r["status"] == "fail"]
