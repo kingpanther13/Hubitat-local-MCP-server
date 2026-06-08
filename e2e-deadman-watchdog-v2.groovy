@@ -1088,11 +1088,13 @@ def adminDeleteItem(args) {
 
 // hub_force_delete_app: force-delete an INSTALLED-APP INSTANCE (e.g. an RM rule) via
 // /installedapp/forcedelete/<id>/quiet -- the same path RM's "Delete Rule" button uses, bypassing
-// child/device checks (mirrors the server's _rmForceDeleteApp). DISTINCT from hub_delete_item(type:'app'),
-// which hits /app/edit/deleteJsonSafe (an Apps Code CLASS, not a running instance). Used by the disarm-
-// time deferred-native-rule sweep; best-effort -- the GET reaching the hub triggers the delete regardless
-// of how the 302 redirect body parses, so a dropped/empty response is NOT treated as failure (the sweep
-// re-lists to confirm the rule is actually gone).
+// child/device checks. Loosely based on the server's _rmForceDeleteApp (same endpoint), adapted to the
+// watchdog's fire-and-forget hubGet -- no status check, no backup. DISTINCT from hub_delete_item(type:'app'),
+// which hits /app/edit/deleteJsonSafe (an Apps Code CLASS, not a running instance). Used by the disarm-time
+// deferred-native-rule sweep. On success the 302 redirect is followed to the apps-list page, so hubGet
+// returns non-null; hubGet returns NULL on a 4xx/5xx, an auth/cookie failure, or a request that never
+// reached the hub -- report THAT as success:false so the disarm sweep can warn + keep its recovery list
+// (any rule that survives is reaped by the separate post-restore --cleanup-only prefix sweep, not a re-list).
 def adminForceDeleteInstalledApp(args) {
     requireConfirm(args)
     def id = (args.id != null) ? args.id : args.appId
@@ -1101,7 +1103,10 @@ def adminForceDeleteInstalledApp(args) {
         throw new IllegalArgumentException("id must be a positive integer (got: '${id}')")
     }
     mcpAdminLog "Force-deleting installed app instance ${id} (/installedapp/forcedelete/${id}/quiet)"
-    hubGet("/installedapp/forcedelete/${id}/quiet", [:])
+    def resp = hubGet("/installedapp/forcedelete/${id}/quiet", [:])
+    if (resp == null) {
+        return [success: false, error: "Force-delete of installed app ${id} got no response -- endpoint error, auth failure, or 4xx/5xx (the request may not have reached the hub).", id: id]
+    }
     return [success: true, message: "Force-delete requested for installed app ${id}.", id: id]
 }
 

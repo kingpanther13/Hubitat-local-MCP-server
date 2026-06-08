@@ -456,6 +456,16 @@ if ! mcp_tool_call_text "hub_write_file (arm flag)" "$WRITE_RPC" >/dev/null; the
   exit 1
 fi
 
+# Run-scope the deferred-native-rule list (PR #251): reset it to [] at arm so a PRIOR run's stale instance
+# ids can never be reaped by THIS run's disarm sweep. The test step overwrites it with THIS run's ids only
+# when E2E_DEFER_NATIVE_DELETES is set; absent that, an empty list is the correct no-op. Best-effort -- a
+# failure must not block the arm (the disarm sweep deletes only exact ids + the --cleanup-only prefix sweep
+# backstops, so a stale list is harmless beyond a no-op re-delete).
+DEFERRED_RULES_FILE="e2e-deferred-native-rules.json"
+mcp_tool_call_text "hub_write_file (reset deferred-rule list)" \
+  "$(jq -nc --arg fn "$DEFERRED_RULES_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:"[]",confirm:true}}}')" >/dev/null 2>&1 \
+  || echo "::warning::Could not reset ${DEFERRED_RULES_FILE} at arm (non-fatal -- exact-id sweep + prefix backstop guard against stale ids)."
+
 # Read-back-and-assert: a cloud 504 can no-op a write while returning ambiguously. We assert
 # armed==true AND the manifest's app.classId round-tripped (the restore target landed intact).
 echo "Reading the flag back to confirm it armed..."

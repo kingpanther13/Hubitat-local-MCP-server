@@ -353,7 +353,7 @@ jobs:
         if: steps.gate.outputs.available == 'true'
         env:
           # Defer per-test native-rule fixture deletes to the disarm step's force sweep (over
-          # WATCHDOG_URL, overlapping the ~100s restore poll) instead of the test critical path.
+          # WATCHDOG_URL, overlapping the restore-poll wait) instead of the test critical path.
           # NOT set on the post-restore --cleanup-only step below, which stays the idempotent backstop.
           E2E_DEFER_NATIVE_DELETES: '1'
         run: python tests/e2e_test.py

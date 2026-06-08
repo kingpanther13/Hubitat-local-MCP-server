@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Install THIS PR's package onto the live test hub via the WATCHDOG MCP endpoint,
-# in Hubitat Package Manager's exact order: LIBRARIES first, then the BUNDLE (if
-# the package ships one), then the APP last.
+# in Hubitat Package Manager's order: the BUNDLE (which delivers every #included
+# library) first, then the APP last. Libraries are NOT installed individually --
+# the bundle ships them; doing both was redundant and forced an extra recompile.
 #
 # This single script REPLACES the four cloud-relay deploy scripts it consolidates:
 #   - mcp_install_libraries.sh   (install/update every #included library)
@@ -14,8 +15,8 @@
 # code-install plumbing. Its advantage over self-deploying through the primary
 # endpoint is that the watchdog is a DIFFERENT running app, so installing the MCP
 # package does NOT reload the app answering the request -- it never bricks itself
-# and stays queryable throughout. Small/fast calls (the libraries, the package's
-# libraries bundle, get_source, get_info) return the hub's VERBATIM compile/save
+# and stays queryable throughout. Small/fast calls (the package's libraries bundle,
+# get_source, get_info) return the hub's VERBATIM compile/save
 # result synchronously within the ~10s cloud relay window (a bundle install is the hub
 # fetching + unpacking a small zip, well within the window), so VERIFY for those is
 # simply: parse the tool
@@ -27,9 +28,10 @@
 # as a secondary source for the hub's verbatim compile error if it never does.
 #
 # Install order (HPM's order; #include deps must exist before the app compiles):
-#   1. LIBRARIES  hub_update_library / hub_create_library  importUrl=<lib raw url>  confirm:true
-#   2. BUNDLE     hub_install_bundle                        importUrl=<bundle zip url> confirm:true  (only if present)
-#   3. APP        hub_update_app  appId=<MCP class id>      importUrl=<app raw url>  confirm:true
+#   1. BUNDLE  hub_install_bundle  importUrl=<bundle zip url>  confirm:true  (delivers EVERY #included library)
+#   2. APP     hub_update_app  appId=<MCP class id>  importUrl=<app raw url>  confirm:true
+# Libraries are delivered ONLY by the bundle -- there is no per-#include hub_update_library/hub_create_library
+# step (section 1 only DISCOVERS the #includes + sanity-checks the manifest declares a bundle to deliver them).
 #
 # Usage: mcp_watchdog_deploy.sh [path/to/hubitat-mcp-server.groovy]
 # Env:   WATCHDOG_URL          -- full watchdog MCP endpoint URL with access_token (secret WATCHDOG_MCP_URL)
@@ -39,7 +41,7 @@
 #
 # The app's importUrl points the hub at the PR branch's raw source so the ~1.5MB
 # blob never has to cross the MCP transport as an inline argument (importUrl
-# deploy, issue #228); each library/bundle importUrl is built from PR_RAW_BASE +
+# deploy, issue #228); the bundle importUrl is built from PR_RAW_BASE +
 # the resolved head SHA + the repo-relative path.
 set -euo pipefail
 

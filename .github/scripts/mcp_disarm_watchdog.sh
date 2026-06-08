@@ -235,22 +235,38 @@ if DEF_TEXT=$(mcp_tool_call_text "hub_read_file (deferred native rules)" \
   DEF_IDS=$(printf '%s' "$DEF_TEXT" | jq -r '(.content // "[]") | fromjson | .[]?' 2>/dev/null || true)
   if [ -n "$DEF_IDS" ]; then
     def_n=0
+    def_fail=0
     while IFS= read -r rid; do
       [ -z "$rid" ] && continue
       def_n=$((def_n + 1))
       echo "Deferred-rule sweep: force-deleting native rule instance ${rid} (overlapping the restore)..."
-      mcp_call "$(jq -nc --arg id "$rid" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_force_delete_app",arguments:{id:$id,confirm:true}}}')" >/dev/null 2>&1 \
-        || echo "::warning::Deferred-rule sweep: force-delete of ${rid} hiccupped (best-effort; the --cleanup-only backstop will reap it)."
+      # mcp_tool_call_text PARSES the JSON-RPC result so we can check tool-level success -- force-delete is
+      # idempotent (deleting a gone rule is a no-op), so its retry is safe. Raw mcp_call would discard a
+      # tool-level error (tool missing, auth fail, 4xx/5xx) and look fine, masking a real failure.
+      if FD_TEXT=$(mcp_tool_call_text "hub_force_delete_app ${rid}" \
+          "$(jq -nc --arg id "$rid" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_force_delete_app",arguments:{id:$id,confirm:true}}}')" 2>/dev/null); then
+        if [ "$(printf '%s' "$FD_TEXT" | jq -r '.content | fromjson | .success' 2>/dev/null)" = "true" ]; then
+          continue
+        fi
+        echo "::warning::Deferred-rule sweep: hub_force_delete_app(${rid}) did not report success: $(printf '%s' "$FD_TEXT" | jq -c '.content|fromjson|{success,error}' 2>/dev/null | head -c 200)"
+      else
+        echo "::warning::Deferred-rule sweep: hub_force_delete_app(${rid}) returned no parseable result (tool missing on the watchdog / endpoint down?)."
+      fi
+      def_fail=$((def_fail + 1))
     done <<< "$DEF_IDS"
-    echo "Deferred-rule sweep: requested force-delete of ${def_n} native rule instance(s)."
-    # Empty the list so a re-run / the backstop never re-processes stale ids.
-    mcp_tool_call_text "hub_write_file (clear deferred list)" \
-      "$(jq -nc --arg fn "$DEFERRED_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:"[]",confirm:true}}}')" >/dev/null 2>&1 || true
+    if [ "$def_fail" -eq 0 ]; then
+      echo "Deferred-rule sweep: force-deleted ${def_n} native rule instance(s); clearing the deferred-id list."
+      mcp_tool_call_text "hub_write_file (clear deferred list)" \
+        "$(jq -nc --arg fn "$DEFERRED_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:"[]",confirm:true}}}')" >/dev/null 2>&1 \
+        || echo "::warning::Deferred-rule sweep: could not clear ${DEFERRED_FILE} (the arm step truncates it next run; re-deleting already-gone ids is a harmless no-op)."
+    else
+      echo "::warning::Deferred-rule sweep: ${def_fail}/${def_n} force-delete(s) did NOT confirm -- KEEPING ${DEFERRED_FILE} so the post-restore --cleanup-only prefix sweep (and the next run) can still reap them. Not failing the restore (best-effort)."
+    fi
   else
-    echo "Deferred-rule sweep: list empty -- nothing to reap (deferral off or no fixtures left behind)."
+    echo "Deferred-rule sweep: list empty -- nothing to reap (deferral off, or no native fixtures left behind)."
   fi
 else
-  echo "Deferred-rule sweep: no deferred-rule list file -- skipping (deferral was off)."
+  echo "::warning::Deferred-rule sweep: could not READ ${DEFERRED_FILE} after retries (transient transport, NOT necessarily deferral-off) -- relying on the post-restore --cleanup-only prefix sweep to reap any BAT_E2E_ rules."
 fi
 
 # --- 3) Poll for the watchdog's clean-finish restore (restoreResult==restored && restoreFor==runId) -

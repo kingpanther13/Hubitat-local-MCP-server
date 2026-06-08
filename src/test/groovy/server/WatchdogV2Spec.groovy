@@ -217,6 +217,20 @@ class WatchdogV2Spec extends Specification {
         calledPath == "/installedapp/forcedelete/123/quiet"     // NOT /app/edit/deleteJsonSafe (code class)
     }
 
+    def "adminForceDeleteInstalledApp reports success:false when hubGet returns null (4xx/5xx/auth/transport)"() {
+        given:
+        // hubGet returns null on a thrown non-2xx, an auth/cookie failure, or a request that never reached
+        // the hub -- the tool must NOT report success then, so the disarm sweep can warn + keep its list.
+        script.metaClass.hubGet = { String path, Map q -> null }
+
+        when:
+        def r = script.adminForceDeleteInstalledApp([id: "123", confirm: true])
+
+        then:
+        r.success == false
+        r.error?.contains("no response")
+    }
+
     @Unroll
     def "adminForceDeleteInstalledApp rejects a bad instance id (#scenario)"() {
         when:

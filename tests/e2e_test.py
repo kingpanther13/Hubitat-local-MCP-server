@@ -58,6 +58,17 @@ class McpToolError(McpError):
 # ---------------------------------------------------------------------------
 
 
+def _op_key(name: str, arguments: dict | None) -> str:
+    """Resolve the per-op timing key for the run summary: the gateway sub-tool (args['tool']) when present,
+    else the flat tool name; hub_set_rule is split into :create (no inner appId) vs :edit so fixture cost is
+    separable from mutation cost. Pure dict logic (unit-tested in test_e2e_test_helpers.py)."""
+    args = arguments or {}
+    key = args.get("tool", name)
+    if key == "hub_set_rule":
+        key += ":create" if not (args.get("args") or {}).get("appId") else ":edit"
+    return key
+
+
 class HubitatMcpClient:
     """Thin client for the Hubitat MCP Server JSON-RPC 2.0 endpoint."""
 
@@ -230,12 +241,7 @@ class HubitatMcpClient:
     def call_tool(self, name: str, arguments: dict | None = None) -> Any:
         """Call an MCP tool. Returns parsed content text (dict/list/str)."""
         args = arguments or {}
-        # Resolve the meaningful op key for the timing summary: for a gateway call the sub-tool
-        # (args["tool"]) is what matters, and for hub_set_rule split create (no appId) from edit so the
-        # real fixture-vs-mutation cost is separable.
-        op_key = args.get("tool", name)
-        if op_key == "hub_set_rule":
-            op_key += ":create" if not (args.get("args") or {}).get("appId") else ":edit"
+        op_key = _op_key(name, args)   # gateway sub-tool / flat name; hub_set_rule split create-vs-edit
         _t0 = time.monotonic()
         result = self._send("tools/call", {"name": name, "arguments": args})
         self.op_timings.append((op_key, time.monotonic() - _t0))
@@ -300,7 +306,7 @@ class TestRunner:
         self.created_native_app_ids: list[str] = []
         # When set (the CI 'Run E2E tests' step only), per-test native-rule fixture deletes are SKIPPED
         # (see _delete_native + cleanup Layer 4) and the rules are reaped by the disarm step's force
-        # sweep over WATCHDOG_URL, overlapping the ~100s restore poll instead of adding to the test
+        # sweep over WATCHDOG_URL, overlapping the restore-poll wait instead of adding to the test
         # critical path. Defaults OFF, so local runs + the post-restore --cleanup-only backstop are
         # unchanged. The lifecycle/delete-assertion tests delete inline (not via _delete_native), so
         # they are unaffected.
@@ -416,15 +422,22 @@ class TestRunner:
             f"Rule name mismatch: expected '{name}', got '{fetched.get('name')}'"
         return rule_id
 
-    def _assert_rule_array_len(self, rule_id: str, key: str, expected: int) -> None:
-        """Fetch a custom rule and assert its triggers/conditions/actions array has the expected count.
-        Catches the legacy engine silently rejecting/dropping a type inside a batched type-coverage rule
-        (a plain create-success check would miss a dropped entry)."""
+    def _assert_rule_types(self, rule_id: str, key: str, expected_types: list[str],
+                           normalize_away: tuple[str, ...] = ()) -> None:
+        """Fetch a custom rule and assert its triggers/conditions/actions array carries the expected COUNT
+        AND each expected TYPE -- catches the legacy engine silently dropping a type OR drop-and-duplicating
+        one (which a length-only check would miss). `normalize_away` lists input types the engine rewrites
+        server-side (triggers: 'sunrise'/'sunset' -> 'time'), so they aren't required to appear under their
+        original name; the count still must match."""
         fetched = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
         arr = fetched.get(key)
-        got = len(arr) if isinstance(arr, list) else arr
-        assert isinstance(arr, list) and len(arr) == expected, \
-            f"custom rule '{key}': expected {expected} entries, got {got} -- a type was rejected/dropped: {fetched.get(key)!r}"
+        assert isinstance(arr, list), f"custom rule '{key}' is not a list: {fetched.get(key)!r}"
+        got = [e.get("type") for e in arr if isinstance(e, dict)]
+        assert len(arr) == len(expected_types), \
+            f"custom rule '{key}': expected {len(expected_types)} entries, got {len(arr)} -- a type was rejected/dropped: {got!r}"
+        missing = [t for t in expected_types if t not in normalize_away and t not in got]
+        assert not missing, \
+            f"custom rule '{key}': types missing after round-trip: {missing} (got {got!r}) -- a type was dropped or replaced by a duplicate"
 
     def _delete_rule_safe(self, rule_id: str) -> None:
         """Delete a rule, swallowing errors."""
@@ -1114,7 +1127,8 @@ class TestRunner:
             "triggers": triggers,
             "actions": [{"type": "log", "message": "trigger types batch"}],
         })
-        self._assert_rule_array_len(rule_id, "triggers", len(triggers))
+        self._assert_rule_types(rule_id, "triggers", [t["type"] for t in triggers],
+                                normalize_away=("sunrise", "sunset"))
         self._delete_rule_safe(rule_id)
 
     # -----------------------------------------------------------------------
@@ -1144,7 +1158,7 @@ class TestRunner:
                 "conditions": conditions,
                 "actions": [{"type": "log", "message": "condition types batch"}],
             })
-            self._assert_rule_array_len(rule_id, "conditions", len(conditions))
+            self._assert_rule_types(rule_id, "conditions", [c["type"] for c in conditions])
             self._delete_rule_safe(rule_id)
         finally:
             self._delete_variable_safe(var_name)
@@ -1187,7 +1201,7 @@ class TestRunner:
                 "triggers": [{"type": "time", "time": "03:00"}],
                 "actions": actions,
             })
-            self._assert_rule_array_len(rule_id, "actions", len(actions))
+            self._assert_rule_types(rule_id, "actions", [a["type"] for a in actions])
             self._delete_rule_safe(rule_id)
         finally:
             self._delete_variable_safe(var_name)
@@ -2301,10 +2315,24 @@ class TestRunner:
         # restore poll) owns these deletes, so skip them here to keep them off the test critical path.
         # The post-restore --cleanup-only step runs WITHOUT the flag, so it's the idempotent backstop.
         if self.defer_native_deletes:
-            deferred_ids = [str(a) for a in self.created_native_app_ids]
+            deferred_ids = {str(a) for a in self.created_native_app_ids}
+            # Also fold in any PREFIX-matched native rule a FAILED test created but never tracked (the rule
+            # is hub-created before its id is appended), so the disarm exact-id sweep reaps those too --
+            # otherwise an untracked leftover would survive until the post-restore --cleanup-only prefix
+            # sweep. This is the deferral-branch equivalent of the non-deferral prefix sweep below.
+            try:
+                nrules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+                for r in (nrules if isinstance(nrules, list) else nrules.get("rules", [])):
+                    if PREFIX in (r.get("name") or r.get("label") or ""):
+                        rid = str(r.get("id", r.get("appId", "")))
+                        if rid:
+                            deferred_ids.add(rid)
+            except Exception as exc:
+                print(f"  [WARN] could not list native rules for the deferred union (tracked ids still deferred): {exc}")
+            deferred_ids = sorted(deferred_ids)
             print(f"  Layer 4: deferring {len(deferred_ids)} native-rule delete(s) to the disarm sweep")
-            # Hand the EXACT tracked instance ids to the disarm sweep via File Manager so it force-deletes
-            # ONLY these (no guessing the /hub2/appsList shape -> no risk of deleting the wrong app). The
+            # Hand the EXACT instance ids to the disarm sweep via File Manager so it force-deletes ONLY
+            # these (no guessing the /hub2/appsList shape -> no risk of deleting the wrong app). The
             # post-restore --cleanup-only prefix sweep (no flag) is the backstop if this list is missed.
             try:
                 self.client.call_tool("hub_manage_files", {
