@@ -335,12 +335,12 @@ jobs:
           MAIN_CHARS: ${{ env.MAIN_CHARS }}
         run: bash .github/scripts/mcp_arm_watchdog.sh
 
-      # Install THIS PR's source + libraries + bundle onto the test hub through the watchdog's
-      # install plumbing ($WATCHDOG_URL). Replaces the old separate install-libraries / deploy-source /
-      # verify-deploy / install-bundle-HPM steps: the watchdog endpoint is a single driver of the
-      # same loopback restore/install plumbing, so it installs the #include libraries, then the bundle
-      # the HPM way, then lands + verifies the app source last (HPM's libraries -> bundle -> app order)
-      # in one step. Blocking:
+      # Install THIS PR's source onto the test hub through the watchdog's install plumbing
+      # ($WATCHDOG_URL). Replaces the old separate install-libraries / deploy-source / verify-deploy /
+      # install-bundle-HPM steps: the watchdog endpoint is a single driver of the same loopback
+      # restore/install plumbing, so it installs the package bundle the HPM way (the bundle delivers
+      # every #include library -- no separate per-library install), then lands + verifies the app
+      # source last (HPM's bundle -> app order) in one step. Blocking:
       # a failed PR install means the tests would run against stale/broken hub code.
       - name: Watchdog - install PR
         if: steps.gate.outputs.available == 'true'
@@ -351,6 +351,11 @@ jobs:
 
       - name: Run E2E tests
         if: steps.gate.outputs.available == 'true'
+        env:
+          # Defer per-test native-rule fixture deletes to the disarm step's force sweep (over
+          # WATCHDOG_URL, overlapping the restore-poll wait) instead of the test critical path.
+          # NOT set on the post-restore --cleanup-only step below, which stays the idempotent backstop.
+          E2E_DEFER_NATIVE_DELETES: '1'
         run: python tests/e2e_test.py
 
       # The install above landed THIS PR's app on the hub, so hub_update_package now

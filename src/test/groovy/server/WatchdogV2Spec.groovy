@@ -22,6 +22,7 @@ import support.PermissiveLog
  */
 class WatchdogV2Spec extends Specification {
     HubitatAppScript script
+    List<List<Object>> runInCalls = []     // captures (delaySeconds, handler[, opts]) of every runIn
 
     def setup() {
         File appFile = new File('e2e-deadman-watchdog-v2.groovy')
@@ -30,6 +31,7 @@ class WatchdogV2Spec extends Specification {
             api: Mock(AppExecutor) {
                 _ * getLog() >> new PermissiveLog()
                 _ * getSettings() >> [hubSecurityEnabled: false, debugLogging: false]
+                _ * runIn(*_) >> { args -> runInCalls << (args as List) }
             },
             userSettingValues: [hubSecurityEnabled: false, debugLogging: false],
             validator: new PassThroughAppValidator([
@@ -160,6 +162,106 @@ class WatchdogV2Spec extends Specification {
         noExceptionThrown()
         appRestored                              // unparseable deadline -> treated as expired -> FIRE
         written?.restoreResult == 'restored'
+    }
+
+    // ---- disarm acceleration: adminWriteFile kicks a one-shot checkDeadman past the ~60s tick ----
+
+    def "deadmanKick delegates to checkDeadman (so the periodic check stays the single decision point)"() {
+        given:
+        boolean checked = false
+        script.metaClass.checkDeadman = { -> checked = true }
+
+        when:
+        script.deadmanKick()
+
+        then:
+        checked
+    }
+
+    @Unroll
+    def "adminWriteFile schedules a one-shot deadmanKick ONLY when the armed-flag file is written (#scenario)"() {
+        given:
+        // A flag write must accelerate the restore (runIn 2s -> deadmanKick); a write to any OTHER file
+        // must NOT schedule anything. The handler MUST be the dedicated 'deadmanKick', never
+        // 'checkDeadman' (scheduling that name would overwrite the runEvery1Minute periodic dead-man).
+        script.metaClass.uploadHubFile = { String fn, byte[] bytes -> }
+
+        when:
+        def r = script.adminWriteFile([fileName: fileName, content: '{"armed":false,"intent":"disarm"}', confirm: true])
+
+        then:
+        r.success == true
+        runInCalls.findAll { it[1] == 'deadmanKick' }.size() == expectedKicks
+        runInCalls.findAll { it[1] == 'deadmanKick' && it[0] == 2 }.size() == expectedKicks   // 2s delay
+        runInCalls.findAll { it[1] == 'checkDeadman' }.isEmpty()                              // never the periodic name
+
+        where:
+        scenario                  | fileName                || expectedKicks
+        'flag file -> kick'       | 'e2e-deadman-v2.json'   || 1
+        'other file -> no kick'   | 'mcp-source-app.groovy' || 0
+    }
+
+    // ---- defer-native-deletes: force-delete an installed-app instance (RM rule) for the disarm sweep ----
+
+    def "adminForceDeleteInstalledApp GETs /installedapp/forcedelete/<id>/quiet (instance, not code class)"() {
+        given:
+        // The forcedelete endpoint answers SUCCESS with a 302 redirect to the apps list; hubGetStatus
+        // captures that status off the thrown response (followRedirects:false), so the tool sees a 3xx.
+        String calledPath = null
+        script.metaClass.hubGetStatus = { String path, Map q -> calledPath = path; [status: 302, location: "/installedapp/list", data: null] }
+
+        when:
+        def r = script.adminForceDeleteInstalledApp([id: "123", confirm: true])
+
+        then:
+        r.success == true
+        r.id == "123"
+        calledPath == "/installedapp/forcedelete/123/quiet"     // NOT /app/edit/deleteJsonSafe (code class)
+    }
+
+    @Unroll
+    def "adminForceDeleteInstalledApp treats #status as #expected (302 redirect + 2xx = success)"() {
+        given:
+        script.metaClass.hubGetStatus = { String path, Map q -> [status: status, location: null, data: null] }
+
+        expect:
+        script.adminForceDeleteInstalledApp([id: "123", confirm: true]).success == expected
+
+        where:
+        status || expected
+        302    || true       // forcedelete success redirect
+        200    || true       // plain OK (some firmwares)
+        404    || false      // instance already gone / bad id -> real failure, sweep keeps its list
+        500    || false      // hub error
+    }
+
+    def "adminForceDeleteInstalledApp reports success:false when the request never reaches the hub (status null)"() {
+        given:
+        // hubGetStatus leaves status null on an auth/cookie failure or a request that never reached the
+        // hub -- the tool must NOT report success then, so the disarm sweep can warn + keep its id list.
+        script.metaClass.hubGetStatus = { String path, Map q -> [status: null, location: null, data: null] }
+
+        when:
+        def r = script.adminForceDeleteInstalledApp([id: "123", confirm: true])
+
+        then:
+        r.success == false
+        r.error?.contains("did not confirm")
+    }
+
+    @Unroll
+    def "adminForceDeleteInstalledApp rejects a bad instance id (#scenario)"() {
+        when:
+        script.adminForceDeleteInstalledApp([id: badId, confirm: true])
+
+        then:
+        thrown(IllegalArgumentException)
+
+        where:
+        scenario      | badId
+        'non-integer' | 'abc'
+        'zero'        | '0'
+        'missing'     | null
     }
 
     // ---- PR #247: bundle tools mirrored into the watchdog + the no-stale restore cleanup ----

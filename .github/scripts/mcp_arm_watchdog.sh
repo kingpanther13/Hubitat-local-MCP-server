@@ -240,11 +240,15 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
     PRE_LSD_AT=$(printf '%s' "$PRE_INFO" | jq -r '(.lastSelfDeploy.at // 0) | floor' 2>/dev/null || echo 0)
     DM_RPC=$(jq -nc --arg id "$CLASS_ID" --arg url "$MAIN_SOURCE_URL" \
       '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_update_app",arguments:{appId:$id,importUrl:$url,confirm:true}}}')
-    mcp_tool_call_text "hub_update_app (refresh canonical main)" "$DM_RPC" >/dev/null || true
+    # Fire the deploy ONCE (single-shot mcp_call, NOT the 5x-retry mcp_tool_call_text): the ~1.6MB
+    # compile relay-drops the response, and retrying just RE-SENDS the deploy (re-triggering the compile)
+    # for ~80s of wasted timeouts + noisy ::warning:: lines. The fresh-lastSelfDeploy poll below is the
+    # real confirmation -- it tolerates the dropped response by design.
+    mcp_call "$DM_RPC" >/dev/null 2>&1 || true
     DM_LANDED=""
     DM_DEADLINE=$(( $(date +%s) + 420 ))
     while [ "$(date +%s)" -lt "$DM_DEADLINE" ]; do
-      sleep 15
+      sleep 5
       DM_INFO=$(mcp_tool_call_text "hub_get_info (main-refresh poll)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' || true)
       DM_APP=$(printf '%s' "$DM_INFO" | jq -r '.lastSelfDeploy.appId // empty' 2>/dev/null || true)
       DM_AT=$(printf '%s' "$DM_INFO" | jq -r '(.lastSelfDeploy.at // 0) | floor' 2>/dev/null || echo 0)
@@ -451,6 +455,16 @@ if ! mcp_tool_call_text "hub_write_file (arm flag)" "$WRITE_RPC" >/dev/null; the
   echo "::error::hub_write_file('$FLAG_FILE') returned non-JSON $RPC_ATTEMPTS times -- could not confirm the arm write. Re-run the job."
   exit 1
 fi
+
+# Run-scope the deferred-native-rule list (PR #251): reset it to [] at arm so a PRIOR run's stale instance
+# ids can never be reaped by THIS run's disarm sweep. The test step overwrites it with THIS run's ids only
+# when E2E_DEFER_NATIVE_DELETES is set; absent that, an empty list is the correct no-op. Best-effort -- a
+# failure must not block the arm (the disarm sweep deletes only exact ids + the --cleanup-only prefix sweep
+# backstops, so a stale list is harmless beyond a no-op re-delete).
+DEFERRED_RULES_FILE="e2e-deferred-native-rules.json"
+mcp_tool_call_text "hub_write_file (reset deferred-rule list)" \
+  "$(jq -nc --arg fn "$DEFERRED_RULES_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:"[]",confirm:true}}}')" >/dev/null 2>&1 \
+  || echo "::warning::Could not reset ${DEFERRED_RULES_FILE} at arm (non-fatal -- exact-id sweep + prefix backstop guard against stale ids)."
 
 # Read-back-and-assert: a cloud 504 can no-op a write while returning ambiguously. We assert
 # armed==true AND the manifest's app.classId round-tripped (the restore target landed intact).

@@ -105,7 +105,7 @@ deploy_app_via_watchdog() {
   local deadline info cur_app cur_at cur_ok cur_err
   deadline=$(( $(date +%s) + 420 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    sleep 15
+    sleep 5
     info=$(call_tool '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}')
     cur_app=$(printf '%s' "$info" | jq -r '.lastSelfDeploy.appId // empty' 2>/dev/null || true)
     cur_at=$(printf '%s' "$info" | jq -r '(.lastSelfDeploy.at // 0) | floor' 2>/dev/null || echo 0)

@@ -143,6 +143,12 @@ def checkDeadman() {
     actAndRecord(flag, "fire")
 }
 
+// One-shot accelerator scheduled by adminWriteFile right after CI writes the armed flag. A handler
+// name DISTINCT from "checkDeadman" is deliberate: it guarantees runIn() never overwrites the
+// runEvery1Minute("checkDeadman") periodic dead-man job. Delegates to the same idempotent check, so it
+// just makes the disarm restore happen ~2s after the flag write instead of on the next minute tick.
+def deadmanKick() { checkDeadman() }
+
 // Run the package restore, then record result + idempotency stamp into the flag (the signal CI
 // polls). BOTH triggers retry up to a 5-tick cap before latching "failed" (a transient miss must not
 // latch the restore failed); a success stamps restoreFor=runId so it runs at most once per run.
@@ -657,6 +663,7 @@ def executeAdminTool(String toolName, Map args) {
         case "hub_create_library":  return adminCreateLibrary(args)
         case "hub_update_library":  return adminUpdateLibrary(args)
         case "hub_delete_item":     return adminDeleteItem(args)
+        case "hub_force_delete_app": return adminForceDeleteInstalledApp(args)
         case "hub_install_bundle":  return adminInstallBundle(args)
         case "hub_list_bundles":    return adminListBundles(args)
         case "hub_delete_bundle":   return adminDeleteBundle(args)
@@ -1079,6 +1086,34 @@ def adminDeleteItem(args) {
     }
 }
 
+// hub_force_delete_app: force-delete an INSTALLED-APP INSTANCE (e.g. an RM rule) via
+// /installedapp/forcedelete/<id>/quiet -- the same path RM's "Delete Rule" button uses, bypassing
+// child/device checks. Loosely based on the server's _rmForceDeleteApp (same endpoint). Status-aware
+// via hubGetStatus: the forcedelete endpoint answers SUCCESS with a 302 redirect, so a 2xx/3xx status
+// is success while >=400 -- or no status at all, meaning the request never reached the hub (auth/
+// transport) -- is reported as success:false so the disarm sweep can warn + keep its recovery list
+// (any rule that survives is reaped by the separate post-restore --cleanup-only prefix sweep, not a
+// re-list). DISTINCT from hub_delete_item(type:'app'), which hits /app/edit/deleteJsonSafe (an Apps
+// Code CLASS, not a running instance). Used by the disarm-time deferred-native-rule sweep.
+def adminForceDeleteInstalledApp(args) {
+    requireConfirm(args)
+    def id = (args.id != null) ? args.id : args.appId
+    if (!id) throw new IllegalArgumentException("id (the installed-app instance id) is required")
+    if (!id.toString().isInteger() || id.toString().toInteger() <= 0) {
+        throw new IllegalArgumentException("id must be a positive integer (got: '${id}')")
+    }
+    mcpAdminLog "Force-deleting installed app instance ${id} (/installedapp/forcedelete/${id}/quiet)"
+    def resp = hubGetStatus("/installedapp/forcedelete/${id}/quiet", [:])
+    Integer st = (resp?.status != null) ? (resp.status as Integer) : null
+    // The forcedelete endpoint answers SUCCESS with a 302 redirect to the apps list (a plain 2xx is
+    // also fine). >=400 -- or no status at all, meaning the request never reached the hub
+    // (auth/transport) -- is a real failure: report it so the disarm sweep warns + keeps its id list.
+    if (st != null && st < 400) {
+        return [success: true, message: "Force-deleted installed app ${id} (HTTP ${st}).", id: id]
+    }
+    return [success: false, error: "Force-delete of installed app ${id} did not confirm (status=${st ?: 'none'}) -- endpoint error, auth failure, or the request never reached the hub.", id: id]
+}
+
 // hub_install_bundle: copied from toolInstallBundle + _firmwareAtLeast + _bundleResponseSucceeded
 // (hubitat-mcp-server.groovy 13548-13643), incl. the NUMERIC firmware gate at 2.3.8.108 and the
 // /bundle2 vs /bundle/uploadZipFromUrl split. Adapted to hubGet/hubPostJson.
@@ -1405,6 +1440,13 @@ def adminWriteFile(args) {
     }
     try {
         uploadHubFile(args.fileName, args.content.getBytes("UTF-8"))
+        // Accelerate the dead-man: kick a one-shot checkDeadman ~2s after CI writes the armed flag,
+        // instead of waiting up to ~60s for the next runEvery1Minute tick (the single biggest avoidable
+        // cost in the disarm/restore step). A DEDICATED handler (deadmanKick, NOT "checkDeadman") means
+        // scheduling it can never overwrite the periodic dead-man job, so the brick/GitHub-down floor
+        // stays intact; checkDeadman is idempotent (restoreFor stamp), so an arm-write kick is a harmless
+        // no-op and only a disarm write actually restores -- ~58s sooner.
+        if (args.fileName == (flagFileName ?: "e2e-deadman-v2.json")) runIn(2, "deadmanKick")
         return [success: true, message: "File '${args.fileName}' written.", fileName: args.fileName, contentLength: args.content.length()]
     } catch (Exception e) {
         log.error "adminWriteFile: ${e.message}"
@@ -1553,6 +1595,8 @@ def getAdminToolDefinitions() {
             required: ["libraryId", "confirm"]]],
         [name: "hub_delete_item", description: "Delete an app/driver/library by id. confirm:true required.",
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
+        [name: "hub_force_delete_app", description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. confirm:true required.",
+         inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
         [name: "hub_install_bundle", description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
          inputSchema: [type: "object", properties: [importUrl: [type: "string"], primary: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
         [name: "hub_list_bundles", description: "List installed code bundle containers (id/name/namespace). Read-only.",
@@ -1629,6 +1673,35 @@ String hubGet(String path, Map query, int timeoutSec = 30) {
     String out = null
     try { httpGet(params) { resp -> out = respText(resp) } }
     catch (Exception e) { log.error "hubGet ${path}: ${e.message}" }
+    return out
+}
+
+// Status-aware loopback GET. Unlike hubGet (text body, swallows every exception -> null), this
+// returns [status, location, data] and treats a 3xx the way the hub editor does: endpoints like
+// /installedapp/forcedelete answer SUCCESS with a 302 redirect, which Hubitat's httpGet THROWS on
+// when followRedirects:false. Mirrors hubitat-mcp-server.groovy _hubRequest(handle3xx) -- the
+// proven sandbox-safe e.response.status capture. status stays null only on a real transport failure.
+Map hubGetStatus(String path, Map query, int timeoutSec = 30) {
+    def params = [uri: "http://127.0.0.1:8080", path: path, query: query,
+                  textParser: true, ignoreSSLIssues: true, followRedirects: false, timeout: timeoutSec]
+    def cookie = secCookie()
+    if (cookie) params.headers = [Cookie: cookie]
+    Map out = [status: null, location: null, data: null]
+    try {
+        httpGet(params) { resp -> out = [status: resp.status, location: resp.headers?."Location"?.toString(), data: respText(resp)] }
+    } catch (Exception e) {
+        def resp = null
+        try { resp = e.response } catch (Exception ignore) { resp = null }
+        Integer st = null
+        try { st = resp?.status as Integer } catch (Exception ignore) { st = null }
+        if (st != null) {
+            def loc = null
+            try { loc = resp.headers?."Location"?.toString() } catch (Exception ignore) { loc = null }
+            out = [status: st, location: loc, data: null]
+        } else {
+            log.error "hubGetStatus ${path}: ${e.message}"
+        }
+    }
     return out
 }
 
