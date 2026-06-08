@@ -1024,6 +1024,42 @@ class TestRunner:
         self._delete_native(app_id)
 
     @test("native_apps")
+    def test_set_rule_create_with_required_expression(self) -> None:
+        # hub_set_rule CREATE (no appId) bundling addRequiredExpression. Pre-fix the
+        # create arm read only addTriggers/addActions, so a bundled RE was silently
+        # dropped and the call returned success=True on an empty shell. The fix honors
+        # addRequiredExpression on create (runs the RE walk post-create) and surfaces
+        # its outcome under result.requiredExpression. This pins create-with-RE
+        # end-to-end: the RE field is present (NOT dropped), the RE actually lands on
+        # the rule, and the rule is healthy.
+        sw = int(self.get_test_switch_id())
+        created = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule",
+            "args": {
+                "name": f"{PREFIX}CreateRE",
+                "addRequiredExpression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
+                "confirm": True,
+            },
+        })
+        app_id = created.get("appId")
+        assert app_id, f"create-with-RE did not return appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+        try:
+            # The whole point: the bundled RE was honored, not silently dropped.
+            re_result = created.get("requiredExpression")
+            assert re_result is not None, \
+                f"addRequiredExpression was silently dropped on create (no requiredExpression in result): {created}"
+            assert re_result.get("success") is not False, \
+                f"bundled addRequiredExpression failed on create: {re_result}"
+            # The RE actually landed: a condition index was returned by the walk.
+            assert re_result.get("conditionIndices"), \
+                f"create-with-RE produced no conditionIndices -- the expression did not land: {re_result}"
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_action_mutations(self) -> None:
         # hub_set_rule edit -> addActions (bulk) + removeAction + clearActions + replaceActions.
         app_id = self._create_native_rule("Act_Mut")
