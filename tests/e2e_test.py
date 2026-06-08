@@ -925,7 +925,7 @@ class TestRunner:
             # skip was produced -- the false-positive not_in_schema partial this guards.
             skipped = result.get("settingsSkipped") or []
             bad = [s for s in skipped if isinstance(s, dict)
-                   and s.get("key") and str(s.get("key")).startswith("ReltDev")
+                   and (s.get("key") or "").startswith("ReltDev")
                    and s.get("reason") == "not_in_schema"]
             assert not bad, f"unexpected ReltDev not_in_schema skip (the enum false-partial bug): {bad}"
             # The contract discriminator: partial stays falsy.
@@ -951,7 +951,7 @@ class TestRunner:
                 f"condition enum value did not land in a state_<N> field; settingsApplied={cond_applied}"
             cond_skipped = cond_result.get("settingsSkipped") or []
             cond_bad = [s for s in cond_skipped if isinstance(s, dict)
-                        and s.get("key") and str(s.get("key")).startswith("RelrDev_")
+                        and (s.get("key") or "").startswith("RelrDev_")
                         and s.get("reason") == "not_in_schema"]
             assert not cond_bad, \
                 f"unexpected RelrDev_<N> not_in_schema skip on the condition path: {cond_bad}"
@@ -991,7 +991,7 @@ class TestRunner:
                 f"walker enum value did not land in a state_<N> field; settingsApplied={applied}"
             skipped = result.get("settingsSkipped") or []
             bad = [s for s in skipped if isinstance(s, dict)
-                   and s.get("key") and str(s.get("key")).startswith("RelrDev_")
+                   and (s.get("key") or "").startswith("RelrDev_")
                    and s.get("reason") == "not_in_schema"]
             assert not bad, f"unexpected RelrDev_<N> not_in_schema skip on the walker enum path: {bad}"
             assert not result.get("partial"), \
@@ -1029,7 +1029,7 @@ class TestRunner:
                 f"doActPage walker enum value did not land in a state_<N> field; settingsApplied={applied}"
             skipped = result.get("settingsSkipped") or []
             bad = [s for s in skipped if isinstance(s, dict)
-                   and s.get("key") and str(s.get("key")).startswith("RelrDev_")
+                   and (s.get("key") or "").startswith("RelrDev_")
                    and s.get("reason") == "not_in_schema"]
             assert not bad, f"unexpected RelrDev_<N> not_in_schema skip on the doActPage walker enum path: {bad}"
             assert not result.get("partial"), \
