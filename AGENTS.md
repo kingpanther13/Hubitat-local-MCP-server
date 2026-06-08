@@ -147,6 +147,13 @@ Every MCP tool is gated. The layers, from broadest to narrowest:
 - If the tool's behaviour affects live-hub flows, add a `tests/BAT-v2.md` scenario in the same PR.
 - Track tool errors during eval. High invalid-parameter rates usually indicate the description or examples are the bug, not the model. Anthropic's example: Claude was appending `2025` to web-search queries until the description was fixed.
 
+### e2e CI: `pull_request_target` trigger + how to validate workflow changes
+
+`hub-e2e.yml` runs on **`pull_request_target`** (NOT `pull_request`) on purpose: a FORK contributor's PR (e.g. @level99's) can then run e2e against the shared test hub with the `WATCHDOG_MCP_URL` / `MCP_URL` secrets, gated behind the `approve` environment for non-trusted authors. **Do NOT "fix" a red `e2e` badge by gating the trigger to same-repo branches** — that is the old behaviour and it re-excludes fork contributors, the exact problem this setup solves. The trade-off is how `pull_request_target` resolves files: the **workflow file itself** (`hub-e2e.yml`'s step structure) always comes from **main**, while the job **checks out the PR head's code**, so `.github/scripts/*`, `tests/e2e_test.py`, the watchdog groovy, and `hubitat-mcp-server.groovy` are the PR's. So:
+
+- **Changing the CONTENT of an existing script / test / groovy file** (logic inside the e2e `.sh` scripts, `tests/e2e_test.py`, or the server/rule/watchdog source) → the auto `e2e` check exercises the PR's code in-PR. **Iterate normally** — this works for fork PRs too, which is the whole point. New MCP tools (incl. e.g. PR #247's bundle tools) and their `tests/e2e_test.py` scenarios fall here: no special handling.
+- **Restructuring the workflow FILE** — adding/removing/renaming a *step*, or deleting/renaming a script the base workflow *calls* — is NOT exercised by the auto check (it runs main's old structure, usually RED against the PR's deleted/renamed files). Validate such a PR with **`gh workflow run hub-e2e.yml --ref <branch>`** (`workflow_dispatch` runs the PR branch's OWN workflow file) and watch that run; the PR's `e2e` badge stays red until merge, and the dispatch run is the merge-readiness proof. This is the ONLY case that needs the dispatch dance (e.g. PR #248 restructured the steps and deleted the old deploy scripts).
+
 ### Sources
 
 All rules above cite verified sources, re-checked on 2026-05-26.
