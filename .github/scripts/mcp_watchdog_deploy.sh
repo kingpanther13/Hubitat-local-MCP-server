@@ -52,7 +52,6 @@ if [ ! -f "$APP_FILE" ]; then
   echo "::error::App file not found: $APP_FILE (wrong working directory or bad path arg). Refusing to silently report 'nothing to install'."
   exit 1
 fi
-LIB_DIR="$(dirname "$APP_FILE")/libraries"
 
 # Pulled from the parent app's definition() block -- keep in sync if the parent
 # ever changes its namespace/name (HPM tracks it, so it shouldn't).
@@ -88,93 +87,23 @@ mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_cr
   || echo "::warning::hub_create_backup call failed/timed out; continuing (the backup is a defensive snapshot, not required for writes)"
 
 # ===========================================================================
-# 1) LIBRARIES FIRST -- install/update every library the app #includes so the
-#    `#include` directives resolve when the app compiles (issue #209). Matches
-#    each #include to its library file by the (namespace, name) declared in the
-#    library() block (NOT by filename, mirroring how the hub resolves #includes).
+# 1) LIBRARIES are delivered ONLY by the BUNDLE below (section 2) -- the bundle is the real HPM/user
+#    "one Update click" delivery path, and it ships every library the app #includes. Re-installing each
+#    #included library INDIVIDUALLY here (the old per-#include hub_update_library/create loop) was
+#    redundant -- the bundle delivers the same libraries -- and it triggered an extra hub recompile of
+#    the running app per library touched. So this step now only DISCOVERS the #include set and
+#    sanity-checks the package can deliver it (a manifest with #includes but no bundle would leave the
+#    directives unresolved and the app would fail to compile). The exact library bytes land in section 2.
 # ===========================================================================
 mapfile -t INCLUDES < <(
   grep -hoE '^[[:space:]]*#include[[:space:]]+[A-Za-z0-9_]+\.[A-Za-z0-9_]+' "$APP_FILE" \
     | sed -E 's/^[[:space:]]*#include[[:space:]]+//' | sort -u || true
 )
-
-if [ "${#INCLUDES[@]}" -eq 0 ]; then
-  echo "No #include directives in $APP_FILE -- no libraries to install."
-else
-  echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]}"
-
-  # Snapshot existing hub libraries once, to choose update-vs-create per library. Use the RETRYING
-  # read: this is an idempotent list, and a single cloud-relay drop here (the hub is briefly busy right
-  # after the best-effort backup above + the arm's canonical-main bundle refresh) must not hard-fail the
-  # whole deploy. (Retry is safe for reads; the create/update/delete WRITES below stay single-shot.)
-  LIB_LIST_TEXT=$(call_tool_retry '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}')
-  if [ -z "$LIB_LIST_TEXT" ]; then
-    echo "::error::hub_list_libraries returned no MCP content from the watchdog endpoint after retries -- cannot plan create-vs-update. Re-run; if it persists, check the watchdog app logs."
-    exit 1
-  fi
-
-  for tok in "${INCLUDES[@]}"; do
-    ns="${tok%%.*}"
-    name="${tok##*.}"
-
-    # Find the local library file whose library() declares this (namespace, name).
-    libfile=""
-    for f in "$LIB_DIR"/*.groovy; do
-      [ -f "$f" ] || continue
-      if grep -qE 'library[[:space:]]*\(' "$f" \
-        && grep -qE "name:[[:space:]]*[\"']${name}[\"']" "$f" \
-        && grep -qE "namespace:[[:space:]]*[\"']${ns}[\"']" "$f"; then
-        libfile="$f"
-        break
-      fi
-    done
-    if [ -z "$libfile" ]; then
-      echo "::error::#include ${tok} has no matching library file in ${LIB_DIR}"
-      exit 1
-    fi
-    rel="${libfile#./}"
-    url="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/${rel}"
-
-    existing_id=$(printf '%s' "$LIB_LIST_TEXT" | jq -r --arg ns "$ns" --arg name "$name" \
-      '(.libraries // []) | map(select(.namespace==$ns and .name==$name)) | (.[0].id // empty)' 2>/dev/null || true)
-
-    if [ -n "$existing_id" ] && [ "$existing_id" != "null" ]; then
-      echo "Updating existing library ${tok} (id ${existing_id}) from ${url} ..."
-      UPD_RPC=$(jq -nc --arg id "$existing_id" --arg url "$url" \
-        '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_update_library",arguments:{libraryId:$id,importUrl:$url,confirm:true}}}')
-      UPD_TEXT=$(call_tool "$UPD_RPC")
-      if [ "$(ok_of "$UPD_TEXT")" = "true" ]; then
-        echo "Library ${tok} updated."
-        continue
-      fi
-      # Update failed. The existing copy may be BUNDLE-MANAGED (a prior bundle run
-      # delivered it) and non-editable in place. Self-heal so a previous bundle run
-      # can't strand this step on a later PR: delete the existing copy, recreate fresh.
-      echo "::warning::hub_update_library failed for ${tok}; deleting + recreating (existing copy may be bundle-managed): $(printf '%s' "$UPD_TEXT" | jq -c '{success,error}' 2>/dev/null || printf '%s' "$UPD_TEXT" | head -c 200)"
-      DEL_RPC=$(jq -nc --arg id "$existing_id" \
-        '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_delete_item",arguments:{type:"library",id:$id,confirm:true}}}')
-      DEL_TEXT=$(call_tool "$DEL_RPC")
-      if [ "$(ok_of "$DEL_TEXT")" != "true" ]; then
-        echo "::error::Could not update OR delete existing library ${tok} (id ${existing_id}) -- it appears locked (e.g. bundle-managed) and this script cannot reconcile it. Remove it manually on the hub (FOR DEVELOPERS > Libraries code, or the bundle in Bundle Manager): $(printf '%s' "$DEL_TEXT" | jq -c '{success,error}' 2>/dev/null || printf '%s' "$DEL_TEXT" | head -c 300)"
-        exit 1
-      fi
-      echo "Deleted stale ${tok}; will recreate from source."
-    else
-      echo "Creating library ${tok} from ${url} ..."
-    fi
-
-    CRT_RPC=$(jq -nc --arg url "$url" \
-      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_create_library",arguments:{importUrl:$url,confirm:true}}}')
-    CRT_TEXT=$(call_tool "$CRT_RPC")
-    if [ "$(ok_of "$CRT_TEXT")" != "true" ]; then
-      echo "::error::Library ${tok} create failed (transient relay error or a hub-side rejection). Hub verbatim: $(err_of "$CRT_TEXT") -- full: $(printf '%s' "$CRT_TEXT" | jq -c '{success,error,note,verified}' 2>/dev/null || printf '%s' "$CRT_TEXT" | head -c 400)"
-      exit 1
-    fi
-    echo "Library ${tok} OK."
-  done
-
-  echo "All ${#INCLUDES[@]} PR library(ies) installed/updated -- the app's #include directives will resolve on deploy."
+if [ "${#INCLUDES[@]}" -gt 0 ] && [ -z "$BUNDLE_RELS" ]; then
+  echo "::error::App #includes ${#INCLUDES[@]} library(ies) (${INCLUDES[*]}) but packageManifest.json declares NO bundle to deliver them. A bundle-only install would leave the #include directives unresolved and the app would not compile. Add the libraries' bundle to the manifest."
+  exit 1
 fi
+echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- delivered via the package bundle (section 2), the HPM way (no redundant per-library install)."
 
 # ===========================================================================
 # 2) BUNDLE(S) -- install every bundle the manifest declares, the HPM way (HPM

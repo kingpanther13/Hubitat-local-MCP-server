@@ -156,7 +156,7 @@ Per-run flow (all over `WATCHDOG_URL` unless noted), driven by `.github/scripts/
 2. **Lease** — serialize runs on the single shared hub (a hub variable with a TTL).
 3. **Self-update** — deploy THIS PR's `e2e-deadman-watchdog-v2.groovy` onto the watchdog itself (`mcp_watchdog_self_update.sh`), so e2e exercises the watchdog the PR ships. After the one-time manual install, the watchdog never needs to be re-imported.
 4. **Arm** (`mcp_arm_watchdog.sh`) — refresh the hub to canonical `main` if it drifted or `main`'s SHA changed (skip when current), cache main (app + each `#include`d library) to File Manager, and write an armed flag with a ~35-min deadline.
-5. **Install PR** (`mcp_watchdog_deploy.sh`) — libraries → bundle → app, each confirmed via a FRESH `lastSelfDeploy` success (survives the relay-dropped ~1.6 MB response AND a same-length change, so a stale source can't false-green).
+5. **Install PR** (`mcp_watchdog_deploy.sh`) — bundle → app (the bundle delivers every `#include`d library, so there is no separate per-library install step; installing a library individually AND via the bundle was redundant and forced an extra recompile). The app deploy is confirmed via a FRESH `lastSelfDeploy` success (survives the relay-dropped ~1.6 MB response AND a same-length change, so a stale source can't false-green).
 6. **Tests** — `tests/e2e_test.py` against `MCP_URL`.
 7. **Disarm / restore** (`mcp_disarm_watchdog.sh`) — the watchdog's on-hub `checkDeadman` timer restores main from the cache (libraries-first, app-last). CI fires an early disarm on a clean finish; if CI can't (the run crashed), the watchdog auto-restores at the deadline — the dead-man.
 
