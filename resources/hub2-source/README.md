@@ -1,102 +1,130 @@
-# Hubitat hub2 Vue UI source (`vue-hub2.min.js`)
+# Hubitat admin-UI source bundles (`/ui2/js/`)
 
-This is the production Vue 3 SPA bundle that powers Hubitat's modern `/ui2/`
-admin UI. It is downloaded verbatim from the hub at:
+This folder vendors Hubitat's first-party browser JavaScript — the code that
+powers the hub's `/ui2/` admin UI — as a reference for interoperability work
+with the hub's HTTP surface. Every file is downloaded verbatim from a hub at
+`http://<hub-ip>/ui2/js/<file>`.
 
-    http://<hub-ip>/ui2/js/vue-hub2.min.js
+**Two distinct UIs ship in `/ui2/`, and both matter here:**
 
-The copy committed here was captured on **2026-05-26** from a Hubitat C-8 Pro
-on firmware current as of that date. The file is **~3.3 MB minified**.
-Hubitat ships no source map (`vue-hub2.min.js.map` is 404) and no
-unminified sibling, so this is the only form available to consumers.
-
-## Why it lives in this repo
-
-Several open issues require us to wire the MCP server to apps whose admin
-UI was rewritten in Vue (Basic Rules, Visual Rules Builder, hub variables,
-device swap, etc.). For those apps the legacy `dynamicPage` HTML scrape
-strategy does not apply — the contract is the JSON payload the Vue UI
-POSTs to the server. The data model and endpoint paths for that contract
-are encoded as literal strings in this bundle, and the easiest way to
-get a stable reference copy is to vendor the file.
-
-## What's in the bundle
-
-~548 named Vue components. The notable groups:
-
-| Area | Components |
+| File(s) | What it is |
 |---|---|
-| App / driver / library editor | `AppCodeEditor`, `AppsCodeV2`, `AppDetails`, `AppEvents`, `AppEventSubscriptions`, `AppSettings`, `AppSettingsDrawer`, `AppsCodeTable`, `AppScheduledJobs`, `AppState`, `AppSplitWarningDialog` |
-| Devices | `AddDevice*` (8 flows), `Devices`, `DeviceDetails`, `DeviceGridView`, `DevicesTableV2`, `DeviceTile`, `DeviceEvents`, `DeviceLogsTab` |
-| Visual Rules Builder | `VisualRuleBuilder`, `VisualRuleBuilder20`, `VRBTriggerDialog`, `VRBConditionDialog`, `VRBActionDialog`, `ConditionsController`, `ConditionRow`, `ConditionsDialog`, `DeviceCondition`, `TimeCondition`, `DeviceDoesThis`, `DeviceIs`, `DeviceSensesThat` |
-| Basic Rules | `BasicRulesApp` + `createNewBasicRuleApp` factory |
-| Dashboards | `Dashboards`, `DashboardsViewer`, `DashboardGridView`, `DashboardTable`, `DashboardToolbar` |
-| Z-Wave / Zigbee admin | `ZigbeeGraph/Info/Logs/Scan`, `ZwaveGraph/Info/Logs/NodeState`, `ZWaveFirmwareFileManager`, `ZigbeeMqttImportPage`, `TasmotaMqttImportPage` |
-| Hub / system | Backup/Restore (+ Cloud Backups, scheduled), Hub Mesh, Hub Variables, Hub Modes, HSM, onboarding wizards, ToS |
+| `vue-hub2.min.js` (~3.3 MB) | The modern **Vue 3 SPA** — Basic Rules, Visual Rules Builder, devices, dashboards, hub admin |
+| `appUI.js`, `main.js`, `helpers.js`, `hub2utils.js`, `hubitat.min.js`, `success-compiled.js` | The **classic server-rendered `dynamicPage` engine** — the client side of the legacy app-config flow that Rule Machine and every other classic app still use |
 
-### Not in this bundle: Rule Machine
+Classic-engine files + `success-compiled.js` captured **2026-06-08** from a
+Hubitat **C-8** on firmware **2.5.0.143**; `vue-hub2.min.js` was first captured
+2026-05-26. Hubitat ships no source maps and no unminified siblings, so these
+minified bundles are the only form available — but **string literals survive
+minification** (capability names, field keys, endpoint paths), so plain `grep`
+is the fastest way to find a feature's data shape.
 
-The Vue layer treats RM (and every other classic system app — Notifier,
-Button Controllers, Mode Manager, etc.) as a black box. When you open an
-RM rule from hub2 it renders `<iframe src="/installedapp/configure/<id>?embed">`
-and lets the server-side `dynamicPage` HTML do everything. So this bundle
-is **not** useful for RM wire format. The classic POST flow is still the
-contract.
+## Why these live in the repo
+
+Several issues need the MCP server wired to hub features whose contract is the
+JSON/form payload the browser sends, not something the server documents. The
+two UIs split the work:
+
+- **Vue SPA (`vue-hub2.min.js`)** — the contract for apps rewritten in Vue
+  (Basic Rules, Visual Rules Builder, hub variables, device swap, …) is the
+  JSON the Vue components POST.
+- **Classic engine (`appUI.js` + `main.js`)** — the contract for Rule Machine
+  and the other classic `dynamicPage` apps is the form/settings POST this
+  jQuery engine performs on `submitOnChange`, button clicks, and page
+  transitions. **This is the genuine wire-format reference for the MCP
+  server's native-RM tools.**
+
+## Classic-page engine — the RM wizard contract
+
+The classic config page (`/installedapp/configure/<id>`) loads this set. The
+two load-bearing files:
+
+- **`appUI.js`** (48 KB) — the `dynamicPage` driver. Implements `submitOnChange`
+  (the per-field re-POST that re-renders the wizard) and `stateAttribute`
+  button encoding. Endpoints it calls: `/installedapp/update/json` (settings
+  POST), `/installedapp/btn` (button click), `/installedapp/ssr/` (server-side
+  page render), `/installedapp/collapseCallback/`, `/installedapp/configure/`.
+- **`main.js`** (148 KB) — the broader classic app-list / app-config UI logic:
+  `submitOnChange`, `formAction`, `nextPage` / `btnNext` page navigation,
+  `AppButtons`, plus `/installedapp/status/`, `/installedapp/createchild/`,
+  `/installedapp/disable`, `/installedapp/configure/`.
+
+Supporting files:
+
+- **`helpers.js`** (16 KB) — shared UI helpers (`/installedapp/list`).
+- **`hub2utils.js`** (3.6 KB) — small shared utility shims.
+- **`hubitat.min.js`** (33 KB) — **not** the dynamicPage engine: the Handlebars
+  template runtime (`registerPartial`/`registerHelper`/`unregisterDecorator`),
+  modal / z-index helpers (`showModal`, `updateZIndex`), and the hub-control
+  toolbar (`reboot`/`shutdown`/`zwaveRepair` via jQuery `.ajax`). Vendored for
+  completeness of the classic `/ui2/js` set.
+- **`success-compiled.js`** (833 B) — tiny precompiled Handlebars template bundle.
+
+### On the "Rule Machine is a black box" note
+
+The Vue bundle treats RM (and every classic app) as a black box — it iframes
+`/installedapp/configure/<id>?embed` and lets the server-side `dynamicPage`
+HTML do the work. That is true **of the Vue layer only**. The classic engine
+above (`appUI.js` / `main.js`) is the client that drives that `dynamicPage`
+flow, so the RM wizard's submit / button / page-transition protocol **is**
+documented here — on the classic side, not the Vue side.
+
+## Vue SPA (`vue-hub2.min.js`)
+
+The production Vue 3 SPA — ~548 named components. Notable groups: app/driver/
+library editor, devices, **Visual Rules Builder** (`VisualRuleBuilder`,
+`VisualRuleBuilder20`, `VRB*Dialog`, `ConditionsController`, …), Basic Rules
+(`BasicRulesApp`), dashboards, Z-Wave/Zigbee admin, hub/system (backup, hub
+mesh, variables, modes, HSM, onboarding).
+
+**"Rule Builder 2.0" = the Visual Rule Builder.** The component is literally
+`VisualRuleBuilder20` (alongside the older `VisualRuleBuilder`), a graph/edge
+editor backed by `/app/ruleBuilder20Json/<id>` — not a separate engine.
 
 ## Endpoints discovered
 
 | Endpoint | Notes |
 |---|---|
-| `POST /app/saveOrUpdateJson` | Known. `{id, source, version}` |
-| `POST /driver/saveOrUpdateJson` | Same shape, drivers. New for us. |
-| `POST /library/saveOrUpdateJson` | Same shape, libraries. New for us. |
-| `GET  /installedapp/json/<id>` | Installed-app state as JSON |
+| `POST /app/saveOrUpdateJson` | `{id, source, version}` (app); same shape for `/driver/` and `/library/` |
+| `GET  /app/ruleBuilderJson/<id>` | **Classic RM** rule's compiled internal state as JSON — `broken` flag, `eval`/`parens`/`predCapabs`, rendered condition text. Read-only; not used by the MCP server today. |
+| `GET/POST /app/ruleBuilder20Json/<id>` | Visual Rule Builder 2.0 rule graph — read+write JSON (`GET` → `{name, rulePaused, ruleJson}`; `POST {name, ruleJson}`) |
+| `GET  /installedapp/configure/json/<id>` | Full live config page (sections, inputs, settings) — the RM **read** path the MCP server uses |
+| `POST /installedapp/update/json` | Classic settings POST (`dynamicPage` submit) — the RM **write** path |
+| `*    /installedapp/btn` | Classic page-button click |
+| `*    /installedapp/ssr/<…>` | Classic server-side page render |
+| `*    /installedapp/collapseCallback/` | Section collapse state |
+| `GET  /installedapp/json/<id>` | Thin app summary (id/name/type/disabled/user) |
 | `GET  /installedapp/statusJson/<id>` | App status JSON |
 | `GET  /installedapp/eventsJson/<id>` | Events history JSON |
-| `GET  /installedapp/sysAppByIdJson/<id>` | System-app metadata |
 | `POST /installedapp/forcedelete/<id>/quiet` | Force-delete, no prompts |
-| `*    /installedapp/direct/swapDevice` | New direct JSON page for global device swap |
-| `*    /installedapp/direct/hubVariables` | New direct JSON page for variable CRUD |
-| `/installedapp/sysAppApi/appCloner/app/0` | AppCloner restore-apps API |
-| `/installedapp/configure/<id>?embed` | iframe URL for classic apps (RM, BC, Notifier, etc.) |
+| `*    /installedapp/direct/swapDevice` | Vue direct page, global device swap |
+| `*    /installedapp/direct/hubVariables` | Vue direct page, variable CRUD |
 
-The `direct/*` family is narrow — only the two endpoints above exist.
-Hub2 did **not** build a general "save settings as JSON" API; everything
-else still goes through the classic `dynamicPage` flow.
+## Working with the files
 
-## Working with the file
+String literals survive minification, so `grep` is the fastest way to find a
+data shape. To read control flow:
 
-The file is minified (one ~3.3 MB line) but **string literals survive
-minification** — capability names, event labels, field keys, endpoint
-paths are all greppable as-is. For that reason, plain `grep` against
-this file is the fastest way to find a feature's data shape.
-
-When you need to read control flow, run it through one of:
-
-- `prettier --parser babel vue-hub2.min.js > vue-hub2.pretty.js` —
-  restores formatting; variable names stay mangled but the file becomes
-  navigable.
-- `npx webcrack vue-hub2.min.js -o vue-hub2.webcrack/` — splits the
-  webpack/Vite bundle back into per-module files.
-- `npx humanify` — LLM-renames mangled identifiers semantically. Slow
-  and costs tokens; overkill unless you need to fully understand a
-  complex flow.
+- `prettier --parser babel <file> > <file>.pretty.js`
+- `npx webcrack <file> -o <out>/` — splits a webpack/Vite bundle into modules
+- `npx humanify` — LLM-renames mangled identifiers (slow; only for deep dives)
 
 ## Refresh procedure
 
-When Hubitat ships a new hub firmware that updates the UI:
+When Hubitat ships new firmware that updates the UI:
 
 ```bash
-curl -s "http://<hub-ip>/ui2/js/vue-hub2.min.js" -o vue-hub2.min.js
+for f in vue-hub2.min.js appUI.js main.js helpers.js hub2utils.js hubitat.min.js success-compiled.js; do
+  curl -s "http://<hub-ip>/ui2/js/$f" -o "$f"
+done
 ```
 
-Capture the firmware version and capture date at the top of this README
-when you do.
+Record the firmware version + capture date at the top of this README.
 
 ## License note
 
-The bundle is Hubitat's proprietary distributed code. It is included
-here under the same terms as anyone else accessing it from a Hubitat hub
-they own — as a reference for interoperability work with the published
-admin HTTP surface. Do not redistribute it outside this repo or the
-contexts that already legitimately serve it.
+These bundles are Hubitat's proprietary distributed code, included here under
+the same terms as anyone accessing them from a Hubitat hub they own — as a
+reference for interoperability with the published admin HTTP surface. Do not
+redistribute outside this repo or the contexts that already legitimately serve
+them.
