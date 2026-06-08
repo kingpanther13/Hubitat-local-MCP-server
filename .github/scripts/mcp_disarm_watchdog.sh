@@ -245,10 +245,14 @@ if DEF_TEXT=$(mcp_tool_call_text "hub_read_file (deferred native rules)" \
       # tool-level error (tool missing, auth fail, 4xx/5xx) and look fine, masking a real failure.
       if FD_TEXT=$(mcp_tool_call_text "hub_force_delete_app ${rid}" \
           "$(jq -nc --arg id "$rid" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_force_delete_app",arguments:{id:$id,confirm:true}}}')" 2>/dev/null); then
-        if [ "$(printf '%s' "$FD_TEXT" | jq -r '.content | fromjson | .success' 2>/dev/null)" = "true" ]; then
+        # mcp_tool_call_text already unwraps .result.content[0].text, which the watchdog builds by
+        # JSON-serializing the tool's return map directly -- so success is TOP-LEVEL here ('.success'),
+        # NOT under a '.content' key. (The '.content | fromjson' shape applies only to hub_read_file,
+        # whose payload IS a file body under .content -- see the DEF_IDS read above.)
+        if [ "$(printf '%s' "$FD_TEXT" | jq -r '.success' 2>/dev/null)" = "true" ]; then
           continue
         fi
-        echo "::warning::Deferred-rule sweep: hub_force_delete_app(${rid}) did not report success: $(printf '%s' "$FD_TEXT" | jq -c '.content|fromjson|{success,error}' 2>/dev/null | head -c 200)"
+        echo "::warning::Deferred-rule sweep: hub_force_delete_app(${rid}) did not report success: $(printf '%s' "$FD_TEXT" | jq -c '{success,error}' 2>/dev/null | head -c 200)"
       else
         echo "::warning::Deferred-rule sweep: hub_force_delete_app(${rid}) returned no parseable result (tool missing on the watchdog / endpoint down?)."
       fi
