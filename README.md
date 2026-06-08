@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 91 MCP tools (30 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 94 MCP tools (30 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 91 tools total — 11 core tools are always visible, while the rest are organized behind 19 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 94 tools total — 11 core tools are always visible, while the rest are organized behind 19 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -43,7 +43,7 @@ Once HPM is installed:
 2. Search for **"MCP"**
 3. Select **MCP Rule Server** and install
 
-That's it! HPM will install both the parent app and child app automatically and notify you when updates are available.
+That's it! HPM will install the parent app, the child app, and the required Groovy **libraries** (delivered as a bundle, shown under **Libraries Code**) automatically in the same install/update, and notify you when updates are available.
 
 > **Alternate HPM method**: You can also use HPM > **Install** > **From a URL** and paste:
 > ```
@@ -52,9 +52,17 @@ That's it! HPM will install both the parent app and child app automatically and 
 
 ### Option B: Manual Installation
 
-You need to install **two** app files:
+The parent app `#include`s Groovy **libraries**, which are all shipped together in one **bundle** (`mcp-libraries.zip`). Install that bundle **first** — otherwise the parent app fails to compile when you Save it. Install in this order: the libraries bundle, then the parent app, then the child app.
 
-**1. Install the Parent App (MCP Rule Server):**
+**1. Install the libraries bundle:**
+
+In the Hubitat web UI go to **Bundles** > **Import**, and import the bundle from this repo:
+   ```
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/bundles/mcp-libraries.zip
+   ```
+   If your hub's Bundle Manager only accepts a file upload, download that `.zip` first and upload it. Importing the bundle installs **every** library the app needs in one step (they appear under **Libraries Code**) — there's no need to add libraries individually. (HPM / Option A does this automatically.)
+
+**2. Install the Parent App (MCP Rule Server):**
 1. Go to Hubitat web UI > **Apps Code** > **+ New App**
 2. Click **Import** and paste this URL:
    ```
@@ -63,7 +71,7 @@ You need to install **two** app files:
 3. Click **Import** > **OK** > **Save**
 4. Click **OAuth** > **Enable OAuth in App** > **Save**
 
-**2. Install the Child App (MCP Rule):**
+**3. Install the Child App (MCP Rule):**
 1. Go to **Apps Code** > **+ New App**
 2. Click **Import** and paste this URL:
    ```
@@ -221,9 +229,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (91 total — 30 on tools/list)
+### MCP Tools (94 total — 30 on tools/list)
 
-The server has 91 tools total. To keep the MCP `tools/list` manageable, **11 core tools** are always visible and the remaining tools are organized behind **19 domain-named gateways** (7 read-only `hub_read_*` gateways + 12 write-bearing `hub_manage_*` gateways). The AI sees 30 items on `tools/list` (11 + 19 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 94 tools total. To keep the MCP `tools/list` manageable, **11 core tools** are always visible and the remaining tools are organized behind **19 domain-named gateways** (7 read-only `hub_read_*` gateways + 12 write-bearing `hub_manage_*` gateways). The AI sees 30 items on `tools/list` (11 + 19 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (11) — Always visible on tools/list
 
@@ -1530,6 +1538,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.1.0** - ci: auto-run e2e on trusted fork PRs, gate other contributors; lease waits for a busy hub; ci: e2e dead-man watchdog v2 as a 2nd MCP server — drive deploy through it (kills self-update 504s); docs: standalone-watchdog e2e architecture + pull_request_target trigger gotcha; feat: modularize Rooms + bundle tools into #include libraries + bundle-management tools (#209). PRs: [#246](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/246), [#248](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/248), [#249](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/249), [#247](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/247)
 - **v2.0.4** - feat: installAsUserApp install-commit fix + #include smoke test + e2e dead-man watchdog (#209). PRs: [#243](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/243)
 - **v2.0.3** - feat: hub_update_package dev tool — one-call app+library deploy at a git ref (#209). PRs: [#242](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/242)
 - **v2.0.2** - feat: add hub_list_libraries read tool. PRs: [#241](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/241)

@@ -24,9 +24,9 @@ import os
 import random
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
@@ -85,7 +85,7 @@ class HubitatMcpClient:
         if self.verbose:
             print(f"    [DEBUG] {msg}")
 
-    def _send(self, method: str, params: Optional[dict] = None) -> dict:
+    def _send(self, method: str, params: dict | None = None) -> dict:
         """Send a JSON-RPC 2.0 request and return the parsed result.
 
         Retries transient HTTP 5xx and network errors (cloud relay flake) with
@@ -110,8 +110,8 @@ class HubitatMcpClient:
         # Rate-limit: don't overwhelm the hub
         time.sleep(0.2)
 
-        last_exc: Optional[Exception] = None
-        data: Optional[dict] = None
+        last_exc: Exception | None = None
+        data: dict | None = None
         resp = None
         for attempt in range(3):
             resp = None
@@ -177,7 +177,7 @@ class HubitatMcpClient:
             "clientInfo": {"name": "e2e-test", "version": "1.0.0"},
         })
 
-    def raw_request(self, payload: Any) -> "requests.Response":
+    def raw_request(self, payload: Any) -> requests.Response:
         """POST a raw JSON-RPC body (single object, batch array, or notification)
         and return the raw requests.Response — no result-unwrapping, no
         error-raising. Retries transient 5xx/network flake like _send. Used by
@@ -186,7 +186,7 @@ class HubitatMcpClient:
         the result-unwrapping call_tool/_send helpers deliberately hide.
         """
         time.sleep(0.2)
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
         for attempt in range(3):
             try:
                 resp = requests.post(
@@ -213,7 +213,7 @@ class HubitatMcpClient:
         about pagination. Caps at 20 pages defensively to avoid runaway on a buggy server.
         """
         combined: list = []
-        params: Optional[dict] = None
+        params: dict | None = None
         for _ in range(20):
             page_result = self._send("tools/list", params)
             combined.extend(page_result.get("tools", []))
@@ -223,7 +223,7 @@ class HubitatMcpClient:
             params = {"cursor": next_cursor}
         raise McpError("tools/list pagination did not terminate within 20 pages")
 
-    def call_tool(self, name: str, arguments: Optional[dict] = None) -> Any:
+    def call_tool(self, name: str, arguments: dict | None = None) -> Any:
         """Call an MCP tool. Returns parsed content text (dict/list/str)."""
         result = self._send("tools/call", {"name": name, "arguments": arguments or {}})
 
@@ -288,8 +288,8 @@ class TestRunner:
         self.created_variable_names: list[str] = []
 
         # Cached helpers
-        self._first_device_id: Optional[str] = None
-        self._test_start_time: Optional[str] = None  # ISO for log check
+        self._first_device_id: str | None = None
+        self._test_start_time: str | None = None  # ISO for log check
 
     # -- Helpers -------------------------------------------------------------
 
@@ -691,7 +691,7 @@ class TestRunner:
         except (McpToolError, McpError):
             pass
 
-    def _last_rule_id(self) -> Optional[str]:
+    def _last_rule_id(self) -> str | None:
         return self.created_rule_ids[-1] if self.created_rule_ids else None
 
     # -----------------------------------------------------------------------
@@ -1525,7 +1525,7 @@ class TestRunner:
         assert isinstance(result, dict), f"hub_get_info returned {type(result)}"
         # issue #209 load-bearing #include proof: the deployed app `#include mcp.McpSmokeTestLib`,
         # so mcpSmokeTestMarker() must be callable and folded into the info output. By the time this
-        # test runs, the "Install bundle the HPM way" CI step has re-delivered McpSmokeTestLib via the
+        # test runs, the watchdog PR-install step has re-delivered McpSmokeTestLib via the package
         # bundle .zip and resaved the app, so this marker rides on the BUNDLE-delivered library. If the
         # include had not resolved on the hub, the app would not have compiled or this field would be
         # missing -- either way this assertion catches a broken library load.
@@ -1541,18 +1541,31 @@ class TestRunner:
         libs = result if isinstance(result, list) else result.get("libraries", [])
         assert isinstance(libs, list), "hub_list_libraries did not return a list"
         source = result.get("source") if isinstance(result, dict) else None
-        assert source in (None, "hub_api", "hub_api_raw", "unavailable"), \
-            f"hub_list_libraries returned unexpected source {source!r}"
+        # The library-PRESENCE assertions below require the hub's library API to return its
+        # populated JSON-array shape (source == "hub_api"). The degraded shapes
+        # (hub_api_raw / unavailable) return an empty list, so requiring hub_api here turns a
+        # genuinely-unreadable library API into a clear failure instead of a misleading
+        # "McpRoomsLib not found (got [])". level99's hub returns the array today.
+        assert source == "hub_api", (
+            f"hub_list_libraries did not return the populated hub API shape (source={source!r}); "
+            "cannot validate bundle-delivered libraries"
+        )
         for lib in libs:
             assert "id" in lib and "name" in lib, "library summary missing id/name"
             assert "source" not in lib, "hub_list_libraries should omit source (read it via hub_get_source)"
-        # issue #209: the "Install bundle the HPM way" CI step delivers McpSmokeTestLib (mcp namespace)
-        # into Libraries Code via the bundle .zip (the #include's library leg), so it must be present
-        # here. Proves the library was actually added to Libraries Code on the hub (not just that the
-        # app compiled). Removed with the smoke test.
+        # issue #209: the watchdog PR-install step delivers the package's libraries (mcp
+        # namespace) into Libraries Code via the bundle .zip (the #include's library leg), so they must
+        # be present here. Proves the libraries were actually added to Libraries Code on the hub (not
+        # just that the app compiled).
+        lib_names = [lib.get("name") for lib in libs]
+        # McpRoomsLib is the first REAL extracted module (hub_*_room impls) -- permanent.
+        assert any(
+            lib.get("name") == "McpRoomsLib" and lib.get("namespace") == "mcp" for lib in libs
+        ), f"McpRoomsLib not found in hub libraries (got {lib_names})"
+        # McpSmokeTestLib is the throwaway #209 canary -- removed once the split is validated.
         assert any(
             lib.get("name") == "McpSmokeTestLib" and lib.get("namespace") == "mcp" for lib in libs
-        ), f"McpSmokeTestLib not found in hub libraries (got {[lib.get('name') for lib in libs]})"
+        ), f"McpSmokeTestLib not found in hub libraries (got {lib_names})"
 
     @test("system_tools")
     def test_manage_diagnostics(self) -> None:
@@ -1680,6 +1693,366 @@ class TestRunner:
         })
         # May be empty list, but should not error
         assert result is not None, "hub_list_rooms returned None"
+
+    @test("system_tools")
+    def test_manage_rooms_create_get_rename_delete(self) -> None:
+        """Issue #209: validate the FULL McpRoomsLib-backed Rooms flow live.
+
+        Room create/get/update/delete impls now live in the McpRoomsLib #include
+        library; this exercises all five room tools (create, get, update/rename, list,
+        delete) against the real hub through the deployed app, including the
+        device-assignment path (create WITH a device -> hub_get_room renders it ->
+        hub_delete_room unassigns it). The Spock suite covers the logic in isolation;
+        this proves the extracted library actually runs end-to-end. Self-cleaning;
+        cleanup()'s room sweep reclaims a strand if this crashes mid-way.
+        """
+        dev_id = self.get_first_device_id()
+        name = f"{PREFIX}RoomLib"
+        renamed = f"{PREFIX}RoomLib2"
+        room_id = None
+        try:
+            # Self-heal: a doubly-crashed prior run could leave BAT_E2E_RoomLib/RoomLib2 behind,
+            # which would make hub_create_room/hub_update_room fail on the duplicate-name guard.
+            # Delete any pre-existing same-named rooms first (mirrors get_test_switch_id reuse).
+            pre = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            for r in (pre.get("rooms", []) if isinstance(pre, dict) else []):
+                if r.get("name") in (name, renamed):
+                    try:
+                        self.client.call_tool("hub_manage_rooms", {
+                            "tool": "hub_delete_room",
+                            "args": {"room": str(r.get("id")), "confirm": True},
+                        })
+                    except Exception as exc:
+                        print(f"  [WARN] rooms flow pre-sweep: delete {r.get('id')} failed: {exc}")
+
+            # hub_create_room WITH a device assigned at creation.
+            created = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_create_room",
+                "args": {"name": name, "deviceIds": [dev_id], "confirm": True},
+            })
+            assert created.get("success") is True, f"hub_create_room did not succeed: {created}"
+            room = created.get("room") or {}
+            room_id = str(room.get("id") or "")
+            assert room_id, f"hub_create_room returned no room id: {created}"
+            assert room.get("deviceCount") == 1, \
+                f"hub_create_room did not assign the device at creation (deviceCount={room.get('deviceCount')!r}): {created}"
+
+            # hub_get_room (singular read): must return the room WITH the assigned device.
+            got = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_get_room",
+                "args": {"room": room_id},
+            })
+            assert str(got.get("id")) == room_id, f"hub_get_room returned wrong room: {got}"
+            assert got.get("name") == name, f"hub_get_room name mismatch: {got}"
+            got_devices = got.get("devices") or []
+            assert any(str(d.get("id")) == dev_id for d in got_devices), \
+                f"hub_get_room did not list the assigned device {dev_id}: {got}"
+
+            # hub_get_room also resolves by NAME (not just id).
+            got_by_name = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_get_room",
+                "args": {"room": name},
+            })
+            assert str(got_by_name.get("id")) == room_id, \
+                f"hub_get_room by name did not resolve to the same room: {got_by_name}"
+
+            # hub_update_room (rename).
+            renamed_res = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_update_room",
+                "args": {"room": room_id, "newName": renamed, "confirm": True},
+            })
+            assert renamed_res.get("success") is True, f"hub_update_room did not succeed: {renamed_res}"
+            assert (renamed_res.get("room") or {}).get("name") == renamed, \
+                f"hub_update_room did not apply the new name: {renamed_res}"
+
+            # hub_list_rooms must reflect the rename.
+            listed = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            rooms = listed.get("rooms", []) if isinstance(listed, dict) else []
+            assert any(str(r.get("id")) == room_id and r.get("name") == renamed for r in rooms), \
+                f"renamed room {room_id} not found as '{renamed}' in hub_list_rooms: {rooms}"
+
+            # hub_delete_room (unassigns the device, does NOT delete the device).
+            deleted = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_delete_room",
+                "args": {"room": room_id, "confirm": True},
+            })
+            assert deleted.get("success") is True, f"hub_delete_room did not succeed: {deleted}"
+            assert deleted.get("devicesUnassigned") == 1, \
+                f"hub_delete_room did not report the device unassigned: {deleted}"
+            room_id = None  # deleted cleanly; skip the finally sweep
+            print(f"    ROOMS_LIB_FLOW create+get+rename+delete OK ({renamed}, dev {dev_id})")
+        finally:
+            if room_id:
+                try:
+                    self.client.call_tool("hub_manage_rooms", {
+                        "tool": "hub_delete_room",
+                        "args": {"room": room_id, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] rooms flow cleanup: delete {room_id} failed: {exc}")
+
+    @test("system_tools")
+    def test_manage_rooms_error_contracts(self) -> None:
+        """Issue #209: validate the McpRoomsLib tools' error/validation contracts live.
+
+        The round-trip proves the happy paths; this proves the failure modes traverse
+        the MCP transport correctly on a real hub: not-found lookup, the duplicate-name
+        and rename-collision guards, and the confirm safety gate on the destructive room
+        writes (create + delete). These are unit-covered in ToolRoomsSpec; here we confirm
+        the same contracts end-to-end. Self-cleaning (finally + Layer-6 sweep).
+        """
+        name_a = f"{PREFIX}RoomErrA"
+        name_b = f"{PREFIX}RoomErrB"
+        ghost = f"{PREFIX}RoomGhostNope"
+        created_ids = []
+        try:
+            # Pre-sweep same-named strands from a doubly-crashed prior run.
+            pre = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            for r in (pre.get("rooms", []) if isinstance(pre, dict) else []):
+                if r.get("name") in (name_a, name_b):
+                    try:
+                        self.client.call_tool("hub_manage_rooms", {
+                            "tool": "hub_delete_room",
+                            "args": {"room": str(r.get("id")), "confirm": True},
+                        })
+                    except Exception:
+                        pass
+
+            # 1) hub_get_room on a non-existent room -> -32602 (McpError).
+            try:
+                self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_get_room", "args": {"room": ghost},
+                })
+                assert False, "hub_get_room on a non-existent room should have raised"
+            except McpError as e:
+                # Both are valid "the room isn't there" errors: "not found" when other rooms
+                # exist, "no rooms configured" when the hub has none (the e2e hub often has zero).
+                msg = str(e).lower()
+                assert "not found" in msg or "no rooms configured" in msg, (
+                    f"hub_get_room error was not a not-found: {e}"
+                )
+
+            # 2) confirm safety gate: hub_create_room without confirm -> refused, no room created.
+            # `confirm` is a REQUIRED schema param (the convention for every destructive tool), so a
+            # missing confirm is refused by the dispatch's required-param check. That surfaces as an
+            # isError envelope ("Missing required parameter: confirm") whose isError lives in the
+            # content, so call_tool RETURNS it as the parsed dict rather than raising; a raised
+            # McpError/-32602 is also acceptable. The load-bearing guarantee is refusal + no room.
+            refused = False
+            detail = None
+            try:
+                detail = self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_create_room", "args": {"name": name_a},
+                })
+                blob = (detail if isinstance(detail, str) else json.dumps(detail)).lower()
+                refused = (isinstance(detail, dict) and bool(detail.get("isError"))) \
+                    or "confirm" in blob or "required parameter" in blob
+            except McpError as e:  # also catches McpToolError (subclass): a raised envelope / -32602
+                detail = str(e)
+                refused = any(s in detail.lower() for s in ("confirm", "safety check", "required parameter"))
+            assert refused, \
+                f"hub_create_room without confirm should have been refused by the safety gate, got: {detail}"
+            after = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            assert not any(
+                r.get("name") == name_a
+                for r in (after.get("rooms", []) if isinstance(after, dict) else [])
+            ), "hub_create_room without confirm must NOT create the room"
+
+            # 3) duplicate-name guard: create roomA, then a second create with the same name -> refused.
+            created = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_create_room", "args": {"name": name_a, "confirm": True},
+            })
+            assert created.get("success") is True, f"setup create roomA failed: {created}"
+            id_a = str((created.get("room") or {}).get("id") or "")
+            assert id_a, f"setup create roomA returned no id: {created}"
+            created_ids.append(id_a)
+            try:
+                self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_create_room", "args": {"name": name_a, "confirm": True},
+                })
+                assert False, "duplicate hub_create_room should have raised"
+            except McpError as e:
+                assert "already exists" in str(e).lower(), f"duplicate-create error unexpected: {e}"
+
+            # 4) rename-collision guard: create roomB, rename it to roomA's name -> refused.
+            created_b = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_create_room", "args": {"name": name_b, "confirm": True},
+            })
+            assert created_b.get("success") is True, f"setup create roomB failed: {created_b}"
+            id_b = str((created_b.get("room") or {}).get("id") or "")
+            assert id_b, f"setup create roomB returned no id: {created_b}"
+            created_ids.append(id_b)
+            try:
+                self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_update_room",
+                    "args": {"room": id_b, "newName": name_a, "confirm": True},
+                })
+                assert False, "renaming roomB to roomA's name should have raised"
+            except McpError as e:
+                assert "already exists" in str(e).lower(), f"collision-rename error unexpected: {e}"
+
+            # 5) confirm safety gate on delete: hub_delete_room without confirm -> refused, room survives.
+            # Same refusal shape as the create gate above: a missing REQUIRED confirm comes back as an
+            # isError envelope (returned by call_tool) or a raise -- accept either; room must survive.
+            del_refused = False
+            del_detail = None
+            try:
+                del_detail = self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_delete_room", "args": {"room": id_a},
+                })
+                blob = (del_detail if isinstance(del_detail, str) else json.dumps(del_detail)).lower()
+                del_refused = (isinstance(del_detail, dict) and bool(del_detail.get("isError"))) \
+                    or "confirm" in blob or "required parameter" in blob
+            except McpError as e:
+                del_detail = str(e)
+                del_refused = any(s in del_detail.lower() for s in ("confirm", "safety check", "required parameter"))
+            assert del_refused, \
+                f"hub_delete_room without confirm should have been refused by the safety gate, got: {del_detail}"
+            still = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            assert any(
+                str(r.get("id")) == id_a
+                for r in (still.get("rooms", []) if isinstance(still, dict) else [])
+            ), "roomA must survive a no-confirm delete attempt"
+
+            print("    ROOMS_LIB_ERRORS not-found + confirm-gate + duplicate + collision OK")
+        finally:
+            for rid in created_ids:
+                try:
+                    self.client.call_tool("hub_manage_rooms", {
+                        "tool": "hub_delete_room",
+                        "args": {"room": rid, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] rooms error-contract cleanup: delete {rid} failed: {exc}")
+
+    # -----------------------------------------------------------------------
+    # Bundle tools (issue #209): McpBundlesLib-backed hub_list_bundles /
+    # hub_export_bundle / hub_delete_bundle. These prove that, after the
+    # modularization, the libraries actually load as a bundle on the real hub
+    # and the new tools work end-to-end. They ride on the watchdog PR-install step
+    # (the "Watchdog - install PR" job in hub-e2e.yml) that delivers the
+    # mcp-libraries bundle before tests run.
+    # -----------------------------------------------------------------------
+
+    @test("system_tools")
+    def test_list_bundles(self) -> None:
+        """hub_list_bundles lists installed bundles, and the package's libraries bundle (delivered
+        by the watchdog PR-install step) is present with its libraries -- proof the split libraries
+        load as a bundle on the real hub."""
+        result = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+        assert result.get("source") == "hub_api", \
+            f"hub_list_bundles did not return the populated hub API shape (source={result.get('source')!r})"
+        bundles = result.get("bundles", []) if isinstance(result, dict) else []
+        mcp_bundle = next(
+            (b for b in bundles if b.get("namespace") == "mcp"
+             and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
+            None,
+        )
+        assert mcp_bundle and mcp_bundle.get("id"), \
+            f"the mcp libraries bundle (containing McpRoomsLib) was not found: {[b.get('name') for b in bundles]}"
+        print(f"    BUNDLES_LIST ok -- '{mcp_bundle.get('name')}' contains {(mcp_bundle.get('contains') or {}).get('libraries')}")
+
+    @test("system_tools")
+    def test_export_bundle(self) -> None:
+        """hub_export_bundle saves a bundle's .zip to the File Manager (independently confirmed via
+        hub_list_files). Self-cleaning."""
+        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+        bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
+        target = next(
+            (b for b in bundles if b.get("namespace") == "mcp"
+             and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
+            None,
+        )
+        assert target and target.get("id"), "no mcp libraries bundle available to export"
+        bid = str(target["id"])
+        fname = f"{PREFIX}bundle_export_{bid}.zip"
+        try:
+            result = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_export_bundle",
+                "args": {"bundleId": bid, "saveAs": fname},
+            })
+            assert result.get("success") is True, f"hub_export_bundle did not succeed: {result}"
+            assert (result.get("bytes") or 0) > 0, f"hub_export_bundle saved 0 bytes: {result}"
+            assert result.get("fileName") == fname, f"hub_export_bundle filename mismatch: {result}"
+            files = self.client.call_tool("hub_read_files", {"tool": "hub_list_files"})
+            names = [f.get("name") for f in (files.get("files", []) if isinstance(files, dict) else [])]
+            assert fname in names, f"exported bundle file {fname} not found in File Manager: {names}"
+            print(f"    BUNDLE_EXPORT ok -- {fname} ({result.get('bytes')} B)")
+        finally:
+            # hub_delete_file auto-backs-up a normal file before deleting it, so deleting the export
+            # leaves "{base}_backup_<ts>.zip" behind. Delete the export, THEN sweep the backup(s) it
+            # spawned (their names carry "_backup_", so deleting them makes no further backup-of-backup).
+            try:
+                self.client.call_tool("hub_manage_files", {
+                    "tool": "hub_delete_file", "args": {"fileName": fname, "confirm": True},
+                })
+            except Exception as exc:
+                print(f"  [WARN] bundle export cleanup: delete {fname} failed: {exc}")
+            try:
+                files = self.client.call_tool("hub_read_files", {"tool": "hub_list_files"})
+                for nm in [f.get("name") for f in (files.get("files", []) if isinstance(files, dict) else [])]:
+                    if isinstance(nm, str) and nm.startswith(f"{PREFIX}bundle_export_") and "_backup_" in nm:
+                        self.client.call_tool("hub_manage_files", {
+                            "tool": "hub_delete_file", "args": {"fileName": nm, "confirm": True},
+                        })
+            except Exception as exc:
+                print(f"  [WARN] bundle export backup sweep failed: {exc}")
+
+    @test("system_tools")
+    def test_delete_bundle(self) -> None:
+        """hub_delete_bundle removes a bundle, verified by re-list. Uses a self-contained throwaway
+        bundle (mcptest namespace, fetched from the PR head) so it NEVER touches the live mcp
+        libraries bundle. Skipped on local runs where the PR raw URL env isn't set."""
+        raw_base = os.environ.get("PR_RAW_BASE")
+        sha = os.environ.get("PR_HEAD_SHA_RESOLVED")
+        if not (raw_base and sha):
+            print("    SKIP test_delete_bundle: PR_RAW_BASE/PR_HEAD_SHA_RESOLVED not set (local run)")
+            return
+        url = f"{raw_base}/{sha}/tests/fixtures/mcp-e2e-throwaway-bundle.zip"
+        bid = None
+        try:
+            installed = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_install_bundle", "args": {"importUrl": url, "confirm": True},
+            })
+            assert installed.get("success") is True, f"throwaway bundle install failed: {installed}"
+            listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+            bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
+            tw = next((b for b in bundles if b.get("namespace") == "mcptest"), None)
+            assert tw and tw.get("id"), \
+                f"throwaway bundle not listed after install: {[b.get('name') for b in bundles]}"
+            bid = str(tw["id"])
+            deleted = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_delete_bundle", "args": {"bundleId": bid, "confirm": True},
+            })
+            assert deleted.get("success") is True, f"hub_delete_bundle did not succeed: {deleted}"
+            assert deleted.get("verified") is True, f"hub_delete_bundle did not verify the id gone: {deleted}"
+            relisted = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+            rb = relisted.get("bundles", []) if isinstance(relisted, dict) else []
+            assert not any(b.get("namespace") == "mcptest" for b in rb), \
+                "throwaway bundle still present after hub_delete_bundle"
+            bid = None
+            print("    BUNDLE_DELETE ok -- throwaway installed, listed, deleted, verified gone")
+        finally:
+            if bid:
+                try:
+                    self.client.call_tool("hub_manage_code", {
+                        "tool": "hub_delete_bundle", "args": {"bundleId": bid, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] throwaway bundle cleanup: delete {bid} failed: {exc}")
+            # Deleting the bundle removes only the container; Hubitat does NOT cascade-delete the library
+            # it delivered (mcptest.E2eThrowawayLib), so remove that too or it pollutes Libraries Code
+            # across runs. The disarm no-stale gate is scoped to the 'mcp' namespace and won't touch this.
+            try:
+                libs = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_libraries"})
+                for lib in (libs.get("libraries", []) if isinstance(libs, dict) else []):
+                    if lib.get("namespace") == "mcptest" and lib.get("id"):
+                        self.client.call_tool("hub_manage_code", {
+                            "tool": "hub_delete_item",
+                            "args": {"type": "library", "id": str(lib["id"]), "confirm": True},
+                        })
+            except Exception as exc:
+                print(f"  [WARN] throwaway library cleanup failed: {exc}")
 
     # -----------------------------------------------------------------------
     # GROUP 10: developer_mode (10 tests — Section 12 of BAT-v2.md + review-fix coverage)
@@ -1855,11 +2228,14 @@ class TestRunner:
 
     @test("developer_mode")
     def test_t226_delete_variable_no_confirm(self) -> None:
-        """T226: hub_delete_variable refuses when confirm flag is absent.
+        """T226: hub_delete_variable refuses when the confirm flag is absent.
 
-        Note: gateway-layer parameter validation returns the refusal as
-        `isError: true` in result content (not as JSON-RPC -32602). Same
-        wire-format pattern other gateway-required-param checks use.
+        The gateway-layer required-param check returns the refusal as isError. Per the
+        #209 envelope contract (handleToolsCall flags a tool-returned isError on the
+        JSON-RPC result), call_tool RAISES McpToolError when isError lands top-level; an
+        isError-in-content-only envelope comes back as a dict. Accept EITHER -- both prove
+        the destructive delete was refused for the missing confirm (same as the rooms
+        confirm-gate check).
         """
         var_name = f"{PREFIX}NO_CONFIRM_T226"
         self.client.call_tool("hub_manage_variables", {
@@ -1867,13 +2243,24 @@ class TestRunner:
             "args": {"name": var_name, "value": "safe"},
         })
         self.created_variable_names.append(var_name)
-        result = self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_delete_variable",
-            "args": {"name": var_name},  # no confirm
-        })
-        assert result.get("isError") is True, f"Expected isError result for missing confirm: {result}"
-        assert "confirm" in str(result.get("error", "")).lower(), f"refusal didn't mention confirm: {result}"
-        # Variable should still exist
+
+        refused = False
+        detail = None
+        try:
+            detail = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_delete_variable",
+                "args": {"name": var_name},  # no confirm
+            })
+            blob = (detail if isinstance(detail, str) else json.dumps(detail)).lower()
+            refused = (isinstance(detail, dict) and bool(detail.get("isError"))) and (
+                "confirm" in blob or "required parameter" in blob
+            )
+        except McpError as e:
+            detail = str(e)
+            refused = any(s in detail.lower() for s in ("confirm", "safety check", "required parameter"))
+        assert refused, f"hub_delete_variable without confirm should be refused by the safety gate, got: {detail}"
+
+        # Variable should still exist (the refusal must not have deleted it).
         verify = self.client.call_tool("hub_manage_variables", {
             "tool": "hub_get_variable",
             "args": {"name": var_name},
@@ -2084,10 +2471,13 @@ class TestRunner:
     # -----------------------------------------------------------------------
 
     def cleanup(self) -> None:
-        """Three-layer cleanup:
-        1. Delete tracked artifacts (device DNIs, rule IDs, variables)
-        2. Sweep for any BAT_E2E_ virtual devices
-        3. Sweep for any BAT_E2E_ rules
+        """Multi-layer cleanup of BAT_E2E_ artifacts:
+        1. Tracked artifacts (device DNIs, rule IDs, variables)
+        2. Virtual devices (prefix sweep)
+        3. Custom rules (prefix sweep)
+        4. Native RM apps (tracked + prefix sweep)
+        5. Deadman install-fix throwaway (namespace+name)
+        6. Rooms (prefix sweep)
         """
         print("\n--- Cleanup ---")
 
@@ -2219,16 +2609,73 @@ class TestRunner:
         except Exception as exc:
             print(f"  [WARN] deadman target sweep failed: {exc}")
 
+        # Layer 6: rooms with the BAT_E2E_ prefix (issue #209 McpRoomsLib round-trip).
+        # The create/rename/delete test cleans up in its own finally; this reclaims a
+        # room a crashed run stranded.
+        try:
+            rooms_result = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            rlist = rooms_result.get("rooms", []) if isinstance(rooms_result, dict) else []
+            for rm in rlist:
+                rname = rm.get("name") or ""
+                if PREFIX in rname:
+                    rid = str(rm.get("id", ""))
+                    if rid:
+                        try:
+                            print(f"  Sweep: deleting room '{rname}' (id={rid})")
+                            self.client.call_tool("hub_manage_rooms", {
+                                "tool": "hub_delete_room",
+                                "args": {"room": rid, "confirm": True},
+                            })
+                        except Exception as exc:
+                            print(f"  [WARN] Room sweep delete failed for '{rname}': {exc}")
+        except Exception as exc:
+            print(f"  [WARN] Room sweep failed: {exc}")
+
+        # Layer 7: throwaway bundle from the hub_delete_bundle e2e (mcptest namespace). The test
+        # deletes it in its own finally; this reclaims one a crashed run stranded.
+        try:
+            bres = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+            for b in (bres.get("bundles", []) if isinstance(bres, dict) else []):
+                if b.get("namespace") == "mcptest" and b.get("id"):
+                    try:
+                        print(f"  Sweep: deleting throwaway bundle '{b.get('name')}' (id={b.get('id')})")
+                        self.client.call_tool("hub_manage_code", {
+                            "tool": "hub_delete_bundle",
+                            "args": {"bundleId": str(b.get("id")), "confirm": True},
+                        })
+                    except Exception as exc:
+                        print(f"  [WARN] throwaway bundle sweep delete failed for '{b.get('name')}': {exc}")
+        except Exception as exc:
+            print(f"  [WARN] throwaway bundle sweep failed: {exc}")
+
+        # Layer 7b: the throwaway LIBRARY (mcptest namespace) the bundle delivered. Bundle delete does
+        # not cascade it, and the disarm no-stale gate only sweeps the 'mcp' namespace, so a crashed run
+        # can strand it in Libraries Code. Reclaim it here.
+        try:
+            lres = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_libraries"})
+            for lib in (lres.get("libraries", []) if isinstance(lres, dict) else []):
+                if lib.get("namespace") == "mcptest" and lib.get("id"):
+                    try:
+                        print(f"  Sweep: deleting throwaway library '{lib.get('name')}' (id={lib.get('id')})")
+                        self.client.call_tool("hub_manage_code", {
+                            "tool": "hub_delete_item",
+                            "args": {"type": "library", "id": str(lib.get("id")), "confirm": True},
+                        })
+                    except Exception as exc:
+                        print(f"  [WARN] throwaway library sweep delete failed for '{lib.get('name')}': {exc}")
+        except Exception as exc:
+            print(f"  [WARN] throwaway library sweep failed: {exc}")
+
         print("--- Cleanup complete ---\n")
 
     # -----------------------------------------------------------------------
     # Run
     # -----------------------------------------------------------------------
 
-    def run(self, filter_group: Optional[str] = None,
-            filter_test: Optional[str] = None) -> bool:
+    def run(self, filter_group: str | None = None,
+            filter_test: str | None = None) -> bool:
         """Run tests. Returns True if all passed."""
-        self._test_start_time = datetime.now(timezone.utc).isoformat()
+        self._test_start_time = datetime.now(UTC).isoformat()
 
         tests_to_run = []
         for group, display_name, method_name in TEST_REGISTRY:
@@ -2293,6 +2740,13 @@ class TestRunner:
               f"{total_fail} failed, {total_skip} skipped  "
               f"({total_dur:.1f}s)")
 
+        # Slowest tests (diagnostic -- surface optimization targets; the suite is the biggest e2e cost).
+        slow = sorted(self.results, key=lambda r: r.get("duration", 0.0), reverse=True)[:15]
+        if slow:
+            print("\n  Slowest tests:")
+            for r in slow:
+                print(f"    {r.get('duration', 0.0):6.1f}s  {r.get('group', '?')}/{r['name']}")
+
         # List failures
         failures = [r for r in self.results if r["status"] == "fail"]
         if failures:
@@ -2327,7 +2781,7 @@ class SkipTest(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _find_attr(attrs: Any, name: str) -> Optional[str]:
+def _find_attr(attrs: Any, name: str) -> str | None:
     """Extract an attribute value from various response shapes."""
     if isinstance(attrs, dict):
         return attrs.get(name)
@@ -2359,7 +2813,7 @@ def load_config() -> dict:
     config = {}
 
     if config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
 
     # Env var overrides
@@ -2371,11 +2825,11 @@ def load_config() -> dict:
     missing = [k for k in ("hub_url", "app_id", "access_token") if not config.get(k)]
     if missing:
         print(f"ERROR: Missing config values: {', '.join(missing)}")
-        print(f"  Set via tests/e2e_config.json or env vars "
-              f"HUBITAT_HUB_URL, HUBITAT_APP_ID, HUBITAT_ACCESS_TOKEN")
+        print("  Set via tests/e2e_config.json or env vars "
+              "HUBITAT_HUB_URL, HUBITAT_APP_ID, HUBITAT_ACCESS_TOKEN")
         if not config_path.exists():
             print(f"  Config file not found: {config_path}")
-            print(f"  Copy e2e_config.example.json to e2e_config.json and fill in values.")
+            print("  Copy e2e_config.example.json to e2e_config.json and fill in values.")
         sys.exit(1)
 
     return config
@@ -2429,7 +2883,7 @@ def main() -> None:
         print("  Hub is reachable. MCP server responded to initialize.\n")
     except requests.exceptions.ConnectionError:
         print(f"  ERROR: Cannot connect to hub at {config['hub_url']}")
-        print(f"  Check that the hub is online and the URL is correct.")
+        print("  Check that the hub is online and the URL is correct.")
         sys.exit(1)
     except Exception as exc:
         print(f"  ERROR: Initialize failed: {exc}")
@@ -2443,7 +2897,7 @@ def main() -> None:
         print(f"  Backup: {msg}\n")
     except Exception as exc:
         print(f"  [WARN] Backup failed: {exc}")
-        print(f"  Tests requiring backup may fail.\n")
+        print("  Tests requiring backup may fail.\n")
 
     all_passed = runner.run(filter_group=args.group, filter_test=args.test)
     sys.exit(0 if all_passed else 1)

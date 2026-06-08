@@ -24,16 +24,19 @@ def repoRoot = projectDir.parentFile.parentFile
 def productionFiles = [
     new File(repoRoot, 'hubitat-mcp-server.groovy'),
     new File(repoRoot, 'hubitat-mcp-rule.groovy'),
-    // Standalone e2e safety-net app: parse it here so a syntax / 3.0-only break is caught in the
-    // fast lane, not only when the arm script compiles it live on the e2e hub. No #include, so the
-    // resolver passes it through unchanged.
+    // Standalone e2e safety-net apps: parse them here so a syntax / 3.0-only break (or a sandbox-blocked
+    // ClassExpression) is caught in the fast lane, not only when the arm/self-update scripts compile them
+    // live on the e2e hub. The v2 watchdog is the active one (it is self-deployed from the PR head every
+    // e2e run, so a sandbox violation there would otherwise surface only at the live self-update step).
+    // No #include, so the resolver passes them through unchanged.
     new File(repoRoot, 'e2e-deadman-watchdog.groovy'),
+    new File(repoRoot, 'e2e-deadman-watchdog-v2.groovy'),
     new File(repoRoot, 'libraries/mcp-smoke-test-lib.groovy'),
 ]
 
 tasks.register('parse24', JavaExec) {
     group = 'verification'
-    description = 'Parse the production Groovy files under Groovy 2.4.21 (catches 3.0-only syntax that would fail to load on the hub).'
+    description = 'Parse the production Groovy files under Groovy 2.4.21 (catches 3.0-only syntax) AND compile to CANONICALIZATION to flag references to sandbox-blocked classes (java.io / reflection / threads / GroovyShell / sockets) the hub rejects at parse time.'
     javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
     classpath = configurations.groovy24
     mainClass = 'groovy.ui.GroovyMain'

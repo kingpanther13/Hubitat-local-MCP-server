@@ -43,7 +43,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -463,7 +463,7 @@ def manifest_block_from_bullets(
             r"(#\1)",
             lines[0],
         )
-        plain_bullets.append("\n".join([first_line] + lines[1:]))
+        plain_bullets.append("\n".join([first_line, *lines[1:]]))
 
     body = "\n".join(plain_bullets)
     return f"v{version} - {date}\n{body}"
@@ -482,7 +482,7 @@ def bump_manifest(new_version: str, label: str, new_block: str) -> None:
     """
     manifest = json.loads(MANIFEST.read_text())
     manifest["version"] = new_version
-    manifest["dateReleased"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    manifest["dateReleased"] = datetime.now(UTC).strftime("%Y-%m-%d")
 
     if label == "release:patch":
         existing_blocks = split_release_blocks(manifest.get("releaseNotes") or "")
@@ -621,7 +621,7 @@ def main() -> int:
     tag = latest_tag()
     current = tag.lstrip("v") if tag else current_manifest_version()
     new_version = compute_next(current, label)
-    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date = datetime.now(UTC).strftime("%Y-%m-%d")
 
     pr_numbers = merged_pr_numbers_since(tag)
     if not pr_numbers and trigger_pr:
