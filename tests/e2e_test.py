@@ -2047,11 +2047,14 @@ class TestRunner:
 
     @test("developer_mode")
     def test_t226_delete_variable_no_confirm(self) -> None:
-        """T226: hub_delete_variable refuses when confirm flag is absent.
+        """T226: hub_delete_variable refuses when the confirm flag is absent.
 
-        Note: gateway-layer parameter validation returns the refusal as
-        `isError: true` in result content (not as JSON-RPC -32602). Same
-        wire-format pattern other gateway-required-param checks use.
+        The gateway-layer required-param check returns the refusal as isError. Per the
+        #209 envelope contract (handleToolsCall flags a tool-returned isError on the
+        JSON-RPC result), call_tool RAISES McpToolError when isError lands top-level; an
+        isError-in-content-only envelope comes back as a dict. Accept EITHER -- both prove
+        the destructive delete was refused for the missing confirm (same as the rooms
+        confirm-gate check).
         """
         var_name = f"{PREFIX}NO_CONFIRM_T226"
         self.client.call_tool("hub_manage_variables", {
@@ -2059,13 +2062,24 @@ class TestRunner:
             "args": {"name": var_name, "value": "safe"},
         })
         self.created_variable_names.append(var_name)
-        result = self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_delete_variable",
-            "args": {"name": var_name},  # no confirm
-        })
-        assert result.get("isError") is True, f"Expected isError result for missing confirm: {result}"
-        assert "confirm" in str(result.get("error", "")).lower(), f"refusal didn't mention confirm: {result}"
-        # Variable should still exist
+
+        refused = False
+        detail = None
+        try:
+            detail = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_delete_variable",
+                "args": {"name": var_name},  # no confirm
+            })
+            blob = (detail if isinstance(detail, str) else json.dumps(detail)).lower()
+            refused = (isinstance(detail, dict) and bool(detail.get("isError"))) and (
+                "confirm" in blob or "required parameter" in blob
+            )
+        except McpError as e:
+            detail = str(e)
+            refused = any(s in detail.lower() for s in ("confirm", "safety check", "required parameter"))
+        assert refused, f"hub_delete_variable without confirm should be refused by the safety gate, got: {detail}"
+
+        # Variable should still exist (the refusal must not have deleted it).
         verify = self.client.call_tool("hub_manage_variables", {
             "tool": "hub_get_variable",
             "args": {"name": var_name},
