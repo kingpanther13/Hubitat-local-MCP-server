@@ -232,8 +232,18 @@ fi
 DEFERRED_FILE="e2e-deferred-native-rules.json"
 if DEF_TEXT=$(mcp_tool_call_text "hub_read_file (deferred native rules)" \
     "$(jq -nc --arg fn "$DEFERRED_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')" 2>/dev/null); then
-  DEF_IDS=$(printf '%s' "$DEF_TEXT" | jq -r '(.content // "[]") | fromjson | .[]?' 2>/dev/null || true)
-  if [ -n "$DEF_IDS" ]; then
+  # Split a parse failure from a valid (possibly empty) array. hub_read_file returns the file body
+  # under .content; jq '.[]' errors (exit != 0) on truncated/corrupt JSON but yields empty output on a
+  # valid []. A SWALLOWED parse error must NOT collapse to "nothing to reap" -- that would silently
+  # skip the exact-id sweep and leave the rules to only the non-gating prefix backstop.
+  DEF_CONTENT=$(printf '%s' "$DEF_TEXT" | jq -r '.content // ""' 2>/dev/null || true)
+  if [ -z "$DEF_CONTENT" ]; then
+    echo "Deferred-rule sweep: deferred-id file had no content (deferral off, or no native fixtures left behind)."
+  elif ! DEF_IDS=$(printf '%s' "$DEF_CONTENT" | jq -r '.[]' 2>/dev/null); then
+    echo "::error::Deferred-rule sweep: ${DEFERRED_FILE} is not a valid JSON array (truncated/corrupt write?) -- exact-id sweep SKIPPED; the post-restore --cleanup-only prefix sweep is now the ONLY backstop for these ids. Raw head: $(printf '%s' "$DEF_CONTENT" | head -c 200 | tr '\n' ' ')"
+  elif [ -z "$DEF_IDS" ]; then
+    echo "Deferred-rule sweep: deferred-id list is an empty array -- nothing to reap (no native fixtures left behind)."
+  else
     def_n=0
     def_fail=0
     while IFS= read -r rid; do
@@ -266,8 +276,6 @@ if DEF_TEXT=$(mcp_tool_call_text "hub_read_file (deferred native rules)" \
     else
       echo "::warning::Deferred-rule sweep: ${def_fail}/${def_n} force-delete(s) did NOT confirm -- KEEPING ${DEFERRED_FILE} so the post-restore --cleanup-only prefix sweep (and the next run) can still reap them. Not failing the restore (best-effort)."
     fi
-  else
-    echo "Deferred-rule sweep: list empty -- nothing to reap (deferral off, or no native fixtures left behind)."
   fi
 else
   echo "::warning::Deferred-rule sweep: could not READ ${DEFERRED_FILE} after retries (transient transport, NOT necessarily deferral-off) -- relying on the post-restore --cleanup-only prefix sweep to reap any BAT_E2E_ rules."

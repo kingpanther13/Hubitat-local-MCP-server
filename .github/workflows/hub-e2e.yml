@@ -335,12 +335,12 @@ jobs:
           MAIN_CHARS: ${{ env.MAIN_CHARS }}
         run: bash .github/scripts/mcp_arm_watchdog.sh
 
-      # Install THIS PR's source + libraries + bundle onto the test hub through the watchdog's
-      # install plumbing ($WATCHDOG_URL). Replaces the old separate install-libraries / deploy-source /
-      # verify-deploy / install-bundle-HPM steps: the watchdog endpoint is a single driver of the
-      # same loopback restore/install plumbing, so it installs the #include libraries, then the bundle
-      # the HPM way, then lands + verifies the app source last (HPM's libraries -> bundle -> app order)
-      # in one step. Blocking:
+      # Install THIS PR's source onto the test hub through the watchdog's install plumbing
+      # ($WATCHDOG_URL). Replaces the old separate install-libraries / deploy-source / verify-deploy /
+      # install-bundle-HPM steps: the watchdog endpoint is a single driver of the same loopback
+      # restore/install plumbing, so it installs the package bundle the HPM way (the bundle delivers
+      # every #include library -- no separate per-library install), then lands + verifies the app
+      # source last (HPM's bundle -> app order) in one step. Blocking:
       # a failed PR install means the tests would run against stale/broken hub code.
       - name: Watchdog - install PR
         if: steps.gate.outputs.available == 'true'

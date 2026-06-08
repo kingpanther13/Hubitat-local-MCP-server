@@ -2458,6 +2458,24 @@ class TestRunner:
 
         print("--- Cleanup complete ---\n")
 
+    def verify_native_rules_clean(self) -> list[str] | None:
+        """Re-list native RM rules and return the BAT_E2E_ ones still present (empty list = clean).
+        Returns None if the hub could not be listed after retries -- the caller treats that as
+        'cannot prove cleanup' and fails closed. Retries ride out a transient transport blip."""
+        for attempt in range(1, 4):
+            try:
+                nrules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+                rlist = nrules if isinstance(nrules, list) else nrules.get("rules", [])
+                return [
+                    f"{r.get('name') or r.get('label')} (id={r.get('id', r.get('appId'))})"
+                    for r in rlist
+                    if PREFIX in (r.get("name") or r.get("label") or "")
+                ]
+            except Exception as exc:
+                print(f"  [WARN] verify_native_rules_clean: list attempt {attempt}/3 failed: {exc}")
+                time.sleep(2)
+        return None
+
     # -----------------------------------------------------------------------
     # Run
     # -----------------------------------------------------------------------
@@ -2676,7 +2694,20 @@ def main() -> None:
 
     if args.cleanup_only:
         runner.cleanup()
-        print("Cleanup-only mode complete.")
+        # Gating verification: cleanup() and the disarm-time deferred sweep are otherwise all
+        # best-effort (warn-only), so a silently-failed native-rule cleanup could leave BAT_E2E_ RM
+        # apps on the SHARED hub behind a green run. This backstop FAILS CLOSED -- re-list and exit
+        # nonzero if any BAT_E2E_ native rule survived, or if the hub can't be listed to prove it.
+        leftovers = runner.verify_native_rules_clean()
+        if leftovers is None:
+            print("ERROR: cleanup-only could not list native rules to verify cleanup -- failing "
+                  "closed (cannot prove the shared hub is free of BAT_E2E_ rules).")
+            sys.exit(1)
+        if leftovers:
+            print(f"ERROR: cleanup-only left {len(leftovers)} BAT_E2E_ native rule(s) on the hub: "
+                  f"{leftovers}")
+            sys.exit(1)
+        print("Cleanup-only mode complete; verified no BAT_E2E_ native rules remain.")
         sys.exit(0)
 
     # Verify connectivity before running tests

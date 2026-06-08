@@ -1088,13 +1088,13 @@ def adminDeleteItem(args) {
 
 // hub_force_delete_app: force-delete an INSTALLED-APP INSTANCE (e.g. an RM rule) via
 // /installedapp/forcedelete/<id>/quiet -- the same path RM's "Delete Rule" button uses, bypassing
-// child/device checks. Loosely based on the server's _rmForceDeleteApp (same endpoint), adapted to the
-// watchdog's fire-and-forget hubGet -- no status check, no backup. DISTINCT from hub_delete_item(type:'app'),
-// which hits /app/edit/deleteJsonSafe (an Apps Code CLASS, not a running instance). Used by the disarm-time
-// deferred-native-rule sweep. On success the 302 redirect is followed to the apps-list page, so hubGet
-// returns non-null; hubGet returns NULL on a 4xx/5xx, an auth/cookie failure, or a request that never
-// reached the hub -- report THAT as success:false so the disarm sweep can warn + keep its recovery list
-// (any rule that survives is reaped by the separate post-restore --cleanup-only prefix sweep, not a re-list).
+// child/device checks. Loosely based on the server's _rmForceDeleteApp (same endpoint). Status-aware
+// via hubGetStatus: the forcedelete endpoint answers SUCCESS with a 302 redirect, so a 2xx/3xx status
+// is success while >=400 -- or no status at all, meaning the request never reached the hub (auth/
+// transport) -- is reported as success:false so the disarm sweep can warn + keep its recovery list
+// (any rule that survives is reaped by the separate post-restore --cleanup-only prefix sweep, not a
+// re-list). DISTINCT from hub_delete_item(type:'app'), which hits /app/edit/deleteJsonSafe (an Apps
+// Code CLASS, not a running instance). Used by the disarm-time deferred-native-rule sweep.
 def adminForceDeleteInstalledApp(args) {
     requireConfirm(args)
     def id = (args.id != null) ? args.id : args.appId
