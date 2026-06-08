@@ -147,6 +147,28 @@ Every MCP tool is gated. The layers, from broadest to narrowest:
 - If the tool's behaviour affects live-hub flows, add a `tests/BAT-v2.md` scenario in the same PR.
 - Track tool errors during eval. High invalid-parameter rates usually indicate the description or examples are the bug, not the model. Anthropic's example: Claude was appending `2025` to web-search queries until the description was fixed.
 
+### e2e architecture: the standalone dead-man watchdog (test-hub only)
+
+The `e2e` job (`hub-e2e.yml`) proves a PR against a live Hubitat test hub: deploy the PR's code, run `tests/e2e_test.py` against it, then restore main. The MCP server cannot reliably update its OWN app class (the recompile kills the in-flight request → the issue #237 self-update 504), so the install + restore are driven through a **separate** app: the **E2E Dead-Man Watchdog v2** (`e2e-deadman-watchdog-v2.groovy`) — a second, smaller MCP server installed once on the test hub with its own OAuth `/mcp` endpoint (the `WATCHDOG_MCP_URL` secret). It is **test-hub tooling ONLY**: never in the HPM manifest (`packageManifest.json`), never on a user hub. Two endpoints are in play — `MCP_URL` = the main server under test (the tests + all normal hub calls go here); `WATCHDOG_URL` = the watchdog (all backup/install/restore plumbing goes here, so the app being recompiled is never the one answering the request).
+
+Per-run flow (all over `WATCHDOG_URL` unless noted), driven by `.github/scripts/mcp_watchdog_*.sh` (shared helpers in `mcp_watchdog_lib.sh`):
+1. **Health check** — the watchdog answers `tools/list` + `hub_get_info`, else HALT before any mutation.
+2. **Lease** — serialize runs on the single shared hub (a hub variable with a TTL).
+3. **Self-update** — deploy THIS PR's `e2e-deadman-watchdog-v2.groovy` onto the watchdog itself (`mcp_watchdog_self_update.sh`), so e2e exercises the watchdog the PR ships. After the one-time manual install, the watchdog never needs to be re-imported.
+4. **Arm** (`mcp_arm_watchdog.sh`) — refresh the hub to canonical `main` if it drifted or `main`'s SHA changed (skip when current), cache main (app + each `#include`d library) to File Manager, and write an armed flag with a ~35-min deadline.
+5. **Install PR** (`mcp_watchdog_deploy.sh`) — libraries → bundle → app, each confirmed via a FRESH `lastSelfDeploy` success (survives the relay-dropped ~1.6 MB response AND a same-length change, so a stale source can't false-green).
+6. **Tests** — `tests/e2e_test.py` against `MCP_URL`.
+7. **Disarm / restore** (`mcp_disarm_watchdog.sh`) — the watchdog's on-hub `checkDeadman` timer restores main from the cache (libraries-first, app-last). CI fires an early disarm on a clean finish; if CI can't (the run crashed), the watchdog auto-restores at the deadline — the dead-man.
+
+**The watchdog's admin tools are COPIES of the server's code-install tools** (`hub_update_app` with the #237 verbatim-error capture, `hub_get_source`, library/bundle install, file manager, `hub_get_info`, etc.), kept in lockstep so the watchdog can install whatever a PR ships. **Any tool that participates in installing a PR MUST be mirrored into `e2e-deadman-watchdog-v2.groovy`, not just added to the server** — otherwise the e2e install can't use it. Concretely: PR #247's **bundle tools** belong in the watchdog as well as the server, since bundles are part of how a PR is installed. (When you mirror a tool, copy its behaviour faithfully and re-run sandbox lint on the watchdog; the watchdog has its own `WatchdogV2Spec`.)
+
+### e2e CI: `pull_request_target` trigger + how to validate workflow changes
+
+`hub-e2e.yml` runs on **`pull_request_target`** (NOT `pull_request`) on purpose: a FORK contributor's PR (e.g. @level99's) can then run e2e against the shared test hub with the `WATCHDOG_MCP_URL` / `MCP_URL` secrets, gated behind the `approve` environment for non-trusted authors. **Do NOT "fix" a red `e2e` badge by gating the trigger to same-repo branches** — that is the old behaviour and it re-excludes fork contributors, the exact problem this setup solves. The trade-off is how `pull_request_target` resolves files: the **workflow file itself** (`hub-e2e.yml`'s step structure) always comes from **main**, while the job **checks out the PR head's code**, so `.github/scripts/*`, `tests/e2e_test.py`, the watchdog groovy, and `hubitat-mcp-server.groovy` are the PR's. So:
+
+- **Changing the CONTENT of an existing script / test / groovy file** (logic inside the e2e `.sh` scripts, `tests/e2e_test.py`, or the server/rule/watchdog source) → the auto `e2e` check exercises the PR's code in-PR. **Iterate normally** — this works for fork PRs too, which is the whole point. New MCP tools (incl. e.g. PR #247's bundle tools) and their `tests/e2e_test.py` scenarios fall here: no special handling.
+- **Restructuring the workflow FILE** — adding/removing/renaming a *step*, or deleting/renaming a script the base workflow *calls* — is NOT exercised by the auto check (it runs main's old structure, usually RED against the PR's deleted/renamed files). Validate such a PR with **`gh workflow run hub-e2e.yml --ref <branch>`** (`workflow_dispatch` runs the PR branch's OWN workflow file) and watch that run; the PR's `e2e` badge stays red until merge, and the dispatch run is the merge-readiness proof. This is the ONLY case that needs the dispatch dance (e.g. PR #248 restructured the steps and deleted the old deploy scripts).
+
 ### Sources
 
 All rules above cite verified sources, re-checked on 2026-05-26.
