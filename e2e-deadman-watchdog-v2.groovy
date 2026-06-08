@@ -403,9 +403,12 @@ private boolean _restoreLibraryInPlace(String libId, String source, Integer curV
     }
 }
 
-// Create a fresh library from source via /library/saveOrUpdateJson {id:null}. Confirms by requiring a
-// returned id AND that the live source is not a DIFFERENT source (byte-identical, or unreadable -- a
-// transient read must not false-fail a create the hub accepted with a new id).
+// Create a fresh library from source via /library/saveOrUpdateJson {id:null}. Confirms the restore
+// LANDED the same way restoreApp / the in-place path do: a returned id AND a readable BYTE-IDENTICAL
+// live source -- never the id alone. An unreadable read-back is NOT accepted (it would weaken the
+// byte-identical restore guarantee); it returns false so actAndRecord retries the whole restore, which
+// re-confirms via the in-place path now that the library exists. readLibrarySource is a local loopback
+// read, so a persistent failure means we genuinely cannot confirm ANY restore -- failing closed is right.
 private boolean _createLibraryFromSource(String source) {
     String body = groovy.json.JsonOutput.toJson([id: null, source: source, version: null])
     Map resp = hubPostJson("/library/saveOrUpdateJson", body)
@@ -421,11 +424,15 @@ private boolean _createLibraryFromSource(String source) {
             return false
         }
         String live = readLibrarySource(newId)
-        if (live != null && live != source) {
+        if (live == null) {
+            log.error "restoreLibrary(create) ${newId}: created but could not read the live source back to byte-confirm it landed -- treating as NOT restored (the restore retry re-confirms via the in-place path)."
+            return false
+        }
+        if (live != source) {
             log.error "restoreLibrary(create) ${newId}: created but live source differs from the pushed source -- did not land."
             return false
         }
-        logInfo "restoreLibrary(create): created library id ${newId} from cache (${source.length()} chars)."
+        logInfo "restoreLibrary(create): created library id ${newId} from cache (${source.length()} chars), byte-identical confirmed."
         return true
     } catch (Exception e) {
         log.error "restoreLibrary(create): could not parse create response (${e.message})"

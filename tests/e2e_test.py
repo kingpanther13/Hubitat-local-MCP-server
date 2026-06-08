@@ -1824,12 +1824,24 @@ class TestRunner:
             assert fname in names, f"exported bundle file {fname} not found in File Manager: {names}"
             print(f"    BUNDLE_EXPORT ok -- {fname} ({result.get('bytes')} B)")
         finally:
+            # hub_delete_file auto-backs-up a normal file before deleting it, so deleting the export
+            # leaves "{base}_backup_<ts>.zip" behind. Delete the export, THEN sweep the backup(s) it
+            # spawned (their names carry "_backup_", so deleting them makes no further backup-of-backup).
             try:
                 self.client.call_tool("hub_manage_files", {
                     "tool": "hub_delete_file", "args": {"fileName": fname, "confirm": True},
                 })
             except Exception as exc:
                 print(f"  [WARN] bundle export cleanup: delete {fname} failed: {exc}")
+            try:
+                files = self.client.call_tool("hub_read_files", {"tool": "hub_list_files"})
+                for nm in [f.get("name") for f in (files.get("files", []) if isinstance(files, dict) else [])]:
+                    if isinstance(nm, str) and nm.startswith(f"{PREFIX}bundle_export_") and "_backup_" in nm:
+                        self.client.call_tool("hub_manage_files", {
+                            "tool": "hub_delete_file", "args": {"fileName": nm, "confirm": True},
+                        })
+            except Exception as exc:
+                print(f"  [WARN] bundle export backup sweep failed: {exc}")
 
     @test("system_tools")
     def test_delete_bundle(self) -> None:
@@ -1873,6 +1885,19 @@ class TestRunner:
                     })
                 except Exception as exc:
                     print(f"  [WARN] throwaway bundle cleanup: delete {bid} failed: {exc}")
+            # Deleting the bundle removes only the container; Hubitat does NOT cascade-delete the library
+            # it delivered (mcptest.E2eThrowawayLib), so remove that too or it pollutes Libraries Code
+            # across runs. The disarm no-stale gate is scoped to the 'mcp' namespace and won't touch this.
+            try:
+                libs = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_libraries"})
+                for lib in (libs.get("libraries", []) if isinstance(libs, dict) else []):
+                    if lib.get("namespace") == "mcptest" and lib.get("id"):
+                        self.client.call_tool("hub_manage_code", {
+                            "tool": "hub_delete_item",
+                            "args": {"type": "library", "id": str(lib["id"]), "confirm": True},
+                        })
+            except Exception as exc:
+                print(f"  [WARN] throwaway library cleanup failed: {exc}")
 
     # -----------------------------------------------------------------------
     # GROUP 10: developer_mode (10 tests — Section 12 of BAT-v2.md + review-fix coverage)
@@ -2467,6 +2492,24 @@ class TestRunner:
                         print(f"  [WARN] throwaway bundle sweep delete failed for '{b.get('name')}': {exc}")
         except Exception as exc:
             print(f"  [WARN] throwaway bundle sweep failed: {exc}")
+
+        # Layer 7b: the throwaway LIBRARY (mcptest namespace) the bundle delivered. Bundle delete does
+        # not cascade it, and the disarm no-stale gate only sweeps the 'mcp' namespace, so a crashed run
+        # can strand it in Libraries Code. Reclaim it here.
+        try:
+            lres = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_libraries"})
+            for lib in (lres.get("libraries", []) if isinstance(lres, dict) else []):
+                if lib.get("namespace") == "mcptest" and lib.get("id"):
+                    try:
+                        print(f"  Sweep: deleting throwaway library '{lib.get('name')}' (id={lib.get('id')})")
+                        self.client.call_tool("hub_manage_code", {
+                            "tool": "hub_delete_item",
+                            "args": {"type": "library", "id": str(lib.get("id")), "confirm": True},
+                        })
+                    except Exception as exc:
+                        print(f"  [WARN] throwaway library sweep delete failed for '{lib.get('name')}': {exc}")
+        except Exception as exc:
+            print(f"  [WARN] throwaway library sweep failed: {exc}")
 
         print("--- Cleanup complete ---\n")
 

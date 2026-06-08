@@ -212,7 +212,12 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
       echo "::notice::main packageManifest.json declares no bundles -- app-only canonical main (no bundle to refresh)."
     fi
   else
-    echo "::warning::could not fetch main's packageManifest.json from ${MAIN_RAW_PREFIX} -- skipping the bundle refresh this run (the app refresh below still runs; a stale-library cache is possible if main changed a library)."
+    # The restore manifest's canonical-main bundle/library set (and the disarm no-stale gate) depend on
+    # this fetch; arming app-only here would cache a possibly-stale library baseline. main's
+    # packageManifest.json was just reachable (the workflow resolved MAIN_SOURCE_URL from the same repo),
+    # so a failure is a transient blip -- HALT and re-run rather than arm a polluted baseline.
+    echo "::error::e2e HALT: could not fetch main's packageManifest.json from ${MAIN_RAW_PREFIX} -- cannot establish the canonical-main bundle/library baseline. Refusing to arm a possibly-polluted baseline; re-run."
+    exit 1
   fi
 
   LIVE_MAIN_LEN=$(mcp_tool_call_text "hub_get_source (live main length, noSave)" \

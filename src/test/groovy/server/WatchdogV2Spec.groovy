@@ -347,7 +347,8 @@ class WatchdogV2Spec extends Specification {
         written?.restoreResult == 'restored'   // a throwing cleanup delete is caught; restore still succeeds
     }
 
-    def "restoreLibrary(create) accepts an unreadable post-create live source (transient), but rejects a DIFFERENT one"() {
+    @Unroll
+    def "restoreLibrary(create) requires a readable byte-identical live source (#scenario)"() {
         given:
         String cached = 'library mcp.Foo source body cccc'
         script.metaClass.readHubFileText = { String fn -> cached }
@@ -359,10 +360,10 @@ class WatchdogV2Spec extends Specification {
         script.restoreLibrary('119', 'mcp-source-library-119.groovy') == expected
 
         where:
-        scenario                        | live                   || expected
-        'unreadable -> accept on id'    | null                   || true
-        'byte-identical -> restored'    | 'library mcp.Foo source body cccc' || true
-        'different live -> did not land' | 'a DIFFERENT source'   || false
+        scenario                         | live                               || expected
+        'unreadable -> NOT confirmed'    | null                               || false
+        'byte-identical -> restored'     | 'library mcp.Foo source body cccc' || true
+        'different live -> did not land' | 'a DIFFERENT source'               || false
     }
 
     def "adminDeleteBundle reports verified=false when the post-delete re-list is degraded"() {
