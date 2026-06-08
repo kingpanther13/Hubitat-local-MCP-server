@@ -409,6 +409,16 @@ class TestRunner:
             f"Rule name mismatch: expected '{name}', got '{fetched.get('name')}'"
         return rule_id
 
+    def _assert_rule_array_len(self, rule_id: str, key: str, expected: int) -> None:
+        """Fetch a custom rule and assert its triggers/conditions/actions array has the expected count.
+        Catches the legacy engine silently rejecting/dropping a type inside a batched type-coverage rule
+        (a plain create-success check would miss a dropped entry)."""
+        fetched = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
+        arr = fetched.get(key)
+        got = len(arr) if isinstance(arr, list) else arr
+        assert isinstance(arr, list) and len(arr) == expected, \
+            f"custom rule '{key}': expected {expected} entries, got {got} -- a type was rejected/dropped: {fetched.get(key)!r}"
+
     def _delete_rule_safe(self, rule_id: str) -> None:
         """Delete a rule, swallowing errors."""
         try:
@@ -1083,232 +1093,105 @@ class TestRunner:
                     print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 5: trigger_types (6 tests)
+    # GROUP 5: trigger_types (1 batched test -- all trigger types in one rule)
     # -----------------------------------------------------------------------
 
-    def _test_trigger(self, suffix: str, trigger: dict) -> None:
-        """Helper: create rule with given trigger, verify, delete."""
-        name = f"{PREFIX}Trigger_{suffix}"
+    @test("trigger_types")
+    def test_trigger_types(self) -> None:
+        """Legacy custom engine: every trigger TYPE parses + lands. Batched into ONE rule (1 create +
+        1 delete instead of 6 per-type rules) -- keeps per-type create coverage and the count assert
+        catches a silently-dropped type, while cutting the fixture churn the legacy engine doesn't
+        warrant exhaustively. New trigger types: add to this list, not a new rule."""
         dev_id = self.get_first_device_id()
-        # Replace placeholder device ID
-        trigger = _inject_device_id(trigger, dev_id)
-        rule_id = self._create_rule_and_verify(name, {
-            "triggers": [trigger],
-            "actions": [{"type": "log", "message": f"trigger test: {suffix}"}],
+        triggers = [
+            _inject_device_id({"type": "device_event", "deviceId": "PLACEHOLDER", "attribute": "switch"}, dev_id),
+            {"type": "time", "time": "08:00"},
+            {"type": "periodic", "interval": 30, "unit": "minutes"},
+            {"type": "mode_change", "mode": "Away"},
+            {"type": "sunrise", "offset": 0},
+            {"type": "sunset", "offset": -30},
+        ]
+        rule_id = self._create_rule_and_verify(f"{PREFIX}Trigger_Types", {
+            "triggers": triggers,
+            "actions": [{"type": "log", "message": "trigger types batch"}],
         })
+        self._assert_rule_array_len(rule_id, "triggers", len(triggers))
         self._delete_rule_safe(rule_id)
 
-    @test("trigger_types")
-    def test_trigger_device_event(self) -> None:
-        self._test_trigger("device_event", {
-            "type": "device_event", "deviceId": "PLACEHOLDER", "attribute": "switch",
-        })
-
-    @test("trigger_types")
-    def test_trigger_time(self) -> None:
-        self._test_trigger("time", {"type": "time", "time": "08:00"})
-
-    @test("trigger_types")
-    def test_trigger_periodic(self) -> None:
-        self._test_trigger("periodic", {
-            "type": "periodic", "interval": 30, "unit": "minutes",
-        })
-
-    @test("trigger_types")
-    def test_trigger_mode_change(self) -> None:
-        self._test_trigger("mode_change", {"type": "mode_change", "mode": "Away"})
-
-    @test("trigger_types")
-    def test_trigger_sunrise(self) -> None:
-        self._test_trigger("sunrise", {"type": "sunrise", "offset": 0})
-
-    @test("trigger_types")
-    def test_trigger_sunset(self) -> None:
-        self._test_trigger("sunset", {"type": "sunset", "offset": -30})
-
     # -----------------------------------------------------------------------
-    # GROUP 6: condition_types (7 tests)
+    # GROUP 6: condition_types (1 batched test -- all condition types in one rule)
     # -----------------------------------------------------------------------
 
-    def _test_condition(self, suffix: str, condition: dict,
-                        setup=None, teardown=None) -> None:
-        """Create rule with given condition, verify, delete. Optional setup/teardown callables."""
-        if setup:
-            setup()
+    @test("condition_types")
+    def test_condition_types(self) -> None:
+        """Legacy custom engine: every condition TYPE parses + lands. Batched into ONE rule (1 create +
+        1 delete instead of 7). The variable condition needs a backing hub variable. New condition
+        types: add to this list."""
+        dev_id = self.get_first_device_id()
+        var_name = f"{PREFIX}CondVar"
+        self._create_variable(var_name, "String", "test")
         try:
-            name = f"{PREFIX}Cond_{suffix}"
-            dev_id = self.get_first_device_id()
-            condition = _inject_device_id(condition, dev_id)
-            rule_id = self._create_rule_and_verify(name, {
+            conditions = [
+                _inject_device_id({"type": "device_state", "deviceId": "PLACEHOLDER", "attribute": "switch", "operator": "==", "value": "on"}, dev_id),
+                _inject_device_id({"type": "device_was", "deviceId": "PLACEHOLDER", "attribute": "switch", "operator": "==", "value": "on", "forSeconds": 300}, dev_id),
+                {"type": "time_range", "start": "08:00", "end": "22:00"},
+                {"type": "mode", "mode": "Day"},
+                {"type": "variable", "variableName": var_name, "operator": "==", "value": "1"},
+                {"type": "days_of_week", "days": ["Monday", "Wednesday", "Friday"]},
+                {"type": "sun_position", "position": "up"},
+            ]
+            rule_id = self._create_rule_and_verify(f"{PREFIX}Condition_Types", {
                 "triggers": [{"type": "time", "time": "03:00"}],
-                "conditions": [condition],
-                "actions": [{"type": "log", "message": f"condition test: {suffix}"}],
+                "conditions": conditions,
+                "actions": [{"type": "log", "message": "condition types batch"}],
             })
+            self._assert_rule_array_len(rule_id, "conditions", len(conditions))
             self._delete_rule_safe(rule_id)
         finally:
-            if teardown:
-                teardown()
-
-    @test("condition_types")
-    def test_condition_device_state(self) -> None:
-        self._test_condition("device_state", {
-            "type": "device_state", "deviceId": "PLACEHOLDER",
-            "attribute": "switch", "operator": "==", "value": "on",
-        })
-
-    @test("condition_types")
-    def test_condition_device_was(self) -> None:
-        self._test_condition("device_was", {
-            "type": "device_was", "deviceId": "PLACEHOLDER",
-            "attribute": "switch", "operator": "==", "value": "on", "forSeconds": 300,
-        })
-
-    @test("condition_types")
-    def test_condition_time_range(self) -> None:
-        self._test_condition("time_range", {
-            "type": "time_range", "start": "08:00", "end": "22:00",
-        })
-
-    @test("condition_types")
-    def test_condition_mode(self) -> None:
-        self._test_condition("mode", {
-            "type": "mode", "mode": "Day",
-        })
-
-    @test("condition_types")
-    def test_condition_variable(self) -> None:
-        var_name = f"{PREFIX}TestVar"
-        self._test_condition(
-            "variable",
-            {"type": "variable", "variableName": var_name, "operator": "==", "value": "1"},
-            setup=lambda: self._create_variable(var_name, "String", "test"),
-            teardown=lambda: self._delete_variable_safe(var_name),
-        )
-
-    @test("condition_types")
-    def test_condition_days_of_week(self) -> None:
-        self._test_condition("days_of_week", {
-            "type": "days_of_week", "days": ["Monday", "Wednesday", "Friday"],
-        })
-
-    @test("condition_types")
-    def test_condition_sun_position(self) -> None:
-        self._test_condition("sun_position", {
-            "type": "sun_position", "position": "up",
-        })
+            self._delete_variable_safe(var_name)
 
     # -----------------------------------------------------------------------
-    # GROUP 7: action_types (13 tests)
+    # GROUP 7: action_types (1 batched test -- all action types in one rule)
     # -----------------------------------------------------------------------
 
-    def _test_action(self, suffix: str, actions: list[dict],
-                     setup=None, teardown=None) -> None:
-        """Create rule with given actions, verify, delete."""
-        if setup:
-            setup()
+    @test("action_types")
+    def test_action_types(self) -> None:
+        """Legacy custom engine: every action TYPE parses + lands. Batched into ONE rule (1 create +
+        1 delete instead of 13). Covers device commands, variable/mode/delay, control flow
+        (if_then_else, repeat, cancel_delayed, stop) and log/http/comment. 'stop' is placed LAST so it
+        can't truncate the stored action list. set_variable needs a backing hub variable. New action
+        types: add to this list."""
+        dev_id = self.get_first_device_id()
+        switch_id = self.get_test_switch_id()
+        var_name = f"{PREFIX}ActVar"
+        self._create_variable(var_name, "String", "initial")
         try:
-            name = f"{PREFIX}Action_{suffix}"
-            dev_id = self.get_first_device_id()
-            actions = [_inject_device_id(a, dev_id) for a in actions]
-            rule_id = self._create_rule_and_verify(name, {
+            actions = [
+                {"type": "device_command", "deviceId": switch_id, "command": "on"},
+                {"type": "toggle_device", "deviceId": switch_id},
+                {"type": "set_variable", "variableName": var_name, "value": "hello"},
+                {"type": "set_local_variable", "variableName": "localTestVar", "value": "42"},
+                {"type": "set_mode", "mode": "Day"},
+                {"type": "delay", "seconds": 5},
+                {"type": "cancel_delayed"},
+                {"type": "if_then_else",
+                 "condition": {"type": "device_state", "deviceId": dev_id, "attribute": "switch", "operator": "==", "value": "on"},
+                 "thenActions": [{"type": "log", "message": "then branch"}],
+                 "elseActions": [{"type": "log", "message": "else branch"}]},
+                {"type": "repeat", "count": 3, "actions": [{"type": "log", "message": "repeat iteration"}]},
+                {"type": "log", "message": "E2E test log action"},
+                {"type": "http_request", "method": "GET", "url": "http://example.com"},
+                {"type": "comment", "text": "This is a test comment"},
+                {"type": "stop"},
+            ]
+            rule_id = self._create_rule_and_verify(f"{PREFIX}Action_Types", {
                 "triggers": [{"type": "time", "time": "03:00"}],
                 "actions": actions,
             })
+            self._assert_rule_array_len(rule_id, "actions", len(actions))
             self._delete_rule_safe(rule_id)
         finally:
-            if teardown:
-                teardown()
-
-    @test("action_types")
-    def test_action_device_command(self) -> None:
-        switch_id = self.get_test_switch_id()
-        self._test_action("device_command", [
-            {"type": "device_command", "deviceId": switch_id, "command": "on"},
-        ])
-
-    @test("action_types")
-    def test_action_toggle(self) -> None:
-        switch_id = self.get_test_switch_id()
-        self._test_action("toggle", [
-            {"type": "toggle_device", "deviceId": switch_id},
-        ])
-
-    @test("action_types")
-    def test_action_set_variable(self) -> None:
-        var_name = f"{PREFIX}ActionVar"
-        self._test_action(
-            "set_variable",
-            [{"type": "set_variable", "variableName": var_name, "value": "hello"}],
-            setup=lambda: self._create_variable(var_name, "String", "initial"),
-            teardown=lambda: self._delete_variable_safe(var_name),
-        )
-
-    @test("action_types")
-    def test_action_set_local_variable(self) -> None:
-        self._test_action("set_local_variable", [
-            {"type": "set_local_variable", "variableName": "localTestVar", "value": "42"},
-        ])
-
-    @test("action_types")
-    def test_action_set_mode(self) -> None:
-        self._test_action("set_mode", [
-            {"type": "set_mode", "mode": "Day"},
-        ])
-
-    @test("action_types")
-    def test_action_delay(self) -> None:
-        self._test_action("delay", [
-            {"type": "delay", "seconds": 5},
-        ])
-
-    @test("action_types")
-    def test_action_if_then_else(self) -> None:
-        dev_id = self.get_first_device_id()
-        self._test_action("if_then_else", [{
-            "type": "if_then_else",
-            "condition": {
-                "type": "device_state", "deviceId": dev_id,
-                "attribute": "switch", "operator": "==", "value": "on",
-            },
-            "thenActions": [{"type": "log", "message": "then branch"}],
-            "elseActions": [{"type": "log", "message": "else branch"}],
-        }])
-
-    @test("action_types")
-    def test_action_cancel_delayed(self) -> None:
-        self._test_action("cancel_delayed", [
-            {"type": "cancel_delayed"},
-        ])
-
-    @test("action_types")
-    def test_action_repeat(self) -> None:
-        self._test_action("repeat", [{
-            "type": "repeat",
-            "count": 3,
-            "actions": [{"type": "log", "message": "repeat iteration"}],
-        }])
-
-    @test("action_types")
-    def test_action_stop(self) -> None:
-        self._test_action("stop", [{"type": "stop"}])
-
-    @test("action_types")
-    def test_action_log(self) -> None:
-        self._test_action("log", [
-            {"type": "log", "message": "E2E test log action"},
-        ])
-
-    @test("action_types")
-    def test_action_http_request(self) -> None:
-        self._test_action("http_request", [
-            {"type": "http_request", "method": "GET", "url": "http://example.com"},
-        ])
-
-    @test("action_types")
-    def test_action_comment(self) -> None:
-        self._test_action("comment", [
-            {"type": "comment", "text": "This is a test comment"},
-        ])
+            self._delete_variable_safe(var_name)
 
     # -----------------------------------------------------------------------
     # GROUP 8: complex_patterns (2 tests)
