@@ -43,6 +43,7 @@ GROOVY_FILES = [
     # Standalone e2e safety-net app: it runs in the Hubitat sandbox on the e2e hub, so lint it for
     # forbidden patterns here rather than discovering a violation only at live install time.
     REPO_ROOT / "e2e-deadman-watchdog.groovy",
+    REPO_ROOT / "e2e-deadman-watchdog-v2.groovy",
     *sorted((REPO_ROOT / "libraries").glob("*.groovy")),
 ]
 

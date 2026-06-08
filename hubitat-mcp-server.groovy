@@ -6952,7 +6952,7 @@ def toolGetHubInfo(args = null) {
     // So a read can return a record left by an EARLIER deploy (even a prior session) and be mistaken
     // for the latest outcome. Two freshness aids: `ageMs` (now - at) is added here so age is visible at
     // a glance, and a consumer comparing across its own deploy should baseline `at` first and require it
-    // to advance (see .github/scripts/mcp_deploy_source.sh recover_self_deploy_error).
+    // to advance (see .github/scripts/test_self_deploy_recovery.sh recover_self_deploy_error).
     if (atomicState.lastSelfDeploy != null) {
         def lsd = [:] + atomicState.lastSelfDeploy
         if (lsd.at instanceof Number) lsd.ageMs = now() - (lsd.at as long)

@@ -1370,7 +1370,7 @@ class TestRunner:
         assert isinstance(result, dict), f"hub_get_info returned {type(result)}"
         # issue #209 load-bearing #include proof: the deployed app `#include mcp.McpSmokeTestLib`,
         # so mcpSmokeTestMarker() must be callable and folded into the info output. By the time this
-        # test runs, the "Install bundle the HPM way" CI step has re-delivered McpSmokeTestLib via the
+        # test runs, the watchdog PR-install step has re-delivered McpSmokeTestLib via the package
         # bundle .zip and resaved the app, so this marker rides on the BUNDLE-delivered library. If the
         # include had not resolved on the hub, the app would not have compiled or this field would be
         # missing -- either way this assertion catches a broken library load.
@@ -1398,7 +1398,7 @@ class TestRunner:
         for lib in libs:
             assert "id" in lib and "name" in lib, "library summary missing id/name"
             assert "source" not in lib, "hub_list_libraries should omit source (read it via hub_get_source)"
-        # issue #209: the "Install bundle the HPM way" CI step delivers the package's libraries (mcp
+        # issue #209: the watchdog PR-install step delivers the package's libraries (mcp
         # namespace) into Libraries Code via the bundle .zip (the #include's library leg), so they must
         # be present here. Proves the libraries were actually added to Libraries Code on the hub (not
         # just that the app compiled).
