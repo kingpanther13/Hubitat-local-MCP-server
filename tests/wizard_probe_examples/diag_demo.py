@@ -35,13 +35,14 @@ from pathlib import Path
 # Allow running from the repo root without installing the package
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tests.wizard_probe import HubitatMcpClient, load_config, quick_probe
-
 # ---------------------------------------------------------------------------
 # Replace these with a real device ID from your hub's device_pool
 # or pass via DEVICE_ID env var.
 # ---------------------------------------------------------------------------
 import os
+
+from tests.wizard_probe import HubitatMcpClient, load_config, quick_probe
+
 SWITCH_DEVICE_ID = int(os.environ.get("DEVICE_ID", "1063"))
 
 config = load_config()
@@ -73,7 +74,7 @@ result = quick_probe(
 
 print()
 print(f"broken: {result['final']['broken']}")
-print(f"render:")
+print("render:")
 for line in result["final"]["paragraphs"]:
     print(f"  {line}")
 print(f"errors: {result['errors']}")

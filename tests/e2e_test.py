@@ -24,9 +24,9 @@ import os
 import random
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
@@ -58,6 +58,17 @@ class McpToolError(McpError):
 # ---------------------------------------------------------------------------
 
 
+def _op_key(name: str, arguments: dict | None) -> str:
+    """Resolve the per-op timing key for the run summary: the gateway sub-tool (args['tool']) when present,
+    else the flat tool name; hub_set_rule is split into :create (no inner appId) vs :edit so fixture cost is
+    separable from mutation cost. Pure dict logic (unit-tested in test_e2e_test_helpers.py)."""
+    args = arguments or {}
+    key = args.get("tool", name)
+    if key == "hub_set_rule":
+        key += ":create" if not (args.get("args") or {}).get("appId") else ":edit"
+    return key
+
+
 class HubitatMcpClient:
     """Thin client for the Hubitat MCP Server JSON-RPC 2.0 endpoint."""
 
@@ -78,6 +89,10 @@ class HubitatMcpClient:
         self.access_token = access_token
         self.verbose = verbose
         self._request_id = 0
+        # Per-op wall-clock timings (op_key, seconds) for the end-of-run "Per-op wall-clock" summary --
+        # the only place real per-operation cost (RM create vs edit vs delete, etc.) is visible, since
+        # the >> call traces are verbose-gated and never reach the CI log.
+        self.op_timings: list[tuple[str, float]] = []
         # Mask token for safe logging: show first 4 chars only
         self._masked_token = access_token[:4] + "..." if len(access_token) > 4 else "****"
 
@@ -85,7 +100,7 @@ class HubitatMcpClient:
         if self.verbose:
             print(f"    [DEBUG] {msg}")
 
-    def _send(self, method: str, params: Optional[dict] = None) -> dict:
+    def _send(self, method: str, params: dict | None = None) -> dict:
         """Send a JSON-RPC 2.0 request and return the parsed result.
 
         Retries transient HTTP 5xx and network errors (cloud relay flake) with
@@ -110,8 +125,8 @@ class HubitatMcpClient:
         # Rate-limit: don't overwhelm the hub
         time.sleep(0.2)
 
-        last_exc: Optional[Exception] = None
-        data: Optional[dict] = None
+        last_exc: Exception | None = None
+        data: dict | None = None
         resp = None
         for attempt in range(3):
             resp = None
@@ -177,7 +192,7 @@ class HubitatMcpClient:
             "clientInfo": {"name": "e2e-test", "version": "1.0.0"},
         })
 
-    def raw_request(self, payload: Any) -> "requests.Response":
+    def raw_request(self, payload: Any) -> requests.Response:
         """POST a raw JSON-RPC body (single object, batch array, or notification)
         and return the raw requests.Response — no result-unwrapping, no
         error-raising. Retries transient 5xx/network flake like _send. Used by
@@ -186,7 +201,7 @@ class HubitatMcpClient:
         the result-unwrapping call_tool/_send helpers deliberately hide.
         """
         time.sleep(0.2)
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
         for attempt in range(3):
             try:
                 resp = requests.post(
@@ -213,7 +228,7 @@ class HubitatMcpClient:
         about pagination. Caps at 20 pages defensively to avoid runaway on a buggy server.
         """
         combined: list = []
-        params: Optional[dict] = None
+        params: dict | None = None
         for _ in range(20):
             page_result = self._send("tools/list", params)
             combined.extend(page_result.get("tools", []))
@@ -223,9 +238,13 @@ class HubitatMcpClient:
             params = {"cursor": next_cursor}
         raise McpError("tools/list pagination did not terminate within 20 pages")
 
-    def call_tool(self, name: str, arguments: Optional[dict] = None) -> Any:
+    def call_tool(self, name: str, arguments: dict | None = None) -> Any:
         """Call an MCP tool. Returns parsed content text (dict/list/str)."""
-        result = self._send("tools/call", {"name": name, "arguments": arguments or {}})
+        args = arguments or {}
+        op_key = _op_key(name, args)   # gateway sub-tool / flat name; hub_set_rule split create-vs-edit
+        _t0 = time.monotonic()
+        result = self._send("tools/call", {"name": name, "arguments": args})
+        self.op_timings.append((op_key, time.monotonic() - _t0))
 
         # Check for tool-level error
         if result.get("isError"):
@@ -285,11 +304,18 @@ class TestRunner:
         self.created_device_dnis: list[str] = []
         self.created_rule_ids: list[str] = []
         self.created_native_app_ids: list[str] = []
+        # When set (the CI 'Run E2E tests' step only), per-test native-rule fixture deletes are SKIPPED
+        # (see _delete_native + cleanup Layer 4) and the rules are reaped by the disarm step's force
+        # sweep over WATCHDOG_URL, overlapping the restore-poll wait instead of adding to the test
+        # critical path. Defaults OFF, so local runs + the post-restore --cleanup-only backstop are
+        # unchanged. The lifecycle/delete-assertion tests delete inline (not via _delete_native), so
+        # they are unaffected.
+        self.defer_native_deletes = os.environ.get("E2E_DEFER_NATIVE_DELETES") == "1"
         self.created_variable_names: list[str] = []
 
         # Cached helpers
-        self._first_device_id: Optional[str] = None
-        self._test_start_time: Optional[str] = None  # ISO for log check
+        self._first_device_id: str | None = None
+        self._test_start_time: str | None = None  # ISO for log check
 
     # -- Helpers -------------------------------------------------------------
 
@@ -330,9 +356,11 @@ class TestRunner:
             "deviceLabel": f"{PREFIX}Action_Switch",
             "confirm": True,
         })
-        dni = result.get("deviceNetworkId", result.get("dni", ""))
-        if dni:
-            self.created_device_dnis.append(str(dni))
+        # The test switch is PERSISTENT scaffolding, not a fixture-under-test: rule/trigger tests merely
+        # reference it. Deliberately NOT tracked in created_device_dnis, so teardown leaves it on the hub
+        # for the next run to find-and-reuse (the existing-device lookup at the top of this method) --
+        # skipping a create+delete of the switch every run. Devices that ARE under test (test_create_*)
+        # still track + delete themselves. One inert virtual switch persists on the test hub; harmless.
         dev_id = result.get("id", result.get("deviceId", ""))
 
         # Response may not include ID directly — look it up
@@ -344,9 +372,6 @@ class TestRunner:
                 lbl = d.get("label") or d.get("name") or ""
                 if f"{PREFIX}Action_Switch" in lbl:
                     dev_id = str(d["id"])
-                    found_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
-                    if found_dni and found_dni not in self.created_device_dnis:
-                        self.created_device_dnis.append(found_dni)
                     break
 
         self._test_switch_id = str(dev_id) if dev_id else ""
@@ -396,6 +421,23 @@ class TestRunner:
         assert fetched.get("name") == name or fetched.get("name", "").startswith(PREFIX), \
             f"Rule name mismatch: expected '{name}', got '{fetched.get('name')}'"
         return rule_id
+
+    def _assert_rule_types(self, rule_id: str, key: str, expected_types: list[str],
+                           normalize_away: tuple[str, ...] = ()) -> None:
+        """Fetch a custom rule and assert its triggers/conditions/actions array carries the expected COUNT
+        AND each expected TYPE -- catches the legacy engine silently dropping a type OR drop-and-duplicating
+        one (which a length-only check would miss). `normalize_away` lists input types the engine rewrites
+        server-side (triggers: 'sunrise'/'sunset' -> 'time'), so they aren't required to appear under their
+        original name; the count still must match."""
+        fetched = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
+        arr = fetched.get(key)
+        assert isinstance(arr, list), f"custom rule '{key}' is not a list: {fetched.get(key)!r}"
+        got = [e.get("type") for e in arr if isinstance(e, dict)]
+        assert len(arr) == len(expected_types), \
+            f"custom rule '{key}': expected {len(expected_types)} entries, got {len(arr)} -- a type was rejected/dropped: {got!r}"
+        missing = [t for t in expected_types if t not in normalize_away and t not in got]
+        assert not missing, \
+            f"custom rule '{key}': types missing after round-trip: {missing} (got {got!r}) -- a type was dropped or replaced by a duplicate"
 
     def _delete_rule_safe(self, rule_id: str) -> None:
         """Delete a rule, swallowing errors."""
@@ -496,28 +538,14 @@ class TestRunner:
                 switch_dev = d
                 break
         if switch_dev is None:
-            # No switch on the hub -- provision a throwaway virtual one so this test ALWAYS runs
-            # (never skips; skips are failures). Labeled with the BAT_E2E_ prefix so the standard
-            # cleanup sweep removes it.
-            self.client.call_tool("hub_manage_virtual_device", {
-                "action": "create",
-                "deviceType": "Virtual Switch",
-                "deviceLabel": f"{PREFIX}AttrProbe",
-                "confirm": True,
-            })
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
-            dev_list = vdevs if isinstance(vdevs, list) else (vdevs.get("devices", []) if isinstance(vdevs, dict) else [])
-            for d in dev_list:
-                if f"{PREFIX}AttrProbe" in (d.get("label") or d.get("name") or ""):
-                    switch_dev = d
-                    dni = str(d.get("deviceNetworkId", d.get("dni", "")))
-                    if dni:
-                        self.created_device_dnis.append(dni)
-                    break
-            assert switch_dev is not None, \
-                "no switch on the hub and could not provision a virtual one for the attribute read"
+            # No real switch on the hub -- fall back to the persistent scaffolding switch
+            # (get_test_switch_id find-or-reuse) instead of provisioning + deleting a throwaway probe.
+            # This test ALWAYS runs (skips are failures).
+            switch_id = self.get_test_switch_id()
+        else:
+            switch_id = str(switch_dev["id"])
         result = self.client.call_tool("hub_get_device_attribute", {
-            "deviceId": str(switch_dev["id"]),
+            "deviceId": switch_id,
             "attribute": "switch",
         })
         # Result should contain the value (on/off or similar)
@@ -691,7 +719,7 @@ class TestRunner:
         except (McpToolError, McpError):
             pass
 
-    def _last_rule_id(self) -> Optional[str]:
+    def _last_rule_id(self) -> str | None:
         return self.created_rule_ids[-1] if self.created_rule_ids else None
 
     # -----------------------------------------------------------------------
@@ -842,6 +870,12 @@ class TestRunner:
         assert h.get("ok") is not False, f"hub_get_rule_health reports the rule broken: {h}"
 
     def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine") -> None:
+        # Fixture-teardown delete. When deferral is on, skip it (rule stays tracked) so it's reaped by
+        # the disarm sweep during the restore window, not inline on the test critical path. Tests whose
+        # delete IS the assertion call hub_delete_native_app directly (not this helper), so they keep
+        # deleting inline regardless.
+        if self.defer_native_deletes:
+            return
         self.client.call_tool(gateway, {"tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True}})
         self._untrack_native_app(app_id)
 
@@ -1262,232 +1296,106 @@ class TestRunner:
                     print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 5: trigger_types (6 tests)
+    # GROUP 5: trigger_types (1 batched test -- all trigger types in one rule)
     # -----------------------------------------------------------------------
 
-    def _test_trigger(self, suffix: str, trigger: dict) -> None:
-        """Helper: create rule with given trigger, verify, delete."""
-        name = f"{PREFIX}Trigger_{suffix}"
+    @test("trigger_types")
+    def test_trigger_types(self) -> None:
+        """Legacy custom engine: every trigger TYPE parses + lands. Batched into ONE rule (1 create +
+        1 delete instead of 6 per-type rules) -- keeps per-type create coverage and the count assert
+        catches a silently-dropped type, while cutting the fixture churn the legacy engine doesn't
+        warrant exhaustively. New trigger types: add to this list, not a new rule."""
         dev_id = self.get_first_device_id()
-        # Replace placeholder device ID
-        trigger = _inject_device_id(trigger, dev_id)
-        rule_id = self._create_rule_and_verify(name, {
-            "triggers": [trigger],
-            "actions": [{"type": "log", "message": f"trigger test: {suffix}"}],
+        triggers = [
+            _inject_device_id({"type": "device_event", "deviceId": "PLACEHOLDER", "attribute": "switch"}, dev_id),
+            {"type": "time", "time": "08:00"},
+            {"type": "periodic", "interval": 30, "unit": "minutes"},
+            {"type": "mode_change", "mode": "Away"},
+            {"type": "sunrise", "offset": 0},
+            {"type": "sunset", "offset": -30},
+        ]
+        rule_id = self._create_rule_and_verify(f"{PREFIX}Trigger_Types", {
+            "triggers": triggers,
+            "actions": [{"type": "log", "message": "trigger types batch"}],
         })
+        self._assert_rule_types(rule_id, "triggers", [t["type"] for t in triggers],
+                                normalize_away=("sunrise", "sunset"))
         self._delete_rule_safe(rule_id)
 
-    @test("trigger_types")
-    def test_trigger_device_event(self) -> None:
-        self._test_trigger("device_event", {
-            "type": "device_event", "deviceId": "PLACEHOLDER", "attribute": "switch",
-        })
-
-    @test("trigger_types")
-    def test_trigger_time(self) -> None:
-        self._test_trigger("time", {"type": "time", "time": "08:00"})
-
-    @test("trigger_types")
-    def test_trigger_periodic(self) -> None:
-        self._test_trigger("periodic", {
-            "type": "periodic", "interval": 30, "unit": "minutes",
-        })
-
-    @test("trigger_types")
-    def test_trigger_mode_change(self) -> None:
-        self._test_trigger("mode_change", {"type": "mode_change", "mode": "Away"})
-
-    @test("trigger_types")
-    def test_trigger_sunrise(self) -> None:
-        self._test_trigger("sunrise", {"type": "sunrise", "offset": 0})
-
-    @test("trigger_types")
-    def test_trigger_sunset(self) -> None:
-        self._test_trigger("sunset", {"type": "sunset", "offset": -30})
-
     # -----------------------------------------------------------------------
-    # GROUP 6: condition_types (7 tests)
+    # GROUP 6: condition_types (1 batched test -- all condition types in one rule)
     # -----------------------------------------------------------------------
 
-    def _test_condition(self, suffix: str, condition: dict,
-                        setup=None, teardown=None) -> None:
-        """Create rule with given condition, verify, delete. Optional setup/teardown callables."""
-        if setup:
-            setup()
+    @test("condition_types")
+    def test_condition_types(self) -> None:
+        """Legacy custom engine: every condition TYPE parses + lands. Batched into ONE rule (1 create +
+        1 delete instead of 7). The variable condition needs a backing hub variable. New condition
+        types: add to this list."""
+        dev_id = self.get_first_device_id()
+        var_name = f"{PREFIX}CondVar"
+        self._create_variable(var_name, "String", "test")
         try:
-            name = f"{PREFIX}Cond_{suffix}"
-            dev_id = self.get_first_device_id()
-            condition = _inject_device_id(condition, dev_id)
-            rule_id = self._create_rule_and_verify(name, {
+            conditions = [
+                _inject_device_id({"type": "device_state", "deviceId": "PLACEHOLDER", "attribute": "switch", "operator": "==", "value": "on"}, dev_id),
+                _inject_device_id({"type": "device_was", "deviceId": "PLACEHOLDER", "attribute": "switch", "operator": "==", "value": "on", "forSeconds": 300}, dev_id),
+                {"type": "time_range", "start": "08:00", "end": "22:00"},
+                {"type": "mode", "mode": "Day"},
+                {"type": "variable", "variableName": var_name, "operator": "==", "value": "1"},
+                {"type": "days_of_week", "days": ["Monday", "Wednesday", "Friday"]},
+                {"type": "sun_position", "position": "up"},
+            ]
+            rule_id = self._create_rule_and_verify(f"{PREFIX}Condition_Types", {
                 "triggers": [{"type": "time", "time": "03:00"}],
-                "conditions": [condition],
-                "actions": [{"type": "log", "message": f"condition test: {suffix}"}],
+                "conditions": conditions,
+                "actions": [{"type": "log", "message": "condition types batch"}],
             })
+            self._assert_rule_types(rule_id, "conditions", [c["type"] for c in conditions])
             self._delete_rule_safe(rule_id)
         finally:
-            if teardown:
-                teardown()
-
-    @test("condition_types")
-    def test_condition_device_state(self) -> None:
-        self._test_condition("device_state", {
-            "type": "device_state", "deviceId": "PLACEHOLDER",
-            "attribute": "switch", "operator": "==", "value": "on",
-        })
-
-    @test("condition_types")
-    def test_condition_device_was(self) -> None:
-        self._test_condition("device_was", {
-            "type": "device_was", "deviceId": "PLACEHOLDER",
-            "attribute": "switch", "operator": "==", "value": "on", "forSeconds": 300,
-        })
-
-    @test("condition_types")
-    def test_condition_time_range(self) -> None:
-        self._test_condition("time_range", {
-            "type": "time_range", "start": "08:00", "end": "22:00",
-        })
-
-    @test("condition_types")
-    def test_condition_mode(self) -> None:
-        self._test_condition("mode", {
-            "type": "mode", "mode": "Day",
-        })
-
-    @test("condition_types")
-    def test_condition_variable(self) -> None:
-        var_name = f"{PREFIX}TestVar"
-        self._test_condition(
-            "variable",
-            {"type": "variable", "variableName": var_name, "operator": "==", "value": "1"},
-            setup=lambda: self._create_variable(var_name, "String", "test"),
-            teardown=lambda: self._delete_variable_safe(var_name),
-        )
-
-    @test("condition_types")
-    def test_condition_days_of_week(self) -> None:
-        self._test_condition("days_of_week", {
-            "type": "days_of_week", "days": ["Monday", "Wednesday", "Friday"],
-        })
-
-    @test("condition_types")
-    def test_condition_sun_position(self) -> None:
-        self._test_condition("sun_position", {
-            "type": "sun_position", "position": "up",
-        })
+            self._delete_variable_safe(var_name)
 
     # -----------------------------------------------------------------------
-    # GROUP 7: action_types (13 tests)
+    # GROUP 7: action_types (1 batched test -- all action types in one rule)
     # -----------------------------------------------------------------------
 
-    def _test_action(self, suffix: str, actions: list[dict],
-                     setup=None, teardown=None) -> None:
-        """Create rule with given actions, verify, delete."""
-        if setup:
-            setup()
+    @test("action_types")
+    def test_action_types(self) -> None:
+        """Legacy custom engine: every action TYPE parses + lands. Batched into ONE rule (1 create +
+        1 delete instead of 13). Covers device commands, variable/mode/delay, control flow
+        (if_then_else, repeat, cancel_delayed, stop) and log/http/comment. 'stop' is placed LAST so it
+        can't truncate the stored action list. set_variable needs a backing hub variable. New action
+        types: add to this list."""
+        dev_id = self.get_first_device_id()
+        switch_id = self.get_test_switch_id()
+        var_name = f"{PREFIX}ActVar"
+        self._create_variable(var_name, "String", "initial")
         try:
-            name = f"{PREFIX}Action_{suffix}"
-            dev_id = self.get_first_device_id()
-            actions = [_inject_device_id(a, dev_id) for a in actions]
-            rule_id = self._create_rule_and_verify(name, {
+            actions = [
+                {"type": "device_command", "deviceId": switch_id, "command": "on"},
+                {"type": "toggle_device", "deviceId": switch_id},
+                {"type": "set_variable", "variableName": var_name, "value": "hello"},
+                {"type": "set_local_variable", "variableName": "localTestVar", "value": "42"},
+                {"type": "set_mode", "mode": "Day"},
+                {"type": "delay", "seconds": 5},
+                {"type": "cancel_delayed"},
+                {"type": "if_then_else",
+                 "condition": {"type": "device_state", "deviceId": dev_id, "attribute": "switch", "operator": "==", "value": "on"},
+                 "thenActions": [{"type": "log", "message": "then branch"}],
+                 "elseActions": [{"type": "log", "message": "else branch"}]},
+                {"type": "repeat", "count": 3, "actions": [{"type": "log", "message": "repeat iteration"}]},
+                {"type": "log", "message": "E2E test log action"},
+                {"type": "http_request", "method": "GET", "url": "http://example.com"},
+                {"type": "comment", "text": "This is a test comment"},
+                {"type": "stop"},
+            ]
+            rule_id = self._create_rule_and_verify(f"{PREFIX}Action_Types", {
                 "triggers": [{"type": "time", "time": "03:00"}],
                 "actions": actions,
             })
+            self._assert_rule_types(rule_id, "actions", [a["type"] for a in actions])
             self._delete_rule_safe(rule_id)
         finally:
-            if teardown:
-                teardown()
-
-    @test("action_types")
-    def test_action_device_command(self) -> None:
-        switch_id = self.get_test_switch_id()
-        self._test_action("device_command", [
-            {"type": "device_command", "deviceId": switch_id, "command": "on"},
-        ])
-
-    @test("action_types")
-    def test_action_toggle(self) -> None:
-        switch_id = self.get_test_switch_id()
-        self._test_action("toggle", [
-            {"type": "toggle_device", "deviceId": switch_id},
-        ])
-
-    @test("action_types")
-    def test_action_set_variable(self) -> None:
-        var_name = f"{PREFIX}ActionVar"
-        self._test_action(
-            "set_variable",
-            [{"type": "set_variable", "variableName": var_name, "value": "hello"}],
-            setup=lambda: self._create_variable(var_name, "String", "initial"),
-            teardown=lambda: self._delete_variable_safe(var_name),
-        )
-
-    @test("action_types")
-    def test_action_set_local_variable(self) -> None:
-        self._test_action("set_local_variable", [
-            {"type": "set_local_variable", "variableName": "localTestVar", "value": "42"},
-        ])
-
-    @test("action_types")
-    def test_action_set_mode(self) -> None:
-        self._test_action("set_mode", [
-            {"type": "set_mode", "mode": "Day"},
-        ])
-
-    @test("action_types")
-    def test_action_delay(self) -> None:
-        self._test_action("delay", [
-            {"type": "delay", "seconds": 5},
-        ])
-
-    @test("action_types")
-    def test_action_if_then_else(self) -> None:
-        dev_id = self.get_first_device_id()
-        self._test_action("if_then_else", [{
-            "type": "if_then_else",
-            "condition": {
-                "type": "device_state", "deviceId": dev_id,
-                "attribute": "switch", "operator": "==", "value": "on",
-            },
-            "thenActions": [{"type": "log", "message": "then branch"}],
-            "elseActions": [{"type": "log", "message": "else branch"}],
-        }])
-
-    @test("action_types")
-    def test_action_cancel_delayed(self) -> None:
-        self._test_action("cancel_delayed", [
-            {"type": "cancel_delayed"},
-        ])
-
-    @test("action_types")
-    def test_action_repeat(self) -> None:
-        self._test_action("repeat", [{
-            "type": "repeat",
-            "count": 3,
-            "actions": [{"type": "log", "message": "repeat iteration"}],
-        }])
-
-    @test("action_types")
-    def test_action_stop(self) -> None:
-        self._test_action("stop", [{"type": "stop"}])
-
-    @test("action_types")
-    def test_action_log(self) -> None:
-        self._test_action("log", [
-            {"type": "log", "message": "E2E test log action"},
-        ])
-
-    @test("action_types")
-    def test_action_http_request(self) -> None:
-        self._test_action("http_request", [
-            {"type": "http_request", "method": "GET", "url": "http://example.com"},
-        ])
-
-    @test("action_types")
-    def test_action_comment(self) -> None:
-        self._test_action("comment", [
-            {"type": "comment", "text": "This is a test comment"},
-        ])
+            self._delete_variable_safe(var_name)
 
     # -----------------------------------------------------------------------
     # GROUP 8: complex_patterns (2 tests)
@@ -1561,7 +1469,7 @@ class TestRunner:
         assert isinstance(result, dict), f"hub_get_info returned {type(result)}"
         # issue #209 load-bearing #include proof: the deployed app `#include mcp.McpSmokeTestLib`,
         # so mcpSmokeTestMarker() must be callable and folded into the info output. By the time this
-        # test runs, the "Install bundle the HPM way" CI step has re-delivered McpSmokeTestLib via the
+        # test runs, the watchdog PR-install step has re-delivered McpSmokeTestLib via the package
         # bundle .zip and resaved the app, so this marker rides on the BUNDLE-delivered library. If the
         # include had not resolved on the hub, the app would not have compiled or this field would be
         # missing -- either way this assertion catches a broken library load.
@@ -1577,18 +1485,31 @@ class TestRunner:
         libs = result if isinstance(result, list) else result.get("libraries", [])
         assert isinstance(libs, list), "hub_list_libraries did not return a list"
         source = result.get("source") if isinstance(result, dict) else None
-        assert source in (None, "hub_api", "hub_api_raw", "unavailable"), \
-            f"hub_list_libraries returned unexpected source {source!r}"
+        # The library-PRESENCE assertions below require the hub's library API to return its
+        # populated JSON-array shape (source == "hub_api"). The degraded shapes
+        # (hub_api_raw / unavailable) return an empty list, so requiring hub_api here turns a
+        # genuinely-unreadable library API into a clear failure instead of a misleading
+        # "McpRoomsLib not found (got [])". level99's hub returns the array today.
+        assert source == "hub_api", (
+            f"hub_list_libraries did not return the populated hub API shape (source={source!r}); "
+            "cannot validate bundle-delivered libraries"
+        )
         for lib in libs:
             assert "id" in lib and "name" in lib, "library summary missing id/name"
             assert "source" not in lib, "hub_list_libraries should omit source (read it via hub_get_source)"
-        # issue #209: the "Install bundle the HPM way" CI step delivers McpSmokeTestLib (mcp namespace)
-        # into Libraries Code via the bundle .zip (the #include's library leg), so it must be present
-        # here. Proves the library was actually added to Libraries Code on the hub (not just that the
-        # app compiled). Removed with the smoke test.
+        # issue #209: the watchdog PR-install step delivers the package's libraries (mcp
+        # namespace) into Libraries Code via the bundle .zip (the #include's library leg), so they must
+        # be present here. Proves the libraries were actually added to Libraries Code on the hub (not
+        # just that the app compiled).
+        lib_names = [lib.get("name") for lib in libs]
+        # McpRoomsLib is the first REAL extracted module (hub_*_room impls) -- permanent.
+        assert any(
+            lib.get("name") == "McpRoomsLib" and lib.get("namespace") == "mcp" for lib in libs
+        ), f"McpRoomsLib not found in hub libraries (got {lib_names})"
+        # McpSmokeTestLib is the throwaway #209 canary -- removed once the split is validated.
         assert any(
             lib.get("name") == "McpSmokeTestLib" and lib.get("namespace") == "mcp" for lib in libs
-        ), f"McpSmokeTestLib not found in hub libraries (got {[lib.get('name') for lib in libs]})"
+        ), f"McpSmokeTestLib not found in hub libraries (got {lib_names})"
 
     @test("system_tools")
     def test_manage_diagnostics(self) -> None:
@@ -1716,6 +1637,366 @@ class TestRunner:
         })
         # May be empty list, but should not error
         assert result is not None, "hub_list_rooms returned None"
+
+    @test("system_tools")
+    def test_manage_rooms_create_get_rename_delete(self) -> None:
+        """Issue #209: validate the FULL McpRoomsLib-backed Rooms flow live.
+
+        Room create/get/update/delete impls now live in the McpRoomsLib #include
+        library; this exercises all five room tools (create, get, update/rename, list,
+        delete) against the real hub through the deployed app, including the
+        device-assignment path (create WITH a device -> hub_get_room renders it ->
+        hub_delete_room unassigns it). The Spock suite covers the logic in isolation;
+        this proves the extracted library actually runs end-to-end. Self-cleaning;
+        cleanup()'s room sweep reclaims a strand if this crashes mid-way.
+        """
+        dev_id = self.get_first_device_id()
+        name = f"{PREFIX}RoomLib"
+        renamed = f"{PREFIX}RoomLib2"
+        room_id = None
+        try:
+            # Self-heal: a doubly-crashed prior run could leave BAT_E2E_RoomLib/RoomLib2 behind,
+            # which would make hub_create_room/hub_update_room fail on the duplicate-name guard.
+            # Delete any pre-existing same-named rooms first (mirrors get_test_switch_id reuse).
+            pre = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            for r in (pre.get("rooms", []) if isinstance(pre, dict) else []):
+                if r.get("name") in (name, renamed):
+                    try:
+                        self.client.call_tool("hub_manage_rooms", {
+                            "tool": "hub_delete_room",
+                            "args": {"room": str(r.get("id")), "confirm": True},
+                        })
+                    except Exception as exc:
+                        print(f"  [WARN] rooms flow pre-sweep: delete {r.get('id')} failed: {exc}")
+
+            # hub_create_room WITH a device assigned at creation.
+            created = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_create_room",
+                "args": {"name": name, "deviceIds": [dev_id], "confirm": True},
+            })
+            assert created.get("success") is True, f"hub_create_room did not succeed: {created}"
+            room = created.get("room") or {}
+            room_id = str(room.get("id") or "")
+            assert room_id, f"hub_create_room returned no room id: {created}"
+            assert room.get("deviceCount") == 1, \
+                f"hub_create_room did not assign the device at creation (deviceCount={room.get('deviceCount')!r}): {created}"
+
+            # hub_get_room (singular read): must return the room WITH the assigned device.
+            got = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_get_room",
+                "args": {"room": room_id},
+            })
+            assert str(got.get("id")) == room_id, f"hub_get_room returned wrong room: {got}"
+            assert got.get("name") == name, f"hub_get_room name mismatch: {got}"
+            got_devices = got.get("devices") or []
+            assert any(str(d.get("id")) == dev_id for d in got_devices), \
+                f"hub_get_room did not list the assigned device {dev_id}: {got}"
+
+            # hub_get_room also resolves by NAME (not just id).
+            got_by_name = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_get_room",
+                "args": {"room": name},
+            })
+            assert str(got_by_name.get("id")) == room_id, \
+                f"hub_get_room by name did not resolve to the same room: {got_by_name}"
+
+            # hub_update_room (rename).
+            renamed_res = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_update_room",
+                "args": {"room": room_id, "newName": renamed, "confirm": True},
+            })
+            assert renamed_res.get("success") is True, f"hub_update_room did not succeed: {renamed_res}"
+            assert (renamed_res.get("room") or {}).get("name") == renamed, \
+                f"hub_update_room did not apply the new name: {renamed_res}"
+
+            # hub_list_rooms must reflect the rename.
+            listed = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            rooms = listed.get("rooms", []) if isinstance(listed, dict) else []
+            assert any(str(r.get("id")) == room_id and r.get("name") == renamed for r in rooms), \
+                f"renamed room {room_id} not found as '{renamed}' in hub_list_rooms: {rooms}"
+
+            # hub_delete_room (unassigns the device, does NOT delete the device).
+            deleted = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_delete_room",
+                "args": {"room": room_id, "confirm": True},
+            })
+            assert deleted.get("success") is True, f"hub_delete_room did not succeed: {deleted}"
+            assert deleted.get("devicesUnassigned") == 1, \
+                f"hub_delete_room did not report the device unassigned: {deleted}"
+            room_id = None  # deleted cleanly; skip the finally sweep
+            print(f"    ROOMS_LIB_FLOW create+get+rename+delete OK ({renamed}, dev {dev_id})")
+        finally:
+            if room_id:
+                try:
+                    self.client.call_tool("hub_manage_rooms", {
+                        "tool": "hub_delete_room",
+                        "args": {"room": room_id, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] rooms flow cleanup: delete {room_id} failed: {exc}")
+
+    @test("system_tools")
+    def test_manage_rooms_error_contracts(self) -> None:
+        """Issue #209: validate the McpRoomsLib tools' error/validation contracts live.
+
+        The round-trip proves the happy paths; this proves the failure modes traverse
+        the MCP transport correctly on a real hub: not-found lookup, the duplicate-name
+        and rename-collision guards, and the confirm safety gate on the destructive room
+        writes (create + delete). These are unit-covered in ToolRoomsSpec; here we confirm
+        the same contracts end-to-end. Self-cleaning (finally + Layer-6 sweep).
+        """
+        name_a = f"{PREFIX}RoomErrA"
+        name_b = f"{PREFIX}RoomErrB"
+        ghost = f"{PREFIX}RoomGhostNope"
+        created_ids = []
+        try:
+            # Pre-sweep same-named strands from a doubly-crashed prior run.
+            pre = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            for r in (pre.get("rooms", []) if isinstance(pre, dict) else []):
+                if r.get("name") in (name_a, name_b):
+                    try:
+                        self.client.call_tool("hub_manage_rooms", {
+                            "tool": "hub_delete_room",
+                            "args": {"room": str(r.get("id")), "confirm": True},
+                        })
+                    except Exception:
+                        pass
+
+            # 1) hub_get_room on a non-existent room -> -32602 (McpError).
+            try:
+                self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_get_room", "args": {"room": ghost},
+                })
+                assert False, "hub_get_room on a non-existent room should have raised"
+            except McpError as e:
+                # Both are valid "the room isn't there" errors: "not found" when other rooms
+                # exist, "no rooms configured" when the hub has none (the e2e hub often has zero).
+                msg = str(e).lower()
+                assert "not found" in msg or "no rooms configured" in msg, (
+                    f"hub_get_room error was not a not-found: {e}"
+                )
+
+            # 2) confirm safety gate: hub_create_room without confirm -> refused, no room created.
+            # `confirm` is a REQUIRED schema param (the convention for every destructive tool), so a
+            # missing confirm is refused by the dispatch's required-param check. That surfaces as an
+            # isError envelope ("Missing required parameter: confirm") whose isError lives in the
+            # content, so call_tool RETURNS it as the parsed dict rather than raising; a raised
+            # McpError/-32602 is also acceptable. The load-bearing guarantee is refusal + no room.
+            refused = False
+            detail = None
+            try:
+                detail = self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_create_room", "args": {"name": name_a},
+                })
+                blob = (detail if isinstance(detail, str) else json.dumps(detail)).lower()
+                refused = (isinstance(detail, dict) and bool(detail.get("isError"))) \
+                    or "confirm" in blob or "required parameter" in blob
+            except McpError as e:  # also catches McpToolError (subclass): a raised envelope / -32602
+                detail = str(e)
+                refused = any(s in detail.lower() for s in ("confirm", "safety check", "required parameter"))
+            assert refused, \
+                f"hub_create_room without confirm should have been refused by the safety gate, got: {detail}"
+            after = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            assert not any(
+                r.get("name") == name_a
+                for r in (after.get("rooms", []) if isinstance(after, dict) else [])
+            ), "hub_create_room without confirm must NOT create the room"
+
+            # 3) duplicate-name guard: create roomA, then a second create with the same name -> refused.
+            created = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_create_room", "args": {"name": name_a, "confirm": True},
+            })
+            assert created.get("success") is True, f"setup create roomA failed: {created}"
+            id_a = str((created.get("room") or {}).get("id") or "")
+            assert id_a, f"setup create roomA returned no id: {created}"
+            created_ids.append(id_a)
+            try:
+                self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_create_room", "args": {"name": name_a, "confirm": True},
+                })
+                assert False, "duplicate hub_create_room should have raised"
+            except McpError as e:
+                assert "already exists" in str(e).lower(), f"duplicate-create error unexpected: {e}"
+
+            # 4) rename-collision guard: create roomB, rename it to roomA's name -> refused.
+            created_b = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_create_room", "args": {"name": name_b, "confirm": True},
+            })
+            assert created_b.get("success") is True, f"setup create roomB failed: {created_b}"
+            id_b = str((created_b.get("room") or {}).get("id") or "")
+            assert id_b, f"setup create roomB returned no id: {created_b}"
+            created_ids.append(id_b)
+            try:
+                self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_update_room",
+                    "args": {"room": id_b, "newName": name_a, "confirm": True},
+                })
+                assert False, "renaming roomB to roomA's name should have raised"
+            except McpError as e:
+                assert "already exists" in str(e).lower(), f"collision-rename error unexpected: {e}"
+
+            # 5) confirm safety gate on delete: hub_delete_room without confirm -> refused, room survives.
+            # Same refusal shape as the create gate above: a missing REQUIRED confirm comes back as an
+            # isError envelope (returned by call_tool) or a raise -- accept either; room must survive.
+            del_refused = False
+            del_detail = None
+            try:
+                del_detail = self.client.call_tool("hub_manage_rooms", {
+                    "tool": "hub_delete_room", "args": {"room": id_a},
+                })
+                blob = (del_detail if isinstance(del_detail, str) else json.dumps(del_detail)).lower()
+                del_refused = (isinstance(del_detail, dict) and bool(del_detail.get("isError"))) \
+                    or "confirm" in blob or "required parameter" in blob
+            except McpError as e:
+                del_detail = str(e)
+                del_refused = any(s in del_detail.lower() for s in ("confirm", "safety check", "required parameter"))
+            assert del_refused, \
+                f"hub_delete_room without confirm should have been refused by the safety gate, got: {del_detail}"
+            still = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            assert any(
+                str(r.get("id")) == id_a
+                for r in (still.get("rooms", []) if isinstance(still, dict) else [])
+            ), "roomA must survive a no-confirm delete attempt"
+
+            print("    ROOMS_LIB_ERRORS not-found + confirm-gate + duplicate + collision OK")
+        finally:
+            for rid in created_ids:
+                try:
+                    self.client.call_tool("hub_manage_rooms", {
+                        "tool": "hub_delete_room",
+                        "args": {"room": rid, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] rooms error-contract cleanup: delete {rid} failed: {exc}")
+
+    # -----------------------------------------------------------------------
+    # Bundle tools (issue #209): McpBundlesLib-backed hub_list_bundles /
+    # hub_export_bundle / hub_delete_bundle. These prove that, after the
+    # modularization, the libraries actually load as a bundle on the real hub
+    # and the new tools work end-to-end. They ride on the watchdog PR-install step
+    # (the "Watchdog - install PR" job in hub-e2e.yml) that delivers the
+    # mcp-libraries bundle before tests run.
+    # -----------------------------------------------------------------------
+
+    @test("system_tools")
+    def test_list_bundles(self) -> None:
+        """hub_list_bundles lists installed bundles, and the package's libraries bundle (delivered
+        by the watchdog PR-install step) is present with its libraries -- proof the split libraries
+        load as a bundle on the real hub."""
+        result = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+        assert result.get("source") == "hub_api", \
+            f"hub_list_bundles did not return the populated hub API shape (source={result.get('source')!r})"
+        bundles = result.get("bundles", []) if isinstance(result, dict) else []
+        mcp_bundle = next(
+            (b for b in bundles if b.get("namespace") == "mcp"
+             and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
+            None,
+        )
+        assert mcp_bundle and mcp_bundle.get("id"), \
+            f"the mcp libraries bundle (containing McpRoomsLib) was not found: {[b.get('name') for b in bundles]}"
+        print(f"    BUNDLES_LIST ok -- '{mcp_bundle.get('name')}' contains {(mcp_bundle.get('contains') or {}).get('libraries')}")
+
+    @test("system_tools")
+    def test_export_bundle(self) -> None:
+        """hub_export_bundle saves a bundle's .zip to the File Manager (independently confirmed via
+        hub_list_files). Self-cleaning."""
+        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+        bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
+        target = next(
+            (b for b in bundles if b.get("namespace") == "mcp"
+             and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
+            None,
+        )
+        assert target and target.get("id"), "no mcp libraries bundle available to export"
+        bid = str(target["id"])
+        fname = f"{PREFIX}bundle_export_{bid}.zip"
+        try:
+            result = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_export_bundle",
+                "args": {"bundleId": bid, "saveAs": fname},
+            })
+            assert result.get("success") is True, f"hub_export_bundle did not succeed: {result}"
+            assert (result.get("bytes") or 0) > 0, f"hub_export_bundle saved 0 bytes: {result}"
+            assert result.get("fileName") == fname, f"hub_export_bundle filename mismatch: {result}"
+            files = self.client.call_tool("hub_read_files", {"tool": "hub_list_files"})
+            names = [f.get("name") for f in (files.get("files", []) if isinstance(files, dict) else [])]
+            assert fname in names, f"exported bundle file {fname} not found in File Manager: {names}"
+            print(f"    BUNDLE_EXPORT ok -- {fname} ({result.get('bytes')} B)")
+        finally:
+            # hub_delete_file auto-backs-up a normal file before deleting it, so deleting the export
+            # leaves "{base}_backup_<ts>.zip" behind. Delete the export, THEN sweep the backup(s) it
+            # spawned (their names carry "_backup_", so deleting them makes no further backup-of-backup).
+            try:
+                self.client.call_tool("hub_manage_files", {
+                    "tool": "hub_delete_file", "args": {"fileName": fname, "confirm": True},
+                })
+            except Exception as exc:
+                print(f"  [WARN] bundle export cleanup: delete {fname} failed: {exc}")
+            try:
+                files = self.client.call_tool("hub_read_files", {"tool": "hub_list_files"})
+                for nm in [f.get("name") for f in (files.get("files", []) if isinstance(files, dict) else [])]:
+                    if isinstance(nm, str) and nm.startswith(f"{PREFIX}bundle_export_") and "_backup_" in nm:
+                        self.client.call_tool("hub_manage_files", {
+                            "tool": "hub_delete_file", "args": {"fileName": nm, "confirm": True},
+                        })
+            except Exception as exc:
+                print(f"  [WARN] bundle export backup sweep failed: {exc}")
+
+    @test("system_tools")
+    def test_delete_bundle(self) -> None:
+        """hub_delete_bundle removes a bundle, verified by re-list. Uses a self-contained throwaway
+        bundle (mcptest namespace, fetched from the PR head) so it NEVER touches the live mcp
+        libraries bundle. Skipped on local runs where the PR raw URL env isn't set."""
+        raw_base = os.environ.get("PR_RAW_BASE")
+        sha = os.environ.get("PR_HEAD_SHA_RESOLVED")
+        if not (raw_base and sha):
+            print("    SKIP test_delete_bundle: PR_RAW_BASE/PR_HEAD_SHA_RESOLVED not set (local run)")
+            return
+        url = f"{raw_base}/{sha}/tests/fixtures/mcp-e2e-throwaway-bundle.zip"
+        bid = None
+        try:
+            installed = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_install_bundle", "args": {"importUrl": url, "confirm": True},
+            })
+            assert installed.get("success") is True, f"throwaway bundle install failed: {installed}"
+            listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+            bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
+            tw = next((b for b in bundles if b.get("namespace") == "mcptest"), None)
+            assert tw and tw.get("id"), \
+                f"throwaway bundle not listed after install: {[b.get('name') for b in bundles]}"
+            bid = str(tw["id"])
+            deleted = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_delete_bundle", "args": {"bundleId": bid, "confirm": True},
+            })
+            assert deleted.get("success") is True, f"hub_delete_bundle did not succeed: {deleted}"
+            assert deleted.get("verified") is True, f"hub_delete_bundle did not verify the id gone: {deleted}"
+            relisted = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+            rb = relisted.get("bundles", []) if isinstance(relisted, dict) else []
+            assert not any(b.get("namespace") == "mcptest" for b in rb), \
+                "throwaway bundle still present after hub_delete_bundle"
+            bid = None
+            print("    BUNDLE_DELETE ok -- throwaway installed, listed, deleted, verified gone")
+        finally:
+            if bid:
+                try:
+                    self.client.call_tool("hub_manage_code", {
+                        "tool": "hub_delete_bundle", "args": {"bundleId": bid, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] throwaway bundle cleanup: delete {bid} failed: {exc}")
+            # Deleting the bundle removes only the container; Hubitat does NOT cascade-delete the library
+            # it delivered (mcptest.E2eThrowawayLib), so remove that too or it pollutes Libraries Code
+            # across runs. The disarm no-stale gate is scoped to the 'mcp' namespace and won't touch this.
+            try:
+                libs = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_libraries"})
+                for lib in (libs.get("libraries", []) if isinstance(libs, dict) else []):
+                    if lib.get("namespace") == "mcptest" and lib.get("id"):
+                        self.client.call_tool("hub_manage_code", {
+                            "tool": "hub_delete_item",
+                            "args": {"type": "library", "id": str(lib["id"]), "confirm": True},
+                        })
+            except Exception as exc:
+                print(f"  [WARN] throwaway library cleanup failed: {exc}")
 
     # -----------------------------------------------------------------------
     # GROUP 10: developer_mode (10 tests — Section 12 of BAT-v2.md + review-fix coverage)
@@ -1891,11 +2172,14 @@ class TestRunner:
 
     @test("developer_mode")
     def test_t226_delete_variable_no_confirm(self) -> None:
-        """T226: hub_delete_variable refuses when confirm flag is absent.
+        """T226: hub_delete_variable refuses when the confirm flag is absent.
 
-        Note: gateway-layer parameter validation returns the refusal as
-        `isError: true` in result content (not as JSON-RPC -32602). Same
-        wire-format pattern other gateway-required-param checks use.
+        The gateway-layer required-param check returns the refusal as isError. Per the
+        #209 envelope contract (handleToolsCall flags a tool-returned isError on the
+        JSON-RPC result), call_tool RAISES McpToolError when isError lands top-level; an
+        isError-in-content-only envelope comes back as a dict. Accept EITHER -- both prove
+        the destructive delete was refused for the missing confirm (same as the rooms
+        confirm-gate check).
         """
         var_name = f"{PREFIX}NO_CONFIRM_T226"
         self.client.call_tool("hub_manage_variables", {
@@ -1903,13 +2187,24 @@ class TestRunner:
             "args": {"name": var_name, "value": "safe"},
         })
         self.created_variable_names.append(var_name)
-        result = self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_delete_variable",
-            "args": {"name": var_name},  # no confirm
-        })
-        assert result.get("isError") is True, f"Expected isError result for missing confirm: {result}"
-        assert "confirm" in str(result.get("error", "")).lower(), f"refusal didn't mention confirm: {result}"
-        # Variable should still exist
+
+        refused = False
+        detail = None
+        try:
+            detail = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_delete_variable",
+                "args": {"name": var_name},  # no confirm
+            })
+            blob = (detail if isinstance(detail, str) else json.dumps(detail)).lower()
+            refused = (isinstance(detail, dict) and bool(detail.get("isError"))) and (
+                "confirm" in blob or "required parameter" in blob
+            )
+        except McpError as e:
+            detail = str(e)
+            refused = any(s in detail.lower() for s in ("confirm", "safety check", "required parameter"))
+        assert refused, f"hub_delete_variable without confirm should be refused by the safety gate, got: {detail}"
+
+        # Variable should still exist (the refusal must not have deleted it).
         verify = self.client.call_tool("hub_manage_variables", {
             "tool": "hub_get_variable",
             "args": {"name": var_name},
@@ -2120,10 +2415,13 @@ class TestRunner:
     # -----------------------------------------------------------------------
 
     def cleanup(self) -> None:
-        """Three-layer cleanup:
-        1. Delete tracked artifacts (device DNIs, rule IDs, variables)
-        2. Sweep for any BAT_E2E_ virtual devices
-        3. Sweep for any BAT_E2E_ rules
+        """Multi-layer cleanup of BAT_E2E_ artifacts:
+        1. Tracked artifacts (device DNIs, rule IDs, variables)
+        2. Virtual devices (prefix sweep)
+        3. Custom rules (prefix sweep)
+        4. Native RM apps (tracked + prefix sweep)
+        5. Deadman install-fix throwaway (namespace+name)
+        6. Rooms (prefix sweep)
         """
         print("\n--- Cleanup ---")
 
@@ -2165,6 +2463,11 @@ class TestRunner:
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
+                # Keep the persistent scaffolding switch (get_test_switch_id find-and-reuse): sweeping it
+                # would defeat the reuse and pay a create every run. Narrow suffix match, NOT a blanket
+                # prefix skip, so genuine under-test device leftovers are still reclaimed.
+                if lbl.endswith("Action_Switch"):
+                    continue
                 if PREFIX in lbl:
                     dni = str(d.get("deviceNetworkId", d.get("dni", "")))
                     if dni:
@@ -2199,32 +2502,64 @@ class TestRunner:
 
         # Layer 4: native RM rules / classic apps (issue #137). Tracked ids first,
         # then a list-based sweep for anything a failed native_apps test left behind.
-        for app_id in list(self.created_native_app_ids):
+        # When deferral is on, the disarm step's force sweep (over WATCHDOG_URL, overlapping the
+        # restore poll) owns these deletes, so skip them here to keep them off the test critical path.
+        # The post-restore --cleanup-only step runs WITHOUT the flag, so it's the idempotent backstop.
+        if self.defer_native_deletes:
+            deferred_ids = {str(a) for a in self.created_native_app_ids}
+            # Also fold in any PREFIX-matched native rule a FAILED test created but never tracked (the rule
+            # is hub-created before its id is appended), so the disarm exact-id sweep reaps those too --
+            # otherwise an untracked leftover would survive until the post-restore --cleanup-only prefix
+            # sweep. This is the deferral-branch equivalent of the non-deferral prefix sweep below.
             try:
-                print(f"  Deleting tracked native app {app_id}")
-                self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+                nrules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+                for r in (nrules if isinstance(nrules, list) else nrules.get("rules", [])):
+                    if PREFIX in (r.get("name") or r.get("label") or ""):
+                        rid = str(r.get("id", r.get("appId", "")))
+                        if rid:
+                            deferred_ids.add(rid)
+            except Exception as exc:
+                print(f"  [WARN] could not list native rules for the deferred union (tracked ids still deferred): {exc}")
+            deferred_ids = sorted(deferred_ids)
+            print(f"  Layer 4: deferring {len(deferred_ids)} native-rule delete(s) to the disarm sweep")
+            # Hand the EXACT instance ids to the disarm sweep via File Manager so it force-deletes ONLY
+            # these (no guessing the /hub2/appsList shape -> no risk of deleting the wrong app). The
+            # post-restore --cleanup-only prefix sweep (no flag) is the backstop if this list is missed.
+            try:
+                self.client.call_tool("hub_manage_files", {
+                    "tool": "hub_write_file",
+                    "args": {"fileName": "e2e-deferred-native-rules.json",
+                             "content": json.dumps(deferred_ids), "confirm": True},
                 })
             except Exception as exc:
-                print(f"  [WARN] Failed to delete native app {app_id}: {exc}")
-        self.created_native_app_ids.clear()
-        try:
-            nrules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
-            nlist = nrules if isinstance(nrules, list) else nrules.get("rules", [])
-            for r in nlist:
-                rname = r.get("name") or r.get("label") or ""
-                if PREFIX in rname:
-                    rid = str(r.get("id", r.get("appId", "")))
-                    if rid:
-                        try:
-                            print(f"  Sweep: deleting native rule '{rname}' (id={rid})")
-                            self.client.call_tool("hub_manage_rule_machine", {
-                                "tool": "hub_delete_native_app", "args": {"appId": rid, "confirm": True},
-                            })
-                        except Exception as exc:
-                            print(f"  [WARN] Native rule sweep delete failed for '{rname}': {exc}")
-        except Exception as exc:
-            print(f"  [WARN] Native rule sweep failed: {exc}")
+                print(f"  [WARN] could not write the deferred-rule id list; the prefix backstop will reap them: {exc}")
+        else:
+            for app_id in list(self.created_native_app_ids):
+                try:
+                    print(f"  Deleting tracked native app {app_id}")
+                    self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] Failed to delete native app {app_id}: {exc}")
+            self.created_native_app_ids.clear()
+            try:
+                nrules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+                nlist = nrules if isinstance(nrules, list) else nrules.get("rules", [])
+                for r in nlist:
+                    rname = r.get("name") or r.get("label") or ""
+                    if PREFIX in rname:
+                        rid = str(r.get("id", r.get("appId", "")))
+                        if rid:
+                            try:
+                                print(f"  Sweep: deleting native rule '{rname}' (id={rid})")
+                                self.client.call_tool("hub_manage_rule_machine", {
+                                    "tool": "hub_delete_native_app", "args": {"appId": rid, "confirm": True},
+                                })
+                            except Exception as exc:
+                                print(f"  [WARN] Native rule sweep delete failed for '{rname}': {exc}")
+            except Exception as exc:
+                print(f"  [WARN] Native rule sweep failed: {exc}")
 
         # Layer 5: stranded deadman install-fix throwaway. The @test("deadman") test installs
         # 'Deadman Test Target' (namespace mcptest) + its code class; neither carries the BAT_E2E_
@@ -2255,16 +2590,91 @@ class TestRunner:
         except Exception as exc:
             print(f"  [WARN] deadman target sweep failed: {exc}")
 
+        # Layer 6: rooms with the BAT_E2E_ prefix (issue #209 McpRoomsLib round-trip).
+        # The create/rename/delete test cleans up in its own finally; this reclaims a
+        # room a crashed run stranded.
+        try:
+            rooms_result = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+            rlist = rooms_result.get("rooms", []) if isinstance(rooms_result, dict) else []
+            for rm in rlist:
+                rname = rm.get("name") or ""
+                if PREFIX in rname:
+                    rid = str(rm.get("id", ""))
+                    if rid:
+                        try:
+                            print(f"  Sweep: deleting room '{rname}' (id={rid})")
+                            self.client.call_tool("hub_manage_rooms", {
+                                "tool": "hub_delete_room",
+                                "args": {"room": rid, "confirm": True},
+                            })
+                        except Exception as exc:
+                            print(f"  [WARN] Room sweep delete failed for '{rname}': {exc}")
+        except Exception as exc:
+            print(f"  [WARN] Room sweep failed: {exc}")
+
+        # Layer 7: throwaway bundle from the hub_delete_bundle e2e (mcptest namespace). The test
+        # deletes it in its own finally; this reclaims one a crashed run stranded.
+        try:
+            bres = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+            for b in (bres.get("bundles", []) if isinstance(bres, dict) else []):
+                if b.get("namespace") == "mcptest" and b.get("id"):
+                    try:
+                        print(f"  Sweep: deleting throwaway bundle '{b.get('name')}' (id={b.get('id')})")
+                        self.client.call_tool("hub_manage_code", {
+                            "tool": "hub_delete_bundle",
+                            "args": {"bundleId": str(b.get("id")), "confirm": True},
+                        })
+                    except Exception as exc:
+                        print(f"  [WARN] throwaway bundle sweep delete failed for '{b.get('name')}': {exc}")
+        except Exception as exc:
+            print(f"  [WARN] throwaway bundle sweep failed: {exc}")
+
+        # Layer 7b: the throwaway LIBRARY (mcptest namespace) the bundle delivered. Bundle delete does
+        # not cascade it, and the disarm no-stale gate only sweeps the 'mcp' namespace, so a crashed run
+        # can strand it in Libraries Code. Reclaim it here.
+        try:
+            lres = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_libraries"})
+            for lib in (lres.get("libraries", []) if isinstance(lres, dict) else []):
+                if lib.get("namespace") == "mcptest" and lib.get("id"):
+                    try:
+                        print(f"  Sweep: deleting throwaway library '{lib.get('name')}' (id={lib.get('id')})")
+                        self.client.call_tool("hub_manage_code", {
+                            "tool": "hub_delete_item",
+                            "args": {"type": "library", "id": str(lib.get("id")), "confirm": True},
+                        })
+                    except Exception as exc:
+                        print(f"  [WARN] throwaway library sweep delete failed for '{lib.get('name')}': {exc}")
+        except Exception as exc:
+            print(f"  [WARN] throwaway library sweep failed: {exc}")
+
         print("--- Cleanup complete ---\n")
+
+    def verify_native_rules_clean(self) -> list[str] | None:
+        """Re-list native RM rules and return the BAT_E2E_ ones still present (empty list = clean).
+        Returns None if the hub could not be listed after retries -- the caller treats that as
+        'cannot prove cleanup' and fails closed. Retries ride out a transient transport blip."""
+        for attempt in range(1, 4):
+            try:
+                nrules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+                rlist = nrules if isinstance(nrules, list) else nrules.get("rules", [])
+                return [
+                    f"{r.get('name') or r.get('label')} (id={r.get('id', r.get('appId'))})"
+                    for r in rlist
+                    if PREFIX in (r.get("name") or r.get("label") or "")
+                ]
+            except Exception as exc:
+                print(f"  [WARN] verify_native_rules_clean: list attempt {attempt}/3 failed: {exc}")
+                time.sleep(2)
+        return None
 
     # -----------------------------------------------------------------------
     # Run
     # -----------------------------------------------------------------------
 
-    def run(self, filter_group: Optional[str] = None,
-            filter_test: Optional[str] = None) -> bool:
+    def run(self, filter_group: str | None = None,
+            filter_test: str | None = None) -> bool:
         """Run tests. Returns True if all passed."""
-        self._test_start_time = datetime.now(timezone.utc).isoformat()
+        self._test_start_time = datetime.now(UTC).isoformat()
 
         tests_to_run = []
         for group, display_name, method_name in TEST_REGISTRY:
@@ -2329,6 +2739,26 @@ class TestRunner:
               f"{total_fail} failed, {total_skip} skipped  "
               f"({total_dur:.1f}s)")
 
+        # Slowest tests (diagnostic -- surface optimization targets; the suite is the biggest e2e cost).
+        slow = sorted(self.results, key=lambda r: r.get("duration", 0.0), reverse=True)[:15]
+        if slow:
+            print("\n  Slowest tests:")
+            for r in slow:
+                print(f"    {r.get('duration', 0.0):6.1f}s  {r.get('group', '?')}/{r['name']}")
+
+        # Per-op wall-clock (diagnostic -- real per-operation cost, the basis for fixture/cleanup
+        # optimization: how much is RM create vs edit vs delete vs reads). Aggregated by op key.
+        ops = getattr(self.client, "op_timings", [])
+        if ops:
+            agg: dict[str, list[float]] = {}
+            for op_key, dur in ops:
+                slot = agg.setdefault(op_key, [0, 0.0])
+                slot[0] += 1
+                slot[1] += dur
+            print("\n  Per-op wall-clock (total / count / avg, slowest total first):")
+            for op_key, (cnt, tot) in sorted(agg.items(), key=lambda kv: kv[1][1], reverse=True)[:20]:
+                print(f"    {tot:6.1f}s  {int(cnt):3d}x  {tot / cnt:4.1f}s avg  {op_key}")
+
         # List failures
         failures = [r for r in self.results if r["status"] == "fail"]
         if failures:
@@ -2363,7 +2793,7 @@ class SkipTest(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _find_attr(attrs: Any, name: str) -> Optional[str]:
+def _find_attr(attrs: Any, name: str) -> str | None:
     """Extract an attribute value from various response shapes."""
     if isinstance(attrs, dict):
         return attrs.get(name)
@@ -2395,7 +2825,7 @@ def load_config() -> dict:
     config = {}
 
     if config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
 
     # Env var overrides
@@ -2407,11 +2837,11 @@ def load_config() -> dict:
     missing = [k for k in ("hub_url", "app_id", "access_token") if not config.get(k)]
     if missing:
         print(f"ERROR: Missing config values: {', '.join(missing)}")
-        print(f"  Set via tests/e2e_config.json or env vars "
-              f"HUBITAT_HUB_URL, HUBITAT_APP_ID, HUBITAT_ACCESS_TOKEN")
+        print("  Set via tests/e2e_config.json or env vars "
+              "HUBITAT_HUB_URL, HUBITAT_APP_ID, HUBITAT_ACCESS_TOKEN")
         if not config_path.exists():
             print(f"  Config file not found: {config_path}")
-            print(f"  Copy e2e_config.example.json to e2e_config.json and fill in values.")
+            print("  Copy e2e_config.example.json to e2e_config.json and fill in values.")
         sys.exit(1)
 
     return config
@@ -2455,7 +2885,20 @@ def main() -> None:
 
     if args.cleanup_only:
         runner.cleanup()
-        print("Cleanup-only mode complete.")
+        # Gating verification: cleanup() and the disarm-time deferred sweep are otherwise all
+        # best-effort (warn-only), so a silently-failed native-rule cleanup could leave BAT_E2E_ RM
+        # apps on the SHARED hub behind a green run. This backstop FAILS CLOSED -- re-list and exit
+        # nonzero if any BAT_E2E_ native rule survived, or if the hub can't be listed to prove it.
+        leftovers = runner.verify_native_rules_clean()
+        if leftovers is None:
+            print("ERROR: cleanup-only could not list native rules to verify cleanup -- failing "
+                  "closed (cannot prove the shared hub is free of BAT_E2E_ rules).")
+            sys.exit(1)
+        if leftovers:
+            print(f"ERROR: cleanup-only left {len(leftovers)} BAT_E2E_ native rule(s) on the hub: "
+                  f"{leftovers}")
+            sys.exit(1)
+        print("Cleanup-only mode complete; verified no BAT_E2E_ native rules remain.")
         sys.exit(0)
 
     # Verify connectivity before running tests
@@ -2465,7 +2908,7 @@ def main() -> None:
         print("  Hub is reachable. MCP server responded to initialize.\n")
     except requests.exceptions.ConnectionError:
         print(f"  ERROR: Cannot connect to hub at {config['hub_url']}")
-        print(f"  Check that the hub is online and the URL is correct.")
+        print("  Check that the hub is online and the URL is correct.")
         sys.exit(1)
     except Exception as exc:
         print(f"  ERROR: Initialize failed: {exc}")
@@ -2479,7 +2922,7 @@ def main() -> None:
         print(f"  Backup: {msg}\n")
     except Exception as exc:
         print(f"  [WARN] Backup failed: {exc}")
-        print(f"  Tests requiring backup may fail.\n")
+        print("  Tests requiring backup may fail.\n")
 
     all_passed = runner.run(filter_group=args.group, filter_test=args.test)
     sys.exit(0 if all_passed else 1)

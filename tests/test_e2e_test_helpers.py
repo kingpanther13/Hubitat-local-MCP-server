@@ -10,8 +10,8 @@ Importing the module itself is skipped if the 'requests' library is not availabl
 (not installed in the CI environment for this repo).
 """
 
-import sys
 import os
+import sys
 
 # tests/ is already on sys.path conceptually, but be explicit for safety.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
@@ -22,8 +22,7 @@ import pytest
 # gracefully if requests is not installed (base CI only has pytest).
 requests = pytest.importorskip("requests", reason="'requests' not installed; skipping e2e helpers")
 
-import e2e_test as et
-
+import e2e_test as et  # noqa: E402 -- must follow the importorskip above (e2e_test imports requests at module level)
 
 # ---------------------------------------------------------------------------
 # _find_attr
@@ -176,3 +175,28 @@ def test_inject_device_id_recurses_into_else_actions():
     }
     result = et._inject_device_id(obj, "22")
     assert result["elseActions"][0]["deviceId"] == "22"
+
+
+# ---------------------------------------------------------------------------
+# _op_key (per-op timing key resolution)
+# ---------------------------------------------------------------------------
+
+def test_op_key_gateway_set_rule_create():
+    """Gateway-wrapped hub_set_rule with no inner appId resolves to a :create op."""
+    assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {}}) == "hub_set_rule:create"
+
+
+def test_op_key_gateway_set_rule_edit():
+    """An inner appId marks an :edit (mutation), so fixture-create cost stays separable in the summary."""
+    assert et._op_key("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {"appId": "5"}}) == "hub_set_rule:edit"
+
+
+def test_op_key_gateway_other_subtool_uses_sub_tool():
+    """A gateway call resolves to its sub-tool, not the gateway name."""
+    assert et._op_key("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}}) == "hub_list_rules"
+
+
+def test_op_key_flat_tool_uses_name():
+    """A flat (non-gateway) call resolves to the tool name; None args are tolerated."""
+    assert et._op_key("hub_get_info", {}) == "hub_get_info"
+    assert et._op_key("hub_get_info", None) == "hub_get_info"

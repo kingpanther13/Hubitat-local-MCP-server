@@ -420,6 +420,26 @@ class ToolRoomsSpec extends ToolSpecBase {
         unknown.accessible == false
     }
 
+    def "hub_get_room tolerates a device whose currentStates read throws (entry still returned, no propagation)"() {
+        given: 'a room with a device whose currentStates getter throws'
+        installGetRoomsStub([[id: 7, name: 'Den', deviceIds: [100]]])
+        def dev = new TestDevice(id: 100, name: 'den_light', label: 'Den Light',
+            currentStates: [[name: 'switch', value: 'on']])
+        dev.metaClass.getCurrentStates = { -> throw new RuntimeException('states unavailable') }
+        childDevicesList << dev
+
+        when:
+        def result = script.toolGetRoom('7')
+
+        then: 'the device entry is still returned (id/label/name) with no currentStates, and nothing propagates'
+        result.deviceCount == 1
+        def d = result.devices.find { it.id == '100' }
+        d != null
+        d.label == 'Den Light'
+        d.name == 'den_light'
+        !d.containsKey('currentStates')
+    }
+
     @spock.lang.Unroll
     def "hub_get_room via dispatch expands deviceIds and flags unresolvable ids (useGateways=#useGateways)"() {
         given:
@@ -488,6 +508,27 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "gateway missing-required-param refusal sets top-level isError on the envelope, not just content (#209)"() {
+        // handleGateway pre-validates a sub-tool's required params and RETURNS an isError envelope
+        // (rather than throwing). handleToolsCall must flag that on the JSON-RPC result's top-level
+        // isError so a spec-compliant client -- one that checks top-level isError, not the content
+        // JSON -- sees a refused destructive call as an error and routes a retry. This is the
+        // file-wide contract ("handleToolsCall flags isError on the JSON-RPC envelope"); regression
+        // guard for the bug where a returned isError stayed invisible top-level.
+        given: 'gateway mode pinned -- this exercises handleGateway pre-validation, which only runs when useGateways is ON (the CI flat-matrix dimension defaults it OFF, where the gateway is disabled and returns a different refusal)'
+        settingsMap.useGateways = true
+        enableWrite()
+
+        when: 'hub_create_room is invoked via the hub_manage_rooms gateway with confirm omitted'
+        def response = mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_create_room', args: [name: 'EnvErr']])
+
+        then: 'the refusal is on the TOP-LEVEL envelope (isError), carrying the helpful content'
+        response.error == null
+        response.result.isError == true
+        response.result.content[0].text.contains('Missing required parameter')
+        response.result.content[0].text.contains('confirm')
+    }
+
     def "hub_create_room throws when the Write master is disabled"() {
         given:
         settingsMap.enableWrite = false
@@ -528,6 +569,20 @@ class ToolRoomsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Room name is required')
+    }
+
+    def "hub_create_room rejects a non-numeric deviceId with a clean validation error (not an opaque coercion failure)"() {
+        given:
+        enableWrite()
+        installGetRoomsStub([])
+
+        when:
+        script.toolCreateRoom([name: 'Den', deviceIds: ['100', 'abc'], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('deviceIds must be numeric')
+        ex.message.contains('abc')
     }
 
     @spock.lang.Unroll

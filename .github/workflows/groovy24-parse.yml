@@ -1,10 +1,18 @@
 name: Groovy 2.4 Parse Check
 
-# Additive lane (issue #105 PR2a). Hubitat's hub runtime is Groovy 2.4.x, but the unit-test
-# harness runs Groovy 3.0, so code can pass the 3.0 lane yet fail to LOAD on the hub (3.0-only
-# syntax/operators). This lane parses the two production .groovy files under a stock Groovy
-# 2.4.21 grammar (CONVERSION phase only -- no semantic analysis, so injected hub globals are
-# not false positives) and fails if either file would not load on 2.4.
+# Additive lane (issues #105, #209). Hubitat's hub runtime is Groovy 2.4.x with a security sandbox,
+# but the unit-test harness runs Groovy 3.0 with the sandbox OFF (Flags.DontRestrictGroovy), so code
+# can pass the 3.0 lane yet fail to LOAD on the hub. This lane resolves each production file's
+# #include libraries (so it checks the inlined source the hub compiles) and runs two gates under a
+# stock Groovy 2.4.21:
+#   1. CONVERSION-phase parse -- catches 3.0-only syntax/operators that won't load on 2.4.
+#   2. CANONICALIZATION + AST walk -- resolves every class reference to its FQN and fails on any
+#      reference to a sandbox-blocked class (java.io / reflection / threads / GroovyShell / raw
+#      sockets) that the hub rejects at parse time ("ClassExpression not allowed"). This is the
+#      class of bug that previously only a real-hub deploy caught (e.g. `instanceof InputStream`).
+# Dynamic hub globals (log, state, ...) are never resolved as classes, so they are not false
+# positives; if a file references a hub-only TYPE by name the sandbox gate is skipped for it (notice)
+# and it falls back to the syntax gate -- never a false failure.
 #
 # It is fully standalone: a separate build under ci/groovy24-parse/ that never touches the
 # root build.gradle or the existing 3.0 unit-test lane.
@@ -36,5 +44,5 @@ jobs:
             11
             17
       - uses: gradle/actions/setup-gradle@v6
-      - name: Parse production files under Groovy 2.4.21
+      - name: Parse + sandbox-class-check production files under Groovy 2.4.21
         run: ./gradlew -p ci/groovy24-parse parse24 --console=plain

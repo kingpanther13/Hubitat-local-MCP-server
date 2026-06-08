@@ -10,9 +10,9 @@ Exit 0 = clean, exit 1 = errors found.
 Outputs GitHub Actions annotations when running in CI.
 """
 
+import os
 import re
 import sys
-import os
 from pathlib import Path
 
 # Force UTF-8 on stdout/stderr so prints containing em dashes, arrows, and
@@ -43,6 +43,7 @@ GROOVY_FILES = [
     # Standalone e2e safety-net app: it runs in the Hubitat sandbox on the e2e hub, so lint it for
     # forbidden patterns here rather than discovering a violation only at live install time.
     REPO_ROOT / "e2e-deadman-watchdog.groovy",
+    REPO_ROOT / "e2e-deadman-watchdog-v2.groovy",
     *sorted((REPO_ROOT / "libraries").glob("*.groovy")),
 ]
 
@@ -163,6 +164,22 @@ RULES = [
         "id": "SANDBOX-014",
         "pattern": r"\bcase\b[^:]*:\s*\{",
         "message": "Bare '{ }' block right after 'case X:' is rejected by the hub's Groovy 2.4 parser (ambiguous closure vs open block) even though hubitat_ci's Groovy 3.0 accepts it -- extract the case body to a method or remove the braces",
+        "severity": "error",
+    },
+    {
+        # The Hubitat sandbox forbids referencing a java.io stream/reader/writer class as a
+        # ClassExpression (e.g. `instanceof InputStream`, a cast, or a typed declaration). The hub
+        # rejects the app at PARSE time: "Expression [ClassExpression] is not allowed:
+        # java.io.InputStream". Both hubitat_ci's Groovy 3.0 (real JVM) and a plain regex compile
+        # such code fine, so ONLY a real-hub deploy catches it otherwise -- which is exactly how an
+        # `instanceof InputStream` shipped this far. Duck-type instead: branch on byte[]/CharSequence
+        # and read remaining bodies via `.bytes` / `.text` (see _readRespText), never naming the
+        # class. Scans run on comment/string-stripped source, so doc mentions of these classes are
+        # unaffected. (This is a curated list of the realistic accidental classes; the real-hub e2e
+        # deploy remains the comprehensive compile gate for sandbox ClassExpressions not listed here.)
+        "id": "SANDBOX-015",
+        "pattern": r"\b(?:InputStream|OutputStream|FileInputStream|FileOutputStream|ByteArrayInputStream|ByteArrayOutputStream|DataInputStream|DataOutputStream|BufferedInputStream|BufferedOutputStream|BufferedReader|BufferedWriter|FileReader|FileWriter|InputStreamReader|OutputStreamWriter|RandomAccessFile|PushbackInputStream|PrintStream|PrintWriter)\b",
+        "message": "java.io stream/reader/writer class referenced as a ClassExpression -- blocked by the Hubitat sandbox at parse time ('ClassExpression not allowed'). Duck-type instead: branch on byte[]/CharSequence and read via .bytes/.text rather than naming the class (e.g. avoid `instanceof InputStream`).",
         "severity": "error",
     },
 ]
@@ -656,6 +673,16 @@ def _extract_canonical_counts() -> dict | None:
         return None
     src = srv_path.read_text(encoding="utf-8", errors="replace")
 
+    # Tool DEFINITIONS now live partly in #include'd library modules (issue #209): a domain's defs
+    # sit in its libraries/*.groovy alongside its impl, contributed via _getAllToolDefinitions_part<Name>()
+    # chunk methods. The app #includes every library module, so the canonical tool surface =
+    # main + all library modules; concatenate them so those def chunks are parsed + counted. The
+    # gateway config (getGatewayConfig) lives only in main, so the first-match carve below is unaffected.
+    _lib_dir = REPO_ROOT / "libraries"
+    if _lib_dir.is_dir():
+        for _lib in sorted(_lib_dir.glob("*.groovy")):
+            src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
+
     # Comment-stripping intentionally NOT done. Reasoning: this codebase's
     # tool description heredocs commonly contain both `//` (URLs like
     # `https://...`) and `/* ... */`-shaped tokens (regex example syntax,
@@ -726,7 +753,7 @@ def _extract_canonical_counts() -> dict | None:
     # (The dispatcher body carries no `name:` lines, so including it is harmless;
     # a pre-split source with all defs in getAllToolDefinitions() still matches.)
     all_bodies = re.findall(
-        r"^def (?:getAllToolDefinitions|_getAllToolDefinitions_part\d+)\(\) \{(.*?)^}",
+        r"^def (?:getAllToolDefinitions|_getAllToolDefinitions_part\w+)\(\) \{(.*?)^}",
         src,
         re.DOTALL | re.MULTILINE,
     )
@@ -1978,6 +2005,14 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
         if not server.exists():
             return findings
         src = server.read_text(encoding="utf-8", errors="replace")
+        # Tool defs now live partly in #include'd library modules (issue #209); the app includes
+        # every libraries/*.groovy, so append them so moved def chunks (e.g.
+        # _getAllToolDefinitions_partRooms) are seen by the gateway-vs-defs reachability checks
+        # below. The src_override path stays main-only for the synthetic self-test corpora.
+        _lib_dir = REPO_ROOT / "libraries"
+        if _lib_dir.is_dir():
+            for _lib in sorted(_lib_dir.glob("*.groovy")):
+                src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
 
     rel = str(server.relative_to(REPO_ROOT))
 
@@ -2033,7 +2068,7 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
     #    PR1C split the defs across _getAllToolDefinitions_part1..N() chunk
     #    methods (64KB-method-bytecode cap); gather names from all of them.
     all_bodies = re.findall(
-        r"^def (?:getAllToolDefinitions|_getAllToolDefinitions_part\d+)\(\) \{(.*?)^}",
+        r"^def (?:getAllToolDefinitions|_getAllToolDefinitions_part\w+)\(\) \{(.*?)^}",
         src, re.DOTALL | re.MULTILINE,
     )
     if not all_bodies:
@@ -2411,6 +2446,36 @@ SELF_TEST_CASES = [
         "GroovyShell mentioned in a string literal is NOT flagged",
         'log.warn "do not use GroovyShell here"',
         [("SANDBOX-013", False)],
+    ),
+    (
+        "instanceof InputStream (the ClassExpression the hub rejected) is flagged",
+        "else if (d instanceof InputStream) zipBytes = d.bytes",
+        [("SANDBOX-015", True)],
+    ),
+    (
+        "a (BufferedReader) cast is flagged",
+        "def r = (BufferedReader) resp.data",
+        [("SANDBOX-015", True)],
+    ),
+    (
+        "a typed FileOutputStream declaration is flagged",
+        "FileOutputStream out = openIt()",
+        [("SANDBOX-015", True)],
+    ),
+    (
+        "duck-typed .bytes read (the safe replacement) is NOT flagged",
+        "zipBytes = d.bytes",
+        [("SANDBOX-015", False)],
+    ),
+    (
+        "instanceof CharSequence (sandbox-allowed) is NOT flagged",
+        "if (d instanceof CharSequence) unexpectedBodyDesc = 'text'",
+        [("SANDBOX-015", False)],
+    ),
+    (
+        "InputStream mentioned only in a comment is NOT flagged",
+        "return d.text  // Reader/InputStream -- may throw mid-stream",
+        [("SANDBOX-015", False)],
     ),
 ]
 
@@ -3165,6 +3230,115 @@ def run_self_test() -> int:
     return 0
 
 
+def check_include_library_lockstep() -> list[dict]:
+    """Every `#include mcp.X` in the app must stay in lockstep with its delivery (issue #209):
+    (1) a libraries/*.groovy whose library() declares (namespace=X.ns, name=X.name),
+    (2) a tools/build-bundle.py LIBS entry (else the HPM bundle won't deliver it), and
+    (3) a getPackageLibraryRegistry() entry (else hub_update_package aborts before deploy).
+
+    A gap means the library can't load on a user's hub, so the app's #include fails to compile.
+    Catches it cheaply here (no hub) instead of at install/recompile time.
+
+    Direction: this is #include -> delivery (every include must resolve). It does NOT flag an
+    orphan library/LIBS/registry entry with no #include (a stale-but-harmless entry). It DOES flag
+    two library files declaring the same (namespace, name), since a duplicate makes the hub's
+    #include bind ambiguously (only one of the two copies wins).
+    """
+    findings: list[dict] = []
+    server = REPO_ROOT / "hubitat-mcp-server.groovy"
+    if not server.exists():
+        return findings
+    src = server.read_text(encoding="utf-8", errors="replace")
+    rel = "hubitat-mcp-server.groovy"
+
+    includes = re.findall(
+        r"(?m)^[ \t]*#include[ \t]+([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)[ \t]*$", src
+    )
+    if not includes:
+        return findings
+
+    # (1) libraries declared by (namespace, name) from each libraries/*.groovy library() call.
+    declared: dict[tuple[str, str], str] = {}
+    lib_dir = REPO_ROOT / "libraries"
+    if lib_dir.is_dir():
+        for lib in sorted(lib_dir.glob("*.groovy")):
+            text = lib.read_text(encoding="utf-8", errors="replace")
+            m = re.search(r"(?m)^library\s*\((.*)\)\s*$", text)
+            if not m:
+                continue
+            decl = m.group(1)
+            nm = re.search(r"name:\s*['\"]([^'\"]+)['\"]", decl)
+            ns = re.search(r"namespace:\s*['\"]([^'\"]+)['\"]", decl)
+            if nm and ns:
+                key = (ns.group(1), nm.group(1))
+                if key in declared:
+                    findings.append({
+                        "file": f"libraries/{lib.name}", "line": 1, "severity": "error",
+                        "rule": "INCLUDE_LOCKSTEP", "source": "",
+                        "message": (
+                            f"Duplicate library declaration namespace='{key[0]}', name='{key[1]}' in "
+                            f"both {declared[key]} and {lib.name} -- a duplicate (namespace, name) makes "
+                            f"the hub's #include bind ambiguously (only one copy wins). Rename or remove one."
+                        ),
+                    })
+                else:
+                    declared[key] = lib.name
+
+    # (2) build-bundle.py LIBS dest names ({NAMESPACE}.<Name>.groovy).
+    bb = REPO_ROOT / "tools" / "build-bundle.py"
+    bundled_names: set[str] = set()
+    if bb.exists():
+        bundled_names = set(
+            re.findall(r"\{NAMESPACE\}\.(\w+)\.groovy", bb.read_text(encoding="utf-8", errors="replace"))
+        )
+
+    # (3) getPackageLibraryRegistry() keys ("ns.Name").
+    reg_match = re.search(
+        r"def getPackageLibraryRegistry\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE
+    )
+    registry_keys: set[str] = set()
+    if reg_match:
+        registry_keys = set(re.findall(r'"([A-Za-z0-9_]+\.[A-Za-z0-9_]+)"\s*:', reg_match.group(1)))
+
+    include_line: dict[str, int] = {}
+    for i, line in enumerate(src.splitlines(), 1):
+        m = re.match(r"^[ \t]*#include[ \t]+([A-Za-z0-9_]+\.[A-Za-z0-9_]+)", line)
+        if m:
+            include_line.setdefault(m.group(1), i)
+
+    for ns, name in includes:
+        token = f"{ns}.{name}"
+        ln = include_line.get(token, 1)
+        if (ns, name) not in declared:
+            findings.append({
+                "file": rel, "line": ln, "severity": "error", "rule": "INCLUDE_LOCKSTEP", "source": "",
+                "message": (
+                    f"#include {token} has no matching libraries/*.groovy "
+                    f"(a library() with namespace='{ns}', name='{name}'). The app won't compile -- "
+                    f"add the library file."
+                ),
+            })
+            continue  # downstream checks are moot without the file
+        if name not in bundled_names:
+            findings.append({
+                "file": rel, "line": ln, "severity": "error", "rule": "INCLUDE_LOCKSTEP", "source": "",
+                "message": (
+                    f"#include {token} ({declared[(ns, name)]}) is not in tools/build-bundle.py LIBS -- "
+                    f"the HPM bundle won't deliver it, so the app fails to compile on a user's hub after "
+                    f"update. Add it to LIBS and rebuild the bundle."
+                ),
+            })
+        if token not in registry_keys:
+            findings.append({
+                "file": rel, "line": ln, "severity": "error", "rule": "INCLUDE_LOCKSTEP", "source": "",
+                "message": (
+                    f"#include {token} is not in getPackageLibraryRegistry() -- hub_update_package would "
+                    f'abort before deploying. Add the "{token}" entry.'
+                ),
+            })
+    return findings
+
+
 def main() -> int:
     if "--self-test" in sys.argv[1:]:
         return run_self_test()
@@ -3212,6 +3386,11 @@ def main() -> int:
     # "a read got added to a manage gateway but never surfaced on the read side"
     # class, which mislabels the read as a write and hides it from the read path.
     all_findings.extend(check_read_write_split())
+
+    # Issue #209 lockstep: every #include'd library must have a libraries/ file + a build-bundle.py
+    # LIBS entry + a getPackageLibraryRegistry() entry, so a broken/undelivered library fails CI
+    # here instead of failing the app's compile on a user's hub.
+    all_findings.extend(check_include_library_lockstep())
 
     # Sort by file, then line
     all_findings.sort(key=lambda f: (f["file"], f["line"]))

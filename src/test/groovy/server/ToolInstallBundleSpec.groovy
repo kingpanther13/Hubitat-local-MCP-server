@@ -31,7 +31,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
     @Shared private TestLocation sharedLocation = new TestLocation()
 
     private static final String BUNDLE_URL =
-        'https://raw.githubusercontent.com/owner/repo/main/bundles/mcp-smoke-test.zip'
+        'https://raw.githubusercontent.com/owner/repo/main/bundles/mcp-libraries.zip'
 
     def setupSpec() {
         appExecutor.getLocation() >> sharedLocation
@@ -144,7 +144,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         ex.message.contains('scheme must be http or https')
 
         where:
-        badUrl << ['ftp://host/x.zip', 'file:///etc/passwd', 'mcp-smoke-test.zip']
+        badUrl << ['ftp://host/x.zip', 'file:///etc/passwd', 'mcp-libraries.zip']
     }
 
     @Unroll

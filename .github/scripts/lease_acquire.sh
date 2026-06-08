@@ -3,18 +3,24 @@
 #
 # Usage:  lease_acquire.sh <by-identifier>
 # Env:    MCP_URL — full cloud OAuth URL with access_token
-#         LEASE_WAIT_TIMEOUT_S  — max seconds to WAIT for a busy lease to free
-#                                 before aborting (default 600). Set 0 to fail fast.
-#         LEASE_POLL_INTERVAL_S — seconds between polls while waiting (default 15).
+#         LEASE_WAIT_TIMEOUT_S        — max seconds to WAIT for a successfully-read but HELD
+#                                       lease to free before aborting (default 600). Set 0 to
+#                                       fail fast.
+#         LEASE_UNREACHABLE_TIMEOUT_S — max seconds to tolerate the endpoint being UNREADABLE
+#                                       (5xx on every read = hub/app down, not lease held)
+#                                       before fast-failing (default 120). Much shorter than the
+#                                       held-lease budget: a down hub won't free a lease, so
+#                                       waiting it out just burns ~10min per run.
+#         LEASE_POLL_INTERVAL_S       — seconds between polls while waiting (default 15).
 #
-# Exits 0 on successful claim. While the lease is held by someone else and not
+# Exits 0 on successful claim. While the lease is read as held by someone else and not
 # expired, this WAITS (polling) and claims it automatically the moment it frees or
 # the holder's TTL lapses — so a run queued behind another holder, or behind a manual
 # hub session that GitHub's `concurrency` group can't see, starts on its own instead
-# of needing a manual re-run. A transient read failure or a malformed/corrupt lease
-# value mid-wait is treated as "still busy" and polled through, never as free. Exits 1
-# only if the lease is STILL held (or stays unreadable/malformed) after
-# LEASE_WAIT_TIMEOUT_S, or if the post-write race-check shows another claim landed last.
+# of needing a manual re-run. A brief read failure or a malformed/corrupt lease value
+# mid-wait is polled through, never treated as free. Exits 1 if the lease is STILL held
+# after LEASE_WAIT_TIMEOUT_S, if the endpoint stays UNREADABLE past LEASE_UNREACHABLE_TIMEOUT_S
+# (the fast-fail for a down hub/app), or if the post-write race-check shows another claim last.
 #
 # Lease shape (JSON, written into Hubitat Hub Variable `_TEST_HUB_LEASED_BY`):
 #   {"by":"<who>","since":<epoch_ms>,"until":<epoch_ms>}
@@ -27,6 +33,7 @@ BY="${1:?Usage: $0 <by-identifier>}"
 
 LEASE_DURATION_MIN=30
 LEASE_WAIT_TIMEOUT_S="${LEASE_WAIT_TIMEOUT_S:-600}"
+LEASE_UNREACHABLE_TIMEOUT_S="${LEASE_UNREACHABLE_TIMEOUT_S:-120}"
 LEASE_POLL_INTERVAL_S="${LEASE_POLL_INTERVAL_S:-15}"
 VERIFY_SLEEP_S=2
 
@@ -73,19 +80,30 @@ set_lease_value() {
 # wait budget runs out. The job's own timeout-minutes bounds the total, and because
 # we claim only AFTER this wait, the lease TTL below starts at acquisition.
 WAIT_DEADLINE_S=$(( $(now_ms) / 1000 + LEASE_WAIT_TIMEOUT_S ))
+# Epoch-s of the FIRST of a run of consecutive read failures; reset to "" on any successful
+# read. Lets a persistently-unreachable endpoint (hub/app down) fast-fail on its own short
+# budget instead of burning the full held-lease wait below.
+read_fail_since=""
 while :; do
-  # A read failure (cloud gateway down past mcp_call's own 5 retries) is NOT fatal
-  # mid-wait: a failed read claims nothing, so keep polling within the budget rather
-  # than aborting the run this wait exists to keep alive.
+  # A brief read failure (cloud gateway 5xx past mcp_call's own 5 retries) is NOT fatal mid-
+  # wait -- a failed read claims nothing, so ride out a transient blip. But a PERSISTENTLY
+  # unreachable endpoint means the hub or its MCP app is DOWN, not that the lease is held;
+  # a down hub never frees the lease, so waiting the full LEASE_WAIT_TIMEOUT_S there just burns
+  # ~10min per run (and every queued run repeats it). Read failures therefore get their own
+  # short LEASE_UNREACHABLE_TIMEOUT_S budget and fast-fail past it.
   if ! CURRENT="$(get_lease_value)"; then
-    if [ "$(( $(now_ms) / 1000 ))" -ge "$WAIT_DEADLINE_S" ]; then
-      echo "::error::Lease unreadable (cloud gateway) through the ${LEASE_WAIT_TIMEOUT_S}s wait budget. Aborting."
+    NOW_S=$(( $(now_ms) / 1000 ))
+    [ -z "$read_fail_since" ] && read_fail_since="$NOW_S"
+    UNREACH_S=$(( NOW_S - read_fail_since ))
+    if [ "$UNREACH_S" -ge "$LEASE_UNREACHABLE_TIMEOUT_S" ]; then
+      echo "::error::Test hub MCP endpoint unreachable for ${UNREACH_S}s (5xx on every lease read) -- the hub or its MCP server app is down, not the lease held. Aborting fast instead of waiting out the ${LEASE_WAIT_TIMEOUT_S}s held-lease budget."
       exit 1
     fi
-    echo "::warning::Lease read failed (cloud gateway); retrying next poll..."
+    echo "::warning::Lease read failed (cloud gateway); endpoint unreachable ${UNREACH_S}s/${LEASE_UNREACHABLE_TIMEOUT_S}s, retrying next poll..."
     sleep "$LEASE_POLL_INTERVAL_S"
     continue
   fi
+  read_fail_since=""  # a successful read clears the unreachable streak
 
   if [ -z "$CURRENT" ]; then
     break  # released

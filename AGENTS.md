@@ -147,6 +147,28 @@ Every MCP tool is gated. The layers, from broadest to narrowest:
 - If the tool's behaviour affects live-hub flows, add a `tests/BAT-v2.md` scenario in the same PR.
 - Track tool errors during eval. High invalid-parameter rates usually indicate the description or examples are the bug, not the model. Anthropic's example: Claude was appending `2025` to web-search queries until the description was fixed.
 
+### e2e architecture: the standalone dead-man watchdog (test-hub only)
+
+The `e2e` job (`hub-e2e.yml`) proves a PR against a live Hubitat test hub: deploy the PR's code, run `tests/e2e_test.py` against it, then restore main. The MCP server cannot reliably update its OWN app class (the recompile kills the in-flight request → the issue #237 self-update 504), so the install + restore are driven through a **separate** app: the **E2E Dead-Man Watchdog v2** (`e2e-deadman-watchdog-v2.groovy`) — a second, smaller MCP server installed once on the test hub with its own OAuth `/mcp` endpoint (the `WATCHDOG_MCP_URL` secret). It is **test-hub tooling ONLY**: never in the HPM manifest (`packageManifest.json`), never on a user hub. Two endpoints are in play — `MCP_URL` = the main server under test (the tests + all normal hub calls go here); `WATCHDOG_URL` = the watchdog (all backup/install/restore plumbing goes here, so the app being recompiled is never the one answering the request).
+
+Per-run flow (all over `WATCHDOG_URL` unless noted), driven by `.github/scripts/mcp_watchdog_*.sh` (shared helpers in `mcp_watchdog_lib.sh`):
+1. **Health check** — the watchdog answers `tools/list` + `hub_get_info`, else HALT before any mutation.
+2. **Lease** — serialize runs on the single shared hub (a hub variable with a TTL).
+3. **Self-update** — deploy THIS PR's `e2e-deadman-watchdog-v2.groovy` onto the watchdog itself (`mcp_watchdog_self_update.sh`), so e2e exercises the watchdog the PR ships. After the one-time manual install, the watchdog never needs to be re-imported.
+4. **Arm** (`mcp_arm_watchdog.sh`) — refresh the hub to canonical `main` if it drifted or `main`'s SHA changed (skip when current), cache main (app + each `#include`d library) to File Manager, and write an armed flag with a ~35-min deadline.
+5. **Install PR** (`mcp_watchdog_deploy.sh`) — bundle → app (the bundle delivers every `#include`d library, so there is no separate per-library install step; installing a library individually AND via the bundle was redundant and forced an extra recompile). The app deploy is confirmed via a FRESH `lastSelfDeploy` success (survives the relay-dropped ~1.6 MB response AND a same-length change, so a stale source can't false-green).
+6. **Tests** — `tests/e2e_test.py` against `MCP_URL`.
+7. **Disarm / restore** (`mcp_disarm_watchdog.sh`) — the watchdog's on-hub `checkDeadman` timer restores main from the cache (libraries-first, app-last). CI fires an early disarm on a clean finish; if CI can't (the run crashed), the watchdog auto-restores at the deadline — the dead-man.
+
+**The watchdog's admin tools are COPIES of the server's code-install tools** (`hub_update_app` with the #237 verbatim-error capture, `hub_get_source`, library/bundle install, file manager, `hub_get_info`, etc.), kept in lockstep so the watchdog can install whatever a PR ships. **Any tool that participates in installing a PR MUST be mirrored into `e2e-deadman-watchdog-v2.groovy`, not just added to the server** — otherwise the e2e install can't use it. Concretely: PR #247's **bundle tools** belong in the watchdog as well as the server, since bundles are part of how a PR is installed. (When you mirror a tool, copy its behaviour faithfully and re-run sandbox lint on the watchdog; the watchdog has its own `WatchdogV2Spec`.)
+
+### e2e CI: `pull_request_target` trigger + how to validate workflow changes
+
+`hub-e2e.yml` runs on **`pull_request_target`** (NOT `pull_request`) on purpose: a FORK contributor's PR (e.g. @level99's) can then run e2e against the shared test hub with the `WATCHDOG_MCP_URL` / `MCP_URL` secrets, gated behind the `approve` environment for non-trusted authors. **Do NOT "fix" a red `e2e` badge by gating the trigger to same-repo branches** — that is the old behaviour and it re-excludes fork contributors, the exact problem this setup solves. The trade-off is how `pull_request_target` resolves files: the **workflow file itself** (`hub-e2e.yml`'s step structure) always comes from **main**, while the job **checks out the PR head's code**, so `.github/scripts/*`, `tests/e2e_test.py`, the watchdog groovy, and `hubitat-mcp-server.groovy` are the PR's. So:
+
+- **Changing the CONTENT of an existing script / test / groovy file** (logic inside the e2e `.sh` scripts, `tests/e2e_test.py`, or the server/rule/watchdog source) → the auto `e2e` check exercises the PR's code in-PR. **Iterate normally** — this works for fork PRs too, which is the whole point. New MCP tools (incl. e.g. PR #247's bundle tools) and their `tests/e2e_test.py` scenarios fall here: no special handling.
+- **Restructuring the workflow FILE** — adding/removing/renaming a *step*, or deleting/renaming a script the base workflow *calls* — is NOT exercised by the auto check (it runs main's old structure, usually RED against the PR's deleted/renamed files). Validate such a PR with **`gh workflow run hub-e2e.yml --ref <branch>`** (`workflow_dispatch` runs the PR branch's OWN workflow file) and watch that run; the PR's `e2e` badge stays red until merge, and the dispatch run is the merge-readiness proof. This is the ONLY case that needs the dispatch dance (e.g. PR #248 restructured the steps and deleted the old deploy scripts).
+
 ### Sources
 
 All rules above cite verified sources, re-checked on 2026-05-26.
@@ -166,6 +188,60 @@ PR #202 (merged 2026-05-19) established the annotation-hints baseline on every s
 ## The custom MCP rule engine is legacy
 
 `hubitat-mcp-rule.groovy` (the MCP child app, surfaced through the `custom_*` tools) is **legacy**. It still ships and still gets bug fixes, but it is **closed to new feature work** — Hubitat's native Rule Machine is the supported path now and exposes equivalent functionality through `hub_set_rule` (in the `hub_manage_rule_machine` gateway) plus `hub_set_native_app` / `hub_delete_native_app` and the rest of the `hub_manage_native_rules_and_apps` group. New rule-related capabilities should land on the parent app's native-RM tools, not on the child app. If a feature request lands on the child app, propose it for the native side instead.
+
+## Vendored hub admin-UI source (`resources/hub2-source/`) — READ THIS FOLDER
+
+`resources/hub2-source/` holds a large body of **reverse-engineered reference material** about Hubitat's HTTP / admin-UI surface that exists **nowhere else** — not in this server's code, not in Hubitat's published docs, not searchable from the outside. It was obtained by vendoring the hub's own browser bundles and probing a live hub, and it is catalogued in the folder's `README.md`: an **endpoint inventory**, JSON payload / data shapes, the classic-app wire format, the modern Vue data contracts, and the full UI component map. **A lot of what's in there can only be found by opening that folder and reading it** — so make a habit of checking it.
+
+**Before reverse-engineering ANY hub behaviour** — a new or undocumented endpoint, a payload/response shape, an app's data model, a native / RM wire format, how some UI feature talks to the server, what JSON a Vue page POSTs — **go read `resources/hub2-source/` (its `README.md` first) before deriving anything by hand from the live UI.** String literals survive minification, so `grep` against the bundles finds endpoint paths, field keys, and capability names directly.
+
+What's catalogued there:
+
+- **`vue-hub2.min.js`** — the modern Vue 3 SPA (~548 components). The contract for the Vue-rewritten apps (Basic Rules, Visual Rules Builder / `VisualRuleBuilder20`, hub variables, device swap, dashboards, Z-Wave/Zigbee admin, backups, …) is the JSON those components POST.
+- **`appUI.js` + `main.js`** — the classic `dynamicPage` / `submitOnChange` engine that drives Rule Machine and every other classic app. The genuine wire-format reference for the native-RM tools (`submitOnChange` re-POST, `stateAttribute` buttons, page transitions, `/installedapp/update/json`, `/installedapp/btn`, `/installedapp/ssr`). The Vue bundle black-boxes RM; this is where RM's protocol actually lives.
+- supporting bundles plus the README's growing **endpoint inventory** (e.g. `/app/ruleBuilderJson` — classic RM compiled rule state as JSON).
+
+When you discover a new endpoint, shape, or data model from these bundles, **add it to the folder's `README.md`** so the next person finds it there. Re-capture the bundles and refresh the inventory when new firmware changes the UI.
+
+## Library modules (`#include`) — the modularization path (issue #209)
+
+The server is being split out of the single `hubitat-mcp-server.groovy` monolith into Groovy `#include` libraries under `libraries/`. `#include` is a **textual paste**: the library body is inlined into the app's compiled class at parse time (no method boundary, no separate runtime), so library methods, `state`/`atomicState`, and string-literal `subscribe`/`schedule` handlers all resolve as if written in the app. Read this before adding or moving code into a library.
+
+### What moves to the library vs stays in the app
+
+When you extract a tool group, **both** its tool **definitions** and its **implementation methods** (plus any domain-private helpers) move into the library. The definitions go in a `_getAllToolDefinitions_part<Name>()` chunk method that `getAllToolDefinitions()` in the main app concatenates. What **stays in `hubitat-mcp-server.groovy`**: the **gateway config** entries in `getGatewayConfig()` (gateway membership is cross-domain), the `executeTool()` **dispatch cases** (one line per tool), and the `getReadOnlyToolNames()` membership. So the per-tool split is: **library** = definition + implementation (+ domain-private helpers); **main** = gateway membership + the one-line dispatch case + readonly membership.
+
+`tests/sandbox_lint.py` resolves the `#include`'d library modules before its TOOL_COUNT / read-write-split checks (so library-contributed defs are counted), and the Spock harness re-inlines the library so its specs compile unchanged. Shared **generic** helpers (`hubInternalGet`/`hubInternalGetRaw`/the `hubInternal*` family, `mcpLog`, `requireDestructiveConfirm`, `_paginateList`, `formatTimestamp`, `getHubSecurityCookie`, `findDevice`, etc.) stay in main; libraries call them (resolved after the textual inline). Do NOT cross-`#include` one library from another.
+
+New tools MAY be authored **library-first**: definition + impl in a library from day one, with only the gateway entry + dispatch case added to the main file (the bundle-management tools — `McpBundlesLib` — were built this way).
+
+### Library granularity + helper placement
+
+- **Group by cohesion + shared domain helpers, not one library per tiny group.** A library is a cohesive *domain* (e.g. all room tools, all bundle tools). Tools that share a domain-specific helper belong in the SAME library so the helper isn't duplicated or cross-`#include`d. Multiple small tool groups MAY share one library when they're cohesive.
+- **Helper placement:** a **generic** helper used across many domains (`hubInternalGet`, `mcpLog`, `requireDestructiveConfirm`, `_paginateList`, `formatTimestamp`, …) stays in **main** so any library can call it (textual paste means library code calls main methods, and vice versa, within the one compiled class). A helper used by only **one** library's tools lives **in that library** (e.g. `_parseBundleContent` in `McpBundlesLib`). Place each helper where it minimizes confusion; don't relocate a shared helper into a library that makes other callers reach across modules.
+
+### HPM delivery — bundles, not `libraries[]`
+
+Libraries are delivered to real hubs via an HPM **bundle** (a `.zip`), declared in `packageManifest.json` `bundles[]`. Do NOT use the manifest `libraries[]` array — HPM silently drops it on update (verified upstream). One bundle, `bundles/mcp-libraries.zip`, carries every library; it is built deterministically by `tools/build-bundle.py` and committed. The committed zip is the artifact real users (and the CI e2e job) install, so it must never drift from `libraries/*.groovy`. Three things keep it honest: the `.githooks/pre-commit` hook **auto-rebuilds and stages** the zip whenever a library is committed (enable once per clone with `git config core.hooksPath .githooks`); the `sandbox-lint` workflow re-runs the builder and fails if `bundles/` drifts; and the `hub-e2e` job re-verifies freshness before install so e2e always tests the real bundle. With the hook on, the rebuild is automatic — you only rebuild by hand (`python tools/build-bundle.py`) if you skip the hook.
+
+### BP20 — library file hygiene (avoids a Hubitat parser `Internal error`)
+
+- The `library(...)` declaration MUST be the **first line** of the file. **Zero file-scope commentary before it.**
+- Keep comments **inside method bodies**. Avoid file-scope `/* */` / `/** */` blocks and any file-scope comment containing the literal text `library(` or `/* */` — these can fail the hub's parser on save.
+- Use **string-literal** handler names for `subscribe`/`schedule` (never bare identifiers).
+- Do NOT move `preferences {}`, `mappings {}`, or the RM wizard-walker closures into a library (root-level DSL / unverified closure binding under `#include`).
+
+### Adding (or extracting into) a library — checklist
+
+1. Create `libraries/<name>.groovy` starting with `library(name: "<Name>", namespace: "mcp", author: "...", description: "...")`, then the impl methods.
+2. Add `#include mcp.<Name>` near the top of `hubitat-mcp-server.groovy`.
+3. Register it in `getPackageLibraryRegistry()` (the `hub_update_package` dev-deploy leg).
+4. Add it to `LIBS` in `tools/build-bundle.py`.
+5. Rebuild + **commit** `bundles/*.zip`. With the `.githooks` pre-commit hook enabled (`git config core.hooksPath .githooks`) this is automatic on commit; otherwise run `python tools/build-bundle.py` yourself. The `sandbox-lint` drift gate enforces it either way.
+6. The Spock harness auto-resolves `#include` via `src/test/groovy/support/IncludeResolver.groovy` — no harness edit needed. Add an `IncludeResolverSpec` case asserting the real library resolves.
+7. Keep the gateway membership, the `executeTool` dispatch case, and `getReadOnlyToolNames()` entry in main; the tool **definitions** move to the library next to the impl (see "What moves to the library vs stays in the app" above). `check_include_library_lockstep` (sandbox_lint) verifies the `#include` ⇄ library file ⇄ `LIBS` ⇄ registry quartet stays in sync.
+
+Steps 3 + 4 must stay in lockstep (an unmapped `#include` aborts `hub_update_package`; a missing `LIBS` entry ships a stale bundle). When updating a library on a hub by hand during dev, **update the existing library, don't install a second copy** — a duplicate name+namespace creates a second library at a new id and `#include` binds to only one (HPM's normal install flow avoids this).
 
 ## PR workflow
 
