@@ -1103,11 +1103,15 @@ def adminForceDeleteInstalledApp(args) {
         throw new IllegalArgumentException("id must be a positive integer (got: '${id}')")
     }
     mcpAdminLog "Force-deleting installed app instance ${id} (/installedapp/forcedelete/${id}/quiet)"
-    def resp = hubGet("/installedapp/forcedelete/${id}/quiet", [:])
-    if (resp == null) {
-        return [success: false, error: "Force-delete of installed app ${id} got no response -- endpoint error, auth failure, or 4xx/5xx (the request may not have reached the hub).", id: id]
+    def resp = hubGetStatus("/installedapp/forcedelete/${id}/quiet", [:])
+    Integer st = (resp?.status != null) ? (resp.status as Integer) : null
+    // The forcedelete endpoint answers SUCCESS with a 302 redirect to the apps list (a plain 2xx is
+    // also fine). >=400 -- or no status at all, meaning the request never reached the hub
+    // (auth/transport) -- is a real failure: report it so the disarm sweep warns + keeps its id list.
+    if (st != null && st < 400) {
+        return [success: true, message: "Force-deleted installed app ${id} (HTTP ${st}).", id: id]
     }
-    return [success: true, message: "Force-delete requested for installed app ${id}.", id: id]
+    return [success: false, error: "Force-delete of installed app ${id} did not confirm (status=${st ?: 'none'}) -- endpoint error, auth failure, or the request never reached the hub.", id: id]
 }
 
 // hub_install_bundle: copied from toolInstallBundle + _firmwareAtLeast + _bundleResponseSucceeded
@@ -1669,6 +1673,35 @@ String hubGet(String path, Map query, int timeoutSec = 30) {
     String out = null
     try { httpGet(params) { resp -> out = respText(resp) } }
     catch (Exception e) { log.error "hubGet ${path}: ${e.message}" }
+    return out
+}
+
+// Status-aware loopback GET. Unlike hubGet (text body, swallows every exception -> null), this
+// returns [status, location, data] and treats a 3xx the way the hub editor does: endpoints like
+// /installedapp/forcedelete answer SUCCESS with a 302 redirect, which Hubitat's httpGet THROWS on
+// when followRedirects:false. Mirrors hubitat-mcp-server.groovy _hubRequest(handle3xx) -- the
+// proven sandbox-safe e.response.status capture. status stays null only on a real transport failure.
+Map hubGetStatus(String path, Map query, int timeoutSec = 30) {
+    def params = [uri: "http://127.0.0.1:8080", path: path, query: query,
+                  textParser: true, ignoreSSLIssues: true, followRedirects: false, timeout: timeoutSec]
+    def cookie = secCookie()
+    if (cookie) params.headers = [Cookie: cookie]
+    Map out = [status: null, location: null, data: null]
+    try {
+        httpGet(params) { resp -> out = [status: resp.status, location: resp.headers?."Location"?.toString(), data: respText(resp)] }
+    } catch (Exception e) {
+        def resp = null
+        try { resp = e.response } catch (Exception ignore) { resp = null }
+        Integer st = null
+        try { st = resp?.status as Integer } catch (Exception ignore) { st = null }
+        if (st != null) {
+            def loc = null
+            try { loc = resp.headers?."Location"?.toString() } catch (Exception ignore) { loc = null }
+            out = [status: st, location: loc, data: null]
+        } else {
+            log.error "hubGetStatus ${path}: ${e.message}"
+        }
+    }
     return out
 }
 

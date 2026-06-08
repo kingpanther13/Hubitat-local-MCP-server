@@ -205,8 +205,10 @@ class WatchdogV2Spec extends Specification {
 
     def "adminForceDeleteInstalledApp GETs /installedapp/forcedelete/<id>/quiet (instance, not code class)"() {
         given:
+        // The forcedelete endpoint answers SUCCESS with a 302 redirect to the apps list; hubGetStatus
+        // captures that status off the thrown response (followRedirects:false), so the tool sees a 3xx.
         String calledPath = null
-        script.metaClass.hubGet = { String path, Map q -> calledPath = path; "" }
+        script.metaClass.hubGetStatus = { String path, Map q -> calledPath = path; [status: 302, location: "/installedapp/list", data: null] }
 
         when:
         def r = script.adminForceDeleteInstalledApp([id: "123", confirm: true])
@@ -217,18 +219,34 @@ class WatchdogV2Spec extends Specification {
         calledPath == "/installedapp/forcedelete/123/quiet"     // NOT /app/edit/deleteJsonSafe (code class)
     }
 
-    def "adminForceDeleteInstalledApp reports success:false when hubGet returns null (4xx/5xx/auth/transport)"() {
+    @Unroll
+    def "adminForceDeleteInstalledApp treats #status as #expected (302 redirect + 2xx = success)"() {
         given:
-        // hubGet returns null on a thrown non-2xx, an auth/cookie failure, or a request that never reached
-        // the hub -- the tool must NOT report success then, so the disarm sweep can warn + keep its list.
-        script.metaClass.hubGet = { String path, Map q -> null }
+        script.metaClass.hubGetStatus = { String path, Map q -> [status: status, location: null, data: null] }
+
+        expect:
+        script.adminForceDeleteInstalledApp([id: "123", confirm: true]).success == expected
+
+        where:
+        status || expected
+        302    || true       // forcedelete success redirect
+        200    || true       // plain OK (some firmwares)
+        404    || false      // instance already gone / bad id -> real failure, sweep keeps its list
+        500    || false      // hub error
+    }
+
+    def "adminForceDeleteInstalledApp reports success:false when the request never reaches the hub (status null)"() {
+        given:
+        // hubGetStatus leaves status null on an auth/cookie failure or a request that never reached the
+        // hub -- the tool must NOT report success then, so the disarm sweep can warn + keep its id list.
+        script.metaClass.hubGetStatus = { String path, Map q -> [status: null, location: null, data: null] }
 
         when:
         def r = script.adminForceDeleteInstalledApp([id: "123", confirm: true])
 
         then:
         r.success == false
-        r.error?.contains("no response")
+        r.error?.contains("did not confirm")
     }
 
     @Unroll
