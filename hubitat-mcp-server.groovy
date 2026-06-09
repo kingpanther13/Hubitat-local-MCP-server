@@ -16550,18 +16550,40 @@ private Integer _discoverParentAppId(String appType) {
     }
 
     def parentNode = findParentNode()
+    def bootstrapDiag = null
     if (parentNode?.id == null) {
-        // The built-in parent app is not installed yet. Hubitat installs a built-in
-        // (system) app via GET /installedapp/sysApp/<display name> -- exactly the link
-        // the "Add Built-In App" page uses, and parentTypeName IS that display name.
-        // Bootstrap the parent here, then re-discover, rather than dead-ending the
-        // caller. Only fires when the parent is absent, so it never duplicates an
-        // existing singleton parent.
+        // The built-in parent app is not installed yet. Hubitat's "Add Built-In App"
+        // flow is two steps, exactly like _createUserAppInstance: (1) GET
+        // /installedapp/sysApp/<display name> creates a PENDING shell and 302-redirects
+        // to /installedapp/configure/<newId>/<page>; (2) submit that page's "Done" so the
+        // install commits (fires installed()/initialize()) and the parent shows up in
+        // /hub2/appsList. parentTypeName IS the Add-Built-In-App display name. Only fires
+        // when the parent is absent, so it never duplicates an existing singleton parent.
         def sysAppPath = "/installedapp/sysApp/" + URLEncoder.encode(parentTypeName, "UTF-8").replace("+", "%20")
         mcpLog("info", "rm-native", "'${parentTypeName}' parent not installed -- bootstrapping via GET ${sysAppPath}")
         try {
-            hubInternalGetRaw(sysAppPath)
+            def created = hubInternalGetRaw(sysAppPath)
+            bootstrapDiag = "sysApp status=${created?.status} location=${created?.location}"
+            if (created?.status == 302 && created.location) {
+                def m = (created.location =~ /\/installedapp\/configure\/(\d+)(?:\/([^\/?#]+))?/)
+                if (m) {
+                    def pendingId = m[0][1] as Integer
+                    def firstPage = m[0][2]
+                    def commit = _commitUserAppInstall(pendingId, firstPage)
+                    bootstrapDiag += " pendingId=${pendingId} committed=${commit?.success}"
+                    if (commit?.success != true) {
+                        bootstrapDiag += " commitError=${commit?.error}"
+                        mcpLog("warn", "rm-native", "sysApp bootstrap of '${parentTypeName}': install-commit (Done) for pending id ${pendingId} did not succeed: ${commit?.error}")
+                    }
+                } else {
+                    bootstrapDiag += " (could not parse new id from location)"
+                    mcpLog("warn", "rm-native", "sysApp bootstrap of '${parentTypeName}': could not parse new id from Location ${created.location}")
+                }
+            } else {
+                mcpLog("warn", "rm-native", "sysApp bootstrap of '${parentTypeName}': unexpected response (status=${created?.status}, location=${created?.location})")
+            }
         } catch (Exception e) {
+            bootstrapDiag = "sysApp threw: ${e.message}"
             mcpLog("warn", "rm-native", "sysApp bootstrap of '${parentTypeName}' threw (continuing to re-discover): ${e.message}")
         }
         parentNode = findParentNode()
@@ -16569,7 +16591,7 @@ private Integer _discoverParentAppId(String appType) {
 
     if (parentNode?.id == null) {
         throw new IllegalArgumentException(
-            "'${parentTypeName}' parent not found on this hub and the /installedapp/sysApp bootstrap did not surface it. Install it via Apps --> Add Built-In App, then retry appType=${appType}.")
+            "'${parentTypeName}' parent not found on this hub and the /installedapp/sysApp bootstrap did not surface it [${bootstrapDiag}]. Install it via Apps --> Add Built-In App, then retry appType=${appType}.")
     }
     def id = parentNode.id.toString().toInteger()
     ids[appType] = id

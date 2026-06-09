@@ -250,23 +250,37 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.parentAppId == 21
     }
 
-    def "_discoverParentAppId bootstraps a missing built-in parent via /installedapp/sysApp, then re-discovers it (button_controller on a clean hub, issue #185)"() {
+    def "_discoverParentAppId bootstraps a missing built-in parent (sysApp create shell + Done commit) then re-discovers it (button_controller on a clean hub, issue #185)"() {
         given:
-        // The hub starts WITHOUT a Button Controllers parent; after the sysApp
-        // ("Add Built-In App") install GET fires, /hub2/appsList surfaces it at id=88.
-        boolean installed = false
+        // The hub starts WITHOUT a Button Controllers parent. The "Add Built-In App"
+        // flow is two steps: GET /installedapp/sysApp/<name> makes a pending shell at
+        // id=88 (302 -> configure/88/<page>), then a Done commit installs it -- only
+        // after the commit does it surface in /hub2/appsList. The real
+        // _commitUserAppInstall runs here (it's private, so its I/O is stubbed, not it).
+        boolean committed = false
         int appsListCalls = 0
         hubGet.register('/hub2/appsList') { params ->
             appsListCalls++
-            installed
+            committed
                 ? JsonOutput.toJson([apps: [[data: [id: 88, name: "Button Controllers", type: "Button Controllers", user: false, hidden: false], children: []]]])
                 : JsonOutput.toJson([apps: []])
         }
+        // The pending shell's first page (installed=true so the commit confirms) + status.
+        hubGet.register('/installedapp/configure/json/88/mainPage') { params ->
+            JsonOutput.toJson([app: [id: 88, installed: true, version: 1], configPage: [name: "mainPage", sections: []], settings: [:], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/88') { params -> statusJson(88) }
+
         def rawCalls = []
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             rawCalls << path
-            if (path.startsWith("/installedapp/sysApp/")) installed = true
-            [status: 302, location: "/installedapp/configure/88", data: ""]
+            [status: 302, location: "/installedapp/configure/88/mainPage", data: ""]
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body._action_update == "Done") committed = true
+            [status: 200, location: null, data: '{"status":"success"}']
         }
 
         when:
@@ -275,20 +289,24 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the sysApp Add-Built-In-App endpoint was hit with the URL-encoded parent name"
         rawCalls.any { it == "/installedapp/sysApp/Button%20Controllers" }
 
-        and: "the bootstrapped parent id is returned (re-discovered after install)"
+        and: "a Done commit was POSTed for the pending shell"
+        posts.any { it.path == "/installedapp/update/json" && it.body._action_update == "Done" }
+
+        and: "the now-committed parent id is returned (re-discovered after install)"
         id == 88
 
         and: "appsList was queried twice -- once before the bootstrap, once after"
         appsListCalls == 2
     }
 
-    def "_discoverParentAppId throws a clear error when the sysApp bootstrap still does not surface the parent"() {
+    def "_discoverParentAppId throws a clear, diagnostic error when the sysApp bootstrap does not surface the parent"() {
         given:
-        // sysApp install GET fires but the parent never appears (e.g. unsupported on
-        // this firmware) -- the caller must get a clear error, not a silent failure.
+        // sysApp returns an unexpected (non-302) response, so there's no pending shell to
+        // commit and the parent never appears -- the caller must get a clear error that
+        // carries the bootstrap diagnostics, not a silent failure.
         hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: []]) }
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            [status: 302, location: "/installedapp/list", data: ""]
+            [status: 200, location: null, data: ""]
         }
 
         when:
