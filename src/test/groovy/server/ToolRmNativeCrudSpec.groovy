@@ -28749,6 +28749,34 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "addRequiredExpression" | [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]]
     }
 
+    def "hub_set_rule CREATE type-checks the honored shortcuts -- a wrong-typed one is rejected, not silently dropped to an empty shell (#244 review follow-up)"() {
+        // The completeness gate rejects edit-only shortcuts, but the honored ones need a
+        // type check too: addTrigger/addAction/addRequiredExpression as a List/String
+        // (instead of a Map), or addTriggers/addActions as a non-List, slip past the
+        // instanceof gather guards in _createNativeAppShell and silently build an empty
+        // shell -- the exact silent-success the gate exists to prevent, for the wrong type.
+        given:
+        enableWrite()
+        def shellRan = false
+        script.metaClass._createNativeAppShell = { args -> shellRan = true; [success: true, appId: 986] }
+
+        when: "a honored shortcut is passed with the wrong type on create (no appId)"
+        script.toolSetRule([name: "BAT-malformed", (badOp): badVal, confirm: true])
+
+        then: "rejected loudly BEFORE the shell builder runs -- not dropped to an empty shell"
+        def e = thrown(IllegalArgumentException)
+        e.message.contains(badOp)
+        !shellRan
+
+        where:
+        badOp                   | badVal
+        "addRequiredExpression" | ["not", "a", "map"]
+        "addTrigger"            | "switch"
+        "addAction"             | "log"
+        "addTriggers"           | [capability: "Switch"]
+        "addActions"            | "log"
+    }
+
     def "_rmWalkConditionReveal fails loud when ctx.applied is absent -- the force-write fallback's promise would otherwise be a lie"() {
         // S1 internal-contract guard. The Custom Attribute exposure-probe force-write fallback
         // records the comparator key into ctx.applied AND emits a skip hint promising "value IS

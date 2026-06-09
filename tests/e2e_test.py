@@ -919,6 +919,17 @@ class TestRunner:
                     "tool": "hub_delete_native_app", "args": {"appId": controller_id, "force": True, "confirm": True},
                 })
                 self._untrack_native_app(controller_id)
+            # Delete the virtual button device now (not just via global cleanup) so the hub
+            # stays clean even if a later test fails or the run is interrupted.
+            if button_dni:
+                try:
+                    self.client.call_tool("hub_manage_virtual_device", {
+                        "action": "delete", "deviceNetworkId": button_dni, "confirm": True,
+                    })
+                    if button_dni in self.created_device_dnis:
+                        self.created_device_dnis.remove(button_dni)
+                except (McpToolError, McpError) as exc:
+                    print(f"  [WARN] button-rule e2e cleanup: delete device {button_dni} failed: {exc}")
 
     @test("native_apps")
     def test_set_rule_addaction_missing_required_field_fails_fast(self) -> None:

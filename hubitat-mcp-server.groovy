@@ -22967,15 +22967,29 @@ def toolSetRule(args) {
         // while the call still returned success:true on an empty shell. Mirror
         // the sibling hub_set_native_app's reject-don't-drop posture: the create
         // arm must HONOR or LOUDLY REJECT every shortcut it is handed, never
-        // silent-success. CREATE_HONORED is the single source of truth for what
-        // create bundles; EDIT_ONLY enumerates the rest of the edit-path surface
-        // reachable on hub_set_rule, rejected here.
+        // silent-success.
         def CREATE_HONORED = ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression'] as Set
         def EDIT_ONLY = ['addLocalVariable', 'patches', 'replaceActions', 'removeAction', 'clearActions',
                          'moveAction', 'removeTrigger', 'modifyTrigger', 'walkStep', 'settings', 'button']
         def droppedOnCreate = EDIT_ONLY.findAll { args instanceof Map && args.containsKey(it) }
         if (droppedOnCreate) {
             throw new IllegalArgumentException("hub_set_rule CREATE (no appId) only bundles ${CREATE_HONORED.sort().join(', ')}; ${droppedOnCreate.join(', ')} ${droppedOnCreate.size() == 1 ? 'is an' : 'are'} edit-only operation${droppedOnCreate.size() == 1 ? '' : 's'} that require${droppedOnCreate.size() == 1 ? 's' : ''} an existing rule. Create the rule first (with name + any bundled triggers/actions/addRequiredExpression), then re-call hub_set_rule with the returned appId to apply ${droppedOnCreate.join(', ')}.")
+        }
+        // Type-check the honored keys too. A malformed one (e.g. addRequiredExpression
+        // as a List/String instead of a Map) slips past the instanceof guards below
+        // and silently creates an empty shell -- the exact silent-success this gate
+        // prevents, just for the wrong type.
+        if (args instanceof Map) {
+            ['addTrigger', 'addAction', 'addRequiredExpression'].each { k ->
+                if (args.containsKey(k) && args[k] != null && !(args[k] instanceof Map)) {
+                    throw new IllegalArgumentException("hub_set_rule create: '${k}' must be an object (a single spec, e.g. {capability: ...}); it was a non-object that would be silently dropped. Use the plural '${k}s' for a list of specs.")
+                }
+            }
+            ['addTriggers', 'addActions'].each { k ->
+                if (args.containsKey(k) && args[k] != null && !(args[k] instanceof List)) {
+                    throw new IllegalArgumentException("hub_set_rule create: '${k}' must be an array of spec objects; it was a non-array that would be silently dropped. Use the singular '${k.replaceAll(/s$/, '')}' for a single spec.")
+                }
+            }
         }
         def createArgs = [appType: "rule_machine", name: args?.name, confirm: args?.confirm] as LinkedHashMap
         def trigs = []
@@ -23319,7 +23333,7 @@ def _createNativeAppShell(args) {
         }
         def result = [
             success: health.ok && !partialTriggers && !partialActions && !reFailed && !rePartial,
-            partial: (partialTriggers || partialActions || rePartial) as Boolean,
+            partial: (partialTriggers || partialActions || reFailed || rePartial) as Boolean,
             partialTriggers: partialTriggers,
             partialActions: partialActions,
             repairHints: repairHints,
@@ -23341,10 +23355,14 @@ def _createNativeAppShell(args) {
         if (actionSpecs) result.actions = actionResults
         if (reSpec != null) {
             result.requiredExpression = reResult
-            // Surface the schema-declared top-level field defensively, matching
-            // the _applyNativeAppEdit edit arm. Near-impossible on a fresh
-            // create, but the outputSchema promises it top-level.
+            // Lift the RE outcome fields top-level. The outputSchema declares
+            // requiredExpressionAlreadyExists / expressionNotLive / updateRuleFailed /
+            // updateRuleError at the top level and the _applyNativeAppEdit edit arm
+            // surfaces them there, so don't bury them under requiredExpression on create.
             if (reResult?.requiredExpressionAlreadyExists) result.requiredExpressionAlreadyExists = true
+            if (reResult?.expressionNotLive) result.expressionNotLive = true
+            if (reResult?.updateRuleFailed) result.updateRuleFailed = true
+            if (reResult?.updateRuleError != null) result.updateRuleError = reResult.updateRuleError
         }
         // Honesty caveat: only rule_machine reliably copies origLabel -> the
         // installed-app display label on commit. For other (partial-support)
@@ -25087,7 +25105,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             def uniqueCondIdxs = lostEntries.collect { it.condIdx }.findAll { it != null }.unique().size()
             def deg = uniqueCondIdxs > 0 ? uniqueCondIdxs : lostEntries.size()
             def cw = (deg == 1) ? "condition" : "conditions"
-            reRepairHints << "${deg} ${cw} used a degraded write path (e.g. rhs_type_not_revealed; see settingsSkipped entries with 'reason'). Inspect via hub_get_app_config(appId, includeSettings=true) and re-run with rawSettings to fill missing fields if needed."
+            reRepairHints << "${deg} ${cw} used a degraded write path (e.g. comparator_force_write_failed or rhs_type_not_revealed; see settingsSkipped entries with 'reason'). Re-add the affected field(s) via hub_set_rule(walkStep={page:'STPage', operation:'introspect'}) to see the live schema, then write them one at a time -- or rebuild the expression. Verify first via hub_get_app_config(appId, includeSettings=true): if the expression paragraph renders correctly, the partial flag is cosmetic and no repair is needed."
         }
         if (!forceWrittenKeys.isEmpty()) {
             def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
