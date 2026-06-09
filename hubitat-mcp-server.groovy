@@ -16553,40 +16553,67 @@ private Integer _discoverParentAppId(String appType) {
     def bootstrapDiag = null
     if (parentNode?.id == null) {
         // The built-in parent app is not installed yet. Hubitat's "Add Built-In App"
-        // flow is two steps, exactly like _createUserAppInstance: (1) GET
-        // /installedapp/sysApp/<display name> creates a PENDING shell and 302-redirects
-        // to /installedapp/configure/<newId>/<page>; (2) submit that page's "Done" so the
-        // install commits (fires installed()/initialize()) and the parent shows up in
-        // /hub2/appsList. parentTypeName IS the Add-Built-In-App display name. Only fires
-        // when the parent is absent, so it never duplicates an existing singleton parent.
+        // link is GET /installedapp/sysApp/<display name> (parentTypeName IS that name);
+        // verified live, it CREATES the parent server-side and 302-redirects to its
+        // configure page, and the parent appears in /hub2/appsList right away. The redirect
+        // Location is ABSOLUTE, so the HTTP client may follow it and return 200 with no
+        // Location -- so don't depend on the response shape: fire the GET and RE-DISCOVER
+        // by type. Only fires when the parent is absent (never duplicates a singleton).
+        // Falls back to parsing the new id from the response + a Done commit for firmware
+        // that lists the parent only once the install commits.
         def sysAppPath = "/installedapp/sysApp/" + URLEncoder.encode(parentTypeName, "UTF-8").replace("+", "%20")
         mcpLog("info", "rm-native", "'${parentTypeName}' parent not installed -- bootstrapping via GET ${sysAppPath}")
+        def created = null
         try {
-            def created = hubInternalGetRaw(sysAppPath)
-            bootstrapDiag = "sysApp status=${created?.status} location=${created?.location}"
-            if (created?.status == 302 && created.location) {
-                def m = (created.location =~ /\/installedapp\/configure\/(\d+)(?:\/([^\/?#]+))?/)
-                if (m) {
-                    def pendingId = m[0][1] as Integer
-                    def firstPage = m[0][2]
-                    def commit = _commitUserAppInstall(pendingId, firstPage)
-                    bootstrapDiag += " pendingId=${pendingId} committed=${commit?.success}"
-                    if (commit?.success != true) {
-                        bootstrapDiag += " commitError=${commit?.error}"
-                        mcpLog("warn", "rm-native", "sysApp bootstrap of '${parentTypeName}': install-commit (Done) for pending id ${pendingId} did not succeed: ${commit?.error}")
-                    }
-                } else {
-                    bootstrapDiag += " (could not parse new id from location)"
-                    mcpLog("warn", "rm-native", "sysApp bootstrap of '${parentTypeName}': could not parse new id from Location ${created.location}")
-                }
-            } else {
-                mcpLog("warn", "rm-native", "sysApp bootstrap of '${parentTypeName}': unexpected response (status=${created?.status}, location=${created?.location})")
-            }
+            created = hubInternalGetRaw(sysAppPath)
+            bootstrapDiag = "sysApp status=${created?.status} location=${created?.location} dataLen=${created?.data?.toString()?.length() ?: 0}"
         } catch (Exception e) {
             bootstrapDiag = "sysApp threw: ${e.message}"
-            mcpLog("warn", "rm-native", "sysApp bootstrap of '${parentTypeName}' threw (continuing to re-discover): ${e.message}")
+            mcpLog("warn", "rm-native", "sysApp bootstrap GET for '${parentTypeName}' threw (continuing to re-discover): ${e.message}")
         }
+        // Primary: the GET creates the parent server-side -- re-discover it by type.
         parentNode = findParentNode()
+        bootstrapDiag += " rediscovered=${parentNode?.id}"
+        if (parentNode?.id == null && created != null) {
+            // /hub2/appsList can lag right after creation, so extract the new id from the
+            // response and use it DIRECTLY. 302: id is in the absolute Location. 200 (the
+            // client followed the redirect to the configure page): the classic appUI page
+            // injects `appId = <id>` (verified live).
+            def newId = null
+            def firstPage = null
+            if (created.location) {
+                def lm = (created.location.toString() =~ /\/installedapp\/configure\/(\d+)(?:\/([^\/?#]+))?/)
+                if (lm.find()) { newId = lm.group(1) as Integer; firstPage = lm.group(2) }
+            }
+            if (newId == null && created.data) {
+                def bs = created.data.toString()
+                def am = (bs =~ /appId\s*=\s*(\d+)/)
+                if (am.find()) newId = am.group(1) as Integer
+                else {
+                    def cm = (bs =~ /\/installedapp\/configure(?:\/json)?\/(\d+)/)
+                    if (cm.find()) newId = cm.group(1) as Integer
+                }
+            }
+            bootstrapDiag += " newId=${newId}"
+            if (newId != null) {
+                // Commit via Done so the parent is fully installed, then trust the id
+                // directly rather than re-reading the (possibly cache-lagging) appsList.
+                try {
+                    def commit = _commitUserAppInstall(newId, firstPage)
+                    bootstrapDiag += " committed=${commit?.success}"
+                } catch (Exception ce) { bootstrapDiag += " commitThrew=${ce.message}" }
+                parentNode = [id: newId, installed: true]
+            } else if (created.data) {
+                bootstrapDiag += " bodyHead='${created.data.toString().take(200).replaceAll(/\s+/, ' ')}'"
+            }
+        } else if (parentNode?.id != null && parentNode.installed != true) {
+            // Surfaced but PENDING (installed != true) -- commit via Done so it's usable.
+            try {
+                def commit = _commitUserAppInstall(parentNode.id.toString().toInteger(), null)
+                bootstrapDiag += " committed=${commit?.success}"
+            } catch (Exception ce) { bootstrapDiag += " commitThrew=${ce.message}" }
+            parentNode = findParentNode()
+        }
     }
 
     if (parentNode?.id == null) {
