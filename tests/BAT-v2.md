@@ -2378,7 +2378,7 @@ All 90 distinct tools are covered by at least one test, excluding the destructiv
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 227 test scenarios** (113 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness) plus 13 excluded destructive operations documented for manual testing
+**Total: 234 test scenarios** (120 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -3629,6 +3629,112 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ---
 
+### T634 — addTrigger Custom Attribute trigger row on an enum-recognized attribute: no false-positive partial
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a switch's 'switch' attribute -- use hub_list_virtual_devices to find a virtual switch). Create RM rule 'BAT CustomEnumAttr'.",
+  "test_prompt": "Add a trigger to 'BAT CustomEnumAttr' using addTrigger: {capability:'Custom Attribute', deviceIds:[<deviceId>], attribute:'switch', comparator:'=', state:'on'}. Inspect result.partial, result.settingsApplied, and result.settingsSkipped.",
+  "teardown_prompt": "Delete 'BAT CustomEnumAttr'."
+}
+```
+
+**Expected**: the trigger-row add returns `success=true` and `partial=false`. Because the hub recognizes `switch` as an enum attribute, picking it reveals the enum value picker `tstate<N>` and hides the free comparator `ReltDev<N>`. The value `on` lands in `tstate<N>` (present in `settingsApplied`); `ReltDev<N>` is NOT in `settingsApplied` (the tool does not write a comparator field the schema doesn't expose) and produces NO `not_in_schema` skip. `settingsSkipped` has no `ReltDev<N>` entry. The trigger row renders correctly on mainPage ("switch is on") with `result.health.ok=true`.
+
+**Failure modes**: a `not_in_schema` skip on `ReltDev<N>` appearing in `settingsSkipped` and flipping `partial=true` even though the value landed in `tstate<N>` -- the pre-fix unconditional comparator write against an enum attribute (the bug this scenario guards). Contrast control: a genuinely free-valued Custom Attribute (e.g. a custom driver's `fixtureMode`) DOES expose the comparator field and writes it with `partial=false` -- the fix must not regress that path.
+
+### T635 — addTrigger conditional-trigger Custom Attribute condition on an enum attribute: no false-positive partial
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a switch's 'switch' attribute -- use hub_list_virtual_devices to find a virtual switch). Create RM rule 'BAT CustomEnumCond'.",
+  "test_prompt": "Add a conditional trigger to 'BAT CustomEnumCond' using addTrigger: {capability:'Switch', deviceIds:[<deviceId>], state:'on', condition:{capability:'Custom Attribute', deviceIds:[<deviceId>], attribute:'switch', comparator:'=', state:'on'}}. Inspect result.partial, result.settingsApplied, and result.settingsSkipped.",
+  "teardown_prompt": "Delete 'BAT CustomEnumCond'."
+}
+```
+
+**Expected**: the conditional-trigger add returns `success=true` and `partial=false`. The condition wizard (`_rmBuildCondition`, underscore field names) has the same enum routing as the trigger row: the enum attribute reveals the value picker `state_<N>` and hides the comparator `RelrDev_<N>`. The value `on` lands in `state_<N>` (present in `settingsApplied`); `RelrDev_<N>` is neither applied nor skipped, and `partial=false`. The trigger renders correctly on mainPage with `result.health.ok=true`.
+
+**Failure modes**: a `not_in_schema` skip on `RelrDev_<N>` flipping `partial=true` even though the value landed in `state_<N>`. Contrast control: a free-valued Custom Attribute condition DOES expose `RelrDev_<N>` and writes it with `partial=false`.
+
+### T636 — addRequiredExpression Custom Attribute enum condition on the reveal walker (STPage): no hard error
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a switch's 'switch' attribute -- use hub_list_virtual_devices to find a virtual switch). Create RM rule 'BAT WalkEnumAttr'.",
+  "test_prompt": "Add a Required Expression to 'BAT WalkEnumAttr' using addRequiredExpression: {conditions:[{capability:'Custom Attribute', deviceIds:[<deviceId>], attribute:'switch', comparator:'=', state:'on'}]}. Inspect result.success, result.partial, result.settingsApplied, and result.settingsSkipped.",
+  "teardown_prompt": "Delete 'BAT WalkEnumAttr'."
+}
+```
+
+**Expected**: the Required Expression add returns `success=true` and `partial=false`. The STPage reveal walker (`_rmWalkConditionReveal`) writes `rCustomAttr_<N>`, and the enum re-render reveals `state_<N>` directly and never exposes `RelrDev_<N>`. The walker branches to the enum path: it writes the value to `state_<N>`, skips the comparator, and does NOT throw. The expression renders on mainPage with `result.health.ok=true`.
+
+**Failure modes**: pre-fix the walker threw `IllegalStateException` ("RelrDev_<N> (comparator) not revealed after rCustomAttr_<N> write"), surfacing as `success=false` / an error envelope -- a hard failure on an attribute the hub legitimately treats as an enum. A `not_in_schema`/throw on the enum attribute, or `partial=true` despite a clean build, fails this scenario. Contrast control: a free-valued Custom Attribute condition reveals `RelrDev_<N>` and writes the comparator normally.
+
+### T637 — addTrigger Custom Attribute free-valued comparator: value lands normally
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT CustomFetchFallback'.",
+  "test_prompt": "Add a trigger to 'BAT CustomFetchFallback' on a FREE-valued Custom Attribute (e.g. a custom driver's 'fixtureMode'): addTrigger {capability:'Custom Attribute', deviceIds:[<deviceId>], attribute:'fixtureMode', comparator:'=', state:'bright'}. Inspect result.success and result.settingsApplied.",
+  "teardown_prompt": "Delete 'BAT CustomFetchFallback'."
+}
+```
+
+**Expected**: the add returns `success=true` and the comparator `ReltDev<N>` is in `settingsApplied`. This exercises the HEALTHY free-attribute path: the enum-vs-free guard re-fetches `selectTriggers` after writing the attribute, the re-fetch succeeds on a healthy hub, the comparator field is revealed, and the value is written normally. The force-write fallback (which fires only when that re-fetch fails transiently with an empty/unparseable response, force-writing the comparator + flagging `partial`) is not reachable from an agent prompt on a healthy hub by design -- it is covered deterministically by the `_rmForceWriteEnumField ...` Spock specs via stub injection.
+
+**Failure modes**: the comparator is silently dropped (absent from `settingsApplied` with no skip entry), or `partial=true` despite a clean build on the healthy path. The transient re-fetch-failure fallback branch is driven by the Spock specs, not this live form.
+
+### T638 — addAction ifThen Custom Attribute enum condition on the reveal walker (doActPage): no hard error
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a switch's 'switch' attribute -- use hub_list_virtual_devices to find a virtual switch). Create RM rule 'BAT WalkEnumAction'.",
+  "test_prompt": "Add an IF/THEN action to 'BAT WalkEnumAction' using addAction: {capability:'ifThen', expression:{conditions:[{capability:'Custom Attribute', deviceIds:[<deviceId>], attribute:'switch', comparator:'=', state:'on'}]}}. Inspect result.success, result.partial, result.settingsApplied, and result.settingsSkipped.",
+  "teardown_prompt": "Delete 'BAT WalkEnumAction'."
+}
+```
+
+**Expected**: the IF/THEN action add returns `success=true` and `partial=false`. The doActPage reveal walker (`_rmWalkConditionReveal`, the same shared walker as STPage) writes `rCustomAttr_<N>`, and the enum re-render reveals `state_<N>` directly and never exposes `RelrDev_<N>`. The walker branches to the enum path: it writes the value to `state_<N>`, skips the comparator, and does NOT throw. The action renders on mainPage with `result.health.ok=true`.
+
+**Failure modes**: pre-fix the walker threw `IllegalStateException` on the doActPage surface (the same false-hard-fail the STPage T636 guards, but reached via `addAction`), surfacing as `success=false` / an error envelope on an attribute the hub legitimately treats as an enum. A `not_in_schema`/throw on the enum attribute, or `partial=true` despite a clean build, fails this scenario. Contrast control: a free-valued Custom Attribute condition reveals `RelrDev_<N>` and writes the comparator normally on doActPage too.
+
+---
+
+### T639 — hub_set_rule CREATE (no appId) bundling addRequiredExpression: the RE is honored, not silently dropped
+
+```json
+{
+  "setup_prompt": "the Write master is enabled. Identify a virtual switch on the hub (use hub_list_virtual_devices)."
+,
+  "test_prompt": "Create a new RM rule in ONE call with hub_set_rule (NO appId): {name:'BAT CreateRE', addRequiredExpression:{conditions:[{capability:'Switch', deviceIds:[<switchId>], state:'on'}]}, confirm:true}. Inspect result.appId and result.requiredExpression.",
+  "teardown_prompt": "Delete 'BAT CreateRE'."
+}
+```
+
+**Expected**: the create returns a new `appId` AND a `result.requiredExpression` object whose `success` is not false and whose `conditionIndices` is non-empty -- the bundled Required Expression actually landed on the brand-new rule. `hub_get_rule_health` reports `ok=true`. The RE walk runs after the rule shell is created (before any bundled actions).
+
+**Failure modes**: pre-fix the create arm read only `addTriggers`/`addActions`, so `addRequiredExpression` on create was silently dropped: the call returned `success=true` on an EMPTY rule with no `requiredExpression` field. Absence of `result.requiredExpression` (RE dropped), `requiredExpression.success=false` (RE failed to bake), or an empty `conditionIndices` (the expression did not land) all fail this scenario.
+
+---
+
+### T640 — hub_set_rule edit-only shortcut on CREATE is rejected loudly, not dropped to an empty shell
+
+```json
+{
+  "setup_prompt": "the Write master is enabled."
+,
+  "test_prompt": "Call hub_set_rule with NO appId and an edit-only shortcut: {name:'BAT RejectEditOnly', replaceActions:[{capability:'log', message:'x'}], confirm:true}. Inspect the error.",
+  "teardown_prompt": "If a rule named 'BAT RejectEditOnly' was created, delete it (it should NOT have been -- the call must reject before any create)."
+}
+```
+
+**Expected**: the call is rejected with an `IllegalArgumentException` (JSON-RPC -32602) whose message names `replaceActions`, says it is an `edit-only` operation requiring an existing rule, and points the caller to create-then-edit. NO rule is created. This is the create-arm completeness contract: every shortcut the create arm is handed is HONORED or LOUDLY REJECTED, never silently dropped to a `success=true` empty shell. The same rejection holds for `addLocalVariable`, `patches`, `removeAction`, `clearActions`, `moveAction`, `removeTrigger`, `modifyTrigger`, and `walkStep`.
+
+**Failure modes**: a `success=true` envelope with an empty rule (the edit-only op was silently dropped -- the exact pre-fix bug, regressed). A raw internal error with no actionable guidance, or a rule created despite the rejection, also fails this scenario.
+
+---
+
 ## Changes from BAT v1
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
@@ -3642,7 +3748,7 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 7. **T62 rewritten**: Was testing `manage_virtual_devices` catalog (removed gateway) → now tests `hub_manage_diagnostics` catalog
 8. **T104 updated**: Anti-recursion test uses `hub_manage_diagnostics` gateway
 9. **Excluded tests expanded**: 10 → 13 (separate rows for each app/driver operation, added gateway column)
-10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total); paired-tool singular-deviceId coverage adds T614 (addTrigger.condition) + T615 (addAction expression) (181 total); subExpression rejection on addAction adds T616 (182 total -- T616 previously covered recursive subExpression normalization, which production now rejects at the doActPage pre-pass; T616 was rewritten to pin the rejection path); reveal-fallback sentinel adds T617 (183 total); compareToDevice fallback adds T618 (184 total); Between two times sunrise/sunset adds T619 (185 total); Variable compareToVariable on the walker pages adds T620, compareToDevice missing-comparator reject adds T621, and Custom-Attribute '*changed*' cosmetic-partial filter adds T622 (188 total); periodic-frequency completeness adds T623/T624/T625/T626/T627 (the five newly-supported frequencies: Seconds/Minutes/Weekly/Monthly/Yearly -- Monthly by-day and Yearly nth-weekday) + T628 (Cron field-name fix) + T629 (count-enum validation rejection) + T630 (Monthly nth-weekday mode) + T631 (Monthly dayOfMonth/weekOfMonth mutual-exclusivity rejection) + T632 (two periodic triggers in one rule -- no sub-page collision) (198 total); the #137 native-app tool rename adds T633 (hub_set_rule single-call create-with-bundle: new rule + trigger + action in one upsert) (199 total). Note: `Total: 227 test scenarios` in the header above counts ALL scenarios including the NL (T501-T565 range), built-in-app integration (T801-T821 range), library management (T901-T909 range), and the unnumbered walker/normalization sub-scenarios. The cumulative T-numbered tally in this item (ending at 198) reflects only sequentially-numbered tests in the explicit-coverage section.
+10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total); paired-tool singular-deviceId coverage adds T614 (addTrigger.condition) + T615 (addAction expression) (181 total); subExpression rejection on addAction adds T616 (182 total -- T616 previously covered recursive subExpression normalization, which production now rejects at the doActPage pre-pass; T616 was rewritten to pin the rejection path); reveal-fallback sentinel adds T617 (183 total); compareToDevice fallback adds T618 (184 total); Between two times sunrise/sunset adds T619 (185 total); Variable compareToVariable on the walker pages adds T620, compareToDevice missing-comparator reject adds T621, and Custom-Attribute '*changed*' cosmetic-partial filter adds T622 (188 total); periodic-frequency completeness adds T623/T624/T625/T626/T627 (the five newly-supported frequencies: Seconds/Minutes/Weekly/Monthly/Yearly -- Monthly by-day and Yearly nth-weekday) + T628 (Cron field-name fix) + T629 (count-enum validation rejection) + T630 (Monthly nth-weekday mode) + T631 (Monthly dayOfMonth/weekOfMonth mutual-exclusivity rejection) + T632 (two periodic triggers in one rule -- no sub-page collision) (198 total); the native-app tool rename adds T633 (hub_set_rule single-call create-with-bundle: new rule + trigger + action in one upsert) (199 total); Custom-Attribute enum-attribute false-positive-partial guard adds T634 (trigger row), T635 (conditional-trigger condition path), T636 (Required Expression reveal walker / STPage enum condition), and T637 (free-valued Custom Attribute comparator: value lands normally) (203 total); the doActPage walker enum-condition parity (the 4th surface, reached via addAction ifThen) adds T638 (204 total); create-with-bundled-Required-Expression adds T639 and the create-arm edit-only-rejection completeness contract adds T640 (206 total). Note: `Total: 234 test scenarios` in the header above counts ALL scenarios including the NL (T501-T565 range), built-in-app integration (T801-T821 range), library management (T901-T909 range), and the unnumbered walker/normalization sub-scenarios. The cumulative T-numbered tally in this item (ending at 206) reflects only sequentially-numbered tests in the explicit-coverage section.
 11. **Spec-only coverage by necessity**: the trailing-updateRule failure paths on `addTrigger`, `addRequiredExpression`, `addLocalVariable`, `addTriggers`/`addActions` (bulk), `patches`, and the action-mutation/trigger-mutation dispatchers (`removeAction`, `clearActions`, `replaceActions`, `moveAction`, `removeTrigger`, `modifyTrigger`) -- response slots `updateRuleFailed`, `subscriptionsNotLive` / `expressionNotLive` / `variableNotLive` / `patchesNotLive`, `updateRuleError`, and the recovery `repairHints` line -- are covered exclusively by Spock specs in `src/test/groovy/server/ToolRmNativeCrudSpec.groovy` (the single-path failure/SUCCESS pairs for `addTrigger` / `addRequiredExpression` / `addLocalVariable`, the three-row `@Unroll` failure/SUCCESS pairs for the bulk path covering `addTriggers`-only / `addActions`-only / both, and the corresponding patches and action-mutation envelope specs). The defensive `asyncCommitLikely` path on `clearActions` / `replaceActions` -- response slots `asyncCommitLikely`, `stage`, `actionsRequestedForRemoval`, `actionsStillPresent`, `pendingActionsToAdd`, `clearActionsResult`, `safeRecovery` -- is also spec-only: with the synchronous full-form trashActs submit the delete commits in-band, so this rare residual path (stuck `state.editAct` or a firmware commit lag still showing the actions present after the verify-retry) is not reproducible from an agent prompt against a live hub. Live-hub BAT coverage was considered but skipped: deterministically forcing the trailing `_rmClickAppButton(updateRule)` to throw against a real hub requires hub-side disruption (firmware downgrade / network partition mid-call / hub-config corruption) that is not realistically scriptable from an agent prompt. The Spock specs exercise the production response-shape contract directly via stub injection and constitute the regression gate.
 12. **PR1B read/write gateway split**: the 13-gateway flat-core layout was restructured into **19 gateways (7 `hub_read_*` pure-read + 12 `hub_manage_*` write-bearing) + 11 flat core tools** (30 on tools/list). Gateway renames: `hub_manage_rules` → `hub_manage_custom_rules`, `hub_manage_code_write` → `hub_manage_code`, `hub_manage_native_rules` → `hub_manage_native_rules_and_apps`. Removed gateways (read tools folded into `hub_read_apps_code`): `hub_manage_code_read`, `hub_manage_installed_apps`, `hub_manage_hpm`. `hub_list_installed_apps` merged into `hub_list_apps` (scope=types|instances). New pure-read gateways added: `hub_read_apps_code`, `hub_read_devices`, `hub_read_diagnostics`, `hub_read_files`, `hub_read_rooms`, `hub_read_rules`, `hub_read_variables`. Reads listed in a mixed `hub_manage_*` gateway are also surfaced in their `hub_read_*` gateway (multi-membership). Tool-behavior flips: `hub_export_custom_rule` and `hub_export_native_app` are now WRITES (they persist via saveAs); `hub_get_metrics` is now a READ (recordSnapshot default false). The previously-flat custom-rule and device tools (`hub_get_custom_rule`, `hub_create_custom_rule`, `hub_update_custom_rule`, `hub_list_devices`, `hub_get_device`, etc.) are now folded into gateways. `hub_report_issue` remains a flat core tool.
 

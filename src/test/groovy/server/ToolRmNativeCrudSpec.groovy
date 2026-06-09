@@ -73,6 +73,18 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.enableRead = true
     }
 
+    // Single source of truth for POST-interceptor key matching. Returns the inner
+    // field name of a "settings[<name>]" form key, or null if k is not such a key.
+    // Single-evaluation matches()/group(1) -- NOT the `def m = k =~ /.../; m[0][1]`
+    // idiom, which re-coerces a STATEFUL java.util.regex.Matcher on every read and
+    // exhausts it under Groovy 3.0 (the second `m[0][1]` on the same matcher returns
+    // null because the previous read advanced past the match). Routing every
+    // interceptor through this helper makes that double-coercion shape unable to recur.
+    private static String _settingKeyOf(Object k) {
+        def matcher = (k?.toString() ?: "") =~ /^settings\[(.+)\]$/
+        return matcher.matches() ? matcher.group(1) : null
+    }
+
     // Minimal RM parent discovery response (/hub2/appsList tree with a
     // Rule Machine parent at id=21 so _rmDiscoverParentAppId finds it).
     private String appsListJson(int rmId = 21) {
@@ -135,6 +147,38 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             childAppCount: 0,
             childDeviceCount: 0
         ])
+    }
+
+    // ---------- _settingKeyOf POST-interceptor helper (closed mechanism) ----------
+
+    def "_settingKeyOf extracts the inner field name and is null for non-settings keys"() {
+        // Pins the single source of truth every POST interceptor in this spec routes
+        // through, so the stateful-matcher double-coercion shape cannot recur.
+        expect:
+        _settingKeyOf("settings[ReltDev1]") == "ReltDev1"
+        _settingKeyOf("settings[state_1]") == "state_1"
+        _settingKeyOf("settings[isCondTrig.1]") == "isCondTrig.1"
+        _settingKeyOf("_action_previous") == null
+        _settingKeyOf("currentPage") == null
+        _settingKeyOf(null) == null
+    }
+
+    def "_settingKeyOf is repeat-call stable -- the matcher-exhaustion bug the helper exists to prevent"() {
+        // The legacy idiom `def m = k =~ /.../; m[0][1]; m[0][1]` re-reads a STATEFUL
+        // Matcher; under Groovy 3.0 the second read can return null because the prior
+        // read advanced the matcher past its match. _settingKeyOf builds a fresh matcher
+        // and reads group(1) exactly once per call, so it returns the SAME value across
+        // repeated calls on the same key -- this is the property that lets every
+        // interceptor read the key as many times as it needs without exhaustion.
+        when:
+        def first  = _settingKeyOf("settings[RelrDev_1]")
+        def second = _settingKeyOf("settings[RelrDev_1]")
+        def third  = _settingKeyOf("settings[RelrDev_1]")
+
+        then:
+        first == "RelrDev_1"
+        second == "RelrDev_1"
+        third == "RelrDev_1"
     }
 
     // ---------- create_rm_rule ----------
@@ -5980,6 +6024,656 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         (result.settingsApplied == null || (result.settingsApplied as List).isEmpty())
     }
 
+    // ---------- addTrigger Custom Attribute enum-vs-free comparator routing ----------
+    //
+    // A Custom Attribute trigger picks the attribute (tCustomAttr<N>) first.
+    // For an attribute the hub recognizes as an ENUM (switch, motion, contact,
+    // lock, ...) the re-rendered page reveals the enum value picker tstate<N>
+    // and HIDES the free comparator ReltDev<N>; the value lands in tstate<N> and
+    // there is no comparator field to write. For a genuinely free-valued
+    // attribute the page reveals ReltDev<N> (the comparator) instead. The fix
+    // writes ReltDev<N> only when the live schema still exposes it, so the
+    // enum path no longer emits a spurious not_in_schema skip on ReltDev<N>.
+
+    // exposeComparator=true reveals ReltDev1 (free attribute); false omits it (enum attribute reveals tstate1 instead).
+    private String customAttrSchemaJson(int ruleId, int seqNum, boolean exposeComparator) {
+        def inputs = [
+            [name: "tCapab1", type: "enum", options: ["Custom Attribute"]],
+            [name: "tDev1", type: "capability.*", multiple: true],
+            [name: "tCustomAttr1", type: "enum", options: ["switch", "fixtureMode"]],
+            [name: "tstate1", type: "enum", options: ["on", "off"]],
+            [name: "isCondTrig.1", type: "bool"],
+            [name: "hasAll", type: "button"]
+        ]
+        if (exposeComparator) {
+            inputs << [name: "ReltDev1", type: "enum", options: ["=", "!=", ">", "<"]]
+        }
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                         sections: [[title: "", input: inputs, paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:],
+            childApps: []
+        ])
+    }
+
+    def "addTrigger Custom Attribute on an enum attribute lands the value in tstate and stays partial=false"() {
+        // Regression guard for the enum-attribute false-positive partial: the hub
+        // hides ReltDev<N> and reveals tstate<N>, so the value lands in tstate1
+        // and no comparator field exists to write. The fix suppresses the
+        // ReltDev1 write, so no not_in_schema skip is produced and partial stays
+        // false. Reverting the fix re-introduces the unconditional ReltDev1 write
+        // -> not_in_schema skip -> partial flips true, failing this spec.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrSchemaJson(100, fetchSeq, false)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "=", state: "on"],
+            confirm: true
+        ])
+
+        then: "value lands in tstate1 and the trigger is not falsely flagged partial"
+        result.success == true
+        result.partial == false
+        (result.settingsApplied as List).contains("tstate1")
+        !(result.settingsApplied as List).contains("ReltDev1")
+
+        and: "the enum VALUE 'on' actually landed in the tstate1 picker (POST-body value pin, not just key existence)"
+        posts.any { p -> (p.body as Map)["settings[tstate1]"] == "on" }
+
+        and: "no ReltDev1 not_in_schema skip was produced"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" }
+    }
+
+    def "addTrigger Custom Attribute on a free attribute still writes the ReltDev comparator (normalized)"() {
+        // Preserve the free-comparator path: a genuinely free-valued attribute
+        // reveals ReltDev<N>, and the fix must still write the comparator there.
+        // This spec pins that ReltDev1 is written (and not skipped) AND that the
+        // POSTed comparator carries the NORMALIZED Unicode glyph -- feeding '!='
+        // must land '≠', the form RM recognizes. A regression dropping
+        // _rmNormalizeComparator on the trigger row would still land the key (so a
+        // key-only contains check would not catch it) but POST the raw '!='; the
+        // value-pin below is what catches that. It does NOT assert partial, because
+        // the tstate1 value-landed semantics for a free attribute depend on live hub
+        // behaviour the static stub cannot honestly model; partial in this fixture
+        // would rest on the render-hash artifact.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrSchemaJson(100, fetchSeq, true)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Custom Attribute", deviceIds: [2], attribute: "fixtureMode", comparator: "!=", state: "bright"],
+            confirm: true
+        ])
+
+        then: "the comparator field is written to ReltDev1 and is not skipped"
+        result.success == true
+        (result.settingsApplied as List).contains("ReltDev1")
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" }
+
+        and: "the POSTed comparator carries the NORMALIZED Unicode glyph, not the raw '!='"
+        posts.any { p -> (p.body as Map)["settings[ReltDev1]"] == "≠" }
+        !posts.any { p -> (p.body as Map)["settings[ReltDev1]"] == "!=" }
+    }
+
+    def "addTrigger Custom Attribute neither-rendered: when the re-render exposes NEITHER ReltDev1 nor tstate1, the comparator skips not_in_schema and flips partial (degradation pin)"() {
+        // W1 third-branch pin for _rmAddTrigger. The comparator-first guard has three
+        // branches: comparatorExposed -> write; else valuePickerExposed -> suppress (enum,
+        // no write attempted); else (NEITHER exposed, e.g. a lagged render) -> ATTEMPT the
+        // write via writeIfPresent. writeIfPresent routes to _rmWriteSettingOnPage, which
+        // pre-gates on schema-containment: ReltDev1 is absent from the live schema in the
+        // neither-rendered case, so the write is NOT POSTed and records a not_in_schema skip
+        // -- the helper must NOT force a comparator into a hidden field (that silent
+        // dead-storage IS the bug this PR fixes). not_in_schema on the comparator is genuine
+        // degradation (not in the informational/enum-exempt set), so partial MUST flip true.
+        // Every other trigger-row fixture always emits tstate1, so this third branch and its
+        // degradation-partial contract were unpinned before this spec.
+        given:
+        enableWrite()
+        boolean attrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "tCustomAttr1") attrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            // After tCustomAttr1 commits, the re-render exposes NEITHER the comparator
+            // ReltDev1 NOR the value picker tstate1 (the lagged-render / transient case).
+            def inputs = [
+                [name: "tCapab1",      type: "enum", options: ["Custom Attribute"]],
+                [name: "tDev1",        type: "capability.*", multiple: true],
+                [name: "tCustomAttr1", type: "enum", options: ["switch", "fixtureMode"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll",       type: "button"]
+            ]
+            if (!attrWritten) {
+                // Before the attr write, the value picker is present (so the attr write's
+                // own _rmWriteSettingOnPage verify sees a normal schema). After the write,
+                // neither ReltDev1 nor tstate1 appears -- the neither-rendered case.
+                inputs = inputs + [[name: "tstate1", type: "enum", options: ["on", "off"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${attrWritten ? 'after' : 'before'}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Custom Attribute", deviceIds: [2], attribute: "fixtureMode", comparator: "!=", state: "bright"],
+            confirm: true
+        ])
+
+        then: "the comparator was NOT POSTed -- production must not force-write a hidden field"
+        !posts.any { p -> (p.body as Map).containsKey("settings[ReltDev1]") }
+
+        and: "a not_in_schema skip on ReltDev1 records the genuine degradation"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" && it?.reason == "not_in_schema" }
+
+        and: "the genuine degradation flips partial"
+        result.partial == true
+    }
+
+    // ---------- addTrigger.condition (conditional-trigger) Custom Attribute routing ----------
+    //
+    // The conditional-trigger sub-wizard (_rmBuildCondition) uses underscore
+    // field names: rCustomAttr_<N> / RelrDev_<N> / state_<N> (vs the trigger
+    // row's tCustomAttr<N> / ReltDev<N> / tstate<N>). It has the same enum
+    // routing: an enum attribute reveals state_<N> and hides RelrDev_<N>, so the
+    // unconditional RelrDev_<N> write produced a false-positive not_in_schema
+    // skip. The fix writes RelrDev_<N> only when the schema still exposes it.
+
+    // exposeComparator=true reveals RelrDev_1 (free condition attribute); false omits it
+    // (enum attribute reveals state_1 instead). The condition is built at idx 1; the outer
+    // Switch trigger is built at idx 2, so both index families share this one schema.
+    private String customAttrConditionSchemaJson(int ruleId, int seqNum, boolean exposeComparator) {
+        def inputs = [
+            // Condition (idx 1) fields.
+            [name: "isCondTrig.1", type: "bool"],
+            [name: "condTrig.1", type: "enum", options: ["": "Click to set", "a": "--> New Condition"]],
+            [name: "rCapab_1", type: "enum", options: ["Custom Attribute"]],
+            [name: "rDev_1", type: "capability.*", multiple: true],
+            [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
+            [name: "state_1", type: "enum", options: ["on", "off"]],
+            [name: "not1", type: "bool"],
+            // Outer Switch trigger (idx 2) fields.
+            [name: "tCapab2", type: "enum", options: ["Switch"]],
+            [name: "tDev2", type: "capability.switch", multiple: true],
+            [name: "tstate2", type: "enum", options: ["on", "off"]],
+            [name: "isCondTrig.2", type: "bool"],
+            [name: "condTrig.2", type: "enum", options: ["": "Click to set"]],
+            [name: "hasAll", type: "button"]
+        ]
+        if (exposeComparator) {
+            inputs << [name: "RelrDev_1", type: "enum", options: ["=", "!=", ">", "<"]]
+        }
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                         sections: [[title: "", input: inputs, paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:],
+            childApps: []
+        ])
+    }
+
+    def "addTrigger conditional Custom Attribute on an enum attribute lands the value in state_<N> and stays partial=false"() {
+        // Regression guard for the conditional-trigger sibling of the enum bug:
+        // the condition wizard hides RelrDev_1 and reveals state_1, so the value
+        // lands in state_1 and there is no comparator field to write. The fix
+        // suppresses the RelrDev_1 write, so no not_in_schema skip is produced and
+        // partial stays false. Reverting the fix re-introduces the unconditional
+        // RelrDev_1 write -> not_in_schema skip -> partial flips true.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrConditionSchemaJson(100, fetchSeq, false)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
+                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "=", state: "on"]],
+            confirm: true
+        ])
+
+        then: "the condition value lands in state_1 and no RelrDev_1 skip flags partial"
+        result.success == true
+        result.partial == false
+        (result.settingsApplied as List).contains("state_1")
+        !(result.settingsApplied as List).contains("RelrDev_1")
+
+        and: "no RelrDev_1 not_in_schema skip was produced"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" }
+    }
+
+    def "addTrigger conditional Custom Attribute on a free attribute still writes the RelrDev_<N> comparator (normalized)"() {
+        // Preserve the free-comparator condition path: a genuinely free-valued
+        // attribute reveals RelrDev_1, and the fix must still write the comparator
+        // there. Pins that RelrDev_1 is written (and not skipped) AND that the
+        // POSTed comparator carries the NORMALIZED Unicode glyph -- feeding '!='
+        // must land '≠'. A regression dropping _rmNormalizeComparator on the
+        // condition row would still land the key but POST the raw '!='; the
+        // value-pin below catches that. It does NOT assert partial, because the
+        // state_1 value-landed semantics for a free attribute depend on live hub
+        // behaviour the static stub cannot honestly model.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrConditionSchemaJson(100, fetchSeq, true)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
+                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "fixtureMode", comparator: "!=", state: "bright"]],
+            confirm: true
+        ])
+
+        then: "the condition comparator is written to RelrDev_1 and is not skipped"
+        result.success == true
+        (result.settingsApplied as List).contains("RelrDev_1")
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" }
+
+        and: "the POSTed comparator carries the NORMALIZED Unicode glyph, not the raw '!='"
+        posts.any { p -> (p.body as Map)["settings[RelrDev_1]"] == "≠" }
+        !posts.any { p -> (p.body as Map)["settings[RelrDev_1]"] == "!=" }
+    }
+
+    def "addTrigger conditional Custom Attribute neither-rendered: when the re-render exposes NEITHER RelrDev_1 nor state_1, the comparator skips not_in_schema and flips partial (degradation pin)"() {
+        // W1 third-branch pin for _rmBuildCondition (the conditional-trigger sibling of the
+        // trigger-row neither-rendered pin). Same three-branch guard, underscore field names:
+        // comparatorExposed -> write; else valuePickerExposed -> suppress (enum, no write);
+        // else (NEITHER, lagged render) -> ATTEMPT the write. The write routes through
+        // _rmWriteSettingOnPage, which pre-gates on schema-containment: RelrDev_1 is absent
+        // in the neither-rendered case, so the write is NOT POSTed and records a
+        // not_in_schema skip (no force-write into a hidden field). not_in_schema on the
+        // comparator is genuine degradation and flips partial. Every other condition fixture
+        // always emits state_1, so this branch and its degradation contract were unpinned.
+        given:
+        enableWrite()
+        boolean condAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") condAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            // After rCustomAttr_1 commits, the re-render exposes NEITHER the comparator
+            // RelrDev_1 NOR the value picker state_1 (the lagged-render / transient case).
+            def inputs = [
+                [name: "isCondTrig.1",  type: "bool"],
+                [name: "condTrig.1",    type: "enum", options: ["": "Click to set", "a": "--> New Condition"]],
+                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute"]],
+                [name: "rDev_1",        type: "capability.*", multiple: true],
+                [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
+                [name: "not1",          type: "bool"],
+                [name: "tCapab2",       type: "enum", options: ["Switch"]],
+                [name: "tDev2",         type: "capability.switch", multiple: true],
+                [name: "tstate2",       type: "enum", options: ["on", "off"]],
+                [name: "isCondTrig.2",  type: "bool"],
+                [name: "condTrig.2",    type: "enum", options: ["": "Click to set"]],
+                [name: "hasAll",        type: "button"]
+            ]
+            if (!condAttrWritten) {
+                // Before the attr write, the value picker is present so the attr write's
+                // own _rmWriteSettingOnPage verify sees a normal schema. After the write,
+                // neither RelrDev_1 nor state_1 appears -- the neither-rendered case.
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${condAttrWritten ? 'after' : 'before'}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
+                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "fixtureMode", comparator: "!=", state: "bright"]],
+            confirm: true
+        ])
+
+        then: "the condition comparator was NOT POSTed -- production must not force-write a hidden field"
+        !posts.any { p -> (p.body as Map).containsKey("settings[RelrDev_1]") }
+
+        and: "a not_in_schema skip on RelrDev_1 records the genuine degradation"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "not_in_schema" }
+
+        and: "the genuine degradation flips partial"
+        result.partial == true
+    }
+
+    // ---------- Custom Attribute comparator-guard fetch-failure fallback ----------
+    //
+    // The enum-vs-free routing re-fetches selectTriggers after writing the
+    // attribute to decide whether the value picker (tstate<N> / state_<N>) was
+    // revealed. That re-fetch is a new failure surface: _rmFetchConfigJson throws
+    // on an empty/unparseable response. A transient hub hiccup there must NOT abort
+    // the whole add, and it must NOT silently drop the comparator. The guard catches
+    // the throw and FORCE-WRITES the comparator (bypassing the schema-containment
+    // gate, because the failed re-fetch leaves the page schema unavailable -- a
+    // normal gated write would reject the comparator as not_in_schema and swallow it).
+    //
+    // These two specs split the contract by surface: (1) a direct unit test on the
+    // force-write helper, which pins the no-schema-gate POST + applied/skipped
+    // bookkeeping non-vacuously; (2) a no-abort assertion driving toolSetRule with a
+    // throwing presence-check, which pins F9's actual contract (a transient
+    // presence-check fetch failure does not propagate out of the build). The full
+    // settingsApplied cascade is intentionally NOT asserted in (2) -- the
+    // poisoned-empty-schema state cannot be honestly modelled by the integration stub
+    // (every selectTriggers fetch is byte-identical, so the harness cannot fail only
+    // the presence-check while leaving the surrounding writes' fetches intact).
+
+    def "_rmForceWriteEnumField POSTs the comparator without a schema-gate fetch and records the unverified skip"() {
+        // Direct unit test on the fetch-failure fallback's force-write helper.
+        // Reverting the helper body (e.g. routing back through the schema-gated
+        // _rmWriteSettingOnPage, or dropping the skip) fails these assertions.
+        given:
+        enableWrite()
+        def posts = []
+        // No /installedapp/configure/json stub is registered: the helper must NOT
+        // call _rmFetchConfigJson. If it does, the unstubbed GET surfaces as a
+        // failure rather than silently passing -- proving the schema-gate bypass.
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        def applied = []
+        def skipped = []
+
+        when:
+        script._rmForceWriteEnumField(100, "selectTriggers", "ReltDev1", "=", applied, skipped)
+
+        then: "exactly one settings POST carrying the comparator value, with sub-page context"
+        def updatePost = posts.find { it.path == "/installedapp/update/json" }
+        updatePost != null
+        updatePost.body["settings[ReltDev1]"] == "="
+        updatePost.body.currentPage == "selectTriggers"
+        updatePost.body.pageBreadcrumbs == '["mainPage"]'
+
+        and: "the key is appended to applied"
+        applied == ["ReltDev1"]
+
+        and: "the skip records the force-written-unverified reason with the normalized value"
+        skipped.size() == 1
+        skipped[0].key == "ReltDev1"
+        skipped[0].reason == "comparator_force_written_unverified"
+        skipped[0].value == "="
+    }
+
+    def "_rmForceWriteEnumField never aborts: a 4xx-rejected fallback POST degrades to a force-write-failed skip"() {
+        // Never-abort contract for the force-write fallback. _rmPostSettings throws
+        // IllegalStateException on a status >= 400 (e.g. a stale version token, which
+        // this helper cannot supply -- the re-fetch that would carry app.version is the
+        // one that already failed). The helper must CATCH that and degrade, not
+        // propagate. Reverting the try/catch to a bare _rmPostSettings(appId, body)
+        // makes the 409 propagate -> noExceptionThrown() fails.
+        given:
+        enableWrite()
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            // 4xx so _rmPostSettings' status-guard throws (the rejection path).
+            [status: 409, location: null, data: 'stale version token']
+        }
+        def applied = []
+        def skipped = []
+
+        when:
+        script._rmForceWriteEnumField(100, "selectTriggers", "ReltDev1", "=", applied, skipped)
+
+        then: "the helper swallowed the rejection -- no exception propagated"
+        noExceptionThrown()
+
+        and: "the comparator did NOT land (write was rejected)"
+        !(applied as List).contains("ReltDev1")
+
+        and: "the rejection is recorded as the degraded force-write-failed skip"
+        skipped.size() == 1
+        skipped[0].key == "ReltDev1"
+        skipped[0].reason == "comparator_force_write_failed"
+        skipped[0].value == "="
+    }
+
+    def "_rmWriteSubPageField: a write into a hidden field with a STABLE render verifies as NOT persisted (no renderShifted mask)"() {
+        // S2 genuine-rejection-not-masked pin, direct on _rmWriteSubPageField. When a
+        // write targets a field absent from the page AND the page's render is stable
+        // across the write (schema unchanged, value absent, render hash identical,
+        // settings absent), persisted MUST be false so the caller records a genuine
+        // silent_rejection. This is the contract the Site B neither-rendered integration
+        // spec depends on (it deliberately uses a state-driven, NOT per-fetch, paragraph
+        // so renderShifted stays false across the rejected write). renderShifted remains a
+        // coarse signal that CAN mask on an unrelated paragraph delta -- that known
+        // limitation is documented at the renderShifted assignment; this spec pins the
+        // honest no-mask baseline so a regression that always-credits persisted is caught.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        // STPage schema is byte-stable across the write: RelrDev_1 is NEVER present
+        // (the hidden-field case) and the paragraph text does not change.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond",     type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Temperature"]],
+                                 [name: "hasAll",   type: "button"]
+                                 // RelrDev_1 intentionally absent -- the hidden-field case.
+                             ], paragraphs: ["stable"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+
+        when:
+        def wr = script._rmWriteSubPageField(100, "STPage", "mainPage", "name", 0, [unUsed: null], "RelrDev_1", ">")
+
+        then: "the write is NOT credited persisted -- a genuine silent rejection, not masked"
+        wr.persisted == false
+
+        and: "every persistence signal is honestly false (no value landed, no schema/render/settings shift)"
+        wr.valueLanded == false
+        wr.schemaShifted == false
+        wr.renderShifted == false
+        wr.settingsLanded == false
+        wr.verifyFetchFailed == false
+    }
+
+    def "addTrigger Custom Attribute: a throwing presence-check fetch does not abort the build and flags partial"() {
+        // F9 no-abort contract: when the post-attribute exposure-probe fetch throws
+        // (transient hub failure), toolSetRule must complete without propagating the
+        // exception and surface partial=true. The full settingsApplied cascade is NOT
+        // asserted here -- see the section comment: the integration stub cannot model
+        // the poisoned-empty schema, only that the throw is caught and degraded.
+        given:
+        enableWrite()
+        boolean attrWritten = false
+        int postAttrSelectFetches = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body.each { k, v ->
+                    if (k.toString() == "settings[tCustomAttr1]") attrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            // The attribute write's own _rmWriteSettingOnPage does a leading fetch
+            // (pre-attrWritten) and a trailing verify (the 1st post-attrWritten
+            // fetch). The presence-check is the 2nd post-attrWritten fetch -- fail
+            // exactly that one so the throw lands on the guard's probe.
+            if (attrWritten) {
+                postAttrSelectFetches++
+                if (postAttrSelectFetches == 2) return ''
+            }
+            customAttrSchemaJson(100, 1, true)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Custom Attribute", deviceIds: [2], attribute: "fixtureMode", comparator: "=", state: "bright"],
+            confirm: true
+        ])
+
+        then: "the build completed (no propagated exception), stayed success, and flagged partial"
+        noExceptionThrown()
+        result != null
+        result.success != false
+        result.partial == true
+    }
+
+    def "addTrigger condition Custom Attribute: a throwing re-fetch does not abort the build and flags partial (condition call-site)"() {
+        // CONDITION call-site analog of the trigger-row force-write integration above.
+        // The force-write helper has direct unit tests + the TRIGGER call-site
+        // integration (_rmAddTrigger). This pins the OTHER call site: _rmBuildCondition's
+        // comparator guard. After writing rCustomAttr_<N>, _rmBuildCondition re-fetches
+        // selectTriggers to decide enum-vs-free; when that re-fetch throws (transient
+        // hub hiccup), the guard must force-write RelrDev_<N> and degrade to partial
+        // rather than propagate the exception and abort the whole add.
+        given:
+        enableWrite()
+        boolean condAttrWritten = false
+        int postCondAttrFetches = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body.each { k, v ->
+                    if (k.toString() == "settings[rCustomAttr_1]") condAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            // The attribute write's own _rmWriteSettingOnPage does a leading fetch
+            // (pre-condAttrWritten) and a trailing verify (the 1st post-condAttrWritten
+            // fetch). The comparator-guard re-fetch is the 2nd post-condAttrWritten
+            // fetch -- fail exactly that one so the throw lands on the guard's probe.
+            if (condAttrWritten) {
+                postCondAttrFetches++
+                if (postCondAttrFetches == 2) return ''
+            }
+            customAttrConditionSchemaJson(100, 1, true)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
+                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "fixtureMode", comparator: "=", state: "bright"]],
+            confirm: true
+        ])
+
+        then: "the build completed (no propagated exception), stayed success, and flagged partial"
+        noExceptionThrown()
+        result != null
+        result.success != false
+        result.partial == true
+    }
+
     // ---------- addTrigger Periodic Schedule frequency completeness ----------
     //
     // These specs pin the exact RM 5.1 setting names each periodic frequency
@@ -8755,9 +9449,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fn = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fn = key
                         if (fn == "rCustomAttr_1") rCustomAttrWritten = true
                         if (fn == "RelrDev_1") relrWritten = true
                     }
@@ -8844,6 +9538,1570 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { p -> (p.body as Map).any { k, v -> k?.toString()?.contains("value_1") } }
     }
 
+    def "addRequiredExpression Custom Attribute walker on an enum attribute lands the value in state_1 with no RelrDev write and partial=false"() {
+        // Regression guard for the walker (STPage) enum-attribute bug: an
+        // enum-recognized attribute re-renders to reveal state_1 DIRECTLY and never
+        // exposes RelrDev_1. The pre-fix walker threw IllegalStateException ("RelrDev_<N>
+        // not revealed") -- a hard failure. The fix branches: when state_1 is present
+        // and RelrDev_1 is not, it skips the comparator and writes state_1 with no throw
+        // and no partial. Reverting the fix re-introduces the throw, failing this spec.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF S1 is on THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            // Enum attribute: rCustomAttr_1 re-render reveals state_1 (enum picker)
+            // DIRECTLY and NEVER reveals RelrDev_1.
+            def inputs = [
+                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "switch",
+                comparator: "=",
+                state: "on"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the value lands in state_1 and the enum path does not throw"
+        result.success == true
+        result.partial == false
+        (result.settingsApplied as List).contains("state_1")
+
+        and: "RelrDev_1 was never written -- the comparator field the enum render hid"
+        !(result.settingsApplied as List).contains("RelrDev_1")
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+    }
+
+    def "addRequiredExpression Custom Attribute walker on a free attribute still writes RelrDev_1 (negative pin)"() {
+        // Negative pin for the enum walker fix: a genuinely free-valued attribute
+        // reveals RelrDev_1 (progressive disclosure: rCustomAttr_1 -> RelrDev_1 ->
+        // state_1). The comparator MUST still be written there -- the enum branch must
+        // not over-suppress. (Mirrors the existing 'value routes to state_N' walker spec
+        // but pins the RelrDev write explicitly as the free-vs-enum discriminator.)
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        boolean relrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        if (key == "rCustomAttr_1") rCustomAttrWritten = true
+                        if (key == "RelrDev_1") relrWritten = true
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF fixtureMode = bright THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            def inputs = [
+                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "RelrDev_1", type: "enum",
+                                    options: ["<", "<=", ">", ">=", "=", "!="]]]
+            }
+            if (relrWritten) {
+                inputs = inputs + [[name: "state_1", type: "string"]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "fixtureMode",
+                comparator: "=",
+                state: "bright"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the comparator RelrDev_1 is written and the value lands in state_1"
+        result.success == true
+        (result.settingsApplied as List).contains("RelrDev_1")
+        (result.settingsApplied as List).contains("state_1")
+    }
+
+    def "addRequiredExpression walker Site B: a standard capability carrying an enum attribute suppresses RelrDev_1 and stays partial=false"() {
+        // Site B = the walker's default (non-Custom-Attribute) path: a standard
+        // capability (here Temperature) that carries a custom-attribute field. Its
+        // comparator block writes rCustomAttr_1 then discoverField(state_1|RelrDev_1):
+        // an enum-recognized attribute reveals state_1 and HIDES RelrDev_1, so the
+        // comparator is suppressed. Distinct from Site A (the dedicated Custom
+        // Attribute block). Reverting the Site B suppression re-introduces the
+        // unconditional RelrDev_1 write (silent dead-storage), which this spec catches
+        // by asserting RelrDev_1 is never POSTed.
+        // COVERAGE NOTE: Site B is NOT reachable via the structured tool (a Custom
+        // Attribute spec routes to capability='Custom Attribute' = Site A), so Site B
+        // is Spock-only -- there is no e2e scenario for it. These specs ARE its coverage.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF T1 mode is comfort THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            // Standard capability default path: rCapab_1=Temperature is in the schema.
+            // After rCustomAttr_1 commits, an enum-recognized attribute reveals state_1
+            // and never reveals RelrDev_1 (the Site B enum case).
+            def inputs = [
+                [name: "cond",          type: "enum",                   options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",                   options: ["Custom Attribute", "Temperature"]],
+                [name: "rDev_1",        type: "capability.temperature", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",                   options: ["thermostatMode", "temperature"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["comfort", "eco"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                attribute: "thermostatMode",
+                comparator: "=",
+                state: "comfort"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the value lands in state_1 and the Site B enum path stays partial=false"
+        result.success == true
+        result.partial == false
+        (result.settingsApplied as List).contains("state_1")
+
+        and: "RelrDev_1 was neither applied nor POSTed -- the comparator the enum render hid"
+        !(result.settingsApplied as List).contains("RelrDev_1")
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+    }
+
+    def "addAction ifThen walker Site A: an enum Custom Attribute lands the value in state_1 with no RelrDev write and partial=false"() {
+        // doActPage mirror of the STPage Site A enum-success spec. The same shared
+        // walker reaches this through a DIFFERENT write closure: STPage injects
+        // writeST (the _rmWriteSubPageField path), doActPage injects writeAct (the
+        // _rmWriteSettingOnPage path), so the throw->success conversion in the
+        // dedicated Custom Attribute block needs its own reachability proof here.
+        // An enum-recognized attribute re-renders to reveal state_1 DIRECTLY and never
+        // exposes RelrDev_1; the fix skips the comparator and writes state_1 with no
+        // throw and no partial. Reverting the walker fix re-introduces the throw.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        def daSeq = 0
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            // Enum attribute: rCustomAttr_1 re-render reveals state_1 (enum picker)
+            // DIRECTLY and NEVER reveals RelrDev_1.
+            def inputs = [
+                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond",          type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF switch = on THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF switch = on THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Custom Attribute",
+                    deviceIds: [8],
+                    attribute: "switch",
+                    comparator: "=",
+                    state: "on"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the value lands in state_1 and the doActPage enum path does not throw"
+        result.success == true
+        result.partial == false
+        (result.settingsApplied as List).contains("state_1")
+
+        and: "RelrDev_1 was never written -- the comparator field the enum render hid"
+        !(result.settingsApplied as List).contains("RelrDev_1")
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+    }
+
+    def "addAction ifThen walker Site B: a standard capability carrying an enum attribute suppresses RelrDev_1 and stays partial=false"() {
+        // doActPage mirror of the STPage Site B enum-suppress spec. Site B is the
+        // walker's default (non-Custom-Attribute) path: a standard capability (here
+        // Temperature) that carries a custom-attribute field. Its comparator block
+        // writes rCustomAttr_1 then discoverField(state_1|RelrDev_1): an enum-recognized
+        // attribute reveals state_1 and HIDES RelrDev_1, so the comparator is suppressed.
+        // Reachable here via the writeAct closure (vs STPage's writeST). Reverting the
+        // Site B suppression re-introduces the unconditional RelrDev_1 write (silent
+        // dead-storage), which this spec catches by asserting RelrDev_1 is never POSTed.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        def daSeq = 0
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            // Standard capability default path: rCapab_1=Temperature is in the schema.
+            // After rCustomAttr_1 commits, an enum-recognized attribute reveals state_1
+            // and never reveals RelrDev_1 (the Site B enum case).
+            def inputs = [
+                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond",          type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Temperature"]],
+                [name: "rDev_1",        type: "capability.temperature", multiple: true],
+                [name: "rCustomAttr_1", type: "enum", options: ["thermostatMode", "temperature"]],
+                [name: "hasAll",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["comfort", "eco"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF mode is comfort THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF mode is comfort THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Temperature",
+                    deviceIds: [8],
+                    attribute: "thermostatMode",
+                    comparator: "=",
+                    state: "comfort"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the value lands in state_1 and the Site B enum path stays partial=false on doActPage"
+        result.success == true
+        result.partial == false
+        (result.settingsApplied as List).contains("state_1")
+
+        and: "the enum VALUE 'comfort' actually landed in the state_1 picker (POST-body value pin, not just key existence)"
+        posts.any { p -> (p.body as Map)["settings[state_1]"] == "comfort" }
+
+        and: "RelrDev_1 was neither applied nor POSTed -- the comparator the enum render hid"
+        !(result.settingsApplied as List).contains("RelrDev_1")
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+    }
+
+    def "addRequiredExpression walker Site B free-path: a non-enum attribute reveals RelrDev_1 and the comparator IS written (negative pin)"() {
+        // Negative pin for the Site B enum-SUPPRESS branch. The enum-suppress specs pin
+        // that an enum attribute hides RelrDev_1 and the comparator is NOT written; this
+        // pins the complementary free-attribute branch where the post-rCustomAttr_1
+        // re-render reveals RelrDev_1 (NOT state_1) and the comparator MUST be written.
+        // Guards against an over-suppress regression that would drop the comparator on
+        // the free path. STPage is sufficient -- Site B's free vs enum decision is page-
+        // independent (the attrValuePickerExposed discoverField gate is shared).
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        boolean relrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                    if (key != null && key == "RelrDev_1") relrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF T1 setpoint > 70 THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            // Standard capability (Temperature) carrying a FREE-valued custom attribute.
+            // FREE-path progressive disclosure: rCustomAttr_1 -> RelrDev_1 -> state_1.
+            // After rCustomAttr_1 commits, the re-render reveals RelrDev_1 ONLY (NOT
+            // state_1), so the Site B attrValuePickerExposed discoverField gate
+            // (visibleNames contains state_1?) is FALSE and the comparator must be
+            // written. state_1 must NOT appear until RelrDev_1 commits -- exposing it
+            // alongside RelrDev_1 would model the enum case and over-suppress the
+            // comparator (the original fixture bug this negative-pin guards against).
+            def inputs = [
+                [name: "cond",          type: "enum",                   options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",                   options: ["Custom Attribute", "Temperature"]],
+                [name: "rDev_1",        type: "capability.temperature", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",                   options: ["setpoint", "temperature"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "RelrDev_1", type: "enum",
+                                    options: ["<", "<=", ">", ">=", "=", "!="]]]
+            }
+            if (relrWritten) {
+                inputs = inputs + [[name: "state_1", type: "number"]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                attribute: "setpoint",
+                comparator: ">",
+                value: 70
+            ]]],
+            confirm: true
+        ])
+
+        then: "the comparator RelrDev_1 IS written on the free path -- enum-suppress did not over-fire"
+        result.success == true
+        (result.settingsApplied as List).contains("RelrDev_1")
+        posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+    }
+
+    def "addRequiredExpression walker Site B both-visible: a free attribute exposing BOTH RelrDev_1 and state_1 still writes the comparator (normalized) -- comparator-first pin"() {
+        // B1 regression pin for the Site B comparator-FIRST + normalize fix. A free-valued
+        // attribute can render BOTH the comparator RelrDev_1 AND the value picker state_1 in
+        // the same re-render. The pre-fix Site B logic was picker-first (suppress whenever
+        // state_1 is visible) and wrote the RAW comparator, so a !=/== on such an attribute
+        // either dropped the comparator OR wrote a glyph RM does not recognize. The fix
+        // writes the comparator whenever RelrDev_1 is exposed (OR neither rendered), using
+        // _rmNormalizeComparator. This fixture exposes BOTH fields right after rCustomAttr_1
+        // and feeds comparator '!=' -- it asserts RelrDev_1 IS POSTed carrying the
+        // normalized Unicode '≠'. The existing free-path pin reveals state_1 only AFTER
+        // RelrDev_1 writes, so it cannot catch the both-visible / picker-first regression.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF T1 setpoint != 70 THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            // Standard capability (Temperature) carrying a FREE-valued custom attribute
+            // whose re-render exposes BOTH the comparator RelrDev_1 AND the value picker
+            // state_1 simultaneously (the both-visible case). Site B's comparator-first
+            // logic must still write RelrDev_1 here even though state_1 is also visible.
+            def inputs = [
+                [name: "cond",          type: "enum",                   options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",                   options: ["Custom Attribute", "Temperature"]],
+                [name: "rDev_1",        type: "capability.temperature", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",                   options: ["setpoint", "temperature"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "RelrDev_1", type: "enum",
+                                    options: ["<", "<=", ">", ">=", "=", "≠"]]]
+                inputs = inputs + [[name: "state_1", type: "number"]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                attribute: "setpoint",
+                comparator: "!=",
+                value: 70
+            ]]],
+            confirm: true
+        ])
+
+        then: "the comparator RelrDev_1 IS written even though state_1 was simultaneously visible (comparator-first, not picker-first)"
+        result.success == true
+        (result.settingsApplied as List).contains("RelrDev_1")
+
+        and: "the POSTed comparator carries the NORMALIZED Unicode glyph, not the raw '!='"
+        def relrPost = posts.find { p ->
+            (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" }
+        }
+        relrPost != null
+        (relrPost.body as Map)["settings[RelrDev_1]"] == "≠"
+        !posts.any { p -> (p.body as Map)["settings[RelrDev_1]"] == "!=" }
+    }
+
+    def "addRequiredExpression walker Site B neither-rendered: a lagged re-render exposing NEITHER RelrDev_1 nor state_1 still attempts the comparator write, records silent_rejection, and flips partial"() {
+        // Site B (the walker's standard-capability default block) neither-rendered pin.
+        // Site B's comparator guard is comparator-first: it writes RelrDev_1 whenever the
+        // comparator is exposed OR neither field rendered (only the positively-detected enum
+        // case suppresses). When a lagged re-render exposes NEITHER RelrDev_1 NOR state_1,
+        // the guard still ATTEMPTS the write via writeST -- which POSTs-then-verifies with NO
+        // schema-containment pre-gate, so the comparator POSTs but the post-write verify sees
+        // RelrDev_1 absent and records a silent_rejection skip that flips partial. This is
+        // distinct from the trigger-row / condition neither-rendered, which routes through
+        // _rmWriteSettingOnPage (schema-gated) and records not_in_schema instead. Only the
+        // enum and free paths of Site B were pinned; this third (neither-rendered) Site B
+        // branch and its silent_rejection-partial contract were unpinned before this spec.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF T1 setpoint > 70 THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // Standard capability (Temperature) carrying a custom attribute. BEFORE the attr
+            // write, state_1 is present so the attr write's own verify sees a normal schema;
+            // AFTER rCustomAttr_1 commits the re-render exposes NEITHER RelrDev_1 NOR state_1
+            // (the lagged-render case). Site B must still attempt the comparator write.
+            //
+            // The paragraph is STATE-DRIVEN (keyed on rCustomAttrWritten), NOT a monotonic
+            // fetch counter. A per-fetch "seq N" paragraph would make _rmWriteSubPageField's
+            // post-write render hash shift on EVERY write -- including the silently-rejected
+            // RelrDev_1 write -- so renderShifted would be true and writeST would route the
+            // comparator to APPLIED, masking the silent_rejection this spec exists to pin.
+            // Keying the paragraph on wizard state shifts the render exactly once (when the
+            // attribute lands and state_1 disappears) and keeps it STABLE across the
+            // RelrDev_1 write the hub ignores -- so renderShifted/schemaShifted/valueLanded
+            // all stay false there and the write correctly verifies as silent_rejection.
+            def inputs = [
+                [name: "cond",          type: "enum",                   options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",                   options: ["Custom Attribute", "Temperature"]],
+                [name: "rDev_1",        type: "capability.temperature", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",                   options: ["setpoint", "temperature"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (!rCustomAttrWritten) {
+                inputs = inputs + [[name: "state_1", type: "number"]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: [(rCustomAttrWritten ? "attr set" : "pick attribute")]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                attribute: "setpoint",
+                comparator: ">",
+                value: 70
+            ]]],
+            confirm: true
+        ])
+
+        then: "the comparator write WAS attempted (RelrDev_1 POSTed) even though neither field rendered"
+        posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+
+        and: "a silent_rejection skip on RelrDev_1 was recorded (not not_in_schema -- writeST has no schema gate) and partial flipped"
+        def relrSkip = ((result.settingsSkipped as List) ?: []).find { it instanceof Map && it.key == "RelrDev_1" }
+        relrSkip != null
+        relrSkip.reason == "silent_rejection"
+        result.partial == true
+    }
+
+    def "addRequiredExpression walker Site A: a throwing exposure-probe re-fetch force-writes the comparator and flips partial (walker force-write fallback)"() {
+        // Site A (the dedicated Custom Attribute block) force-write-on-re-fetch-failure pin.
+        // After writing rCustomAttr_1, the walker's revealStep re-fetches STPage to decide
+        // enum-vs-free. When that exposure-probe fetch throws transiently (empty/unparseable
+        // response), the walker must NOT propagate the exception and abort the whole add --
+        // it mirrors the trigger-row / condition fallback: catch the throw, force-write the
+        // comparator via _rmForceWriteEnumField (recording comparator_force_written_unverified),
+        // and degrade to partial. Reverting the walker try/catch re-introduces the abort
+        // (a propagated exception / success=false), failing this spec. The "fail exactly the
+        // 2nd post-attr fetch" trick lands the throw on the revealStep probe specifically,
+        // after the attr write's own leading fetch + trailing verify both succeed.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        int postAttrStFetches = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF fixtureMode != bright THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // The attr write's own _rmWriteSubPageField does a leading fetch (pre-write) and
+            // a trailing verify (1st post-write fetch). The revealStep exposure probe is the
+            // 2nd post-write fetch -- fail exactly that one so the throw lands on the probe.
+            if (rCustomAttrWritten) {
+                postAttrStFetches++
+                if (postAttrStFetches == 2) return ''
+            }
+            def inputs = [
+                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "RelrDev_1", type: "enum",
+                                    options: ["<", "<=", ">", ">=", "=", "≠"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${postAttrStFetches}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "fixtureMode",
+                comparator: "!=",
+                state: "bright"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the build completed (no propagated exception), stayed success, and flagged partial"
+        noExceptionThrown()
+        result != null
+        result.success == true
+        result.partial == true
+
+        and: "the comparator was force-written: RelrDev_1 is applied with a comparator_force_written_unverified skip carrying the NORMALIZED glyph"
+        (result.settingsApplied as List).contains("RelrDev_1")
+        def forceSkip = ((result.settingsSkipped as List) ?: []).find { it instanceof Map && it.key == "RelrDev_1" && it.reason == "comparator_force_written_unverified" }
+        forceSkip != null
+
+        and: "the force-write POSTed the NORMALIZED Unicode glyph, not the raw '!='"
+        posts.any { p -> (p.body as Map)["settings[RelrDev_1]"] == "≠" }
+        !posts.any { p -> (p.body as Map)["settings[RelrDev_1]"] == "!=" }
+    }
+
+    def "addRequiredExpression walker Site B: a throwing exposure-probe re-fetch force-writes the comparator and flips partial (Site B graceful degradation, no abort)"() {
+        // Site B = the walker's DEFAULT block (a standard capability carrying a custom
+        // attribute), reached by capability='Temperature'+attribute, NOT capability=
+        // 'Custom Attribute' (= Site A). Site B's exposure-probe re-fetch
+        // (discoverField after rCustomAttr_1) is a transient-failure surface exactly like
+        // Site A's revealStep probe. On a throw, Site B must mirror Site A's
+        // degrade-never-abort contract: catch, force-write the comparator via
+        // _rmForceWriteEnumField (recording comparator_force_written_unverified), flip
+        // partial, never propagate the exception. Reverting Site B's try/catch leaves the
+        // throw UNGUARDED -- the discoverField call aborts the whole add (Site A degrades,
+        // Site B aborts), the asymmetry the maintainer flagged. The "fail exactly the 2nd
+        // post-attr fetch" trick lands the throw on discoverField (the attr write's own
+        // pre-fetch + verify both succeed first), same as the Site A pin.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        int postAttrStFetches = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF T1 temperature != 70 THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // Site B default path: rCapab_1=Temperature (a standard capability), NOT
+            // Custom Attribute. The attr write's own _rmWriteSubPageField does a leading
+            // fetch + a trailing verify; discoverField's first fetch is the 2nd post-write
+            // fetch -- fail exactly that one so the throw lands on the exposure probe.
+            if (rCustomAttrWritten) {
+                postAttrStFetches++
+                if (postAttrStFetches == 2) return ''
+            }
+            def inputs = [
+                [name: "cond",          type: "enum",                   options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",                   options: ["Custom Attribute", "Temperature"]],
+                [name: "rDev_1",        type: "capability.temperature", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",                   options: ["thermostatMode", "temperature"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "RelrDev_1", type: "enum",
+                                    options: ["<", "<=", ">", ">=", "=", "≠"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${postAttrStFetches}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                attribute: "thermostatMode",
+                comparator: "!=",
+                state: "70"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the build completed (no propagated exception), stayed success, and flagged partial"
+        noExceptionThrown()
+        result != null
+        result.success == true
+        result.partial == true
+
+        and: "the comparator was force-written: RelrDev_1 is applied with a comparator_force_written_unverified skip carrying the NORMALIZED glyph"
+        (result.settingsApplied as List).contains("RelrDev_1")
+        def forceSkip = ((result.settingsSkipped as List) ?: []).find { it instanceof Map && it.key == "RelrDev_1" && it.reason == "comparator_force_written_unverified" }
+        forceSkip != null
+
+        and: "the force-write POSTed the NORMALIZED Unicode glyph, not the raw '!=', with the STPage breadcrumb '[]'"
+        def relrPost = posts.find { p -> (p.body as Map).containsKey("settings[RelrDev_1]") }
+        relrPost != null
+        (relrPost.body as Map)["settings[RelrDev_1]"] == "≠"
+        !posts.any { p -> (p.body as Map)["settings[RelrDev_1]"] == "!=" }
+        (relrPost.body as Map).pageBreadcrumbs == '[]'
+    }
+
+    def "addAction ifThen walker Site A: a throwing exposure-probe re-fetch force-writes the comparator with the doActPage breadcrumb and flips partial (doActPage force-write fallback)"() {
+        // doActPage arm of the shared walker force-write fallback. The SAME try/catch in
+        // _rmWalkConditionReveal is reached via writeAct (doActPage) as well as writeST
+        // (STPage), and the two arms post DIFFERENT breadcrumbs:
+        //   (page == "STPage") ? '[]' : '["mainPage"]'
+        // The STPage spec above pins the '[]' arm; this pins the '["mainPage"]' arm reached
+        // through addAction. After rCustomAttr_1, the walker's revealStep re-fetches
+        // doActPage; a transient empty response throws on that probe and the walker must
+        // force-write the comparator + degrade to partial rather than abort. The breadcrumb
+        // assertion is what makes this exercise the doActPage arm specifically rather than
+        // duplicating the STPage spec. Reverting the walker try/catch re-introduces the abort.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        int postAttrDaFetches = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            // The attr write's own _rmWriteSettingOnPage does a leading fetch (pre-write) and
+            // a trailing verify (1st post-write fetch). The revealStep exposure probe is the
+            // 2nd post-write fetch -- fail exactly that one so the throw lands on the probe.
+            if (rCustomAttrWritten) {
+                postAttrDaFetches++
+                if (postAttrDaFetches == 2) return ''
+            }
+            def inputs = [
+                [name: "actType.1",     type: "enum",              options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1",  type: "enum",              options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "RelrDev_1", type: "enum",
+                                    options: ["<", "<=", ">", ">=", "=", "≠"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF switch != on THEN (seq ${postAttrDaFetches})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF switch != on THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Custom Attribute",
+                    deviceIds: [8],
+                    attribute: "switch",
+                    comparator: "!=",
+                    state: "on"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the build completed (no propagated exception), stayed success, and flagged partial"
+        noExceptionThrown()
+        result != null
+        result.success == true
+        result.partial == true
+
+        and: "the comparator was force-written: RelrDev_1 is applied with a comparator_force_written_unverified skip"
+        (result.settingsApplied as List).contains("RelrDev_1")
+        def forceSkip = ((result.settingsSkipped as List) ?: []).find { it instanceof Map && it.key == "RelrDev_1" && it.reason == "comparator_force_written_unverified" }
+        forceSkip != null
+
+        and: "the force-write POSTed the NORMALIZED Unicode glyph, not the raw '!='"
+        def relrPost = posts.find { p -> (p.body as Map).containsKey("settings[RelrDev_1]") }
+        relrPost != null
+        (relrPost.body as Map)["settings[RelrDev_1]"] == "≠"
+        !posts.any { p -> (p.body as Map)["settings[RelrDev_1]"] == "!=" }
+
+        and: "the force-write used the doActPage breadcrumb '[\"mainPage\"]' (NOT the STPage '[]') -- this is the doActPage arm"
+        (relrPost.body as Map).pageBreadcrumbs == '["mainPage"]'
+        (relrPost.body as Map).currentPage == "doActPage"
+    }
+
+    def "addAction ifThen walker Site B: a throwing exposure-probe re-fetch force-writes the comparator with the doActPage breadcrumb and flips partial (Site B graceful degradation, no abort)"() {
+        // doActPage arm of the Site B graceful-degradation pin. Site B = the walker's
+        // default block (a standard capability carrying a custom attribute), reached by
+        // capability='Switch'+attribute through addAction (writeAct, NOT writeST). Its
+        // discoverField exposure probe is the transient-failure surface; on a throw Site B
+        // must catch, force-write the comparator with the doActPage breadcrumb
+        // '["mainPage"]', flip partial, and NOT abort. The breadcrumb assertion is what
+        // exercises the doActPage arm specifically. Reverting Site B's try/catch leaves the
+        // throw unguarded and the add aborts -- the Site-A-degrades-Site-B-aborts asymmetry.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        int postAttrDaFetches = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            // Site B default path: rCapab_1=Switch (a standard capability) carrying a custom
+            // attribute. The attr write's own _rmWriteSettingOnPage does a leading fetch +
+            // a trailing verify; discoverField's first fetch is the 2nd post-write fetch --
+            // fail exactly that one so the throw lands on the exposure probe.
+            if (rCustomAttrWritten) {
+                postAttrDaFetches++
+                if (postAttrDaFetches == 2) return ''
+            }
+            def inputs = [
+                [name: "actType.1",     type: "enum",              options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1",  type: "enum",              options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",              options: ["customLevel", "switch"]],
+                [name: "hasAll",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "RelrDev_1", type: "enum",
+                                    options: ["<", "<=", ">", ">=", "=", "≠"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF customLevel != 50 THEN (seq ${postAttrDaFetches})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF customLevel != 50 THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Switch",
+                    deviceIds: [8],
+                    attribute: "customLevel",
+                    comparator: "!=",
+                    state: "50"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the build completed (no propagated exception), stayed success, and flagged partial"
+        noExceptionThrown()
+        result != null
+        result.success == true
+        result.partial == true
+
+        and: "the comparator was force-written: RelrDev_1 is applied with a comparator_force_written_unverified skip"
+        (result.settingsApplied as List).contains("RelrDev_1")
+        def forceSkip = ((result.settingsSkipped as List) ?: []).find { it instanceof Map && it.key == "RelrDev_1" && it.reason == "comparator_force_written_unverified" }
+        forceSkip != null
+
+        and: "the force-write POSTed the NORMALIZED Unicode glyph, not the raw '!=', with the doActPage breadcrumb '[\"mainPage\"]'"
+        def relrPost = posts.find { p -> (p.body as Map).containsKey("settings[RelrDev_1]") }
+        relrPost != null
+        (relrPost.body as Map)["settings[RelrDev_1]"] == "≠"
+        !posts.any { p -> (p.body as Map)["settings[RelrDev_1]"] == "!=" }
+        (relrPost.body as Map).pageBreadcrumbs == '["mainPage"]'
+        (relrPost.body as Map).currentPage == "doActPage"
+    }
+
+    def "addRequiredExpression on a rule that ALREADY has a Required Expression returns a clear error, not the raw schema dump"() {
+        // C3 existing-RE guard, driven on _rmAddRequiredExpression directly (the helper that
+        // owns the guard). Re-driving addRequiredExpression over a rule that already has an
+        // RE lands STPage in edit-mode: it renders the committed-expression button set
+        // (editST/cancelST/stopOnST/evalOnBoot/doneST) and NOT the cond=a/rCapab_<N>
+        // new-condition add-flow the walk needs. Pre-fix the walk wrote cond=a into a page
+        // that ignored it, then failed partway with a raw "rCapab_<N> not in STPage schema
+        // ... got cancelST, editST, ..." schema dump. The guard detects the edit-mode tell
+        // up front and returns success:false + requiredExpressionAlreadyExists with an
+        // actionable message. This spec FAILS if someone reverts to the raw-dump behavior
+        // (it asserts the error is the clear one AND is NOT the schema dump). The
+        // toolSetRule dispatcher forwards requiredExpressionAlreadyExists + error verbatim;
+        // pinning the helper keeps the assertion at the guard's source.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            // mainPage precursor the walk navigates through (useST write) before it reaches
+            // STPage, where the edit-mode tell is inspected and the existing-RE guard fires.
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // Edit-mode STPage: the committed-RE button set, NO cond / rCapab_<N> add-flow.
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "editST",     type: "button"],
+                                 [name: "cancelST",   type: "button"],
+                                 [name: "stopOnST",   type: "bool"],
+                                 [name: "evalOnBoot", type: "bool"],
+                                 [name: "doneST",     type: "button"]
+                             ], paragraphs: ["Required Expression: switch is on"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script._rmAddRequiredExpression(100,
+            [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]])
+
+        then: "the existing-RE state is reported as a clear, actionable error -- not a raw schema dump"
+        result.success == false
+        result.requiredExpressionAlreadyExists == true
+        result.error?.toLowerCase()?.contains("required expression already exists")
+        result.error?.contains("hub_get_app_config")
+
+        and: "the error is NOT the raw 'not in STPage schema ... got cancelST, editST' dump"
+        !(result.error?.contains("not in STPage schema"))
+        !(result.error?.contains("got cancelST"))
+    }
+
+    def "addRequiredExpression repair hints split comparator_force_written_unverified from the generic lost-field hint"() {
+        // C4 repair-hint-split pin. When a degraded RE write force-writes the comparator
+        // after a transient re-fetch failure, the skip reason is
+        // comparator_force_written_unverified -- the value DID land (it is in
+        // settingsApplied), so the hint must say verify-don't-rewrite, mirroring
+        // _rmAddTrigger / _rmAddAction. Folding it into the generic "fill missing fields /
+        // re-run with rawSettings" hint would wrongly tell the caller to re-write a
+        // comparator that landed. This drives the Site A throwing-probe fallback (the same
+        // fixture as the Site A force-write spec) and asserts repairHints carries the
+        // verify-don't-rewrite hint for RelrDev_1 and NOT the generic lost-field hint.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        int postAttrStFetches = 0
+        // Track written setting values and echo them back in the STPage `settings` map so a
+        // landed value write verifies via settingsLanded (the hub stores written values in
+        // settings) -- deterministic, independent of the render-shift heuristic and the
+        // exposure-probe fetch-count. This is what isolates the ONLY degraded entry to the
+        // comparator_force_written_unverified skip: the state_1 value write provably lands.
+        def stPageSettings = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        if (key == "rCustomAttr_1") rCustomAttrWritten = true
+                        stPageSettings[key] = v
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF fixtureMode != bright THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // The attr write's own fetch + verify succeed; the revealStep exposure probe is
+            // the 2nd post-write fetch -- fail exactly that one to trigger the force-write.
+            if (rCustomAttrWritten) {
+                postAttrStFetches++
+                if (postAttrStFetches == 2) return ''
+            }
+            def inputs = [
+                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                // After the comparator is force-written, the walk best-effort writes the
+                // value into state_1 -- expose both fields so that value write LANDS (no
+                // genuinely-lost skip). It verifies via settingsLanded (the echoed settings
+                // map below), isolating the only degraded entry to the
+                // comparator_force_written_unverified skip, which is the point of the split.
+                inputs = inputs + [
+                    [name: "RelrDev_1", type: "enum", options: ["<", "<=", ">", ">=", "=", "≠"]],
+                    [name: "state_1",   type: "enum", options: ["bright", "dim"]]
+                ]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${postAttrStFetches}".toString()]]]],
+                settings: stPageSettings, childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "fixtureMode",
+                comparator: "!=",
+                state: "bright"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the force-write degraded the result to partial with a comparator_force_written_unverified skip"
+        result.success == true
+        result.partial == true
+        ((result.settingsSkipped as List) ?: []).any { it instanceof Map && it.key == "RelrDev_1" && it.reason == "comparator_force_written_unverified" }
+
+        and: "repairHints carries the verify-don't-rewrite hint naming the force-written comparator"
+        def hints = (result.repairHints as List) ?: []
+        def verifyHint = hints.find { it?.toString()?.contains("force-written") }
+        verifyHint != null
+        verifyHint.toString().contains("RelrDev_1")
+        verifyHint.toString().contains("value IS in settingsApplied")
+        verifyHint.toString().contains("Do NOT re-write")
+
+        and: "it does NOT fold the force-written comparator into the generic fill-missing-fields hint"
+        // The generic lost-field hint exists only when there are genuinely-lost degraded
+        // entries; this run has none (only the force-written skip), so the generic hint must
+        // be absent entirely -- the force-written key is NOT treated as a lost field.
+        !hints.any { it?.toString()?.contains("re-run with rawSettings to fill missing fields") }
+    }
+
+    def "addAction ifThen walker Site B free-path: a non-enum attribute reveals RelrDev_1 and the comparator IS written on doActPage (negative pin)"() {
+        // doActPage analog of the STPage Site B free-path negative pin. The STPage pin
+        // guards over-suppression on the required-expression surface; this guards the
+        // SAME over-suppress regression reached via addAction (doActPage). A free-valued
+        // attribute reveals RelrDev_1 (NOT state_1) after rCustomAttr_1, and the comparator
+        // MUST be written. Without this, a doActPage-only over-suppress regression (Site B
+        // dropping the comparator on the free path) would pass every other walker spec.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        boolean relrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                    if (key != null && key == "RelrDev_1") relrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        def daSeq = 0
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            // FREE-path progressive disclosure on doActPage: rCustomAttr_1 -> RelrDev_1 ->
+            // state_1. After rCustomAttr_1 the re-render reveals RelrDev_1 ONLY (NOT
+            // state_1), so Site B's attrValuePickerExposed gate is false and the comparator
+            // must be written. state_1 must NOT appear until RelrDev_1 commits.
+            def inputs = [
+                [name: "actType.1",     type: "enum",                   options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1",  type: "enum",                   options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond",          type: "enum",                   options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",                   options: ["Custom Attribute", "Temperature"]],
+                [name: "rDev_1",        type: "capability.temperature", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",                   options: ["setpoint", "temperature"]],
+                [name: "hasAll",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "RelrDev_1", type: "enum",
+                                    options: ["<", "<=", ">", ">=", "=", "≠"]]]
+            }
+            if (relrWritten) {
+                inputs = inputs + [[name: "state_1", type: "number"]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF T1 setpoint > 70 THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF T1 setpoint > 70 THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Temperature",
+                    deviceIds: [8],
+                    attribute: "setpoint",
+                    comparator: ">",
+                    value: 70
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the comparator RelrDev_1 IS written on the free path on doActPage -- enum-suppress did not over-fire"
+        result.success == true
+        (result.settingsApplied as List).contains("RelrDev_1")
+        posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+    }
+
     def "addRequiredExpression enum capability: cond.state still writes state_N (backward compat)"() {
         // Regression guard: the condStateOrValue unification must not break the
         // existing cond.state path. Caller passes state='open' (Contact capability)
@@ -8916,6 +11174,156 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { p -> (p.body as Map).any { k, v -> k?.toString()?.contains("RelrDev") } }
     }
 
+    def "addRequiredExpression: the idempotent useST=true silent-reject is re-tagged informational and does not flip partial"() {
+        // The Step-1 useST=true mainPage toggle is idempotent. On a static mainPage
+        // (useST already effectively set, no schema/render/value/settings shift) the
+        // write silent-rejects. The re-tag block converts that to useST_idempotent_noop,
+        // which is informational and must NOT flip partial on an otherwise-clean
+        // expression. Reverting the re-tag leaves it as silent_rejection -> partial flips
+        // true, failing this spec; the settingsSkipped assertion pins the re-tagged reason.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        // Static mainPage -- useST has no value field and the render never shifts, so the
+        // useST=true write cannot be detected as landed and routes to silent_rejection.
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF Contact1 is open"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        // Clean Contact condition (enum capability, no comparator) so the ONLY skip in
+        // play is the useST re-tag -- isolates partial to that single sentinel.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Contact", "Switch"]],
+                                 [name: "rDev_1", type: "capability.contactSensor", multiple: true],
+                                 [name: "state_1", type: "enum", options: ["open", "closed"]],
+                                 [name: "hasAll", type: "button"],
+                                 [name: "doneST", type: "button"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"C1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Contact",
+                deviceIds: [8],
+                state: "open"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the expression committed cleanly -- the useST silent-reject did not flip partial"
+        result.success == true
+        result.partial == false
+
+        and: "the useST skip is re-tagged to the informational useST_idempotent_noop reason"
+        ((result.settingsSkipped as List) ?: []).any {
+            it?.key == "useST" && it?.reason == "useST_idempotent_noop"
+        }
+    }
+
+    def "addRequiredExpression: a non-silent-rejection useST skip is NOT re-tagged and DOES flip partial (negative pin)"() {
+        // Negative pin guarding the re-tag's narrowness. The re-tag only converts the
+        // idempotent silent_rejection no-op to useST_idempotent_noop; it must NOT swallow
+        // a genuinely-degraded useST write. Here useST is ABSENT from the mainPage schema,
+        // so _rmWriteSettingOnPage records reason=not_in_schema (a real value loss, not a
+        // cosmetic idempotent no-op). The reason MUST stay not_in_schema (unchanged) AND
+        // partial MUST flip true. Loosening the re-tag's reason-check (e.g. matching any
+        // useST skip instead of only silent_rejection) would silently re-tag this real
+        // degradation to the informational reason and drop partial -- this spec catches that.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        // mainPage schema WITHOUT useST -- the useST=true write hits not_in_schema, the
+        // genuine-degradation reason (distinct from the idempotent silent_rejection no-op).
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         body: [[element: "paragraph",
+                                                 description: "IF Contact1 is open"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        // Clean Contact condition (enum capability, no comparator) so the ONLY skip in
+        // play is the useST one -- isolates partial to that single sentinel.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Contact", "Switch"]],
+                                 [name: "rDev_1", type: "capability.contactSensor", multiple: true],
+                                 [name: "state_1", type: "enum", options: ["open", "closed"]],
+                                 [name: "hasAll", type: "button"],
+                                 [name: "doneST", type: "button"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"C1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Contact",
+                deviceIds: [8],
+                state: "open"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the useST skip keeps its genuine-degradation reason -- NOT re-tagged informational"
+        ((result.settingsSkipped as List) ?: []).any {
+            it?.key == "useST" && it?.reason == "not_in_schema"
+        }
+        !((result.settingsSkipped as List) ?: []).any {
+            it?.key == "useST" && it?.reason == "useST_idempotent_noop"
+        }
+
+        and: "the real degradation flips partial"
+        result.partial == true
+    }
+
     // ---------- compareToVariable on the walker pages (STPage / doActPage) ----------
 
     def "addAction ifThen Variable compareToVariable: walker writes isVar_N + discovered RHS-variable field with the variable name"() {
@@ -8935,8 +11343,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             posts << [path: path, body: body]
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m && m[0][1] == "isVar_1") isVarWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "isVar_1") isVarWritten = true
                 }
             }
             [status: 200, location: null, data: '']
@@ -9028,8 +11436,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             posts << [path: path, body: body]
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m && m[0][1] == "isVar_1") isVarWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "isVar_1") isVarWritten = true
                 }
             }
             [status: 200, location: null, data: '']
@@ -9117,8 +11525,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             posts << [path: path, body: body]
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m && m[0][1] == "isVar_1") isVarWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "isVar_1") isVarWritten = true
                 }
             }
             [status: 200, location: null, data: '']
@@ -9202,8 +11610,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             posts << [path: path, body: body]
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m && m[0][1] == "isVar_1") isVarWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "isVar_1") isVarWritten = true
                 }
             }
             [status: 200, location: null, data: '']
@@ -9446,8 +11854,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             posts << [path: path, body: body]
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m && m[0][1] == "isVar_1") isVarWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "isVar_1") isVarWritten = true
                 }
             }
             [status: 200, location: null, data: '']
@@ -9542,8 +11950,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             posts << [path: path, body: body]
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m && m[0][1] == "isVar_1") isVarWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "isVar_1") isVarWritten = true
                 }
             }
             [status: 200, location: null, data: '']
@@ -10259,8 +12667,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                     if (k.toString() == "settings[cpType2.1]") cpType2Written = true
                 }
             }
@@ -10367,11 +12775,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "cpType2.1") cpType2Written = true
-                        if (m[0][1] == "cpType3.1") cpType3Written = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "cpType2.1") cpType2Written = true
+                        if (key == "cpType3.1") cpType3Written = true
                     }
                 }
             }
@@ -10485,8 +12893,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             if (path == "/installedapp/btn" && body?.name == "moreParams") moreParamsClicks++
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields << m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields << key
                 }
             }
             [status: 200, location: null, data: '']
@@ -12430,8 +14838,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -12541,8 +14949,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -12738,11 +15146,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             if (path == "/installedapp/btn" && body?.name == "moreParams") moreParamsFired = true
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "cpType2.1") cpType2Written = true
-                        if (m[0][1] == "uVar2.1")   uVar2Written = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "cpType2.1") cpType2Written = true
+                        if (key == "uVar2.1")   uVar2Written = true
                     }
                 }
             }
@@ -12847,8 +15255,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             if (path == "/installedapp/btn" && body?.name == "moreParams") moreParamsFired = true
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -12930,8 +15338,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             if (path == "/installedapp/btn" && body?.name == "moreParams") moreParamsFired = true
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -13243,10 +15651,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             if (path == "/installedapp/btn" && body?.name == "moreParams") moreParamsFired++
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "uVar3.1") uVar3Written = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "uVar3.1") uVar3Written = true
                     }
                 }
             }
@@ -13581,8 +15989,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -13632,8 +16040,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -13685,8 +16093,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -13783,8 +16191,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -13989,8 +16397,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -14041,8 +16449,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -14100,8 +16508,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -14145,8 +16553,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -14220,8 +16628,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
                 body?.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -14285,10 +16693,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             // wizard-consumed fields on Done, which would overwrite the real values.
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1") rCapabWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
                     }
                 }
             }
@@ -14381,10 +16789,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1") rCapabWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
                     }
                 }
             }
@@ -14567,9 +16975,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fieldName = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fieldName = key
                         writtenFields[fieldName] = v
                         if (fieldName == "rCapab_1")  rCapabWritten = true
                         if (fieldName == "starting1") startingWritten = true
@@ -14692,8 +17100,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -15008,9 +17416,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fn = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fn = key
                         writtenFields[fn] = v
                         if (fn == "rCapab_1") rCapabWritten = true
                         if (fn == "lVar_1") varPickerWritten = true
@@ -15224,9 +17632,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fieldName = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fieldName = key
                         writtenFields[fieldName] = v
                         if (fieldName == "rCustomAttr_1") rCustomAttrWritten = true
                         if (fieldName == "RelrDev_1") relrWritten = true
@@ -15361,8 +17769,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
 
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
+        // The fixture reveals NEITHER RelrDev_1 (comparator) NOR state_1 (enum value
+        // picker) after rCustomAttr_1 -- the genuine-degradation case. The walker emits
+        // the generic 'neither ... nor ...' diagnostic (an enum attribute would reveal
+        // state_1 and take the no-throw success path instead).
         result.success == false
-        result.error?.toString()?.contains("RelrDev_<N> (comparator) not revealed after rCustomAttr_<N>")
+        result.error?.toString()?.contains("neither RelrDev_<N> (comparator) nor state_<N> (enum value picker) revealed after rCustomAttr_<N>")
     }
 
     // ---- Between two times: additional negative pins (W2) ----
@@ -15474,11 +17886,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1")  rCapabWritten = true
-                        if (m[0][1] == "starting1") startingWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1")  rCapabWritten = true
+                        if (key == "starting1") startingWritten = true
                     }
                 }
             }
@@ -15525,13 +17937,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1")   rCapabWritten = true
-                        if (m[0][1] == "starting1")  startingWritten = true
-                        if (m[0][1] == "startingA1") startingAWritten = true
-                        if (m[0][1] == "ending1")    endingWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1")   rCapabWritten = true
+                        if (key == "starting1")  startingWritten = true
+                        if (key == "startingA1") startingAWritten = true
+                        if (key == "ending1")    endingWritten = true
                     }
                 }
             }
@@ -15587,12 +17999,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1")  rCapabWritten = true
-                        if (m[0][1] == "starting1") startingWritten = true
-                        if (m[0][1] == "ending1")   endingWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1")  rCapabWritten = true
+                        if (key == "starting1") startingWritten = true
+                        if (key == "ending1")   endingWritten = true
                     }
                 }
             }
@@ -15640,13 +18052,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1")   rCapabWritten = true
-                        if (m[0][1] == "starting1")  startingWritten = true
-                        if (m[0][1] == "startingA1") startingAWritten = true
-                        if (m[0][1] == "ending1")    endingWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1")   rCapabWritten = true
+                        if (key == "starting1")  startingWritten = true
+                        if (key == "startingA1") startingAWritten = true
+                        if (key == "ending1")    endingWritten = true
                     }
                 }
             }
@@ -15894,9 +18306,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fn = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fn = key
                         if (fn == "rCapab_1") rCapabWritten = true
                         if (fn == "lVar_1")   varPickerWritten = true
                     }
@@ -15961,8 +18373,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m && m[0][1] == "rCustomAttr_1") rCustomAttrWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
                 }
             }
             [status: 200, location: null, data: '']
@@ -16014,31 +18426,29 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---- compareToDevice capability (B3) ----
 
-    def "addRequiredExpression compareToDevice: RHS-type selector revealed -- RelrDev and rhsType written"() {
-        // Device-relative comparison: after RelrDev write reveals the RHS-type selector,
-        // the walker chooses the 'another device' option and writes it. The secondary
-        // reference-device/attribute/offset fields are discovered via empty-trigger
-        // _rmRevealStep calls (no write to trigger their appearance), so they are only
-        // written if they appear as newly-visible fields at that point. This spec asserts
-        // the core discovery path (RelrDev -> rhsType reveal -> 'another device' write).
-        // Consequence-gated: rhsType_1 appears only after RelrDev_1 is written.
+    def "addRequiredExpression compareToDevice: RM 5.1.8 has no enum RHS-type selector -- the device-relative path degrades to rhs_type_not_revealed (partial), not a false success"() {
+        // 5.1.8 DEGRADATION PIN (was a false-positive that fabricated an enum
+        // rhsType_1 selector and asserted full success). RM 5.1.8 does NOT render an
+        // enum RHS-type selector for a device-relative RHS -- the real control is a
+        // boolean isDev_<N> ("Relative to a device?") toggle (BAT-v2.md T618). So the
+        // realistic STPage schema never exposes rhsType_1/stateType_1: RelrDev_1 is
+        // written, the enum reveal returns null, and the walker degrades to a
+        // rhs_type_not_revealed skip that flips partial. This spec must FAIL if the
+        // walker is ever reverted to fabricate-then-assert-success on the dead path.
         // Both-ways pending (orchestrator).
         given:
         enableWrite()
-        def relrWritten = false
-        def rhsTypeWritten = false
+        def rCapabWritten = false
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fn = m[0][1]
-                        writtenFields[fn] = v
-                        if (fn == "RelrDev_1")  relrWritten = true
-                        if (fn == "rhsType_1")  rhsTypeWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
                     }
                 }
             }
@@ -16060,26 +18470,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def stFetchSeq = 0
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
             stFetchSeq++
-            // Base fields always present; rhsType_1 revealed after RelrDev_1 write;
-            // refDev_1 and refAttr_1 revealed after rhsType_1 write; offset_1 always
-            // present once device-relative path is active.
+            // Realistic RM 5.1.8 shape: base condition fields appear after rCapab is
+            // written; the enum RHS-type selector (rhsType_1/stateType_1) NEVER appears
+            // because 5.1.8 uses a boolean isDev_<N> toggle the walker doesn't hunt for.
             def inputs = [
                 [name: "cond",       type: "enum",                options: ["a": "New condition"]],
                 [name: "rCapab_1",   type: "enum",                options: ["Temperature", "Humidity"]],
-                [name: "rDev_1",     type: "capability.sensor",   multiple: true],
-                [name: "RelrDev_1",  type: "enum",                options: [">", ">=", "<", "<=", "="]],
                 [name: "hasAll",     type: "button"],
                 [name: "doneST",     type: "button"]
             ]
-            if (relrWritten) {
-                inputs = inputs + [[name: "rhsType_1", type: "enum",
-                    options: ["literal": "A literal value", "device": "Another device's attribute"]]]
-            }
-            if (rhsTypeWritten) {
+            if (rCapabWritten) {
                 inputs = inputs + [
-                    [name: "refDev_1",  type: "capability.sensor", multiple: false],
-                    [name: "refAttr_1", type: "enum", options: ["temperature", "humidity"]],
-                    [name: "offset_1",  type: "number"]
+                    [name: "rDev_1",     type: "capability.sensor", multiple: true],
+                    [name: "RelrDev_1",  type: "enum",              options: [">", ">=", "<", "<=", "="]],
+                    [name: "state_1",    type: "number"]
+                    // rhsType_1 / stateType_1 intentionally absent -- 5.1.8 boolean toggle.
                 ]
             }
             JsonOutput.toJson([
@@ -16116,17 +18521,125 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "result is successful"
-        result.success == true
+        then: "the expression still commits (action skeleton written) but the device-relative RHS is flagged degraded"
+        result.partial == true
 
-        and: "RelrDev_1 written with comparator (consequence-gated: rhsType appears only after RelrDev)"
+        and: "RelrDev_1 was written (base comparator landed) but no enum RHS-type selector was ever written"
         writtenFields["RelrDev_1"] == ">"
+        writtenFields["rhsType_1"] == null
+        writtenFields["stateType_1"] == null
 
-        and: "rhsType_1 written with the 'another device' option key"
-        writtenFields["rhsType_1"] == "device"
+        and: "settingsSkipped carries the compareToDevice rhs_type_not_revealed sentinel -- the honest degradation, not a false fully-applied claim"
+        def sentinel = (result.settingsSkipped as List)?.find { it instanceof Map && it.key == "compareToDevice" }
+        sentinel != null
+        sentinel.reason == "rhs_type_not_revealed"
 
-        and: "no partial/degradation sentinel -- RHS-type selector path succeeded"
-        result.partial != true
+        and: "fallbackApplied=false -- compareToDevice supplied neither state nor value to write as a literal fallback"
+        sentinel.fallbackApplied == false
+    }
+
+    def "addRequiredExpression compareToDevice: a '!=' comparator is normalized to the Unicode glyph on the RelrDev write even when the RHS-type selector never reveals (5.1.8)"() {
+        // Comparator-normalization parity pin: the compareToDevice RelrDev write is the
+        // reveal trigger and must normalize cond.comparator like every sibling write (RM's
+        // comparator enum only accepts the Unicode glyphs; a raw '!=' would write an
+        // operator RM does not recognize). The normalization happens BEFORE the enum
+        // RHS-type reveal check, so it holds on the realistic RM 5.1.8 schema where the
+        // enum selector never appears (boolean isDev_<N> toggle path, BAT-v2.md T618).
+        // Driving the honest 5.1.8 shape keeps the pin focused on normalization without
+        // depending on the dead enum-reveal path -- the device-relative RHS degrades to
+        // partial here, which is correct, not a regression.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        def rCapabWritten = false
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF Temperature != Sensor2"]]]]],
+                settings: [useST: "true"], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            // Realistic 5.1.8 shape: RelrDev_1 (the comparator) appears, but the enum
+            // RHS-type selector never does (boolean isDev_<N> toggle path).
+            def inputs = [
+                [name: "cond",       type: "enum",                options: ["a": "New condition"]],
+                [name: "rCapab_1",   type: "enum",                options: ["Temperature", "Humidity"]],
+                [name: "hasAll",     type: "button"],
+                [name: "doneST",     type: "button"]
+            ]
+            if (rCapabWritten) {
+                inputs = inputs + [
+                    [name: "rDev_1",     type: "capability.sensor", multiple: true],
+                    [name: "RelrDev_1",  type: "enum",              options: [">", ">=", "<", "<=", "=", "≠"]],
+                    [name: "state_1",    type: "number"]
+                    // rhsType_1 / stateType_1 intentionally absent -- 5.1.8 boolean toggle.
+                ]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
+        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                comparator: "!=",
+                compareToDevice: [deviceId: 99, attribute: "temperature"]
+            ]]],
+            confirm: true
+        ])
+
+        then: "RelrDev_1 carries the NORMALIZED Unicode glyph, not the raw '!='"
+        writtenFields["RelrDev_1"] == "≠"
+        writtenFields["RelrDev_1"] != "!="
+
+        and: "the device-relative RHS still degrades honestly (no enum selector on 5.1.8), not a false success"
+        result.partial == true
+        def sentinel = (result.settingsSkipped as List)?.find { it instanceof Map && it.key == "compareToDevice" }
+        sentinel?.reason == "rhs_type_not_revealed"
     }
 
     def "addRequiredExpression compareToDevice: fail-loud when RelrDev not visible after base writes"() {
@@ -16195,9 +18708,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fn = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fn = key
                         writtenFields[fn] = v
                         if (fn == "RelrDev_1") relrWritten = true
                     }
@@ -16633,10 +19146,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1") rCapabWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
                     }
                 }
             }
@@ -16762,9 +19275,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             // all writes on doActPage are direct _rmWriteSettingOnPage calls.
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fieldName = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fieldName = key
                         writtenFields[fieldName] = v
                         if (fieldName == "rCustomAttr_1") rCustomAttrWritten = true
                         if (fieldName == "RelrDev_1") relrWritten = true
@@ -16856,9 +19369,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fn = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fn = key
                         writtenFields[fn] = v
                         if (fn == "rCapab_1") rCapabWritten = true
                     }
@@ -16939,9 +19452,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fn = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fn = key
                         writtenFields[fn] = v
                         if (fn == "rCapab_1") rCapabWritten = true
                         if (fn == "lVar_1") varPickerWritten = true
@@ -17037,9 +19550,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fn = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fn = key
                         writtenFields[fn] = v
                         if (fn == "rCapab_1")   rCapabWritten = true
                         if (fn == "starting1")  startingWritten = true
@@ -17126,26 +19639,28 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         writtenFields["endSunriseOffset1"]?.toString() == "30"
     }
 
-    def "addAction ifThen: compareToDevice writes rhsType/refDev/refAttr"() {
-        // Device-relative comparison on doActPage: after rCapab+rDev+RelrDev writes,
-        // the RHS-type selector appears and must be set to the 'another device' option,
-        // which then reveals the reference device and attribute pickers.
+    def "addAction ifThen compareToDevice: RM 5.1.8 never reveals an enum RHS-type selector -- doActPage degrades to rhs_type_not_revealed (partial), no fabricated success"() {
+        // doActPage 5.1.8 DEGRADATION PIN (was a false-positive that fabricated an enum
+        // stateType_1 selector and asserted full success incl. rDev2_1/rCustomAttr2_1).
+        // RM 5.1.8 renders a boolean isDev_<N> toggle for a device-relative RHS, NOT an
+        // enum selector (BAT-v2.md T618), so the realistic doActPage schema never exposes
+        // stateType_1/rhsType_1. The walker writes RelrDev_1, the enum reveal returns null,
+        // and it degrades to a rhs_type_not_revealed skip that flips partial -- it must NOT
+        // claim the reference device/attribute landed. FAILS if the dead enum-reveal path
+        // is reverted to fabricate-then-assert-success.
         // Both-ways pending (orchestrator).
         given:
         enableWrite()
-        def relrWritten = false
-        def rhsTypeWritten = false
+        def rCapabWritten = false
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fn = m[0][1]
-                        writtenFields[fn] = v
-                        if (fn == "RelrDev_1") relrWritten = true
-                        if (fn == "stateType_1") rhsTypeWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
                     }
                 }
             }
@@ -17158,26 +19673,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def doActFetchSeq = 0
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             doActFetchSeq++
+            // Realistic 5.1.8 shape: base condition fields appear after rCapab; the enum
+            // RHS-type selector (stateType_1/rhsType_1) NEVER appears (boolean toggle path).
             def inputs = [
                 [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
                 [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
                 [name: "cond", type: "enum", options: ["a": "New condition"]],
                 [name: "rCapab_1", type: "enum", options: ["Temperature", "Switch"]],
-                [name: "rDev_1", type: "capability.temperatureMeasurement", multiple: true],
-                [name: "RelrDev_1", type: "enum", options: [">", "<", "=", ">=", "<="]],
                 [name: "hasAll", type: "button"]
             ]
-            if (relrWritten) {
-                inputs = inputs + [[name: "stateType_1", type: "enum",
-                    options: ["literal": "Literal value", "another device": "Another device"]]]
-            }
-            if (rhsTypeWritten) {
-                // Stub picks rDev2_1 / rCustomAttr2_1 as the alternative names from production's
-                // /rDev2_\d+|refDev_\d+|compareDevId_\d+/ and /rCustomAttr2_\d+|refAttr_\d+|compareAttr_\d+/ regexes.
-                // Live firmware emit shape unverified independently; assertions pin to the stub's choice.
+            if (rCapabWritten) {
                 inputs = inputs + [
-                    [name: "rDev2_1", type: "capability.temperatureMeasurement", multiple: false],
-                    [name: "rCustomAttr2_1", type: "enum", options: ["temperature"]]
+                    [name: "rDev_1", type: "capability.temperatureMeasurement", multiple: true],
+                    [name: "RelrDev_1", type: "enum", options: [">", "<", "=", ">=", "<="]],
+                    [name: "state_1", type: "number"]
+                    // stateType_1 / rhsType_1 intentionally absent -- 5.1.8 boolean toggle.
                 ]
             }
             JsonOutput.toJson([
@@ -17211,22 +19721,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "result is successful"
-        result.success == true
+        then: "the action skeleton commits but the device-relative RHS is flagged degraded"
+        result.partial == true
 
-        and: "RelrDev_1 written with comparator"
+        and: "RelrDev_1 was written but no enum RHS-type selector and no reference-device pickers were ever written"
         writtenFields["RelrDev_1"] == ">"
+        writtenFields["stateType_1"] == null
+        writtenFields["rhsType_1"] == null
+        writtenFields["rDev2_1"] == null
+        writtenFields["rCustomAttr2_1"] == null
 
-        and: "stateType_1 set to the 'another device' option key (exact match)"
-        writtenFields["stateType_1"] == "another device"
-
-        and: "reference device written with device ID 9 (scalar enum on the wire)"
-        // Stub exposes rDev2_1; pin to exact key name (stub controls which alternative is in schema).
-        writtenFields["rDev2_1"]?.toString() == "9"
-
-        and: "reference attribute written with 'temperature'"
-        // Stub exposes rCustomAttr2_1; pin to exact key name.
-        writtenFields["rCustomAttr2_1"] == "temperature"
+        and: "settingsSkipped carries the compareToDevice rhs_type_not_revealed sentinel"
+        def sentinel = (result.settingsSkipped as List)?.find { it instanceof Map && it.key == "compareToDevice" }
+        sentinel != null
+        sentinel.reason == "rhs_type_not_revealed"
     }
 
     def "addAction ifThen: fail-loud when modes picker not revealed on doActPage"() {
@@ -17387,9 +19895,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "fail-loud: success=false with diagnostic referencing RelrDev not revealed after rCustomAttr"
+        then: "fail-loud: success=false with the generic neither-field-revealed diagnostic"
+        // Fixture reveals NEITHER RelrDev_1 nor state_1 after rCustomAttr_1 -- the
+        // genuine-degradation case, so the walker emits the generic 'neither ... nor ...'
+        // message (an enum attribute reveals state_1 and takes the no-throw success path).
         result.success == false
-        result.error?.toString()?.contains("RelrDev_<N> (comparator) not revealed after rCustomAttr_<N>")
+        result.error?.toString()?.contains("neither RelrDev_<N> (comparator) nor state_<N> (enum value picker) revealed after rCustomAttr_<N>")
     }
 
     def "addAction ifThen: fail-loud surfaces wizardStuck when cancelCapab cleanup also fails"() {
@@ -17465,9 +19976,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fn = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fn = key
                         writtenFields[fn] = v
                         if (fn == "rCapab_1") rCapabWritten = true
                     }
@@ -17538,9 +20049,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fn = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fn = key
                         writtenFields[fn] = v
                         if (fn == "actType.1")    actTypeWritten = true
                         if (fn == "actSubType.1") actSubTypeWritten = true
@@ -18487,10 +20998,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1") rCapabWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
                     }
                 }
             }
@@ -18558,13 +21069,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1")    rCapabWritten = true
-                        if (m[0][1] == "starting1")   startingWritten = true
-                        if (m[0][1] == "startingA1")  startingAWritten = true
-                        if (m[0][1] == "ending1")     endingWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1")    rCapabWritten = true
+                        if (key == "starting1")   startingWritten = true
+                        if (key == "startingA1")  startingAWritten = true
+                        if (key == "ending1")     endingWritten = true
                     }
                 }
             }
@@ -18646,12 +21157,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1")  rCapabWritten = true
-                        if (m[0][1] == "lVar_1")    lVarWritten = true
-                        if (m[0][1] == "RelrDev_1") relrDevWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1")  rCapabWritten = true
+                        if (key == "lVar_1")    lVarWritten = true
+                        if (key == "RelrDev_1") relrDevWritten = true
                     }
                 }
             }
@@ -18726,11 +21237,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1")       rCapabWritten = true
-                        if (m[0][1] == "rCustomAttr_1")  rCustomAttrWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1")       rCapabWritten = true
+                        if (key == "rCustomAttr_1")  rCustomAttrWritten = true
                     }
                 }
             }
@@ -18812,9 +21323,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fn = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fn = key
                         writtenFields[fn] = v
                         if (fn == "rCapab_1")     rCapabWritten = true
                         if (fn == "RelrDev_1")    relrWritten = true
@@ -18910,10 +21421,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1") rCapabWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
                     }
                 }
             }
@@ -18981,12 +21492,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1")  rCapabWritten = true
-                        if (m[0][1] == "lVar_1")    lVarWritten = true
-                        if (m[0][1] == "RelrDev_1") relrDevWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1")  rCapabWritten = true
+                        if (key == "lVar_1")    lVarWritten = true
+                        if (key == "RelrDev_1") relrDevWritten = true
                     }
                 }
             }
@@ -19059,11 +21570,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1")       rCapabWritten = true
-                        if (m[0][1] == "rCustomAttr_1")  rCustomAttrWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1")       rCapabWritten = true
+                        if (key == "rCustomAttr_1")  rCustomAttrWritten = true
                     }
                 }
             }
@@ -19144,13 +21655,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1")   rCapabWritten = true
-                        if (m[0][1] == "starting1")  startingWritten = true
-                        if (m[0][1] == "startingA1") startingAWritten = true
-                        if (m[0][1] == "ending1")    endingWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1")   rCapabWritten = true
+                        if (key == "starting1")  startingWritten = true
+                        if (key == "startingA1") startingAWritten = true
+                        if (key == "ending1")    endingWritten = true
                     }
                 }
             }
@@ -19231,9 +21742,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        def fn = m[0][1]
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fn = key
                         writtenFields[fn] = v
                         if (fn == "rCapab_1")                  rCapabWritten = true
                         if (fn == "RelrDev_1")                 relrWritten = true
@@ -19335,10 +21846,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1") rCapabWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
                     }
                 }
             }
@@ -19408,10 +21919,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1") rCapabWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
                     }
                 }
             }
@@ -19475,10 +21986,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1") rCapabWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
                     }
                 }
             }
@@ -19551,11 +22062,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1")      rCapabWritten = true
-                        if (m[0][1] == "rCustomAttr_1") rCustomAttrWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1")      rCapabWritten = true
+                        if (key == "rCustomAttr_1") rCustomAttrWritten = true
                     }
                 }
             }
@@ -19637,11 +22148,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1")      rCapabWritten = true
-                        if (m[0][1] == "rCustomAttr_1") rCustomAttrWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1")      rCapabWritten = true
+                        if (key == "rCustomAttr_1") rCustomAttrWritten = true
                     }
                 }
             }
@@ -19849,10 +22360,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "rCapab_1") rCapabWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
                     }
                 }
             }
@@ -19980,10 +22491,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] =~ /rCapab_\d+/) rCapabWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key =~ /rCapab_\d+/) rCapabWritten = true
                     }
                 }
             }
@@ -20076,8 +22587,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -20201,11 +22712,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) {
-                        writtenFields[m[0][1]] = v
-                        if (m[0][1] == "starting1") startingWritten = true
-                        if (m[0][1] == "ending1")   endingWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "starting1") startingWritten = true
+                        if (key == "ending1")   endingWritten = true
                     }
                 }
             }
@@ -20443,8 +22954,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage") {
                 body.each { k, v ->
-                    def mm = k.toString() =~ /^settings\[(.+)\]$/
-                    if (mm && mm[0][1] == "rCapab_1") rCapabWritten = true
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCapab_1") rCapabWritten = true
                 }
             }
             [status: 200, location: null, data: '']
@@ -20505,9 +23016,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage") {
                 body.each { k, v ->
-                    def mm = k.toString() =~ /^settings\[rCapab_(\d+)\]$/
-                    if (mm) {
-                        def s = (mm[0][1] as Integer)
+                    def slotMatcher = k.toString() =~ /^settings\[rCapab_(\d+)\]$/
+                    if (slotMatcher.matches()) {
+                        def s = (slotMatcher.group(1) as Integer)
                         rCapabWrittenForSlot[s] = true
                     }
                 }
@@ -20679,8 +23190,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "selectTriggers") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -21484,8 +23995,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m && m[0][1] == "rCapab_1") {
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCapab_1") {
                         rCapabWritten = true
                     }
                 }
@@ -21660,8 +24171,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -22244,8 +24755,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -22322,8 +24833,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -23087,8 +25598,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -23156,8 +25667,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -23217,8 +25728,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -23278,8 +25789,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -23351,8 +25862,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -23659,8 +26170,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -23739,8 +26250,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "STPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -25024,8 +27535,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json" && body?.currentPage == "doActPage" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
-                    def m = k.toString() =~ /^settings\[(.+)\]$/
-                    if (m) writtenFields[m[0][1]] = v
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
                 }
             }
             [status: 200, location: null, data: '']
@@ -25971,6 +28482,285 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         capturedArgs.triggers[0].capability == "Switch"
         capturedArgs.actions?.size() == 1
         capturedArgs.actions[0].capability == "log"
+    }
+
+    def "hub_set_rule create-with-bundle folds addRequiredExpression into the create args (honored on create, not dropped)"() {
+        // B3 regression pin: pre-fix the create arm read only addTriggers/addActions, so a
+        // bundled addRequiredExpression with NO appId was silently dropped and the call
+        // returned success on an empty shell. The fix folds it into
+        // createArgs.requiredExpression so _createNativeAppShell runs the RE walk. Stub the
+        // shell builder so this pins toolSetRule's gather logic (not the wizard). Reverting
+        // the fold drops requiredExpression from createArgs -> this spec fails.
+        given:
+        enableWrite()
+        def capturedArgs = null
+        script.metaClass._createNativeAppShell = { args ->
+            capturedArgs = args
+            [success: true, appId: 983, appType: args.appType, name: args.name,
+             requiredExpression: [success: true, conditionIndices: [1]]]
+        }
+
+        when: "no appId + a bundled addRequiredExpression -> create branch folds it in"
+        def result = script.toolSetRule([
+            name: "BAT-create-RE",
+            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
+            confirm: true
+        ])
+
+        then: "the create branch fired and the RE map was folded into createArgs.requiredExpression"
+        capturedArgs != null
+        capturedArgs.appType == "rule_machine"
+        capturedArgs.requiredExpression instanceof Map
+        capturedArgs.requiredExpression.conditions[0].capability == "Switch"
+
+        and: "the shell's RE outcome is surfaced on the result (not silently dropped)"
+        result.requiredExpression?.success == true
+    }
+
+    def "create shell with Required Expression and NO actions fires a trailing updateRule AFTER the RE write so the RE is live"() {
+        // BLOCKING regression guard: _rmAddRequiredExpression only clicks
+        // hasRule+doneST -- it does NOT fire updateRule. On the create arm the
+        // RE walk runs BETWEEN the triggers' updateRule and the actions'
+        // updateRule. When actions are present the actions' updateRule
+        // reinitializes the RE for free; when NO actions follow, that updateRule
+        // never fires and the RE would stay dormant. The fix fires a trailing
+        // updateRule in the RE block itself for the no-actions path. This drives
+        // the REAL _createNativeAppShell (NOT a stubbed shell) and asserts a
+        // btn updateRule click occurs AFTER the last RE-walk POST. It goes RED
+        // if the trailing updateRule is removed.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        // _discoverParentAppId reads /hub2/appsList to find the RM parent (id 21).
+        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
+        // createchild -> 974 (302 location parsed by _rmCreateChildApp)
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapp/configure/974", data: ""]
+        }
+        // Label page (origLabel) for the fresh shell.
+        hubGet.register('/installedapp/configure/json/974') { params ->
+            ruleConfigJson(974, "", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/974') { params -> statusJson(974) }
+        // mainPage returns a baked RE paragraph so the post-commit bake check passes.
+        hubGet.register('/installedapp/configure/json/974/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 974, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF S1 is on"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/974/STPage') { params ->
+            fetchSeq++
+            stPageCondSchemaJson(974, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/974/selectActions') { params ->
+            ruleConfigJson(974, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/974/doActPage') { params ->
+            ruleConfigJson(974, "r", [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "drive the REAL create shell with a Required Expression and NO actions"
+        def result = script._createNativeAppShell([
+            appType: "rule_machine",
+            name: "BAT-create-RE-no-actions",
+            requiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
+            confirm: true
+        ])
+
+        then: "the RE committed and the result is clean (RE live)"
+        result.appId == 974
+        result.requiredExpression?.success == true
+        result.requiredExpression?.updateRuleFailed != true
+        result.success == true
+
+        and: "an updateRule btn click fires AFTER the RE-walk writes (so the RE is reinitialized)"
+        def btnClicks = []
+        def lastReWriteIdx = -1
+        posts.eachWithIndex { p, i ->
+            if (p.path == "/installedapp/btn" && p.body?.name == "updateRule") btnClicks << i
+            // RE-walk writes/clicks land on STPage / selectActions / doActPage.
+            if (p.body?.currentPage in ["STPage", "selectActions", "doActPage"]) lastReWriteIdx = i
+        }
+        lastReWriteIdx >= 0
+        btnClicks.any { it > lastReWriteIdx }
+    }
+
+    def "create shell RE-block updateRule failure degrades the result (expressionNotLive), not a silent swallow"() {
+        // Companion to the trailing-updateRule guard: when the RE-block's
+        // trailing updateRule click is REJECTED, the result must degrade
+        // honestly (updateRuleFailed/expressionNotLive/partial) rather than
+        // reporting a live RE. Mirrors the _applyNativeAppEdit edit arm's
+        // updateRuleFailed propagation. The post-RE updateRule click is the only
+        // btn-updateRule that targets selectActions context here -- we fail
+        // exactly that click.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def reWalkDone = false
+        // _discoverParentAppId reads /hub2/appsList to find the RM parent (id 21).
+        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapp/configure/975", data: ""]
+        }
+        hubGet.register('/installedapp/configure/json/975') { params ->
+            ruleConfigJson(975, "", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/975') { params -> statusJson(975) }
+        hubGet.register('/installedapp/configure/json/975/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 975, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF S1 is on"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/975/STPage') { params ->
+            fetchSeq++
+            stPageCondSchemaJson(975, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/975/selectActions') { params ->
+            ruleConfigJson(975, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/975/doActPage') { params ->
+            ruleConfigJson(975, "r", [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        // The RE walk's ghost-ifThen clear ends with a doActPage->selectActions
+        // nav; once that lands, the next updateRule btn click is the RE-block
+        // trailing one -- fail exactly it.
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.currentPage == "doActPage" &&
+                body?.any { k, v -> k?.toString()?.contains("_action_href_name|selectActions|") }) {
+                reWalkDone = true
+            }
+            if (reWalkDone && path == "/installedapp/btn" && body?.name == "updateRule") {
+                throw new RuntimeException("hub rejected updateRule")
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script._createNativeAppShell([
+            appType: "rule_machine",
+            name: "BAT-create-RE-updaterule-fail",
+            requiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
+            confirm: true
+        ])
+
+        then: "the failed re-init is surfaced -- the RE is NOT reported as live"
+        result.requiredExpression?.updateRuleFailed == true
+        result.requiredExpression?.expressionNotLive == true
+        result.requiredExpression?.partial == true
+        result.success == false
+    }
+
+    def "hub_set_rule CREATE (no appId) loudly REJECTS every edit-only shortcut -- no silent-success on a dropped op"() {
+        // B3 class-level completeness guard. The create arm bundles a FIXED set of authoring
+        // shortcuts (CREATE_HONORED); EVERY other rule-authoring shortcut is edit-only and
+        // makes no sense on a brand-new empty rule. The class invariant: the create arm must
+        // HONOR or LOUDLY REJECT every shortcut it is handed -- never drop one to a
+        // success:true empty shell (the sibling hub_set_native_app's reject-don't-drop
+        // posture). This data-driven spec pins the CURRENT edit-only surface (the EDIT_ONLY
+        // list in toolSetRule) and asserts each entry is rejected with IllegalArgumentException
+        // on create. It pins only what the where: block enumerates -- a NEW shortcut added to
+        // hub_set_rule must be added to EDIT_ONLY (and to this where: block) to be covered here.
+        // The companion below pins the must-NOT-catch side (CREATE_HONORED ops do not throw).
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        script.metaClass._createNativeAppShell = { args -> [success: true, appId: 984] }
+
+        when: "an edit-only shortcut is passed on create (no appId)"
+        script.toolSetRule([name: "BAT-edit-only", (editOnlyOp): editOnlyVal, confirm: true])
+
+        then: "create rejects it loudly rather than dropping it to a success shell"
+        def e = thrown(IllegalArgumentException)
+        e.message.contains(editOnlyOp)
+        e.message.toLowerCase().contains("edit-only")
+
+        where:
+        editOnlyOp        | editOnlyVal
+        "addLocalVariable" | [name: "v", type: "Number", value: 0]
+        "patches"          | [[op: "x"]]
+        "replaceActions"   | [[capability: "log", message: "x"]]
+        "removeAction"     | [index: 0]
+        "clearActions"     | true
+        "moveAction"       | [index: 0, direction: "down"]
+        "removeTrigger"    | [index: 0]
+        "modifyTrigger"    | [index: 0]
+        "walkStep"         | [page: "mainPage"]
+        "settings"         | [foo: "bar"]
+        "button"           | "save"
+    }
+
+    def "hub_set_rule CREATE (no appId) does NOT reject the honored bundle shortcuts -- must-not-catch side of the completeness guard"() {
+        // Must-NOT-catch fixture paired with the edit-only rejection guard above. The
+        // CREATE_HONORED shortcuts (addTrigger/addTriggers/addAction/addActions/
+        // addRequiredExpression) must pass the create-arm completeness check WITHOUT
+        // throwing -- the shell builder is stubbed so the gather/dispatch logic is what's
+        // under test. A regression that over-broadens the edit-only reject list to include a
+        // honored op would throw here and fail.
+        given:
+        enableWrite()
+        def shellRan = false
+        script.metaClass._createNativeAppShell = { args -> shellRan = true; [success: true, appId: 985] }
+
+        when: "a honored bundle shortcut is passed on create (no appId)"
+        def result = script.toolSetRule([name: "BAT-honored", (honoredOp): honoredVal, confirm: true])
+
+        then: "no rejection -- the create branch ran the shell builder"
+        noExceptionThrown()
+        shellRan
+        result.appId == 985
+
+        where:
+        honoredOp              | honoredVal
+        "addTrigger"           | [capability: "Switch", deviceIds: [8], state: "on"]
+        "addTriggers"          | [[capability: "Switch", deviceIds: [8], state: "on"]]
+        "addAction"            | [capability: "log", message: "x"]
+        "addActions"           | [[capability: "log", message: "x"]]
+        "addRequiredExpression" | [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]]
+    }
+
+    def "_rmWalkConditionReveal fails loud when ctx.applied is absent -- the force-write fallback's promise would otherwise be a lie"() {
+        // S1 internal-contract guard. The Custom Attribute exposure-probe force-write fallback
+        // records the comparator key into ctx.applied AND emits a skip hint promising "value IS
+        // in settingsApplied". If a caller omits ctx.applied the force-write would land in a
+        // throwaway list and the hint would lie, so the walker rejects a null ctx.applied at the
+        // boundary rather than degrading silently. Both-ways pending (orchestrator).
+        when: "the walker is invoked with a ctx that omits the applied accumulator"
+        script._rmWalkConditionReveal(100, [page: "STPage", skipped: []], [capability: "Switch"], 0)
+
+        then: "it throws loudly, naming the missing field"
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("ctx.applied")
     }
 
     def "hub_set_rule with appId present routes to the edit engine, NOT create"() {

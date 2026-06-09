@@ -989,6 +989,161 @@ class TestRunner:
         self._delete_native(app_id)
 
     @test("native_apps")
+    def test_set_rule_custom_attribute_enum_no_false_partial(self) -> None:
+        # hub_set_rule edit -> addTrigger Custom Attribute on an ENUM-recognized
+        # attribute. A virtual switch's 'switch' attribute is the canonical enum
+        # case: picking it reveals the enum value picker (tstate<N>) and HIDES the
+        # free comparator field (ReltDev<N>). The value must land in tstate<N>, and
+        # the now-absent ReltDev<N> must NOT be written -- an unconditional comparator
+        # write there is rejected not_in_schema and spuriously flips partial=true even
+        # though the trigger built correctly. This pins the no-false-partial contract
+        # the Spock regression specs guard, end-to-end against a live hub. Covers BOTH
+        # the trigger row (_rmAddTrigger, ReltDev<N>) and the conditional-trigger
+        # condition (_rmBuildCondition, RelrDev_<N>) -- the two share the enum bug.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("CustEnum")
+        try:
+            # --- trigger row: tCustomAttr<N> / tstate<N> / ReltDev<N> ---
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "appId": app_id,
+                    "addTrigger": {"capability": "Custom Attribute", "deviceIds": [sw],
+                                   "attribute": "switch", "comparator": "=", "state": "on"},
+                    "confirm": True,
+                },
+            })
+            assert result.get("success") is not False, f"addTrigger reported failure: {result}"
+            # The enum value landed in the value picker (tstate<N>) ...
+            applied = result.get("settingsApplied") or []
+            assert any(str(k).startswith("tstate") for k in applied), \
+                f"enum value did not land in a tstate field; settingsApplied={applied}"
+            # ... and the hidden comparator was NOT written, so no ReltDev not_in_schema
+            # skip was produced -- the false-positive not_in_schema partial this guards.
+            skipped = result.get("settingsSkipped") or []
+            bad = [s for s in skipped if isinstance(s, dict)
+                   and (s.get("key") or "").startswith("ReltDev")
+                   and s.get("reason") == "not_in_schema"]
+            assert not bad, f"unexpected ReltDev not_in_schema skip (the enum false-partial bug): {bad}"
+            # The contract discriminator: partial stays falsy.
+            assert not result.get("partial"), \
+                f"trigger falsely flagged partial despite building correctly: {result}"
+
+            # --- condition path: a conditional trigger whose condition is the same
+            #     enum Custom Attribute (rCustomAttr_<N> / state_<N> / RelrDev_<N>) ---
+            cond_result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "appId": app_id,
+                    "addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on",
+                                   "condition": {"capability": "Custom Attribute", "deviceIds": [sw],
+                                                 "attribute": "switch", "comparator": "=", "state": "on"}},
+                    "confirm": True,
+                },
+            })
+            assert cond_result.get("success") is not False, \
+                f"conditional addTrigger reported failure: {cond_result}"
+            cond_applied = cond_result.get("settingsApplied") or []
+            assert any(str(k).startswith("state_") for k in cond_applied), \
+                f"condition enum value did not land in a state_<N> field; settingsApplied={cond_applied}"
+            cond_skipped = cond_result.get("settingsSkipped") or []
+            cond_bad = [s for s in cond_skipped if isinstance(s, dict)
+                        and (s.get("key") or "").startswith("RelrDev_")
+                        and s.get("reason") == "not_in_schema"]
+            assert not cond_bad, \
+                f"unexpected RelrDev_<N> not_in_schema skip on the condition path: {cond_bad}"
+            assert not cond_result.get("partial"), \
+                f"conditional trigger falsely flagged partial: {cond_result}"
+
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_walker_custom_attribute_enum_no_hard_error(self) -> None:
+        # hub_set_rule edit -> addRequiredExpression (STPage reveal walker) with an
+        # ENUM-recognized Custom Attribute condition. The walker pre-fix THREW
+        # ("RelrDev_<N> not revealed") because the enum re-render hides the comparator
+        # and reveals state_<N> directly. The fix branches to the enum path: it writes
+        # the value to state_<N>, skips the comparator, does NOT throw, and does NOT
+        # flag partial. This pins the walker enum contract end-to-end on a live hub.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("WalkEnum")
+        try:
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "appId": app_id,
+                    "addRequiredExpression": {"conditions": [
+                        {"capability": "Custom Attribute", "deviceIds": [sw],
+                         "attribute": "switch", "comparator": "=", "state": "on"}]},
+                    "confirm": True,
+                },
+            })
+            # The whole point: the walker no longer hard-errors on the enum attribute.
+            assert result.get("success") is not False, \
+                f"addRequiredExpression hard-errored on an enum Custom Attribute (the walker bug): {result}"
+            applied = result.get("settingsApplied") or []
+            assert any(str(k).startswith("state_") for k in applied), \
+                f"walker enum value did not land in a state_<N> field; settingsApplied={applied}"
+            skipped = result.get("settingsSkipped") or []
+            bad = [s for s in skipped if isinstance(s, dict)
+                   and (s.get("key") or "").startswith("RelrDev_")
+                   and s.get("reason") == "not_in_schema"]
+            assert not bad, f"unexpected RelrDev_<N> not_in_schema skip on the walker enum path: {bad}"
+            assert not result.get("partial"), \
+                f"walker enum condition falsely flagged partial: {result}"
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error(self) -> None:
+        # Same shared walker (_rmWalkConditionReveal), but reached via the doActPage
+        # surface (addAction ifThen) rather than STPage (addRequiredExpression). The
+        # 4th of the four wizard surfaces that carry the enum-recognized Custom
+        # Attribute bug. The enum re-render hides the comparator RelrDev_<N> and
+        # reveals state_<N> directly; the fix branches to the enum path (writes
+        # state_<N>, skips the comparator, does NOT throw, does NOT flag partial).
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("WalkEnumAct")
+        try:
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "appId": app_id,
+                    "addAction": {"capability": "ifThen", "expression": {"conditions": [
+                        {"capability": "Custom Attribute", "deviceIds": [sw],
+                         "attribute": "switch", "comparator": "=", "state": "on"}]}},
+                    "confirm": True,
+                },
+            })
+            # The whole point: the doActPage walker no longer hard-errors on the enum attr.
+            assert result.get("success") is not False, \
+                f"addAction ifThen hard-errored on an enum Custom Attribute (the walker bug): {result}"
+            applied = result.get("settingsApplied") or []
+            assert any(str(k).startswith("state_") for k in applied), \
+                f"doActPage walker enum value did not land in a state_<N> field; settingsApplied={applied}"
+            skipped = result.get("settingsSkipped") or []
+            bad = [s for s in skipped if isinstance(s, dict)
+                   and (s.get("key") or "").startswith("RelrDev_")
+                   and s.get("reason") == "not_in_schema"]
+            assert not bad, f"unexpected RelrDev_<N> not_in_schema skip on the doActPage walker enum path: {bad}"
+            assert not result.get("partial"), \
+                f"doActPage walker enum condition falsely flagged partial: {result}"
+            # Close the IF block (THEN body + endIf) before the whole-rule health
+            # check. An ifThen opener added alone is a valid intermediate tool state,
+            # but it leaves the rule with an unclosed IF that the live hub's
+            # rule-health check correctly flags -- the enum-condition contract under
+            # test is already proven by the assertions above; completing the block is
+            # what makes the end-to-end health assertion meaningful.
+            self._set_rule(app_id, {"addAction": {"capability": "log", "message": "fired"}})
+            self._set_rule(app_id, {"addAction": {"capability": "endIf"}})
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_required_expression_and_local_var(self) -> None:
         # hub_set_rule edit -> addLocalVariable + addRequiredExpression (STPage) wizards.
         sw = int(self.get_test_switch_id())
@@ -998,6 +1153,42 @@ class TestRunner:
             {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}})
         self._assert_rule_healthy(app_id)
         self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_create_with_required_expression(self) -> None:
+        # hub_set_rule CREATE (no appId) bundling addRequiredExpression. Pre-fix the
+        # create arm read only addTriggers/addActions, so a bundled RE was silently
+        # dropped and the call returned success=True on an empty shell. The fix honors
+        # addRequiredExpression on create (runs the RE walk post-create) and surfaces
+        # its outcome under result.requiredExpression. This pins create-with-RE
+        # end-to-end: the RE field is present (NOT dropped), the RE actually lands on
+        # the rule, and the rule is healthy.
+        sw = int(self.get_test_switch_id())
+        created = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule",
+            "args": {
+                "name": f"{PREFIX}CreateRE",
+                "addRequiredExpression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
+                "confirm": True,
+            },
+        })
+        app_id = created.get("appId")
+        assert app_id, f"create-with-RE did not return appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+        try:
+            # The whole point: the bundled RE was honored, not silently dropped.
+            re_result = created.get("requiredExpression")
+            assert re_result is not None, \
+                f"addRequiredExpression was silently dropped on create (no requiredExpression in result): {created}"
+            assert re_result.get("success") is not False, \
+                f"bundled addRequiredExpression failed on create: {re_result}"
+            # The RE actually landed: a condition index was returned by the walk.
+            assert re_result.get("conditionIndices"), \
+                f"create-with-RE produced no conditionIndices -- the expression did not land: {re_result}"
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
 
     @test("native_apps")
     def test_set_rule_action_mutations(self) -> None:
