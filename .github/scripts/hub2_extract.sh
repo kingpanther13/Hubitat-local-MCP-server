@@ -334,6 +334,18 @@ win() {
   done
 } > "$OUT/E0-rulebuilder-family.txt" 2>&1
 
+############################################################
+# F0 - createVisualRuleBuilderRule + VRB create-endpoint context
+############################################################
+{
+  echo "# VRB create endpoint context"
+  ctx "$PV" 'createVisualRuleBuilderRule' 10 34 9000
+  echo "## all /app*/ create* endpoints (is there a 20 variant?)"
+  grep -oiE '/app[a-z]*/[a-z0-9_]*create[a-z0-9_]*|/app[a-z]*/create[a-z0-9_/]*' "$PV" 2>/dev/null | sort | uniq -c | sort -rn | head -40 || true
+  echo "## RuleBuilderReadOnly / HubitatRuleBuilder* window-ids context"
+  ctx "$PV" 'HubitatRuleBuilder' 4 10 6000
+} > "$OUT/F0-vrb-create.txt" 2>&1
+
 echo "== evidence files =="
 ls -la "$OUT"
 echo "== total evidence bytes (excl pretty sources) =="
