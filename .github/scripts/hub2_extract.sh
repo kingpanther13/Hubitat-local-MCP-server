@@ -346,6 +346,33 @@ win() {
   ctx "$PV" 'HubitatRuleBuilder' 4 10 6000
 } > "$OUT/F0-vrb-create.txt" 2>&1
 
+############################################################
+# G0 - Visual Rule Builder: one app or two (1.0 vs 2.0)? bundle evidence
+############################################################
+{
+  echo "# Is there truly a VRB 1.0 vs 2.0, or one app? Bundle evidence"
+  echo
+  echo "## distinct visualrule*/rulebuilder*/basicrule* identifiers (case-insensitive)"
+  grep -oiE '[a-z0-9_]*(visualrule|rulebuilder|basicrule)[a-z0-9_]*' "$PV" 2>/dev/null | sort | uniq -c | sort -rn | head -70 || true
+  echo
+  echo "## display strings containing 'rule builder' (is '2.0' ever shown to the user?)"
+  grep -oiE '.{0,16}rule builder[a-z0-9. ]{0,14}' "$PV" 2>/dev/null | sort | uniq -c | sort -rn | head -30 || true
+  echo
+  echo "## Vue component name: definitions for the builders"
+  grep -oiE 'name:[^,}]{0,4}(VisualRuleBuilder[0-9]*|BasicRulesApp|RuleBuilder[0-9]*)[^,}]{0,4}' "$PV" 2>/dev/null | sort | uniq -c | sort -rn | head -30 || true
+  ctx "$PV" 'VisualRuleBuilder20' 2 6 6000
+  echo
+  echo "## classLocation / appType / sysApp strings near rule builders"
+  grep -oiE 'classLocation[^,}]{0,40}' "$PV" 2>/dev/null | sort | uniq -c | sort -rn | head -30 || true
+  grep -oiE '/installedapp/sysApp[a-z0-9/%._-]*' "$PV" 2>/dev/null | sort | uniq -c | sort -rn | head -20 || true
+  echo
+  echo "## docs links: one visual-rule-builder doc, or a 1.0/2.0 split?"
+  grep -oiE 'docs2\.hubitat\.com/[a-z0-9/._-]*(rule|builder)[a-z0-9/._-]*' "$PV" 2>/dev/null | sort | uniq -c | sort -rn | head -20 || true
+  echo
+  echo "## do BOTH window globals + BOTH endpoints co-exist, or is one legacy/unrouted?"
+  grep -oiE 'HubitatRuleBuilder[0-9]*(AppId|ReadOnly)|ruleBuilder[0-9]*Json' "$PV" 2>/dev/null | sort | uniq -c | sort -rn || true
+} > "$OUT/G0-vrb-one-or-two.txt" 2>&1
+
 echo "== evidence files =="
 ls -la "$OUT"
 echo "== total evidence bytes (excl pretty sources) =="
