@@ -868,6 +868,25 @@ class TestRunner:
         # only renders when created through the controller's add-button flow. Create
         # a controller + a virtual button device, then create a button rule via the
         # buttonRule param, author an action via hub_set_rule, and clean up.
+        # Button Controllers is a built-in PARENT app (Apps -> Add Built-In App) the
+        # createchild path needs; it can't be installed via the MCP. On a hub that lacks
+        # it (e.g. the CI test hub) the full add-button flow can't run, so instead verify
+        # the create errors cleanly with the parent-not-found guard (the correct behavior)
+        # and finish -- the buttonRule add-button mechanism itself is covered by the Spock
+        # unit tests. (Skips count as failures in this harness, so we can't SkipTest here.)
+        apps = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": {"scope": "instances"}})
+        app_list = apps.get("apps") if isinstance(apps, dict) else apps
+        if not any(a.get("type") == "Button Controllers" for a in (app_list or [])):
+            try:
+                self.client.call_tool("hub_manage_native_rules_and_apps", {
+                    "tool": "hub_set_native_app",
+                    "args": {"appType": "button_controller", "name": f"{PREFIX}BtnCtrl", "confirm": True},
+                })
+                raise AssertionError("expected a 'Button Controllers parent not found' error when the parent app is absent")
+            except (McpToolError, McpError) as exc:
+                assert "Button Controllers" in str(exc) and "not found" in str(exc).lower(), \
+                    f"unexpected error creating a Button Controller without the parent app: {exc}"
+            return
         controller_id = None
         button_dni = None
         try:
