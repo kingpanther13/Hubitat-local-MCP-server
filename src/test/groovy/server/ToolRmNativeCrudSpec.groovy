@@ -25667,18 +25667,31 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.appType == "notifier"
     }
 
-    def "hub_set_native_app rejects RM authoring params with a pointer to hub_set_rule"() {
+    def "hub_set_native_app ALLOWS walkStep (and RM-format authoring params) -- routes to the shared edit engine, no longer rejected (issue #185)"() {
         given:
         enableWrite()
+        // walkStep is a generic classic-dynamicPage walker, and the RM-wire-format
+        // shortcuts genuinely apply to RM-format classic apps (Basic/Button Rules),
+        // so the native-app tool must NOT reject them -- it shares the same edit
+        // engine as hub_set_rule.
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Switch", "Motion"]],
+                [name: "moreCond", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
 
-        when: "a hand-crafted call smuggles an RM-only param past the lean schema"
-        script.toolSetNativeApp([appId: 100, addTrigger: [capability: "Switch"], confirm: true])
+        when: "walkStep is passed to the GENERIC native-app tool (previously rejected outright)"
+        def result = script.toolSetNativeApp([appId: 100, walkStep: [page: "selectTriggers", operation: "introspect"], confirm: true])
 
-        then: "rejected (not silently dropped) with a redirect to hub_set_rule"
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("hub_set_native_app does not support")
-        ex.message.contains("hub_set_rule")
-        ex.message.contains("addTrigger")
+        then: "it flows to the shared edit engine and returns a walkStep result -- not a 'does not support' rejection"
+        result.success == true
+        result.page == "selectTriggers"
+        result.before?.inputs?.find { it.name == "tCapab1" } != null
     }
 
     def "hub_set_native_app surfaces an unknown appType as a caller-recoverable error"() {
@@ -25691,6 +25704,182 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("Unknown appType")
+    }
+
+    // ---------- issue #185: basic_rule registration + commitButton + buttonRule ----------
+
+    def "_appTypeRegistry registers basic_rule with the live-verified triple + commitButton null, and the create enum advertises it (issue #185 item 1)"() {
+        when:
+        def reg = script._appTypeRegistry()
+
+        then: "basic_rule is a classic dynamicPage app (generic createchild works) but submitOnChange (commitButton null)"
+        reg.basic_rule == [namespace: "hubitat", appName: "Basic Rule-1.0", parentTypeName: "Basic Rules", commitButton: null]
+
+        and: "the create tool advertises basic_rule in its appType enum"
+        def def_ = script.getAllToolDefinitions().find { it.name == 'hub_set_native_app' }
+        def_.inputSchema.properties.appType.enum.contains("basic_rule")
+    }
+
+    def "_resolveCommitButton: null for submitOnChange Basic Rule, updateRule for RM-family/unknown (issue #185 item 3)"() {
+        expect:
+        script._resolveCommitButton("Basic Rule-1.0") == null
+        script._resolveCommitButton("Rule-5.1") == "updateRule"
+        script._resolveCommitButton("Some Unregistered App") == "updateRule"
+        script._resolveCommitButton(null) == "updateRule"
+    }
+
+    def "editing a Basic Rule does NOT fire the updateRule commit click that poisons its render (issue #185 item 3)"() {
+        given:
+        enableWrite()
+        def basicRuleConfig = JsonOutput.toJson([
+            app: [id: 500, name: "Basic Rule-1.0", label: "BR", installed: true, appType: [name: "Basic Rule-1.0", namespace: "hubitat"]],
+            configPage: [name: "mainPage", title: "Basic Rule", error: null, sections: [[title: "", input: [[name: "comments", type: "textarea"]]]]],
+            settings: [:], childApps: []
+        ])
+        hubGet.register('/installedapp/configure/json/500') { params -> basicRuleConfig }
+        hubGet.register('/installedapp/statusJson/500') { params -> statusJson(500) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when: "write a setting to the Basic Rule"
+        def result = script.toolSetNativeApp([appId: 500, settings: [comments: "hi"], confirm: true])
+
+        then: "the setting is POSTed to update/json"
+        posts.any { it.path == "/installedapp/update/json" }
+
+        and: "but NO updateRule button click fires (Basic Rule is submitOnChange, has no updateRule button)"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+    }
+
+    def "editing an RM-family app still fires the updateRule commit click (commitButton default)"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/501') { params -> ruleConfigJson(501, "R", [[name: "comments", type: "textarea"]]) }
+        hubGet.register('/installedapp/statusJson/501') { params -> statusJson(501) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        script.toolSetNativeApp([appId: 501, settings: [comments: "hi"], confirm: true])
+
+        then: "updateRule fires for the RM-format app (app.appType.name = Rule-5.1)"
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+    }
+
+    def "creating a basic_rule uses generic createchild and skips the updateRule commit click (issue #185 items 1+3)"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/appsList') { params ->
+            JsonOutput.toJson([apps: [[data: [id: 4, name: "Basic Rules", type: "Basic Rules", user: false, hidden: false], children: []]]])
+        }
+        hubGet.register('/installedapp/configure/json/777') { params ->
+            JsonOutput.toJson([app: [id: 777, name: "Basic Rule-1.0", installed: true, appType: [name: "Basic Rule-1.0", namespace: "hubitat"]],
+                configPage: [name: "mainPage", error: null, sections: [[title: "", input: [[name: "origLabel", type: "text"]]]]], settings: [:], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/777') { params -> statusJson(777) }
+        def createCalls = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            createCalls << path; [status: 302, location: "/installedapp/configure/777", data: ""]
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolSetNativeApp([appType: "basic_rule", name: "BAT-BR", confirm: true])
+
+        then: "created under the Basic Rules parent via the GENERIC createchild (not a special endpoint)"
+        createCalls.any { it == "/installedapp/createchild/hubitat/Basic Rule-1.0/parent/4" }
+        result.appId == 777
+
+        and: "NO updateRule click (Basic Rule is submitOnChange)"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+    }
+
+    def "buttonRule drives the controller add-button flow (addBut -> re-render -> newBut -> setBut) and returns the new rule id (issue #185 item 2)"() {
+        given:
+        enableWrite()
+        def beforeJson = JsonOutput.toJson([
+            app: [id: 600, name: "Button Controller-5.1", label: "BC", installed: true, appType: [name: "Button Controller-5.1", namespace: "hubitat"]],
+            configPage: [name: "mainPage", error: null, sections: [[title: "", input: [
+                [name: "buttonDev", type: "capability.pushableButton", multiple: true],
+                [name: "origLabel", type: "text"]
+            ]]]],
+            settings: [buttonDev: ["43": "Virtual Button"], origLabel: "BC"],
+            childApps: []
+        ])
+        def afterJson = JsonOutput.toJson([
+            app: [id: 600, name: "Button Controller-5.1", appType: [name: "Button Controller-5.1", namespace: "hubitat"]],
+            configPage: [name: "mainPage", error: null, sections: []],
+            settings: [:],
+            childApps: [[id: 601, name: "Virtual Button: button 1 pushed"]]
+        ])
+        def fetches = [n: 0]
+        // First fetches (validate + pre-write backup) see no children; the final
+        // fetch (find-new-child, after setBut) sees the spawned rule.
+        hubGet.register('/installedapp/configure/json/600') { params -> (++fetches.n <= 2) ? beforeJson : afterJson }
+        hubGet.register('/installedapp/statusJson/600') { params -> statusJson(600) }
+        hubGet.register('/installedapp/configure/json/601') { params -> ruleConfigJson(601, "Virtual Button: button 1 pushed", []) }
+        hubGet.register('/installedapp/statusJson/601') { params -> statusJson(601) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolSetNativeApp([buttonRule: [controllerId: 600, buttonNumber: 1, event: "pushed"], confirm: true])
+
+        then: "addBut click entered add-button mode"
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "true" && it.body?.stateAttribute == "addBut" }
+
+        and: "two full-form update/json posts (re-render, then newBut define) carried buttonDev"
+        def updates = posts.findAll { it.path == "/installedapp/update/json" }
+        updates.size() >= 2
+        updates.last().body["settings[newBut]"] == '["1"]'
+
+        and: "setBut click spawned the rule for '1 pushed'"
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "1 pushed" && it.body?.stateAttribute == "setBut" }
+
+        and: "the new rule id is returned with an actions-authoring pointer to hub_set_rule"
+        result.success == true
+        result.buttonRuleId == 601
+        result.controllerId == 600
+        result.note.contains("hub_set_rule")
+    }
+
+    def "buttonRule rejects a controllerId that is not a Button Controller-5.1"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/700') { params -> ruleConfigJson(700, "Not a controller", []) }
+        hubGet.register('/installedapp/statusJson/700') { params -> statusJson(700) }
+
+        when:
+        script.toolSetNativeApp([buttonRule: [controllerId: 700, buttonNumber: 1, event: "pushed"], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("not a Button Controller-5.1")
+    }
+
+    def "buttonRule rejects an invalid event"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolSetNativeApp([buttonRule: [controllerId: 600, buttonNumber: 1, event: "wiggled"], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("buttonRule.event must be one of")
     }
 
     def "hub_set_rule create dispatch-envelope through the rule_machine gateway returns the new appId"() {
@@ -25717,18 +25906,18 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.appType == "rule_machine"
     }
 
-    def "hub_set_native_app schema is LEAN -- generic params only, no RM trigger/action sugar"() {
+    def "hub_set_native_app schema stays lean -- generic upsert params + the generic walkStep walker + buttonRule, but no FAT RM trigger/action sugar"() {
         when:
         def def_ = script.getAllToolDefinitions().find { it.name == 'hub_set_native_app' }
         def props = def_.inputSchema.properties.keySet()
 
-        then: "exactly the generic upsert params"
-        props == (['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute', 'confirm'] as Set)
+        then: "the generic upsert params, plus the generic classic-page walkStep walker and the buttonRule create helper (issue #185)"
+        props == (['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute', 'buttonRule', 'walkStep', 'confirm'] as Set)
 
-        and: "NONE of the FAT RM authoring params leak into the generic tool"
+        and: "the FAT RM trigger/action authoring shortcuts still stay OUT of the schema (use hub_set_rule)"
         ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression',
          'patches', 'replaceActions', 'removeAction', 'clearActions', 'moveAction',
-         'removeTrigger', 'modifyTrigger', 'walkStep', 'addLocalVariable', 'guide'].every { !props.contains(it) }
+         'removeTrigger', 'modifyTrigger', 'addLocalVariable', 'guide'].every { !props.contains(it) }
     }
 
     def "hub_set_native_app dispatch-envelope through the native gateway routes to create"() {

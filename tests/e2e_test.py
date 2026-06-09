@@ -723,8 +723,9 @@ class TestRunner:
         return self.created_rule_ids[-1] if self.created_rule_ids else None
 
     # -----------------------------------------------------------------------
-    # GROUP 4b: native_apps (3 tests) -- the issue #137 hub_set_rule /
-    # hub_set_native_app split, exercised end-to-end against the live hub.
+    # GROUP 4b: native_apps -- the issue #137 hub_set_rule / hub_set_native_app
+    # split plus the issue #185 additions (basic_rule appType, button-rule create
+    # via buttonRule, walkStep on the generic tool), end-to-end against the live hub.
     # These are distinct from rule_crud above, which drives the LEGACY custom
     # rule engine (custom_* tools); these drive the NATIVE Rule Machine + classic
     # SmartApp surface that appears in Hubitat's own UI.
@@ -811,17 +812,113 @@ class TestRunner:
         self._untrack_native_app(app_id)
 
     @test("native_apps")
-    def test_set_native_app_rejects_rm_params(self) -> None:
-        # The lean generic tool must REJECT Rule Machine authoring params with a
-        # pointer to hub_set_rule (rather than silently dropping them). No mutation.
+    def test_set_native_app_allows_walkstep(self) -> None:
+        # issue #185: hub_set_native_app no longer REJECTS walkStep -- it's a generic
+        # classic-dynamicPage walker that routes to the shared edit engine and works
+        # on any classic app (the rmOnly guard was an oversight). No mutation here
+        # (introspect is read-only).
+        app_id = self._create_native_rule("WalkStep")
         try:
+            result = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": app_id, "walkStep": {"page": "mainPage", "operation": "introspect"}, "confirm": True},
+            })
+            assert result.get("page") == "mainPage", f"walkStep should route through the native-app tool, got: {result}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_native_app_basic_rule_lifecycle(self) -> None:
+        # issue #185 items 1+3: basic_rule is a registered appType (a classic
+        # dynamicPage app, not a Vue SPA). Create via generic createchild, edit a
+        # setting -- which must NOT poison the page with the "For input string:
+        # updateRule" error (the commitButton=null fix) -- then delete.
+        created = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app",
+            "args": {"appType": "basic_rule", "name": f"{PREFIX}BasicRule", "confirm": True},
+        })
+        app_id = created.get("appId")
+        assert app_id, f"basic_rule create did not return an appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+
+        # The created Basic Rule renders a real classic configPage (proves it's not
+        # a Vue-SPA redirect that would silently swallow writes).
+        cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
+        assert (cfg.get("app") or {}).get("name") == "Basic Rule-1.0", f"unexpected Basic Rule config: {cfg}"
+
+        # EDIT: write the Notes field. The item-3 fix means NO updateRule click
+        # fires (Basic Rule is submitOnChange), so the render stays clean.
+        edited = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app",
+            "args": {"appId": app_id, "settings": {"comments": f"{PREFIX}note"}, "confirm": True},
+        })
+        assert "updateRule" not in str(edited.get("configPageError") or ""), \
+            f"Basic Rule edit poisoned the render with the updateRule error: {edited}"
+        assert edited.get("success") is not False, f"Basic Rule edit reported failure: {edited}"
+
+        # DELETE.
+        self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+        })
+        self._untrack_native_app(app_id)
+
+    @test("native_apps")
+    def test_button_rule_create_via_controller(self) -> None:
+        # issue #185 item 2: a Button Rule is a grandchild of a Button Controller and
+        # only renders when created through the controller's add-button flow. Create
+        # a controller + a virtual button device, then create a button rule via the
+        # buttonRule param, author an action via hub_set_rule, and clean up.
+        controller_id = None
+        button_dni = None
+        try:
+            # Virtual button device for the controller to bind to.
+            dev = self.client.call_tool("hub_manage_virtual_device", {
+                "action": "create", "deviceType": "Virtual Button",
+                "deviceLabel": f"{PREFIX}BtnDev", "confirm": True,
+            })
+            button_dni = str((dev.get("device") or {}).get("deviceNetworkId") or dev.get("deviceNetworkId") or "")
+            device_id = str((dev.get("device") or {}).get("id") or dev.get("deviceId") or dev.get("id") or "")
+            assert device_id, f"virtual button create did not return a device id: {dev}"
+            if button_dni:
+                self.created_device_dnis.append(button_dni)
+
+            # Button Controller-5.1 instance + assign its button device.
+            ctrl = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appType": "button_controller", "name": f"{PREFIX}BtnCtrl", "confirm": True},
+            })
+            controller_id = ctrl.get("appId")
+            assert controller_id, f"button controller create did not return an appId: {ctrl}"
+            self.created_native_app_ids.append(str(controller_id))
             self.client.call_tool("hub_manage_native_rules_and_apps", {
                 "tool": "hub_set_native_app",
-                "args": {"appId": 1, "addTrigger": {"capability": "Switch"}, "confirm": True},
+                "args": {"appId": controller_id, "settings": {"buttonDev": [device_id]}, "confirm": True},
             })
-            raise AssertionError("hub_set_native_app should reject RM authoring params")
-        except (McpToolError, McpError) as exc:
-            assert "hub_set_rule" in str(exc), f"rejection should point to hub_set_rule: {exc}"
+
+            # Create the button rule (button 1 pushed) through the controller.
+            br = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"buttonRule": {"controllerId": controller_id, "buttonNumber": 1, "event": "pushed"}, "confirm": True},
+            })
+            rule_id = br.get("buttonRuleId")
+            assert br.get("success") and rule_id, f"buttonRule create failed: {br}"
+
+            # The rule is RM-wire-format: author an action via hub_set_rule, and the
+            # health should be clean (it renders -- not the broken orphan a bare
+            # createchild produces).
+            assert (br.get("health") or {}).get("ok") is not False, f"new button rule is unhealthy: {br}"
+            acted = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {"appId": rule_id, "addAction": {"capability": "log", "message": "E2E button rule"}, "confirm": True},
+            })
+            assert acted.get("success") is not False, f"authoring the button rule's action failed: {acted}"
+        finally:
+            # Deleting the controller cascades to its grandchild rules.
+            if controller_id:
+                self.client.call_tool("hub_manage_native_rules_and_apps", {
+                    "tool": "hub_delete_native_app", "args": {"appId": controller_id, "force": True, "confirm": True},
+                })
+                self._untrack_native_app(controller_id)
 
     @test("native_apps")
     def test_set_rule_addaction_missing_required_field_fails_fast(self) -> None:
