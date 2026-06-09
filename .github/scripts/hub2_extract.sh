@@ -308,6 +308,32 @@ win() {
   done
 } > "$OUT/D0-rulebuilderjson-shape.txt" 2>&1
 
+############################################################
+# E0 - EXHAUSTIVE "ruleBuilder" family enumeration (all bundles)
+############################################################
+{
+  echo "# Every ruleBuilder* token + rule endpoint across all bundles"
+  echo "## distinct ruleBuilder* identifiers (case-insensitive) with counts"
+  for f in "$PV" "$PA" "$PM"; do
+    [ -f "$f" ] || continue
+    echo "===== $(basename "$f") ====="
+    grep -oiE 'rulebuilder[a-z0-9_]*' "$f" 2>/dev/null | sort | uniq -c | sort -rn | head -80 || true
+    echo
+  done
+  echo "## distinct /app*/ and /appui/ endpoint paths containing 'rule' (case-insensitive)"
+  for f in "$PV" "$PA" "$PM"; do
+    [ -f "$f" ] || continue
+    echo "===== $(basename "$f") ====="
+    grep -oiE '/app[a-z]*/[a-z0-9_]*rule[a-z0-9_/]*' "$f" 2>/dev/null | sort | uniq -c | sort -rn | head -50 || true
+    echo
+  done
+  echo "## context for each ruleBuilder* endpoint family member (GET/POST + body/response)"
+  for tok in 'ruleBuilderGenerate' 'ruleBuilderSuggest' 'ruleBuilderPause' 'ruleBuilderImport' 'ruleBuilderExport' 'ruleBuilderValidate' 'ruleBuilderClone' 'ruleBuilderCopy' 'ruleBuilderDelete' 'ruleBuilderList' 'ruleBuilderCreate' 'ruleBuilderNew' 'ruleBuilderPrompt' 'ruleBuilderTest' 'ruleBuilderRun'; do
+    echo "=== $tok (vue) ==="
+    ctx "$PV" "$tok" 5 28 6000
+  done
+} > "$OUT/E0-rulebuilder-family.txt" 2>&1
+
 echo "== evidence files =="
 ls -la "$OUT"
 echo "== total evidence bytes (excl pretty sources) =="
