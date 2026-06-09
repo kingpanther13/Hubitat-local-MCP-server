@@ -2709,7 +2709,7 @@ Gated on enableDeveloperMode (the tool is hidden from tools/list when Developer 
                     ref: [type: "string", description: "The git ref deployed"],
                     dryRun: [type: "boolean", description: "True when this was a plan-only run (no writes)"],
                     aborted: [type: "boolean", description: "True when the deploy stopped before the self app save; the running server was left untouched"],
-                    partial: [type: "boolean", description: "True when bundle(s) + other apps landed but the self app-update call did not return cleanly (likely the self-update recompile)"],
+                    partial: [type: "boolean", description: "True when bundle(s) + other apps landed but the self app did not update -- its call threw (likely the self-update recompile dropped the response) OR returned a failure"],
                     abortReason: [type: "string", description: "Machine-readable abort cause (app_source_fetch_failed / manifest_fetch_failed / manifest_unparseable / bundle_required_but_undeclared / app_class_unresolved / bundle_install_failed / bundle_install_threw / app_update_failed / app_update_threw)"],
                     appUrl: [type: "string", description: "Raw URL the self app source was fetched from (for the #include coverage check)"],
                     includes: [type: "array", description: "Parsed #include tokens (namespace.Name) from the self app source", items: [type: "string"]],
@@ -14047,10 +14047,12 @@ def toolUpdatePackage(args) {
         appResults << [name: a.name, namespace: a.namespace, classId: a.classId, isSelf: a.isSelf, success: ok, app: r]
         if (!ok) {
             if (a.isSelf) {
-                // Self app is last; a clean failure return (not a throw) is surfaced as-is.
+                // Self app is last; a clean failure return (not a throw) is surfaced as-is. Same
+                // partial state as the throw path above (bundles + other apps landed, self did not
+                // update), so flag partial=true too -- the difference is only threw vs returned-false.
                 mcpLog("warn", "developer-mode", "hub_update_package: ref=${ref} self app update reported failure")
                 return [
-                    success: false, ref: ref, includes: includeTokens, bundles: bundleResults, apps: appResults, app: r,
+                    success: false, partial: true, ref: ref, includes: includeTokens, bundles: bundleResults, apps: appResults, app: r,
                     message: "Bundle(s) + other apps installed; the self (server) app update reported failure -- see apps[].app.error. hub_update_app remains available to retry."
                 ]
             }

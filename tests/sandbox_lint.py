@@ -799,6 +799,9 @@ def _extract_canonical_counts() -> dict | None:
         "gateways": gateways,
         "tools_list": tools_list,
         "proxied": proxied,
+        # Dev-mode-only TOP-LEVEL tools, excluded from `core`/`tools_list` (default catalog):
+        # total == core + proxied + dev_only_top_level (see the self-test invariant).
+        "dev_only_top_level": len(dev_only_top_level),
         "per_gateway": per_gateway,
         # Name sets for tool-name consistency check (separate from counts):
         "tool_names": tool_names,           # all tool identifiers in getAllToolDefinitions()
@@ -2883,7 +2886,7 @@ def _check_doc_against_canonical(content: str, canonical_override: dict) -> set[
     """
     real = _extract_canonical_counts() or {
         "total": 0, "core": 0, "gateways": 0, "tools_list": 0,
-        "proxied": 0, "per_gateway": {}, "tool_names": set(),
+        "proxied": 0, "dev_only_top_level": 0, "per_gateway": {}, "tool_names": set(),
         "gateway_names": set(), "proxied_names": set(),
     }
     canonical = dict(real)
@@ -3121,23 +3124,25 @@ def run_self_test() -> int:
         # multi-gateway membership (a read listed in both its hub_read_* and a
         # hub_manage_* gateway), the per-gateway sum DOUBLE-COUNTS those reads and
         # exceeds the DISTINCT proxied count. The canonical relationship is on the
-        # distinct count: total == core + distinct_proxied (and core is derived as
-        # total - distinct_proxied, so this also guards a future core-formula change).
+        # distinct count: total == core + distinct_proxied + dev_only_top_level. core is
+        # derived as total - distinct_proxied - dev_only_top_level (dev-mode-only top-level
+        # tools are excluded from the default-catalog `core`; issue #250), so this also guards
+        # a future core-formula change.
         sum_with_dups = sum(canonical["per_gateway"].values())
         if canonical["core"] < 0:
             failures += 1
             print(
                 f"SELF-TEST FAIL [tool-count extractor]\n"
                 f"  core {canonical['core']} is negative — distinct proxied "
-                f"({canonical['proxied']}) exceeds total ({canonical['total']}); "
-                "_extract_canonical_counts() is inconsistent."
+                f"({canonical['proxied']}) + dev-only top-level ({canonical['dev_only_top_level']}) "
+                f"exceeds total ({canonical['total']}); _extract_canonical_counts() is inconsistent."
             )
-        if canonical["core"] + canonical["proxied"] != canonical["total"]:
+        if canonical["core"] + canonical["proxied"] + canonical["dev_only_top_level"] != canonical["total"]:
             failures += 1
             print(
                 f"SELF-TEST FAIL [tool-count extractor]\n"
-                f"  core ({canonical['core']}) + distinct proxied "
-                f"({canonical['proxied']}) != total ({canonical['total']}) — "
+                f"  core ({canonical['core']}) + distinct proxied ({canonical['proxied']}) + "
+                f"dev-only top-level ({canonical['dev_only_top_level']}) != total ({canonical['total']}) — "
                 "internal inconsistency in _extract_canonical_counts()."
             )
         # Multi-membership means the per-gateway sum must be >= the distinct

@@ -313,6 +313,51 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         calls == []
     }
 
+    def "aborts (no writes) when a manifest bundle location can't be re-anchored to the ref"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        // A bundle whose location isn't a scheme://host/owner/repo/ref/<path> raw URL -> _reanchorToRef null.
+        nextManifestBody = manifest([[name: 'Bad Bundle', location: 'not-a-real-url']], APPS_BOTH)
+        def calls = []
+        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then:
+        result.success == false
+        result.aborted == true
+        result.abortReason == 'manifest_unparseable'
+        result.error.contains('unusable location')
+        calls == []
+    }
+
+    def "aborts (no writes) when a manifest app location can't be re-anchored to the ref"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        // The child app's location is malformed -> _reanchorToRef null -> app_class_unresolved abort.
+        def apps = [
+            [name: 'MCP Rule Server', namespace: 'mcp', location: "${RAW}/main/hubitat-mcp-server.groovy".toString(), required: true],
+            [name: 'MCP Rule', namespace: 'mcp', location: 'garbage', required: true]
+        ]
+        nextManifestBody = manifest(BUNDLE_LIBS, apps)
+        def calls = []
+        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then:
+        result.success == false
+        result.aborted == true
+        result.abortReason == 'app_class_unresolved'
+        calls == []
+    }
+
     def "aborts (no writes) when the app #includes a library but the manifest declares no bundle"() {
         given:
         enableDev()
@@ -457,6 +502,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
 
         then:
         result.success == false
+        result.partial == true   // same partial state as the throw path: bundle + child landed, self did not
         result.bundles[0].success == true
         result.apps.find { it.isSelf }.success == false
         result.message.contains('hub_update_app remains available')
