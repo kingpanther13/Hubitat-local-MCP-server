@@ -650,17 +650,17 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `hub_read_apps_code` → `hub_list_libraries`.
 
-### T44b — Discover hub_update_package dry-run (hub_manage_mcp, Developer Mode)
+### T44b — Discover hub_update_package dry-run (top-level, Developer Mode)
 
-> Precondition: **Developer Mode ON**. `hub_update_package` is hidden from `tools/list` when Developer Mode is off, so with it off the agent should report the tool is unavailable. With it on, the dry run performs no writes.
+> Precondition: **Developer Mode ON**. `hub_update_package` is hidden from `tools/list` when Developer Mode is off, so with it off the agent should report the tool is unavailable. With it on it is a **top-level** tool (issue #250 pulled it out of the `hub_manage_mcp` gateway), and the dry run performs no writes.
 
 ```json
 {
-  "test_prompt": "Developer Mode is on. Without changing anything, do a dry-run package deploy of ref 'main' and tell me which libraries it would install and which app it would update."
+  "test_prompt": "Developer Mode is on. Without changing anything, do a dry-run package deploy of ref 'main' and tell me which bundles and apps it would deploy."
 }
 ```
 
-**Expected**: Discovers `hub_manage_mcp` → `hub_update_package` with `dryRun=true` (no `confirm` needed). Reports `success=true`, `dryRun=true`, the resolved `appClassId`, and the planned libraries (zero until a `#include` is added in the modularization work). No library or app write occurs.
+**Expected**: Discovers the top-level `hub_update_package` and calls it with `dryRun=true` (no `confirm` needed). Reports `success=true`, `dryRun=true`, the planned bundles (the library bundle) and planned apps (parent + child, the parent flagged as the self app, deployed last). No bundle or app write occurs.
 
 ### T45 — Discover hub_list_backups (hub_read_apps_code)
 

@@ -483,7 +483,17 @@ class TestRunner:
     def test_tools_list(self) -> None:
         result = self.client.list_tools()
         tools = result.get("tools", [])
-        assert len(tools) == 30, f"Expected 30 tools (11 core + 19 gateways), got {len(tools)}"
+        names = {t.get("name") for t in tools}
+        # hub_update_package is a Developer-Mode-only TOP-LEVEL tool (issue #250): it shows on
+        # tools/list ONLY with Developer Mode on (this e2e hub has it on -- a documented precondition).
+        # The documented DEFAULT catalog is 30 (11 core + 19 gateways); exclude the dev-mode tool so
+        # the count matches the default regardless of the toggle, then assert the dev-mode tool is
+        # present on this dev-on hub.
+        default_tools = [t for t in tools if t.get("name") != "hub_update_package"]
+        assert len(default_tools) == 30, \
+            f"Expected 30 default tools (11 core + 19 gateways), got {len(default_tools)}: {sorted(names)}"
+        assert "hub_update_package" in names, \
+            "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
 
     @test("infrastructure")
     def test_health_endpoint(self) -> None:
@@ -2045,7 +2055,7 @@ class TestRunner:
                 print(f"  [WARN] throwaway library cleanup failed: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 10: developer_mode (10 tests — Section 12 of BAT-v2.md + review-fix coverage)
+    # GROUP 10: developer_mode (11 tests — Section 12 of BAT-v2.md + review-fix coverage + #250 dry-run)
     # -----------------------------------------------------------------------
     # Preconditions (provided by .github/scripts/mcp_setup_env.sh in CI, or
     # set manually for local runs):
@@ -2311,6 +2321,34 @@ class TestRunner:
             msg = str(e)
             assert "debugLogging" in msg, f"error didn't mention the key: {msg}"
             assert "boolean" in msg.lower(), f"error didn't say boolean: {msg}"
+
+    @test("developer_mode")
+    def test_update_package_dry_run(self) -> None:
+        """Issue #250: hub_update_package dry-run plans the full HPM repair with ZERO writes.
+
+        It is now a TOP-LEVEL tool (pulled out of the hub_manage_mcp gateway). dryRun fetches
+        packageManifest.json at the ref and reports the bundle(s) + apps it WOULD deploy (the self
+        app last), making no changes and needing no confirm. Deploy ref 'main' so the plan is stable
+        regardless of the PR under test. The REAL deploy leg is intentionally not e2e'd -- it
+        recompiles the running server mid-call (issue #237), which is exactly what the watchdog exists
+        to drive; only the no-write dryRun is safe to exercise here.
+        """
+        result = self.client.call_tool("hub_update_package", {"ref": "main", "dryRun": True})
+        assert result.get("success") is True, f"dry-run did not succeed: {result}"
+        assert result.get("dryRun") is True, f"dryRun flag not echoed: {result}"
+        # The library bundle is planned, re-anchored to the deploy ref.
+        bundles = result.get("plannedBundles") or []
+        assert any((b.get("url") or "").endswith(".zip") and "/main/" in (b.get("url") or "")
+                   for b in bundles), f"expected a planned library bundle re-anchored to 'main': {bundles}"
+        # Both apps are planned; exactly one self app (the parent), and it is listed LAST.
+        apps = result.get("plannedApps") or []
+        names = [a.get("name") for a in apps]
+        assert "MCP Rule Server" in names, f"parent app missing from the plan: {apps}"
+        self_apps = [a for a in apps if a.get("isSelf")]
+        assert len(self_apps) == 1 and self_apps[0].get("name") == "MCP Rule Server", \
+            f"expected exactly one self app (MCP Rule Server): {apps}"
+        assert apps and apps[-1].get("isSelf") is True, \
+            f"the self app must be planned LAST (deployed last so its recompile is the final act): {apps}"
 
     # -----------------------------------------------------------------------
     # GROUP 11: hub_get_device_attribute poll mode (2 tests -- wall-clock coverage, I7)

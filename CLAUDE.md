@@ -156,7 +156,7 @@ Per-run flow (all over `WATCHDOG_URL` unless noted), driven by `.github/scripts/
 2. **Lease** — serialize runs on the single shared hub (a hub variable with a TTL).
 3. **Self-update** — deploy THIS PR's `e2e-deadman-watchdog-v2.groovy` onto the watchdog itself (`mcp_watchdog_self_update.sh`), so e2e exercises the watchdog the PR ships. After the one-time manual install, the watchdog never needs to be re-imported.
 4. **Arm** (`mcp_arm_watchdog.sh`) — refresh the hub to canonical `main` if it drifted or `main`'s SHA changed (skip when current), cache main (app + each `#include`d library) to File Manager, and write an armed flag with a ~35-min deadline.
-5. **Install PR** (`mcp_watchdog_deploy.sh`) — bundle → app (the bundle delivers every `#include`d library, so there is no separate per-library install step; installing a library individually AND via the bundle was redundant and forced an extra recompile). The app deploy is confirmed via a FRESH `lastSelfDeploy` success (survives the relay-dropped ~1.6 MB response AND a same-length change, so a stale source can't false-green).
+5. **Install PR** (`mcp_watchdog_deploy.sh`) — bundle → every manifest app (full HPM repair: it deploys the parent AND child apps, overriding whatever is installed; the bundle delivers every `#include`d library, so there is no separate per-library install step — installing a library individually AND via the bundle was redundant and forced an extra recompile). Each app deploy is confirmed via a FRESH `lastSelfDeploy` success (survives the relay-dropped ~1.6 MB response AND a same-length change, so a stale source can't false-green).
 6. **Tests** — `tests/e2e_test.py` against `MCP_URL`.
 7. **Disarm / restore** (`mcp_disarm_watchdog.sh`) — the watchdog's on-hub `checkDeadman` timer restores main from the cache (libraries-first, app-last). CI fires an early disarm on a clean finish; if CI can't (the run crashed), the watchdog auto-restores at the deadline — the dead-man.
 
@@ -235,13 +235,12 @@ Libraries are delivered to real hubs via an HPM **bundle** (a `.zip`), declared 
 
 1. Create `libraries/<name>.groovy` starting with `library(name: "<Name>", namespace: "mcp", author: "...", description: "...")`, then the impl methods.
 2. Add `#include mcp.<Name>` near the top of `hubitat-mcp-server.groovy`.
-3. Register it in `getPackageLibraryRegistry()` (the `hub_update_package` dev-deploy leg).
-4. Add it to `LIBS` in `tools/build-bundle.py`.
-5. Rebuild + **commit** `bundles/*.zip`. With the `.githooks` pre-commit hook enabled (`git config core.hooksPath .githooks`) this is automatic on commit; otherwise run `python tools/build-bundle.py` yourself. The `sandbox-lint` drift gate enforces it either way.
-6. The Spock harness auto-resolves `#include` via `src/test/groovy/support/IncludeResolver.groovy` — no harness edit needed. Add an `IncludeResolverSpec` case asserting the real library resolves.
-7. Keep the gateway membership, the `executeTool` dispatch case, and `getReadOnlyToolNames()` entry in main; the tool **definitions** move to the library next to the impl (see "What moves to the library vs stays in the app" above). `check_include_library_lockstep` (sandbox_lint) verifies the `#include` ⇄ library file ⇄ `LIBS` ⇄ registry quartet stays in sync.
+3. Add it to `LIBS` in `tools/build-bundle.py`.
+4. Rebuild + **commit** `bundles/*.zip`. With the `.githooks` pre-commit hook enabled (`git config core.hooksPath .githooks`) this is automatic on commit; otherwise run `python tools/build-bundle.py` yourself. The `sandbox-lint` drift gate enforces it either way.
+5. The Spock harness auto-resolves `#include` via `src/test/groovy/support/IncludeResolver.groovy` — no harness edit needed. Add an `IncludeResolverSpec` case asserting the real library resolves.
+6. Keep the gateway membership, the `executeTool` dispatch case, and `getReadOnlyToolNames()` entry in main; the tool **definitions** move to the library next to the impl (see "What moves to the library vs stays in the app" above). `check_include_library_lockstep` (sandbox_lint) verifies the `#include` ⇄ library file ⇄ `LIBS` triplet stays in sync.
 
-Steps 3 + 4 must stay in lockstep (an unmapped `#include` aborts `hub_update_package`; a missing `LIBS` entry ships a stale bundle). When updating a library on a hub by hand during dev, **update the existing library, don't install a second copy** — a duplicate name+namespace creates a second library at a new id and `#include` binds to only one (HPM's normal install flow avoids this).
+The `#include` and its `LIBS` entry must stay in lockstep — a missing `LIBS` entry ships a stale bundle that won't deliver the library, so the app fails to compile after an HPM update (or a `hub_update_package` full-repair deploy, which installs the same bundle). When updating a library on a hub by hand during dev, **update the existing library, don't install a second copy** — a duplicate name+namespace creates a second library at a new id and `#include` binds to only one (HPM's normal install flow avoids this).
 
 ## PR workflow
 

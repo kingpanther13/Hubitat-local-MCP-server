@@ -298,11 +298,18 @@ Dedicated Rule Machine gateway: create/edit RM rules (`hub_set_rule`), delete th
 | `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Read master |
 | `hub_delete_native_app` | Delete any classic native app, type-agnostic (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Write master |
 
-### hub_manage_mcp (2 tools)
+### hub_manage_mcp (1 tool)
 
 Developer Mode self-administration: tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration without manual UI intervention. Requires the opt-in `enableDeveloperMode` toggle in the MCP rule app settings (default OFF). Each successful write is logged at WARN level for audit. First gateway under the Developer Mode pattern — additional self-admin tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Allowlisted: `mcpLogLevel`, `debugLogging`, `maxCapturedStates`, `loopGuardMax`, `loopGuardWindowSec`, `enableRead`, `enableCustomRuleEngine`, `useGateways`. After flipping any `enable*` toggle or `useGateways`, MCP clients may need to reconnect to refresh their cached tool schema. | Developer Mode + Write master + confirm + recent backup |
-| `hub_update_package` | Self-deploy the whole package (this app + every library it `#include`s) at a git `ref` — fetch the app source, parse its `#include mcp.<Name>` directives, install/update each referenced library (idempotent), then update the app. Libraries first, app last; aborts before the app save on any failure so the app is never left referencing a missing library and always stays updatable via `hub_update_app`. `dryRun=true` plans with zero writes. Hidden from `tools/list` unless Developer Mode is on. | Developer Mode (hidden when off) + Write master + confirm + recent backup |
+
+### hub_update_package (top-level, Developer Mode)
+
+Its own **top-level** tool (issue #250 pulled it out of the `hub_manage_mcp` gateway), surfaced on `tools/list` only when Developer Mode is on.
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `hub_update_package` | Full HPM-repair self-deploy of the whole package at a git `ref` — **OVERRIDES whatever is installed**, the Hubitat Package Manager Repair way, but anchored to `packageManifest.json` AT the `ref` so an unmerged PR installs. Fetch the manifest at `ref` → install every declared library **bundle** first (the hub unpacks the `.zip`, overwriting in place) → then deploy every declared **app**, the **self** app (`mcp`/`MCP Rule Server`) **last** (its recompile drops the response, #237). Deploys the parent app, the child app (`mcp`/`MCP Rule`, class 230), and the library bundle. Aborts before the self app on any earlier failure, so the running server is never bricked and stays updatable via `hub_update_app`. `dryRun=true` plans with zero writes. Hidden from `tools/list` unless Developer Mode is on. | Developer Mode (hidden when off) + Write master + confirm + recent backup |

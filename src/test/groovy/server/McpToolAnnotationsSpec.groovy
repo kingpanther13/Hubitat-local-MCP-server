@@ -425,27 +425,28 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "hub_update_package appears as a write+destructive tool when Developer Mode is ON (#mode mode)"() {
+    def "hub_update_package appears as a top-level write+destructive tool when Developer Mode is ON (#mode mode)"() {
+        // Issue #250: pulled out of the hub_manage_mcp gateway -- it is now its own
+        // top-level dev-mode tool in BOTH flat and gateway modes.
         given:
         if (mode == 'flat') { settingsMap.useGateways = false } else { settingsMap.remove('useGateways') }
         settingsMap.enableDeveloperMode = true   // ON
 
         when:
         def tools = script.getToolDefinitions()
+        def t = tools.find { it.name == 'hub_update_package' }
 
-        then:
-        if (mode == 'flat') {
-            def t = tools.find { it.name == 'hub_update_package' }
-            assert t != null : 'hub_update_package must be visible in flat mode when Developer Mode is on'
-            assert t.annotations.readOnlyHint == false
-            assert t.annotations.destructiveHint == true
-        } else {
+        then: 'present as its own top-level tool, write + destructive'
+        t != null
+        t.annotations.readOnlyHint == false
+        t.annotations.destructiveHint == true
+
+        and: 'in gateway mode it is NOT a hub_manage_mcp sub-tool (top-level instead), but the gateway survives'
+        if (mode == 'gateway') {
             def mcpGw = tools.find { it.name == 'hub_manage_mcp' }
-            assert mcpGw != null : 'hub_manage_mcp gateway must be present'
+            assert mcpGw != null : 'hub_manage_mcp gateway must still be present (hub_update_mcp_settings)'
             def subTools = (mcpGw.inputSchema?.properties?.tool?.enum ?: []) as Set
-            assert subTools.contains('hub_update_package') : 'hub_update_package must be a hub_manage_mcp sub-tool when Developer Mode is on'
-            assert mcpGw.annotations.readOnlyHint == false
-            assert mcpGw.annotations.destructiveHint == true
+            assert !subTools.contains('hub_update_package') : 'hub_update_package must NOT be a hub_manage_mcp sub-tool anymore'
         }
 
         where:
