@@ -16298,7 +16298,13 @@ private Map _appTypeRegistry() {
     // "For input string: updateRule" (verified live on Basic Rule).
     return [
         rule_machine: [namespace: "hubitat", appName: "Rule-5.1", parentTypeName: "Rule Machine"],
-        button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers"],
+        // Button Controller-5.1's mainPage is submitOnChange (selecting buttonDev re-renders
+        // to reveal the button-action table), with no updateRule button -- so commitButton is
+        // null. Verified live: a settings write of buttonDev (capability.pushableButton) commits
+        // via the submitOnChange re-render, but the default trailing updateRule click re-inits
+        // the app and DROPS the just-selected device (settings.buttonDev silently reverts to
+        // null while the app label still gets the device name -- a false-positive "success").
+        button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers", commitButton: null],
         groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes"],
         notifier: [namespace: "hubitat", appName: "Notifier", parentTypeName: "Notifications"],
         // visual_rule is registered for completeness; not probe-validated against a
