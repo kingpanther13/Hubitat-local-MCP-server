@@ -237,6 +237,35 @@ win() {
   grep -oE '"(submitOnChange|submitOnEveryChange|multiple|required|defaultValue|inputType|name|type|title|description|options|range|offerAll|disabled|textColor|backgroundColor|width|noBorder|image|hidden|placeholder|capability|attribute|command|device|append|displayDuringSetup|element|elem|section|sections|configPage|paragraph|href|page|nextPage|prevPage|install|uninstall|state|buttonSOC|inputClass|stateAttribute|hideable|target|collapse)"' "$PM" 2>/dev/null | sort | uniq -c | sort -rn | head -90 || true
 } > "$OUT/A0-rule-machine.txt" 2>&1
 
+############################################################
+# B0 - BROAD rule/RM token census (not anchored on "rule machine")
+############################################################
+{
+  echo "# Broad rule*/RM* token census across all bundles"
+  echo
+  echo "## 1. Every identifier/path containing 'rule' (case-insensitive), per file, with counts"
+  for f in "$PA" "$PM" "$PV"; do
+    [ -f "$f" ] || continue
+    echo "===== $(basename "$f") ====="
+    grep -oiE '[a-zA-Z0-9_./-]*rule[a-zA-Z0-9_./-]*' "$f" 2>/dev/null | sort | uniq -c | sort -rn | head -150 || true
+    echo
+  done
+  echo "## 2. Standalone 'RM' (word-boundary, case-SENSITIVE) + RM<digit>/RM_<word>"
+  for f in "$PA" "$PM" "$PV"; do
+    [ -f "$f" ] || continue
+    echo "===== $(basename "$f") ====="
+    grep -noE '\bRM\b|\bRM[0-9_][A-Za-z0-9_]*' "$f" 2>/dev/null | sort | uniq -c | sort -rn | head -40 || true
+    echo
+  done
+  echo "## 3. Classic Rule Machine internal vocabulary (server-side tokens), if present in bundles"
+  for f in "$PA" "$PM" "$PV"; do
+    [ -f "$f" ] || continue
+    echo "===== $(basename "$f") ====="
+    grep -noEi 'condActs|getIfThen|doActPage|doActsPage|selectActions|selectTrigger|STPage|predCapabs|actType|actSubType|trigEvents|RMUtils|capsForType|RelrDev|condEvents|ruleType|cancelTimers|cancelDelay|repeatActs|setVariable|privateBoolean|requiredExpression' "$f" 2>/dev/null | sort | uniq -c | sort -rn | head -50 || true
+    echo
+  done
+} > "$OUT/B0-rule-token-census.txt" 2>&1
+
 echo "== evidence files =="
 ls -la "$OUT"
 echo "== total evidence bytes (excl pretty sources) =="
