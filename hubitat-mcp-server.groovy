@@ -16566,7 +16566,12 @@ private Integer _discoverParentAppId(String appType) {
         def created = null
         try {
             created = hubInternalGetRaw(sysAppPath)
-            bootstrapDiag = "sysApp status=${created?.status} location=${created?.location} dataLen=${created?.data?.toString()?.length() ?: 0}"
+            // Front-load the most diagnostic bits (body length + context around `appId`)
+            // because the e2e harness truncates the surfaced error to ~156 chars.
+            def _body = created?.data?.toString() ?: ""
+            def _ai = _body.indexOf("appId")
+            def _ctx = _ai >= 0 ? _body.substring(_ai, Math.min(_ai + 36, _body.length())).replaceAll(/\s+/, ' ') : "noAppId"
+            bootstrapDiag = "dl=${_body.length()} ctx='${_ctx}' st=${created?.status} loc=${created?.location}"
         } catch (Exception e) {
             bootstrapDiag = "sysApp threw: ${e.message}"
             mcpLog("warn", "rm-native", "sysApp bootstrap GET for '${parentTypeName}' threw (continuing to re-discover): ${e.message}")
@@ -16603,8 +16608,6 @@ private Integer _discoverParentAppId(String appType) {
                     bootstrapDiag += " committed=${commit?.success}"
                 } catch (Exception ce) { bootstrapDiag += " commitThrew=${ce.message}" }
                 parentNode = [id: newId, installed: true]
-            } else if (created.data) {
-                bootstrapDiag += " bodyHead='${created.data.toString().take(200).replaceAll(/\s+/, ' ')}'"
             }
         } else if (parentNode?.id != null && parentNode.installed != true) {
             // Surfaced but PENDING (installed != true) -- commit via Done so it's usable.
@@ -16618,7 +16621,7 @@ private Integer _discoverParentAppId(String appType) {
 
     if (parentNode?.id == null) {
         throw new IllegalArgumentException(
-            "'${parentTypeName}' parent not found on this hub and the /installedapp/sysApp bootstrap did not surface it [${bootstrapDiag}]. Install it via Apps --> Add Built-In App, then retry appType=${appType}.")
+            "[bootstrap ${bootstrapDiag}] '${parentTypeName}' parent not surfaced by /installedapp/sysApp (appType=${appType}); install via Apps > Add Built-In App.")
     }
     def id = parentNode.id.toString().toInteger()
     ids[appType] = id
