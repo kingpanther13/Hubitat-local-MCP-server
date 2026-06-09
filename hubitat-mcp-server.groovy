@@ -1270,7 +1270,7 @@ def getGatewayConfig() {
             description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, radio info, Z-Wave repair, and state snapshots. (Custom-rule diagnostics: use hub_get_custom_rule with detailed=true.)",
             tools: ["hub_get_metrics", "hub_get_memory_history", "hub_call_gc", "hub_get_device_health", "hub_get_radio_details", "hub_call_zwave_repair", "hub_list_captured_states", "hub_delete_captured_state"],
             summaries: [
-                hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history. Read-only by default; recordSnapshot=true also persists a snapshot. Args: recordSnapshot, trendPoints",
+                hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; recordSnapshot=true also persists a snapshot. Args: recordSnapshot, trendPoints",
                 hub_get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Read master",
                 hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires the Write master",
                 hub_get_device_health: "Check device staleness, ICMP-ping arbitrary IPs (router, NAS, server), and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), identifyHub",
@@ -1280,7 +1280,7 @@ def getGatewayConfig() {
                 hub_delete_captured_state: "Delete a captured state by stateId, or ALL captured states when stateId is omitted. Args: stateId (optional)"
             ],
             searchHints: [
-                hub_get_metrics: "temperature database size trending monitoring over time",
+                hub_get_metrics: "temperature database size trending monitoring over time health alerts safe mode radio offline backup failed low memory",
                 hub_get_memory_history: "ram free used leak trending over time java heap nio",
                 hub_call_gc: "gc garbage collection free reclaim ram cleanup java heap memory",
                 hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router gateway identify led blink locate physical hub",
@@ -1314,7 +1314,7 @@ def getGatewayConfig() {
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events). Args: type, sortBy, limit",
                 hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions",
                 hub_get_debug_logs: "Get MCP internal debug logs (mode='logs') or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
-                hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history. Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
+                hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
                 hub_get_device_health: "Check device staleness, ICMP-ping arbitrary IPs, and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, identifyHub",
                 hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count). Args: radio (zwave|zigbee, omit for both)",
@@ -1325,7 +1325,7 @@ def getGatewayConfig() {
                 hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
                 hub_get_jobs: "scheduled cron timer recurring what is running next automation",
                 hub_get_debug_logs: "mcp internal troubleshoot trace logging status buffer capacity level",
-                hub_get_metrics: "temperature database size trending monitoring memory over time snapshot history",
+                hub_get_metrics: "temperature database size trending monitoring memory over time snapshot history health alerts safe mode radio offline backup failed weak mesh",
                 hub_get_memory_history: "ram free used leak trending over time java heap nio",
                 hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router identify led blink locate",
                 hub_get_radio_details: "zwave zigbee mesh network frequency firmware channel pan coordinator radio",
@@ -2353,11 +2353,12 @@ Verify rule after creation.""",
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, free memory, internal temperature, database size, MCP server stats, and current security/toggle settings. Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Read master is enabled; otherwise they are omitted.",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, free memory, internal temperature, database size, MCP server stats, and current security/toggle settings. Also surfaces the pending hub firmware/platform update (platformUpdate) + Safe Mode (safeMode).[[FLAT_TRIM]] Pass includeHealthAlerts=true for the hub's full health-alerts block from /hub2/hubData (radio offline, backup failures, low memory, DB bloat, weak mesh). Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Read master is enabled; otherwise they are omitted.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false]
+                    identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
+                    includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block (default false).[[FLAT_TRIM]] Every /hub2/hubData alert flag + messages under healthAlerts; platformUpdate and safeMode are returned regardless.[[/FLAT_TRIM]]", default: false]
                 ]
             ],
             outputSchema: [
@@ -2401,7 +2402,10 @@ Verify rule after creation.""",
                     hubData: [type: "object", description: "Hub data map (Read master only)"],
                     readDisabledNote: [type: "string", description: "Present when the Read master is disabled; PII excluded"],
                     identifyHubTriggered: [type: "boolean", description: "Present when identifyHub requested; LED blink result"],
-                    identifyHubError: [type: "string", description: "Present when identifyHub blink failed"]
+                    identifyHubError: [type: "string", description: "Present when identifyHub blink failed"],
+                    platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available), note (only when available=null)}. Distinct from hub_get_update_status's MCP-server-app check; available=null means /hub2/hubData was unreadable/unrecognized and the note explains why."],
+                    safeMode: [type: "boolean", description: "Whether the hub is running in Safe Mode (from /hub2/hubData). Absent if /hub2/hubData was unreadable."],
+                    healthAlerts: [type: "object", description: "Present only when includeHealthAlerts=true: the hub's health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags), details (full alert map + message strings)}."]
                 ]
             ]
         ],
@@ -3028,7 +3032,7 @@ def _getAllToolDefinitions_part4() {
     return [
         [
             name: "hub_get_update_status",
-            description: "Check if a newer version of MCP Rule Server is available on GitHub. The check is asynchronous: the first call usually returns latestVersion='unknown (check in progress)' — call again in a few seconds for the result.",
+            description: "Check for available updates: the MCP Rule Server APP version on GitHub (installedVersion/latestVersion/updateAvailable) AND, separately, platformUpdate -- the pending Hubitat FIRMWARE update on the hub.[[FLAT_TRIM]] The app check is asynchronous: the first call usually returns latestVersion='unknown (check in progress)', so call again in a few seconds. platformUpdate comes from /hub2/hubData. The two are unrelated; do not conflate the app update with the firmware update.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -3037,11 +3041,12 @@ def _getAllToolDefinitions_part4() {
                 type: "object",
                 properties: [
                     success: [type: "boolean", description: "Whether the check ran"],
-                    installedVersion: [type: "string", description: "Currently installed version"],
-                    latestVersion: [type: "string", description: "Latest version on GitHub; 'unknown' while async check pending"],
-                    updateAvailable: [type: "boolean", description: "Whether a newer version is available"],
-                    lastChecked: [type: "string", description: "When the check last completed"],
-                    note: [type: "string", description: "Async-check guidance"]
+                    installedVersion: [type: "string", description: "Currently installed MCP Rule Server APP version"],
+                    latestVersion: [type: "string", description: "Latest MCP server app version on GitHub; 'unknown' while async check pending"],
+                    updateAvailable: [type: "boolean", description: "Whether a newer MCP server app version is available"],
+                    lastChecked: [type: "string", description: "When the app-version check last completed"],
+                    platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available), note (only when available=null)}. Separate from the MCP server app check above; available=null when /hub2/hubData was unreadable/unrecognized and the note explains why."],
+                    note: [type: "string", description: "Guidance distinguishing the two update types + async-check hint"]
                 ],
                 required: ["success", "installedVersion"]
             ]
@@ -3289,7 +3294,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
         ],
         [
             name: "hub_get_metrics",
-            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. The trend reflects ONLY previously-recorded snapshots — the hub does not auto-sample, so it can be sparse or stale (and resets if the CSV is cleared) unless recordSnapshot=true is called periodically. Read-only by default; pass recordSnapshot=true to ALSO append the current snapshot to the performance-history CSV in the hub File Manager (the only write side-effect). Requires Read master.",
+            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. The trend reflects ONLY previously-recorded snapshots — the hub does not auto-sample, so it can be sparse or stale (and resets if the CSV is cleared) unless recordSnapshot=true is called periodically. Read-only by default; pass recordSnapshot=true to ALSO append the current snapshot to the performance-history CSV in the hub File Manager (the only write side-effect).[[FLAT_TRIM]] Also folds in the hub's own health alerts under healthAlerts (radio offline, backup failures, low memory, DB bloat, weak mesh, safeMode) from /hub2/hubData.[[/FLAT_TRIM]] Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3316,6 +3321,7 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                         databaseSizeKB: [description: "Database size (KB)"],
                         uptimeSeconds: [description: "Uptime in seconds"]
                     ]]],
+                    healthAlerts: [type: "object", description: "The hub's own health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags like hubLowMemory/hubLargeDatabase/zwaveOffline/localBackupFailed/weakZigbee), details (full alert flag map + the hub's message strings)}. Complements the locally-derived warnings on `current`. null if /hub2/hubData was unreadable."],
                     trendPointsAvailable: [type: "integer", description: "Total history rows available"],
                     historyFile: [type: "string", description: "CSV history filename in File Manager"]
                 ],
@@ -6853,6 +6859,62 @@ def applyDeviceMapping(data, Map mapping) {
 
 // ==================== SYSTEM TOOLS ====================
 
+// ===== /hub2/hubData diagnostics: pending platform update + hub health alerts =====
+// /hub2/hubData is the data the modern hub UI computes server-side. It carries the hub's OWN
+// authoritative health alerts plus the pending-platform-update flag (what the UI "bell" reads) --
+// neither is in hub.data or any /hub/advanced/* metric. The availability check is cloud-driven
+// (cloud.hubitat.com); the hub caches the result here so it is readable locally. Defensive: returns
+// null on any fetch/parse failure so callers degrade gracefully (older firmware may not serve it).
+def _getHub2HubData() {
+    try {
+        def raw = hubInternalGet("/hub2/hubData")
+        if (!raw) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        return (parsed instanceof Map) ? parsed : null
+    } catch (Exception e) {
+        // warn, not debug: the default log threshold is "error", so a debug line would be invisible --
+        // and a /hub2/hubData fetch/parse failure (transient 5xx, auth hiccup, or a firmware that
+        // changed the JSON shape) is exactly the cause an operator needs when platformUpdate degrades.
+        mcpLog("warn", "server", "_getHub2HubData read/parse failed: ${e.message}")
+        return null
+    }
+}
+
+// platformUpdate block: the pending HUB FIRMWARE update. Distinct from hub_get_update_status's
+// MCP-server-app version check. currentVersion is the hub firmware string; available +
+// availableVersion come from /hub2/hubData.alerts (platformUpdateAvailable / platformUpdateVersion).
+def _platformUpdateFromHub2(hub2) {
+    def fw = null
+    try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception e) { }
+    def hubVer = (hub2 instanceof Map) ? hub2.version?.toString() : null
+    // available:null is the schema's documented "unreadable" signal -- honor it for BOTH a missing
+    // /hub2/hubData AND a present-but-unrecognized shape (alerts not a Map, or a non-Boolean
+    // platformUpdateAvailable), so a malformed/changed payload can never masquerade as a confident
+    // "no update available".
+    def alerts = (hub2 instanceof Map && hub2.alerts instanceof Map) ? hub2.alerts : null
+    def pa = alerts?.platformUpdateAvailable
+    if (alerts == null || (pa != null && !(pa instanceof Boolean))) {
+        return [available: null, currentVersion: fw ?: hubVer,
+                note: "Pending-firmware status unreadable (/hub2/hubData missing, or its alerts block has an unrecognized shape)."]
+    }
+    boolean avail = (pa == true)
+    def out = [available: avail, currentVersion: fw ?: hubVer]
+    if (avail) out.availableVersion = alerts.platformUpdateVersion?.toString()
+    return out
+}
+
+// healthAlerts block: the hub's own active health determinations from /hub2/hubData -- complementary
+// to, NOT duplicating, the locally-derived memory/temp/DB warnings. `active` lists the currently-
+// firing alert flags; `details` is the full alert map (every flag + the hub's message strings). The
+// platform-update fields are surfaced separately (platformUpdate), so they are dropped here.
+def _healthAlertsFromHub2(hub2) {
+    if (!(hub2 instanceof Map)) return null
+    def alerts = (hub2.alerts instanceof Map) ? ([:] + hub2.alerts) : [:]
+    alerts.remove("platformUpdateAvailable"); alerts.remove("platformUpdateVersion")
+    def active = alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort()
+    return [safeMode: hub2.safeMode == true, active: active, details: alerts]
+}
+
 def toolGetHubInfo(args = null) {
     def hub = location.hub
     def info = [
@@ -6982,6 +7044,17 @@ def toolGetHubInfo(args = null) {
             info.identifyHubError = msg
             mcpLog("warn", "server", "identifyHub blinkLED request failed [${e.class.simpleName}]: ${msg}")
         }
+    }
+
+    // Pending hub firmware update + hub health alerts from /hub2/hubData (one fetch; not PII-gated --
+    // these are hub-health, not location data). platformUpdate + safeMode always; the full alerts
+    // block only when asked (it is the diagnostics surface, lives in full on hub_get_metrics too).
+    def hub2 = _getHub2HubData()
+    info.platformUpdate = _platformUpdateFromHub2(hub2)
+    if (hub2 instanceof Map) info.safeMode = (hub2.safeMode == true)
+    if (args?.includeHealthAlerts == true) {
+        def ha = _healthAlertsFromHub2(hub2)
+        if (ha != null) info.healthAlerts = ha
     }
 
     return info
@@ -11551,6 +11624,11 @@ def toolGetHubPerformance(args) {
     mcpLog("info", "monitoring", "Hub performance snapshot recorded=${recordSnapshot}, trendPoints=${trends.size()}")
     return [
         current: current,
+        // The hub's OWN active health alerts (from /hub2/hubData) sit alongside the locally-derived
+        // memory/temp/DB warnings on `current` -- e.g. the hub's hubLargeDatabase/hubLowMemory flags
+        // complement (and may differ in threshold from) the databaseWarning/memoryWarning above. null
+        // when /hub2/hubData is unreadable.
+        healthAlerts: _healthAlertsFromHub2(_getHub2HubData()),
         trends: trends,
         trendPointsAvailable: history.size(),
         historyFile: csvFileName
@@ -26736,7 +26814,8 @@ def toolCheckForUpdate(args) {
             latestVersion: updateInfo.latestVersion ?: "unknown (check in progress)",
             updateAvailable: updateInfo.updateAvailable ?: false,
             lastChecked: updateInfo.checkedAt ? formatTimestamp(updateInfo.checkedAt) : "checking now",
-            note: "Version check is asynchronous. If latestVersion shows 'unknown', call this tool again in a few seconds to see the result."
+            platformUpdate: _platformUpdateFromHub2(_getHub2HubData()),
+            note: "Two distinct updates here. installedVersion/latestVersion/updateAvailable track the MCP Rule Server APP on GitHub (asynchronous -- if latestVersion is 'unknown', call again in a few seconds). platformUpdate is the SEPARATE pending HUBITAT FIRMWARE/platform update on the hub itself (from /hub2/hubData)."
         ]
     } catch (Exception e) {
         return [

@@ -271,6 +271,26 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_get_info`. Returns hub name, model, firmware version.
 
+### T14b — pending hub firmware/platform update
+
+```json
+{
+  "test_prompt": "Is there a Hubitat firmware/platform update available for my hub, and what version would it update to? Don't apply anything."
+}
+```
+
+**Expected**: Calls `hub_get_info` (or `hub_get_update_status`) and reports the `platformUpdate` block — whether a hub FIRMWARE update is pending and, if so, the `availableVersion` — keeping it distinct from any MCP server-app update. Makes no changes.
+
+### T14c — hub health alerts + safe mode
+
+```json
+{
+  "test_prompt": "Are there any health alerts on my hub right now — low memory, safe mode, radios offline, failed backups? Don't change anything."
+}
+```
+
+**Expected**: Surfaces the hub's own health alerts via `hub_get_info` with `includeHealthAlerts=true` (or `hub_get_metrics`'s `healthAlerts`). Reports `safeMode` and the active alert flags (e.g. `hubLowMemory`, `zwaveOffline`, `localBackupFailed`). Read-only — makes no changes.
+
 ### T15 — hub_list_modes
 
 ```json
