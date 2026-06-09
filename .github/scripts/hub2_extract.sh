@@ -266,6 +266,25 @@ win() {
   done
 } > "$OUT/B0-rule-token-census.txt" 2>&1
 
+############################################################
+# C0 - FULL main.js dynamicPage <form> + input template (for line-by-line impl diff)
+############################################################
+{
+  echo "# main.js: the dynamicPage <form> hidden-field block"
+  echo "#   (formAction / currentPage / pageBreadcrumbs / paramsForPage / appTypeId / appTypeName)"
+  ctx "$PM" 'name="formAction"' 10 230 20000
+  echo
+  echo "# main.js: version + paramsForPage emission (separate template fn)"
+  ctx "$PM" 'name="version"' 12 34 7000
+  echo
+  echo "# main.js: how a settings[...] input is rendered (elem -> HTML attributes)"
+  ctx "$PM" 'name="settings\[' 40 80 20000
+  echo
+  echo "# appUI.js: full serialize loop + jsonSubmit + button POST + breadcrumbs + removeTags (mirror, device already has appUI.pretty.js)"
+  ctx "$PA" 'var jsonSubmit = function' 0 130 16000
+  ctx "$PA" 'postBody\[btn\]' 14 20 4000
+} > "$OUT/C0-form-template-full.txt" 2>&1
+
 echo "== evidence files =="
 ls -la "$OUT"
 echo "== total evidence bytes (excl pretty sources) =="
