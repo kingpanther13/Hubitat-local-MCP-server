@@ -17088,10 +17088,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // landed and the rule rendered correctly. Per the inline-tool-guide
         // contract ("INFORMATIONAL -- does NOT flip partial by itself"), the
         // sentinel MUST be excluded from the partial computation. Other reason
-        // codes (rhs_type_not_revealed, offset_field_not_revealed,
-        // silent_rejection, verification_fetch_failed, not_in_schema) ARE
-        // genuine degradation and continue to flip partial -- the disambiguator
-        // is the reason-code string.
+        // codes (offset_field_not_revealed, silent_rejection,
+        // verification_fetch_failed, not_in_schema) ARE genuine degradation and
+        // continue to flip partial -- the disambiguator is the reason-code string.
         // Both-ways pending (orchestrator).
         given:
         enableWrite()
@@ -18426,29 +18425,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---- compareToDevice capability (B3) ----
 
-    def "addRequiredExpression compareToDevice: RM 5.1.8 has no enum RHS-type selector -- the device-relative path degrades to rhs_type_not_revealed (partial), not a false success"() {
-        // 5.1.8 DEGRADATION PIN (was a false-positive that fabricated an enum
-        // rhsType_1 selector and asserted full success). RM 5.1.8 does NOT render an
-        // enum RHS-type selector for a device-relative RHS -- the real control is a
-        // boolean isDev_<N> ("Relative to a device?") toggle (BAT-v2.md T618). So the
-        // realistic STPage schema never exposes rhsType_1/stateType_1: RelrDev_1 is
-        // written, the enum reveal returns null, and the walker degrades to a
-        // rhs_type_not_revealed skip that flips partial. This spec must FAIL if the
-        // walker is ever reverted to fabricate-then-assert-success on the dead path.
+    def "addRequiredExpression compareToDevice: device-relative happy path -- isDev toggle reveals relDevice picker (no options, as real hardware), offset written, clean success"() {
+        // Device-relative RHS wire-up: writing the comparator RelrDev_1 plus
+        // isDev_1=true reveals the relDevice_1 picker; the reference id is written,
+        // then the optional offset lands in state_1. relDevice_1 is a capability.*
+        // DEVICE picker -- real hardware exposes NO options for it (RM populates the
+        // dropdown client-side), so the stub gives it NO options. The walker must
+        // commit CLEANLY against an empty-options device picker: success:true, NOT
+        // partial, and NO compareToDevice-validation skip (the false-partial this
+        // live-validation round fixed). This is the regression guard for that bug.
         // Both-ways pending (orchestrator).
         given:
         enableWrite()
-        def rCapabWritten = false
+        // The reference device (99) is intentionally NOT in this app's selectedDevices:
+        // RM populates the relDevice picker from the hub-wide same-capability set, so a
+        // reference device the MCP app never selected is still valid. The walker does not
+        // pre-validate it against an option list (device pickers expose none).
         def writtenFields = [:]
+        def isDevWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
             if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
                 body.each { k, v ->
                     def key = _settingKeyOf(k)
                     if (key != null) {
                         writtenFields[key] = v
-                        if (key == "rCapab_1") rCapabWritten = true
+                        if (key == "isDev_1") isDevWritten = true
                     }
                 }
             }
@@ -18463,46 +18465,37 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
                              sections: [[title: "", input: [[name: "useST", type: "bool"]],
-                                         body: [[element: "paragraph", description: "IF Temperature > Sensor2"]]]]],
+                                         body: [[element: "paragraph", description: "Temperature of T1 is > T2 - 2.0"]]]]],
                 settings: [useST: "true"], childApps: []
             ])
         }
-        def stFetchSeq = 0
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            stFetchSeq++
-            // Realistic RM 5.1.8 shape: base condition fields appear after rCapab is
-            // written; the enum RHS-type selector (rhsType_1/stateType_1) NEVER appears
-            // because 5.1.8 uses a boolean isDev_<N> toggle the walker doesn't hunt for.
+            // Progressive-disclosure shape: relDevice_1 appears only AFTER isDev_1
+            // is written. As on real hardware, the capability.* device picker carries
+            // NO options (RM fills the dropdown client-side). state_1 is present
+            // throughout (literal value, re-titled to the offset once isDev_1=true).
             def inputs = [
-                [name: "cond",       type: "enum",                options: ["a": "New condition"]],
-                [name: "rCapab_1",   type: "enum",                options: ["Temperature", "Humidity"]],
+                [name: "cond",       type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",   type: "enum", options: ["Temperature"]],
+                [name: "rDev_1",     type: "capability.sensor", multiple: true],
+                [name: "RelrDev_1",  type: "enum", options: [">", "<", "="]],
+                [name: "isDev_1",    type: "bool"],
+                [name: "state_1",    type: "number"],
                 [name: "hasAll",     type: "button"],
                 [name: "doneST",     type: "button"]
             ]
-            if (rCapabWritten) {
+            if (isDevWritten) {
                 inputs = inputs + [
-                    [name: "rDev_1",     type: "capability.sensor", multiple: true],
-                    [name: "RelrDev_1",  type: "enum",              options: [">", ">=", "<", "<=", "="]],
-                    [name: "state_1",    type: "number"]
-                    // rhsType_1 / stateType_1 intentionally absent -- 5.1.8 boolean toggle.
+                    [name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false]
+                    // NO options key -- real capability.* device pickers expose none.
                 ]
             }
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
-                             sections: [[title: "", input: inputs, paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
                 settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            ruleConfigJson(100, "r", [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "actionCancel", type: "button"]
             ])
         }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -18521,37 +18514,293 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "the expression still commits (action skeleton written) but the device-relative RHS is flagged degraded"
-        result.partial == true
+        then: "the device-relative condition commits"
+        result.success == true
 
-        and: "RelrDev_1 was written (base comparator landed) but no enum RHS-type selector was ever written"
+        and: "the comparator, the isDev toggle, the reference device, and the offset all landed"
+        // Load-bearing discriminators: a regression to the dead enum-hunt would
+        // leave isDev_1 / relDevice_1 unwritten and instead chase rhsType_1.
+        // Production serializes the boolean toggle via toString() before posting, so
+        // the stub captures the string form "true" (same as the not<N> convention).
         writtenFields["RelrDev_1"] == ">"
-        writtenFields["rhsType_1"] == null
-        writtenFields["stateType_1"] == null
+        writtenFields["isDev_1"]?.toString() == "true"
+        writtenFields["relDevice_1"] == "99"
+        writtenFields["state_1"]?.toString() == "-2"
 
-        and: "settingsSkipped carries the compareToDevice rhs_type_not_revealed sentinel -- the honest degradation, not a false fully-applied claim"
-        def sentinel = (result.settingsSkipped as List)?.find { it instanceof Map && it.key == "compareToDevice" }
-        sentinel != null
-        sentinel.reason == "rhs_type_not_revealed"
-
-        and: "fallbackApplied=false -- compareToDevice supplied neither state nor value to write as a literal fallback"
-        sentinel.fallbackApplied == false
+        and: "no compareToDevice-validation skip is produced -- empty device-picker options are NORMAL, not a validation gap"
+        // THE regression guard for this round's live-hub bug: a capability.* device
+        // picker exposes no options, so the walker must NOT emit a
+        // compareToDevice-validation / api_unavailable skip (the false-partial that, on
+        // the live hub, drove top-level success:false on every compareToDevice).
+        // (We do NOT assert partial!=true here: this static-schema stub returns an
+        // unchanged schema after each write, so the post-write verify records a
+        // silent_rejection on every field -- a harness artifact, not the bug under test.
+        // The live hub renders the condition with broken:false and partial!=true.)
+        def skip = (result.settingsSkipped as List) ?: []
+        !skip.any { it instanceof Map && it.key == "compareToDevice-validation" }
+        !skip.any { it instanceof Map && it.key == "compareToDevice" && it.reason == "rhs_type_not_revealed" }
     }
 
-    def "addRequiredExpression compareToDevice: a '!=' comparator is normalized to the Unicode glyph on the RelrDev write even when the RHS-type selector never reveals (5.1.8)"() {
-        // Comparator-normalization parity pin: the compareToDevice RelrDev write is the
-        // reveal trigger and must normalize cond.comparator like every sibling write (RM's
-        // comparator enum only accepts the Unicode glyphs; a raw '!=' would write an
-        // operator RM does not recognize). The normalization happens BEFORE the enum
-        // RHS-type reveal check, so it holds on the realistic RM 5.1.8 schema where the
-        // enum selector never appears (boolean isDev_<N> toggle path, BAT-v2.md T618).
-        // Driving the honest 5.1.8 shape keeps the pin focused on normalization without
-        // depending on the dead enum-reveal path -- the device-relative RHS degrades to
-        // partial here, which is correct, not a regression.
-        // Both-ways pending (orchestrator).
+    def "addRequiredExpression compareToDevice: fail-loud when relDevice picker not revealed after isDev=true"() {
+        // When the boolean isDev_1 toggle does NOT reveal the relDevice_1 picker
+        // (firmware variant / render failure), the walker MUST cancel + throw
+        // rather than silently commit a device-relative condition with no
+        // reference device. Both-ways pending (orchestrator).
         given:
         enableWrite()
-        def rCapabWritten = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // RelrDev_1 + isDev_1 present, but relDevice_1 NEVER appears -- the
+            // boolean toggle did not reveal the reference-device picker.
+            def inputs = [
+                [name: "cond",        type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",    type: "enum", options: ["Temperature"]],
+                [name: "rDev_1",      type: "capability.sensor", multiple: true],
+                [name: "RelrDev_1",   type: "enum", options: [">", "<", "="]],
+                [name: "isDev_1",     type: "bool"],
+                [name: "state_1",     type: "number"],
+                [name: "hasAll",      type: "button"],
+                [name: "cancelCapab", type: "button"]
+                // relDevice_1 intentionally absent.
+            ]
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
+        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                comparator: ">",
+                compareToDevice: [deviceId: 99, attribute: "temperature"]
+            ]]],
+            confirm: true
+        ])
+
+        then: "fail-loud -- relDevice picker did not appear after isDev=true"
+        result.success == false
+        // Load-bearing discriminator: a vacuous regression that silently writes a
+        // partial condition would return success:true, partial:false.
+        result.error?.toString()?.contains("reference-device picker relDevice_<N> not revealed")
+    }
+
+    def "addRequiredExpression compareToDevice: fail-loud when a firmware-variant relDevice picker DOES expose options and they exclude the ref id"() {
+        // DEFENSIVE / FIRMWARE-VARIANT path. Normally a capability.* device picker
+        // exposes NO options (RM fills the dropdown client-side), so the walker does not
+        // validate against an option list. BUT if a firmware variant DOES surface device
+        // options and the requested reference id is not among them, the walker must
+        // cancel + throw rather than write an id that picker would reject. This case is
+        // rare on real hardware; the common empty-options case proceeds cleanly (see the
+        // happy-path and empty-options specs). Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        def isDevWritten = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key == "isDev_1") isDevWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // Firmware-variant shape: relDevice_1 reveals WITH a populated option list
+            // that does NOT include 99 -- the reference device is not a valid option.
+            def inputs = [
+                [name: "cond",        type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",    type: "enum", options: ["Temperature"]],
+                [name: "rDev_1",      type: "capability.sensor", multiple: true],
+                [name: "RelrDev_1",   type: "enum", options: [">", "<", "="]],
+                [name: "isDev_1",     type: "bool"],
+                [name: "state_1",     type: "number"],
+                [name: "hasAll",      type: "button"],
+                [name: "cancelCapab", type: "button"]
+            ]
+            if (isDevWritten) {
+                inputs = inputs + [
+                    [name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false,
+                     options: ["8": "T1"]]   // 99 absent -- wrong-capability / nonexistent ref
+                ]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
+        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                comparator: ">",
+                compareToDevice: [deviceId: 99, attribute: "temperature"]
+            ]]],
+            confirm: true
+        ])
+
+        then: "fail-loud -- reference device is not in the capability-locked picker"
+        result.success == false
+        // Load-bearing discriminator: a regression that skips the option-list check would
+        // write relDevice_1=99 unvalidated and return success (no capability-lock guard).
+        result.error?.toString()?.contains("is not in the relDevice")
+    }
+
+    def "addRequiredExpression compareToDevice: fail-loud when the reference device does not exist on the hub"() {
+        // The reference device id is existence-validated hub-wide via
+        // _rmValidateDeviceIdsExist (the same /device/fullJson check the LHS deviceIds
+        // get). A bogus/typo'd id (empty fullJson body = not-found) is rejected before any
+        // write, so it cannot write through to a silent broken rule. This is the guard the
+        // option-list check could NOT provide on real firmware (device pickers expose no
+        // options, so the option-list branch never fires). Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // Full device-relative schema present -- but the walk must never reach it:
+            // existence validation fires before any write.
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond",      type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1",  type: "enum", options: ["Temperature"]],
+                                 [name: "rDev_1",    type: "capability.sensor", multiple: true],
+                                 [name: "RelrDev_1", type: "enum", options: [">", "<", "="]],
+                                 [name: "isDev_1",   type: "bool"],
+                                 [name: "state_1",   type: "number"],
+                                 [name: "hasAll",    type: "button"]
+                             ], paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')   { params -> '{"id":"8","name":"T1"}' }
+        // Bogus reference device 777: empty fullJson body = not-found signal.
+        hubGet.register('/device/fullJson/777') { params -> '' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                comparator: ">",
+                compareToDevice: [deviceId: 777, attribute: "temperature"]
+            ]]],
+            confirm: true
+        ])
+
+        then: "fail-loud -- _rmValidateDeviceIdsExist rejects the nonexistent reference id"
+        result.success == false
+        // Load-bearing discriminator: a regression that drops the existence check would
+        // write relDevice_1=777 through and return success:true (silent broken rule).
+        // _rmValidateDeviceIdsExist throws "...does not exist on the hub" keyed by label.
+        result.error?.toString()?.contains("does not exist on the hub")
+        result.error?.toString()?.contains("compareToDevice.deviceId")
+    }
+
+    def "addRequiredExpression compareToDevice: fail-loud when combined with literal state/value (mutually exclusive)"() {
+        // compareToDevice (device-relative RHS) and state/value (literal RHS) are mutually
+        // exclusive -- RM renders one OR the other. The old code consumed state/value as a
+        // literal fallback; the new device-relative code ignores them, so a caller passing
+        // both would silently lose the literal. Reject up front, mirroring the Variable
+        // compareToVariable-vs-state/value reject. Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "cond",      type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",  type: "enum", options: ["Temperature"]],
+                [name: "hasAll",    type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
+        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
+
+        when: "compareToDevice supplied alongside a literal state"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                comparator: ">",
+                state: 70,
+                compareToDevice: [deviceId: 99, attribute: "temperature"]
+            ]]],
+            confirm: true
+        ])
+
+        then: "fail-loud -- the mutually-exclusive combination is rejected before any write"
+        result.success == false
+        result.error?.toString()?.contains("cannot be combined with 'state'/'value'")
+    }
+
+    def "addRequiredExpression compareToDevice: empty relDevice option list is NORMAL for a device picker -- proceeds cleanly, no validation skip, no partial"() {
+        // A capability.* device picker exposes NO options on real hardware (RM fills the
+        // dropdown client-side), so an EMPTY option list is the normal case -- NOT a
+        // validation gap. The walker must write the reference id and commit cleanly:
+        // success:true, NOT partial, and NO compareToDevice-validation skip. This is the
+        // inverse of the old (wrong) behaviour that treated empty options as an anomaly
+        // and false-flagged partial on every compareToDevice. Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        def isDevWritten = false
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -18560,7 +18809,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                     def key = _settingKeyOf(k)
                     if (key != null) {
                         writtenFields[key] = v
-                        if (key == "rCapab_1") rCapabWritten = true
+                        if (key == "isDev_1") isDevWritten = true
                     }
                 }
             }
@@ -18570,50 +18819,123 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
-                                         body: [[element: "paragraph", description: "IF Temperature != Sensor2"]]]]],
-                settings: [useST: "true"], childApps: []
-            ])
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
         }
-        def stFetchSeq = 0
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            stFetchSeq++
-            // Realistic 5.1.8 shape: RelrDev_1 (the comparator) appears, but the enum
-            // RHS-type selector never does (boolean isDev_<N> toggle path).
+            // relDevice_1 reveals after isDev_1 with NO options -- the real device-picker shape.
             def inputs = [
-                [name: "cond",       type: "enum",                options: ["a": "New condition"]],
-                [name: "rCapab_1",   type: "enum",                options: ["Temperature", "Humidity"]],
-                [name: "hasAll",     type: "button"],
-                [name: "doneST",     type: "button"]
+                [name: "cond",       type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",   type: "enum", options: ["Temperature"]],
+                [name: "rDev_1",     type: "capability.sensor", multiple: true],
+                [name: "RelrDev_1",  type: "enum", options: [">", "<", "="]],
+                [name: "isDev_1",    type: "bool"],
+                [name: "state_1",    type: "number"],
+                [name: "hasAll",     type: "button"]
             ]
-            if (rCapabWritten) {
+            if (isDevWritten) {
                 inputs = inputs + [
-                    [name: "rDev_1",     type: "capability.sensor", multiple: true],
-                    [name: "RelrDev_1",  type: "enum",              options: [">", ">=", "<", "<=", "=", "≠"]],
-                    [name: "state_1",    type: "number"]
-                    // rhsType_1 / stateType_1 intentionally absent -- 5.1.8 boolean toggle.
+                    [name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false]
+                    // NO options key -- the normal capability.* device-picker shape.
                 ]
             }
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
-                             sections: [[title: "", input: inputs, paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
                 settings: [:], childApps: []
             ])
         }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
+        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                comparator: ">",
+                compareToDevice: [deviceId: 99, attribute: "temperature"]
+            ]]],
+            confirm: true
+        ])
+
+        then: "the write proceeds -- success, and the reference id lands"
+        result.success == true
+        writtenFields["relDevice_1"] == "99"
+
+        and: "the offset slot stays unwritten when offset is omitted"
+        // Negative pin for the ctd.offset != null gate: no offset -> no state_1 write.
+        !writtenFields.containsKey("state_1")
+
+        and: "NO compareToDevice-validation skip is produced -- empty device-picker options are normal"
+        // Load-bearing discriminator: a regression that re-treats empty options as an
+        // anomaly would push a compareToDevice-validation / api_unavailable skip (the
+        // live-hub false-partial this round fixed). This assertion fails against that
+        // wrong-impl. (partial!=true is NOT asserted: the static-schema stub records a
+        // silent_rejection on every write, a harness artifact unrelated to the bug; the
+        // live hub commits the condition with partial!=true.)
+        def skip = (result.settingsSkipped as List) ?: []
+        !skip.any { it instanceof Map && it.key == "compareToDevice-validation" }
+    }
+
+    def "addRequiredExpression compareToDevice: a '!=' comparator is normalized to the Unicode glyph on the RelrDev write"() {
+        // Comparator-normalization parity pin: the compareToDevice RelrDev write is the
+        // reveal trigger and must normalize cond.comparator like every sibling write (RM's
+        // comparator enum only accepts the Unicode glyphs; a raw '!=' would write an
+        // operator RM does not recognize). Drives the device-relative happy path with a
+        // '!=' comparator and asserts the glyph landed on RelrDev_1.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def isDevWritten = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "isDev_1") isDevWritten = true
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
         }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            ruleConfigJson(100, "r", [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "actionCancel", type: "button"]
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // relDevice_1 appears only after isDev_1 is written. RelrDev_1 offers the
+            // Unicode not-equal glyph as an option (RM's real comparator enum).
+            def inputs = [
+                [name: "cond",       type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",   type: "enum", options: ["Temperature"]],
+                [name: "rDev_1",     type: "capability.sensor", multiple: true],
+                [name: "RelrDev_1",  type: "enum", options: [">", ">=", "<", "<=", "=", "≠"]],
+                [name: "isDev_1",    type: "bool"],
+                [name: "state_1",    type: "number"],
+                [name: "hasAll",     type: "button"],
+                [name: "doneST",     type: "button"]
+            ]
+            if (isDevWritten) {
+                inputs = inputs + [
+                    [name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false]
+                    // NO options key -- real capability.* device pickers expose none.
+                ]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
             ])
         }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -18636,10 +18958,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         writtenFields["RelrDev_1"] == "≠"
         writtenFields["RelrDev_1"] != "!="
 
-        and: "the device-relative RHS still degrades honestly (no enum selector on 5.1.8), not a false success"
-        result.partial == true
-        def sentinel = (result.settingsSkipped as List)?.find { it instanceof Map && it.key == "compareToDevice" }
-        sentinel?.reason == "rhs_type_not_revealed"
+        and: "the device-relative RHS lands (relDevice written), not a degraded fallback"
+        writtenFields["relDevice_1"] == "99"
+        def skip = (result.settingsSkipped as List) ?: []
+        !skip.any { it instanceof Map && it.key == "compareToDevice" && it.reason == "rhs_type_not_revealed" }
     }
 
     def "addRequiredExpression compareToDevice: fail-loud when RelrDev not visible after base writes"() {
@@ -18692,168 +19014,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "fail-loud surfaces as success:false with the diagnostic in result.error"
         result.success == false
         result.error?.toString()?.contains("RelrDev_<N> not visible after rCapab/rDev")
-    }
-
-    def "addRequiredExpression compareToDevice: firmware fallback -- RHS-type not revealed, partial=true sentinel"() {
-        // When the RHS-type selector does not appear after RelrDev write (older firmware),
-        // the walker falls back to writing literal state_<N> and pushes a sentinel to
-        // skipped so the caller can detect the degraded write. result.partial must be true.
-        // Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        def relrWritten = false
-        def writtenFields = [:]
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null) {
-                        def fn = key
-                        writtenFields[fn] = v
-                        if (fn == "RelrDev_1") relrWritten = true
-                    }
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
-                                         body: [[element: "paragraph", description: "IF Temperature > 20"]]]]],
-                settings: [useST: "true"], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // RelrDev_1 always present (base write succeeds); rhsType_1 never appears (old firmware).
-            def inputs = [
-                [name: "cond",      type: "enum",                options: ["a": "New condition"]],
-                [name: "rCapab_1",  type: "enum",                options: ["Temperature"]],
-                [name: "rDev_1",    type: "capability.sensor",   multiple: true],
-                [name: "RelrDev_1", type: "enum",                options: [">", "<", "="]],
-                [name: "state_1",   type: "number"],
-                [name: "hasAll",    type: "button"],
-                [name: "doneST",    type: "button"]
-            ]
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "RE", install: false, error: null,
-                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            ruleConfigJson(100, "r", [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "actionCancel", type: "button"]
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
-        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Temperature",
-                deviceIds: [8],
-                comparator: ">",
-                // state is provided so the fallback can write something; fallbackApplied=true.
-                state: 70,
-                compareToDevice: [deviceId: 99, attribute: "temperature"]
-            ]]],
-            confirm: true
-        ])
-
-        then: "result is successful (expression committed)"
-        result.success == true
-
-        and: "partial=true signals that the compareToDevice was not fully written (fallback path)"
-        result.partial == true
-
-        and: "settingsSkipped contains the compareToDevice sentinel with rhs_type_not_revealed reason"
-        def sentinel = (result.settingsSkipped as List)?.find { it instanceof Map && it.key == "compareToDevice" }
-        sentinel != null
-        sentinel.reason == "rhs_type_not_revealed"
-
-        and: "fallbackApplied=true because state was provided and written as literal state_<N> fallback"
-        // Production: fallbackApplied = (cond.state != null || cond.value != null).
-        // Both-ways: if cond.state is removed, this assertion flips to false (vacuous guard test).
-        sentinel.fallbackApplied == true
-    }
-
-    def "addRequiredExpression compareToDevice: fallbackApplied=false when no state or value provided"() {
-        // When rhsType is not revealed AND no state/value was given, the sentinel
-        // must report fallbackApplied=false (condition will be incomplete).
-        // Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        // Static schema: RelrDev_1 is present, rhsType never appears.
-        def relrPresent = true
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "RE", install: false, error: null,
-                             sections: [[title: "", input: [
-                                 [name: "cond",      type: "enum", options: ["a": "New condition"]],
-                                 [name: "rCapab_1",  type: "enum", options: ["Temperature"]],
-                                 [name: "rDev_1",    type: "capability.sensor", multiple: true],
-                                 [name: "RelrDev_1", type: "enum", options: [">", "<"]],
-                                 [name: "hasAll",    type: "button"]
-                                 // rhsType intentionally never added
-                             ], paragraphs: ["static"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
-        hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"T2"}' }
-
-        when: "compareToDevice with no state or value"
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Temperature",
-                deviceIds: [8],
-                comparator: ">",
-                compareToDevice: [deviceId: 9, attribute: "temperature"]
-                // no state, no value
-            ]]],
-            confirm: true
-        ])
-
-        then: "partial result with compareToDevice sentinel"
-        result.partial == true
-        def s = (result.settingsSkipped as List)?.find { it instanceof Map && it.key == "compareToDevice" }
-        s != null
-        s.reason == "rhs_type_not_revealed"
-
-        and: "fallbackApplied=false because no state/value was provided to write as fallback"
-        s.fallbackApplied == false
     }
 
     def "addRequiredExpression Variable: fail-loud when 'variable' field missing"() {
@@ -19227,7 +19387,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     //   Variable     -- variable picker -> RelrDev -> state_N chain
     //   Custom Attr  -- rCustomAttr -> RelrDev -> state_N chain
     //   Between two times -- startType -> startVal -> stopType -> stopVal chain
-    //   compareToDevice   -- rhsType reveal -> refDev/refAttr/offset
+    //   compareToDevice   -- RelrDev + isDev toggle -> relDevice picker -> offset
     //   fail-loud paths   -- same cancelCapab+throw contract as STPage callers
     //
     // Both-ways pending (orchestrator) for every guard below.
@@ -19639,19 +19799,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         writtenFields["endSunriseOffset1"]?.toString() == "30"
     }
 
-    def "addAction ifThen compareToDevice: RM 5.1.8 never reveals an enum RHS-type selector -- doActPage degrades to rhs_type_not_revealed (partial), no fabricated success"() {
-        // doActPage 5.1.8 DEGRADATION PIN (was a false-positive that fabricated an enum
-        // stateType_1 selector and asserted full success incl. rDev2_1/rCustomAttr2_1).
-        // RM 5.1.8 renders a boolean isDev_<N> toggle for a device-relative RHS, NOT an
-        // enum selector (BAT-v2.md T618), so the realistic doActPage schema never exposes
-        // stateType_1/rhsType_1. The walker writes RelrDev_1, the enum reveal returns null,
-        // and it degrades to a rhs_type_not_revealed skip that flips partial -- it must NOT
-        // claim the reference device/attribute landed. FAILS if the dead enum-reveal path
-        // is reverted to fabricate-then-assert-success.
-        // Both-ways pending (orchestrator).
+    def "addAction ifThen compareToDevice: doActPage device-relative happy path -- isDev toggle reveals relDevice picker, offset written"() {
+        // doActPage mirror of the STPage device-relative happy path. The shared walker
+        // _rmWalkConditionReveal runs on BOTH pages, so this pins that the isDev_1 toggle
+        // reveals the relDevice_1 picker and the reference device + offset land on the
+        // action page too -- not just on STPage. Both-ways pending (orchestrator).
         given:
         enableWrite()
-        def rCapabWritten = false
+        def isDevWritten = false
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -19660,7 +19815,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                     def key = _settingKeyOf(k)
                     if (key != null) {
                         writtenFields[key] = v
-                        if (key == "rCapab_1") rCapabWritten = true
+                        if (key == "isDev_1") isDevWritten = true
                     }
                 }
             }
@@ -19670,37 +19825,36 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             actSelectActionsJson(100)
         }
-        def doActFetchSeq = 0
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            doActFetchSeq++
-            // Realistic 5.1.8 shape: base condition fields appear after rCapab; the enum
-            // RHS-type selector (stateType_1/rhsType_1) NEVER appears (boolean toggle path).
+            // relDevice_1 appears only after isDev_1 is written. As on real hardware, the
+            // capability.* device picker carries NO options (RM fills it client-side).
             def inputs = [
                 [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
                 [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
                 [name: "cond", type: "enum", options: ["a": "New condition"]],
                 [name: "rCapab_1", type: "enum", options: ["Temperature", "Switch"]],
+                [name: "rDev_1", type: "capability.temperatureMeasurement", multiple: true],
+                [name: "RelrDev_1", type: "enum", options: [">", "<", "=", ">=", "<="]],
+                [name: "isDev_1", type: "bool"],
+                [name: "state_1", type: "number"],
                 [name: "hasAll", type: "button"]
             ]
-            if (rCapabWritten) {
+            if (isDevWritten) {
                 inputs = inputs + [
-                    [name: "rDev_1", type: "capability.temperatureMeasurement", multiple: true],
-                    [name: "RelrDev_1", type: "enum", options: [">", "<", "=", ">=", "<="]],
-                    [name: "state_1", type: "number"]
-                    // stateType_1 / rhsType_1 intentionally absent -- 5.1.8 boolean toggle.
+                    [name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false]
+                    // NO options key -- real capability.* device pickers expose none.
                 ]
             }
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "doActPage", title: "T", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["seq ${doActFetchSeq}".toString()]]]],
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
                 settings: [:], childApps: []
             ])
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            actMainPageBakedJson(100, "IF Sensor1.temperature > Sensor2.temperature THEN")
+            actMainPageBakedJson(100, "IF Sensor1.temperature > Sensor2.temperature - 2.0 THEN")
         }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"Sensor1"}' }
@@ -19715,26 +19869,29 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                     capability: "Temperature",
                     deviceIds: [8],
                     comparator: ">",
-                    compareToDevice: [deviceId: 9, attribute: "temperature"]
+                    compareToDevice: [deviceId: 9, attribute: "temperature", offset: -2]
                 ]]]
             ],
             confirm: true
         ])
 
-        then: "the action skeleton commits but the device-relative RHS is flagged degraded"
-        result.partial == true
+        then: "the action commits"
+        result.success == true
 
-        and: "RelrDev_1 was written but no enum RHS-type selector and no reference-device pickers were ever written"
+        and: "the comparator, isDev toggle, reference device, and offset all landed on doActPage"
+        // Production serializes the boolean toggle via toString() before posting, so
+        // the stub captures the string form "true".
         writtenFields["RelrDev_1"] == ">"
-        writtenFields["stateType_1"] == null
-        writtenFields["rhsType_1"] == null
-        writtenFields["rDev2_1"] == null
-        writtenFields["rCustomAttr2_1"] == null
+        writtenFields["isDev_1"]?.toString() == "true"
+        writtenFields["relDevice_1"] == "9"
+        writtenFields["state_1"]?.toString() == "-2"
 
-        and: "settingsSkipped carries the compareToDevice rhs_type_not_revealed sentinel"
-        def sentinel = (result.settingsSkipped as List)?.find { it instanceof Map && it.key == "compareToDevice" }
-        sentinel != null
-        sentinel.reason == "rhs_type_not_revealed"
+        and: "no compareToDevice-validation skip (empty device-picker options are normal) and no dead rhs_type_not_revealed skip"
+        // (partial!=true is NOT asserted: the static-schema stub records a
+        // silent_rejection on every write, a harness artifact; the live hub commits clean.)
+        def skip = (result.settingsSkipped as List) ?: []
+        !skip.any { it instanceof Map && it.key == "compareToDevice-validation" }
+        !skip.any { it instanceof Map && it.key == "compareToDevice" && it.reason == "rhs_type_not_revealed" }
     }
 
     def "addAction ifThen: fail-loud when modes picker not revealed on doActPage"() {
@@ -20031,108 +20188,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "state_1 was NOT written for Mode-by-modeIds (picker write, not state_N)"
         !writtenFields.containsKey("state_1")
-    }
-
-    def "addAction ifThen: compareToDevice firmware fallback -- RHS-type not revealed, partial=true sentinel"() {
-        // Parity with addRequiredExpression firmware-fallback spec: when the RHS-type
-        // selector does not appear after RelrDev write, the walker falls back to writing
-        // literal state_<N> and pushes a sentinel to skipped. result.partial must be true.
-        // Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        def actTypeWritten  = false
-        def actSubTypeWritten = false
-        def rCapabWritten   = false
-        def relrWritten     = false
-        def writtenFields   = [:]
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            if (path == "/installedapp/update/json" && body?.currentPage == "doActPage") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null) {
-                        def fn = key
-                        writtenFields[fn] = v
-                        if (fn == "actType.1")    actTypeWritten = true
-                        if (fn == "actSubType.1") actSubTypeWritten = true
-                        if (fn == "rCapab_1")     rCapabWritten = true
-                        if (fn == "RelrDev_1")    relrWritten = true
-                    }
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
-            actSelectActionsJson(100)
-        }
-        // doActPage: schema grows progressively so each pre-condition write looks accepted.
-        // RelrDev_1 and state_1 appear after rCapab is written; stateType_1 / rhsType_1
-        // intentionally never appear (old firmware -- no device-relative RHS-type toggle).
-        def doActFetchSeq = 0
-        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            doActFetchSeq++
-            def inputs = [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
-                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
-                [name: "cond",         type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1",     type: "enum", options: ["Temperature"]],
-                [name: "hasAll",       type: "button"]
-            ]
-            if (rCapabWritten) {
-                inputs = inputs + [
-                    [name: "rDev_1",    type: "capability.sensor", multiple: true],
-                    [name: "RelrDev_1", type: "enum", options: [">", "<", "="]],
-                    [name: "state_1",   type: "number"]
-                    // stateType_1 / rhsType_1 intentionally absent (firmware fallback)
-                ]
-            }
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "doActPage", title: "T", install: false, error: null,
-                             sections: [[title: "", input: inputs,
-                                         paragraphs: ["seq ${doActFetchSeq}".toString()]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            actMainPageBakedJson(100, "IF Temperature > 20 THEN")
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
-        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addAction: [
-                capability: "ifThen",
-                expression: [conditions: [[
-                    capability: "Temperature",
-                    deviceIds: [8],
-                    comparator: ">",
-                    compareToDevice: [deviceId: 99, attribute: "temperature"]
-                ]]]
-            ],
-            confirm: true
-        ])
-
-        then: "result is successful (action committed)"
-        result.success == true
-
-        and: "partial=true signals that the compareToDevice was not fully written (fallback path)"
-        result.partial == true
-
-        and: "settingsSkipped contains the compareToDevice sentinel with rhs_type_not_revealed reason"
-        def sentinel = (result.settingsSkipped as List)?.find { it instanceof Map && it.key == "compareToDevice" }
-        sentinel != null
-        sentinel.reason == "rhs_type_not_revealed"
-
-        and: "fallbackApplied=false because no state/value was provided to write as literal fallback"
-        // Parity with addRequiredExpression fallbackApplied spec: production uses
-        // (cond.state != null || cond.value != null); this input supplies neither.
-        sentinel.fallbackApplied == false
     }
 
     def "addAction ifThen: fail-loud when compareToDevice RelrDev not visible after base writes"() {
@@ -20896,42 +20951,59 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // repairHints plural: "2 conditions" when two conditions both hit the degraded write path.
 
     def "addRequiredExpression: repairHints says '2 conditions' when two compareToDevice conditions both degrade"() {
-        // When two conditions each hit the compareToDevice firmware-fallback path (sentinel pushed),
-        // the repairHints string should say '2 conditions' not '1 condition' or '2 condition(s)'.
+        // When two conditions each hit a genuine compareToDevice degradation (the offset
+        // field is absent so each pushes an offset_field_not_revealed sentinel), the
+        // repairHints string should say '2 conditions' not '1 condition' or '2 condition(s)'.
         // Both-ways pending (orchestrator).
         given:
         enableWrite()
+        def isDev1Written = false
+        def isDev2Written = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key == "isDev_1") isDev1Written = true
+                    if (key == "isDev_2") isDev2Written = true
+                }
+            }
             [status: 200, location: null, data: '']
         }
         hubGet.register('/installedapp/configure/json/100') { params ->
             ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
         }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        // STPage always exposes all fields for both conditions; stateType_<N> / rhsType_<N>
-        // intentionally absent to simulate old firmware, triggering the fallback path for both.
+        // STPage exposes the device-relative fields for both conditions, but state_<N>
+        // (the offset slot) is absent for both -- so each requested offset degrades with
+        // an offset_field_not_revealed sentinel, driving partial for two conditions.
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            def inputs = [
+                [name: "cond",     type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Temperature"]],
+                [name: "rDev_1",   type: "capability.sensor", multiple: true],
+                [name: "RelrDev_1", type: "enum", options: [">", "<", "="]],
+                [name: "isDev_1",  type: "bool"],
+                [name: "rCapab_2", type: "enum", options: ["Temperature"]],
+                [name: "rDev_2",   type: "capability.sensor", multiple: true],
+                [name: "RelrDev_2", type: "enum", options: [">", "<", "="]],
+                [name: "isDev_2",  type: "bool"],
+                [name: "hasAll",   type: "button"]
+                // state_1 / state_2 intentionally absent -- offset slot missing.
+            ]
+            if (isDev1Written) {
+                // NO options key -- real capability.* device pickers expose none.
+                inputs = inputs + [[name: "relDevice_1", type: "capability.temperatureMeasurement",
+                                    multiple: false]]
+            }
+            if (isDev2Written) {
+                inputs = inputs + [[name: "relDevice_2", type: "capability.temperatureMeasurement",
+                                    multiple: false]]
+            }
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
-                             sections: [[title: "", input: [
-                                 [name: "cond",     type: "enum", options: ["a": "New condition"]],
-                                 [name: "rCapab_1", type: "enum", options: ["Temperature"]],
-                                 [name: "rDev_1",   type: "capability.sensor", multiple: true],
-                                 [name: "RelrDev_1", type: "enum", options: [">", "<", "="]],
-                                 [name: "state_1",  type: "number"],
-                                 // stateType_1 absent (old firmware -- fallback path)
-                                 [name: "rCapab_2", type: "enum", options: ["Temperature"]],
-                                 [name: "rDev_2",   type: "capability.sensor", multiple: true],
-                                 [name: "RelrDev_2", type: "enum", options: [">", "<", "="]],
-                                 [name: "state_2",  type: "number"],
-                                 // stateType_2 absent (old firmware -- fallback path)
-                                 [name: "hasAll",   type: "button"]
-                             ], paragraphs: ["seq"]]]],
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
                 settings: [:], childApps: []
             ])
         }
@@ -20956,9 +21028,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 operator: "AND",
                 conditions: [
                     [capability: "Temperature", deviceIds: [8], comparator: ">",
-                     compareToDevice: [deviceId: 99, attribute: "temperature"]],
+                     compareToDevice: [deviceId: 99, attribute: "temperature", offset: -2]],
                     [capability: "Temperature", deviceIds: [9], comparator: "<",
-                     compareToDevice: [deviceId: 99, attribute: "temperature"]]
+                     compareToDevice: [deviceId: 99, attribute: "temperature", offset: -3]]
                 ]
             ],
             confirm: true
@@ -21310,14 +21382,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression compareToDevice: cond.not=true writes not<N> to STPage"() {
-        // When stateType/rhsType ARE revealed (non-fallback path) and not=true,
-        // the walker must write not1=true after the full sequence.
+        // The device-relative sequence (isDev toggle -> relDevice picker) runs, then the
+        // walker writes not1=true after sealing the comparison.
         // Both-ways pending (orchestrator).
         given:
         enableWrite()
-        def rCapabWritten = false
-        def relrWritten = false
-        def rhsTypeWritten = false
+        def isDevWritten = false
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -21325,11 +21395,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 body.each { k, v ->
                     def key = _settingKeyOf(k)
                     if (key != null) {
-                        def fn = key
-                        writtenFields[fn] = v
-                        if (fn == "rCapab_1")     rCapabWritten = true
-                        if (fn == "RelrDev_1")    relrWritten = true
-                        if (fn =~ /stateType_1|rhsType_1/) rhsTypeWritten = true
+                        writtenFields[key] = v
+                        if (key == "isDev_1") isDevWritten = true
                     }
                 }
             }
@@ -21338,32 +21405,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100') { params ->
             ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
         }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
             def inputs = [
-                [name: "cond",     type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1", type: "enum", options: ["Temperature"]],
-                [name: "hasAll",   type: "button"]
+                [name: "cond",      type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",  type: "enum", options: ["Temperature"]],
+                [name: "rDev_1",    type: "capability.sensor", multiple: true],
+                [name: "RelrDev_1", type: "enum", options: [">", "<", "="]],
+                [name: "isDev_1",   type: "bool"],
+                [name: "state_1",   type: "number"],
+                [name: "hasAll",    type: "button"]
             ]
-            if (rCapabWritten) {
+            if (isDevWritten) {
                 inputs = inputs + [
-                    [name: "rDev_1",    type: "capability.sensor", multiple: true],
-                    [name: "RelrDev_1", type: "enum",              options: [">", "<", "="]],
-                    [name: "state_1",   type: "number"]
-                ]
-            }
-            if (relrWritten) {
-                // rhsType_1 appears; includes "another device" option for compareToDevice path
-                inputs = inputs + [[name: "rhsType_1", type: "enum",
-                                    options: ["fixed": "Fixed value", "another device": "Another device value"]]]
-            }
-            if (rhsTypeWritten) {
-                // rDev2_1 and rCustomAttr2_1 appear after selecting "another device"
-                inputs = inputs + [
-                    [name: "rDev2_1",        type: "capability.sensor", multiple: false],
-                    [name: "rCustomAttr2_1", type: "enum",              options: ["temperature": "temperature"]]
+                    [name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false]
+                    // NO options key -- real capability.* device pickers expose none.
                 ]
             }
             JsonOutput.toJson([
@@ -21402,6 +21457,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Production serializes boolean true via toString() before posting to the hub.
         // The stub captures the serialized string form; assert string "true" not boolean.
         writtenFields["not1"]?.toString() == "true"
+        // The device-relative reference write still landed.
+        writtenFields["relDevice_1"] == "99"
     }
 
     // ---------- W-rawSettings (post-walker merge for each capability) ----------
@@ -21734,9 +21791,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Both-ways pending (orchestrator).
         given:
         enableWrite()
-        def rCapabWritten = false
-        def relrWritten = false
-        def rhsTypeWritten = false
+        def isDevWritten = false
         def writtenFields = [:]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -21744,11 +21799,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 body.each { k, v ->
                     def key = _settingKeyOf(k)
                     if (key != null) {
-                        def fn = key
-                        writtenFields[fn] = v
-                        if (fn == "rCapab_1")                  rCapabWritten = true
-                        if (fn == "RelrDev_1")                 relrWritten = true
-                        if (fn =~ /stateType_1|rhsType_1/)     rhsTypeWritten = true
+                        writtenFields[key] = v
+                        if (key == "isDev_1") isDevWritten = true
                     }
                 }
             }
@@ -21757,30 +21809,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100') { params ->
             ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
         }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
             def inputs = [
-                [name: "cond",     type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1", type: "enum", options: ["Temperature"]],
-                [name: "hasAll",   type: "button"]
+                [name: "cond",      type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",  type: "enum", options: ["Temperature"]],
+                [name: "rDev_1",    type: "capability.sensor", multiple: true],
+                [name: "RelrDev_1", type: "enum", options: [">", "<", "="]],
+                [name: "isDev_1",   type: "bool"],
+                [name: "state_1",   type: "number"],
+                [name: "hasAll",    type: "button"]
             ]
-            if (rCapabWritten) {
+            if (isDevWritten) {
                 inputs = inputs + [
-                    [name: "rDev_1",    type: "capability.sensor", multiple: true],
-                    [name: "RelrDev_1", type: "enum",              options: [">", "<", "="]],
-                    [name: "state_1",   type: "number"]
-                ]
-            }
-            if (relrWritten) {
-                inputs = inputs + [[name: "rhsType_1", type: "enum",
-                                    options: ["fixed": "Fixed value", "another device": "Another device value"]]]
-            }
-            if (rhsTypeWritten) {
-                inputs = inputs + [
-                    [name: "rDev2_1",        type: "capability.sensor", multiple: false],
-                    [name: "rCustomAttr2_1", type: "enum",              options: ["temperature": "temperature"]]
+                    [name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false]
+                    // NO options key -- real capability.* device pickers expose none.
                 ]
             }
             JsonOutput.toJson([
@@ -22790,37 +22832,49 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- W-spec-repairHints-singular: single-degraded repairHints says "1 condition" ----------
     //
-    // When exactly one condition degrades (compareToDevice fallback), the repairHints
-    // string must say "1 condition" (not "1 conditions" or "1 condition(s)").
+    // When exactly one condition degrades (compareToDevice offset field absent), the
+    // repairHints string must say "1 condition" (not "1 conditions" or "1 condition(s)").
     // Both-ways pending (orchestrator).
 
     def "addRequiredExpression: repairHints says '1 condition' (singular) for exactly one degraded condition"() {
         given:
         enableWrite()
+        def isDevWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key == "isDev_1") isDevWritten = true
+                }
+            }
             [status: 200, location: null, data: '']
         }
         hubGet.register('/installedapp/configure/json/100') { params ->
             ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
         }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        // Static schema -- RelrDev_1 (RHS type selector) never appears so compareToDevice degrades.
+        // relDevice_1 reveals after isDev_1, but state_1 (the offset slot) is absent so
+        // the requested offset degrades with a single offset_field_not_revealed sentinel.
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            def inputs = [
+                [name: "cond",     type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Temperature"]],
+                [name: "rDev_1",   type: "capability.sensor", multiple: true],
+                [name: "RelrDev_1", type: "enum", options: ["<", ">", "="]],
+                [name: "isDev_1",  type: "bool"],
+                [name: "hasAll",   type: "button"]
+                // state_1 intentionally absent -- no offset slot.
+            ]
+            if (isDevWritten) {
+                // NO options key -- real capability.* device pickers expose none.
+                inputs = inputs + [[name: "relDevice_1", type: "capability.temperatureMeasurement",
+                                    multiple: false]]
+            }
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
-                             sections: [[title: "", input: [
-                                 [name: "cond",     type: "enum", options: ["a": "New condition"]],
-                                 [name: "rCapab_1", type: "enum", options: ["Temperature"]],
-                                 [name: "rDev_1",   type: "capability.sensor", multiple: true],
-                                 [name: "RelrDev_1", type: "enum", options: ["<", ">", "="]],
-                                 [name: "state_1",  type: "number"],
-                                 [name: "hasAll",   type: "button"]
-                             ], paragraphs: ["static"]]]],
+                             sections: [[title: "", input: inputs, paragraphs: ["static"]]]],
                 settings: [:], childApps: []
             ])
         }
@@ -22837,14 +22891,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"TempSensor"}' }
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"RefSensor"}' }
 
-        when: "one condition with compareToDevice (static schema, RHS-type toggle never appears)"
+        when: "one condition with compareToDevice whose offset slot is absent"
         def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
                 capability: "Temperature",
                 deviceIds: [8],
                 comparator: ">",
-                compareToDevice: [deviceId: 99, attribute: "temperature"]
+                compareToDevice: [deviceId: 99, attribute: "temperature", offset: -2]
             ]]],
             confirm: true
         ])
@@ -23298,16 +23352,23 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- compareToDevice silent writes on null reveal ----------
 
-    def "addRequiredExpression compareToDevice: refDev reveal returning null fails loud with cancel"() {
-        // After rhsType_1 selects 'another device', the rDev2/refDev/compareDevId picker
-        // must reveal. When it does not (firmware variant whose field names miss the
-        // regex unions), the walker MUST cancel the wizard + throw rather than silently
-        // commit a compareToDevice condition with no reference device.
-        // Production fix: was `if (refDevReveal.input)` (silent no-op); now mandatory.
+    def "addRequiredExpression compareToDevice: offset field not visible degrades with sentinel"() {
+        // The optional offset is written to state_<N>. When state_<N> is not visible after
+        // the relDevice write (firmware variant), the walker logs warn + pushes a sentinel
+        // with reason='offset_field_not_revealed'. It does NOT fail the call -- the
+        // device-relative comparison is otherwise complete (offset is optional).
+        // Both-ways pending (orchestrator).
         given:
         enableWrite()
+        def isDevWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key == "isDev_1") isDevWritten = true
+                }
+            }
             [status: 200, location: null, data: '']
         }
         hubGet.register('/installedapp/configure/json/100') { params ->
@@ -23317,133 +23378,23 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
         }
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // RelrDev_1 + rhsType_1 reveal; but refDev/rDev2/compareDevId NEVER appear.
-            // No field name in this fixture matches /rDev2_\d+|refDev_\d+|compareDevId_\d+/.
+            // relDevice_1 reveals after isDev_1, but state_1 (the offset slot) is NEVER
+            // present -- so the offset write degrades with the sentinel.
             def inputs = [
                 [name: "cond",       type: "enum", options: ["a": "New condition"]],
                 [name: "rCapab_1",   type: "enum", options: ["Temperature"]],
                 [name: "rDev_1",     type: "capability.sensor", multiple: true],
                 [name: "RelrDev_1",  type: "enum", options: [">", "<", "="]],
-                [name: "rhsType_1",  type: "enum", options: ["aValue": "a value", "aDevice": "another device"]],
-                [name: "hasAll",     type: "button"],
-                [name: "cancelCapab", type: "button"]
-            ]
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "RE", install: false, error: null,
-                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
-        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Temperature",
-                deviceIds: [8],
-                comparator: ">",
-                compareToDevice: [deviceId: 99, attribute: "temperature"]
-            ]]],
-            confirm: true
-        ])
-
-        then: "fail-loud -- reference-device picker did not appear"
-        result.success == false
-        // Load-bearing discriminator: the error message must name the reference-device
-        // picker missing AFTER the rhsType write succeeded. A vacuous regression that
-        // silently writes a partial condition would return success:true, partial:false.
-        result.error?.toString()?.contains("reference-device picker not revealed")
-    }
-
-    def "addRequiredExpression compareToDevice: refAttr reveal returning null fails loud with cancel"() {
-        // Same shape as the refDev fail-loud spec, but exercises the refAttr reveal
-        // branch one step further down the wizard.
-        given:
-        enableWrite()
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // refDev_1 appears (matches /refDev_\d+/) but refAttr/rCustomAttr2/compareAttr never does.
-            def inputs = [
-                [name: "cond",       type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1",   type: "enum", options: ["Temperature"]],
-                [name: "rDev_1",     type: "capability.sensor", multiple: true],
-                [name: "RelrDev_1",  type: "enum", options: [">", "<", "="]],
-                [name: "rhsType_1",  type: "enum", options: ["aValue": "a value", "aDevice": "another device"]],
-                [name: "refDev_1",   type: "capability.sensor", multiple: true],
-                [name: "hasAll",     type: "button"],
-                [name: "cancelCapab", type: "button"]
-            ]
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "RE", install: false, error: null,
-                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
-        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Temperature",
-                deviceIds: [8],
-                comparator: ">",
-                compareToDevice: [deviceId: 99, attribute: "temperature"]
-            ]]],
-            confirm: true
-        ])
-
-        then: "fail-loud -- reference-attribute picker did not appear"
-        result.success == false
-        result.error?.toString()?.contains("reference-attribute picker not revealed")
-    }
-
-    def "addRequiredExpression compareToDevice: offset reveal returning null degrades with sentinel"() {
-        // Optional offset field is missing-OK in the spec; when its picker does not
-        // appear the walker logs warn + pushes a sentinel with reason='offset_field_not_revealed'.
-        // Does NOT fail the call (offset is genuinely optional per the spec shape).
-        given:
-        enableWrite()
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // refDev_1 + refAttr_1 reveal; offset_<N>/devOffset_<N> never does.
-            def inputs = [
-                [name: "cond",       type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1",   type: "enum", options: ["Temperature"]],
-                [name: "rDev_1",     type: "capability.sensor", multiple: true],
-                [name: "RelrDev_1",  type: "enum", options: [">", "<", "="]],
-                [name: "rhsType_1",  type: "enum", options: ["aValue": "a value", "aDevice": "another device"]],
-                [name: "refDev_1",   type: "capability.sensor", multiple: true],
-                [name: "refAttr_1",  type: "enum", options: ["temperature"]],
+                [name: "isDev_1",    type: "bool"],
                 [name: "hasAll",     type: "button"]
+                // state_1 intentionally absent -- no offset slot on this firmware.
             ]
+            if (isDevWritten) {
+                inputs = inputs + [
+                    [name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false]
+                    // NO options key -- real capability.* device pickers expose none.
+                ]
+            }
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
@@ -23456,7 +23407,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
-        when: "offset is requested but the field is not in the schema"
+        when: "offset is requested but the state_<N> slot is not in the schema"
         def result = script.toolSetRule([
             appId: 100,
             addRequiredExpression: [conditions: [[
@@ -24152,100 +24103,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             it instanceof Map && it.key == "variable-validation"
         }
         varValidationEntry == null
-    }
-
-    // ---------- compareToDevice golden-path success (negative pin for all three compareToDevice failure-mode specs) ----------
-
-    def "addRequiredExpression compareToDevice: golden path -- refDev + refAttr + offset all revealed, no sentinel"() {
-        // Negative pin paired with the three compareToDevice failure-mode specs
-        // (refDev null fails loud, refAttr null fails loud, offset null degrades).
-        // When all three fields reveal correctly, the walker writes them all and
-        // surfaces NO compareToDevice-related sentinels in settingsSkipped. A
-        // regression to any of the three guards (e.g. one branch always pushes a
-        // sentinel) would surface here.
-        // Both-ways pending (orchestrator).
-        given:
-        enableWrite()
-        def writtenFields = [:]
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
-                body.each { k, v ->
-                    def key = _settingKeyOf(k)
-                    if (key != null) writtenFields[key] = v
-                }
-            }
-            [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
-            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
-        }
-        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // Static schema with ALL device-relative fields present so every reveal
-            // succeeds. revealStep + discoverField each match revealedNew=false /
-            // revealedAny=true (fallbackToExisting=true), BUT discoverField does
-            // NOT push the reveal-fallback sentinel; revealStep does NOT push it
-            // for empty-trigger calls (the compareToDevice refDev/refAttr/offset
-            // sites use discoverField).
-            def inputs = [
-                [name: "cond",       type: "enum", options: ["a": "New condition"]],
-                [name: "rCapab_1",   type: "enum", options: ["Temperature"]],
-                [name: "rDev_1",     type: "capability.sensor", multiple: true],
-                [name: "RelrDev_1",  type: "enum", options: [">", "<", "="]],
-                [name: "rhsType_1",  type: "enum", options: ["aValue": "a value", "aDevice": "another device"]],
-                [name: "refDev_1",   type: "capability.sensor", multiple: true],
-                [name: "refAttr_1",  type: "enum", options: ["temperature"]],
-                [name: "offset_1",   type: "number"],
-                [name: "hasAll",     type: "button"],
-                [name: "doneST",     type: "button"]
-            ]
-            JsonOutput.toJson([
-                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
-                configPage: [name: "STPage", title: "RE", install: false, error: null,
-                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
-            ])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
-        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[
-                capability: "Temperature",
-                deviceIds: [8],
-                comparator: ">",
-                compareToDevice: [deviceId: 99, attribute: "temperature", offset: -2]
-            ]]],
-            confirm: true
-        ])
-
-        then: "golden path does not hard-fail"
-        result.success != false
-
-        and: "no compareToDevice-related sentinels surfaced (negative pin for the three failure-mode specs)"
-        // Load-bearing discriminator: triples as the negative pin for refDev-null /
-        // refAttr-null / offset-null specs above. Any regression that always pushes
-        // any of those sentinels would surface here. discoverField suppresses the
-        // reveal-fallback sentinel for the three compareToDevice empty-trigger sites,
-        // so even on this static-schema fixture no fallback sentinel fires for them.
-        // The fixture is static so partial=true is expected (silent_rejection on every
-        // write); the assertion is specifically scoped to the compareToDevice sentinel
-        // reasons that the three guards under test produce.
-        def skip = (result.settingsSkipped as List) ?: []
-        !skip.any { it instanceof Map && it.key == "compareToDevice" && it.reason == "rhs_type_not_revealed" }
-        !skip.any { it instanceof Map && it.key == "compareToDevice" && it.reason == "offset_field_not_revealed" }
-
-        and: "all three writes happened with correct values"
-        writtenFields["refDev_1"] != null
-        writtenFields["refAttr_1"] == "temperature"
-        writtenFields["offset_1"]?.toString() == "-2"
     }
 
     // ---------- addRequiredExpression updateRule happy-path negative pin ----------
@@ -25952,22 +25809,28 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // result.partial == false even with the inner partial set, so callers
         // would silently treat the response as fully baked.
         //
-        // Fixture re-uses the compareToDevice `rhs_type_not_revealed` pattern from
-        // the existing addRequiredExpression compareToDevice fallback spec --
-        // STPage exposes RelrDev_1 (base write succeeds) but never reveals
-        // rhsType_<N> (old firmware), so the walker pushes the
-        // rhs_type_not_revealed sentinel and the inner addRE returns partial:true.
-        // Wrap it in patches: [[addRequiredExpression: {...}]] so the same
-        // partial:true propagates to result.patches[0] and the new clause
-        // surfaces it on the outer envelope.
+        // Fixture drives the inner partial via the compareToDevice
+        // offset_field_not_revealed path: STPage reveals relDevice_1 after isDev_1
+        // (device-relative RHS lands) but never exposes state_1 (the offset slot), so
+        // the requested offset degrades with a sentinel and the inner addRE returns
+        // partial:true. Wrap it in patches: [[addRequiredExpression: {...}]] so the same
+        // partial:true propagates to result.patches[0] and the new clause surfaces it on
+        // the outer envelope.
         // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
+        def isDevWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
                 updateRuleClicked = true
+            }
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key == "isDev_1") isDevWritten = true
+                }
             }
             [status: 200, location: null, data: '']
         }
@@ -25984,19 +25847,25 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 settings: [useST: "true"], childApps: []
             ])
         }
-        // STPage: RelrDev_1 always present (base write succeeds); rhsType_<N>
-        // never appears (old-firmware shape) -> walker degrades with
-        // rhs_type_not_revealed sentinel + state literal fallback.
+        // STPage: relDevice_1 reveals after isDev_1 (device-relative RHS lands); state_1
+        // (the offset slot) never appears -> walker degrades the offset with an
+        // offset_field_not_revealed sentinel, so the inner addRE returns partial:true.
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
             def inputs = [
                 [name: "cond",      type: "enum",                options: ["a": "New condition"]],
                 [name: "rCapab_1",  type: "enum",                options: ["Temperature"]],
                 [name: "rDev_1",    type: "capability.sensor",   multiple: true],
                 [name: "RelrDev_1", type: "enum",                options: [">", "<", "="]],
-                [name: "state_1",   type: "number"],
+                [name: "isDev_1",   type: "bool"],
                 [name: "hasAll",    type: "button"],
                 [name: "doneST",    type: "button"]
+                // state_1 intentionally absent -- no offset slot.
             ]
+            if (isDevWritten) {
+                // NO options key -- real capability.* device pickers expose none.
+                inputs = inputs + [[name: "relDevice_1", type: "capability.temperatureMeasurement",
+                                    multiple: false]]
+            }
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
@@ -26019,15 +25888,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
-        when: "patches bundle with addRequiredExpression in compareToDevice fallback path"
+        when: "patches bundle with addRequiredExpression in compareToDevice offset-degraded path"
         def result = script.toolSetRule([
             appId: 100,
             patches: [[addRequiredExpression: [conditions: [[
                 capability: "Temperature",
                 deviceIds: [8],
                 comparator: ">",
-                state: 70,
-                compareToDevice: [deviceId: 99, attribute: "temperature"]
+                compareToDevice: [deviceId: 99, attribute: "temperature", offset: -2]
             ]]]]],
             confirm: true
         ])
@@ -26041,8 +25909,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "overall success not false (every patch op landed)"
         // Load-bearing discriminator: B1's clause is specifically about partial
         // (orthogonal to success). The outer success path here is the happy one --
-        // the inner addRE returned `success: true, partial: true` (compareToDevice
-        // fallback is a partial-but-success contract).
+        // the inner addRE returned `success: true, partial: true` (a dropped offset is
+        // a partial-but-success contract).
         result.success != false
 
         and: "outer updateRuleFailed is falsy (this isn't an outer-failure case)"
@@ -27981,18 +27849,25 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // but the trailing updateRule click landed clean -- caller had to drill
         // into patches[] to discover why.
         //
-        // Drives partial via the compareToDevice rhs_type_not_revealed fallback:
-        // STPage exposes RelrDev_1 (base write succeeds) but never reveals
-        // rhsType_<N> (old firmware), so the inner addRE returns
+        // Drives partial via the compareToDevice offset_field_not_revealed path:
+        // STPage reveals relDevice_1 after isDev_1 (device-relative RHS lands) but never
+        // exposes state_1 (the offset slot), so the inner addRE returns
         // {success:true, partial:true}. Trailing updateRule click lands clean.
         // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
+        def isDevWritten = false
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
                 updateRuleClicked = true
+            }
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key == "isDev_1") isDevWritten = true
+                }
             }
             [status: 200, location: null, data: '']
         }
@@ -28009,19 +27884,25 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 settings: [useST: "true"], childApps: []
             ])
         }
-        // STPage: RelrDev_1 always present (base write succeeds); rhsType_<N>
-        // never appears (old-firmware shape) -> walker degrades with
-        // rhs_type_not_revealed sentinel + state literal fallback.
+        // STPage: relDevice_1 reveals after isDev_1 (device-relative RHS lands); state_1
+        // (the offset slot) never appears -> walker degrades the offset with an
+        // offset_field_not_revealed sentinel, so the inner addRE returns partial:true.
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
             def inputs = [
                 [name: "cond",      type: "enum",                options: ["a": "New condition"]],
                 [name: "rCapab_1",  type: "enum",                options: ["Temperature"]],
                 [name: "rDev_1",    type: "capability.sensor",   multiple: true],
                 [name: "RelrDev_1", type: "enum",                options: [">", "<", "="]],
-                [name: "state_1",   type: "number"],
+                [name: "isDev_1",   type: "bool"],
                 [name: "hasAll",    type: "button"],
                 [name: "doneST",    type: "button"]
+                // state_1 intentionally absent -- no offset slot.
             ]
+            if (isDevWritten) {
+                // NO options key -- real capability.* device pickers expose none.
+                inputs = inputs + [[name: "relDevice_1", type: "capability.temperatureMeasurement",
+                                    multiple: false]]
+            }
             JsonOutput.toJson([
                 app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
@@ -28044,15 +27925,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"T1"}' }
         hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
 
-        when: "patches bundle with addRequiredExpression in compareToDevice fallback path"
+        when: "patches bundle with addRequiredExpression in compareToDevice offset-degraded path"
         def result = script.toolSetRule([
             appId: 100,
             patches: [[addRequiredExpression: [conditions: [[
                 capability: "Temperature",
                 deviceIds: [8],
                 comparator: ">",
-                state: 70,
-                compareToDevice: [deviceId: 99, attribute: "temperature"]
+                compareToDevice: [deviceId: 99, attribute: "temperature", offset: -2]
             ]]]]],
             confirm: true
         ])

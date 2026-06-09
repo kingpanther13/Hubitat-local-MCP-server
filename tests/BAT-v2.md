@@ -2378,7 +2378,7 @@ All 90 distinct tools are covered by at least one test, excluding the destructiv
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 234 test scenarios** (120 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness) plus 13 excluded destructive operations documented for manual testing
+**Total: 234 test scenarios** (120 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice device-relative + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -3367,22 +3367,22 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ---
 
-### T618 — addRequiredExpression compareToDevice: RHS-type fallback partial-success on RM 5.1.8
+### T618 — addRequiredExpression compareToDevice: device-relative comparison with offset
 
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT CompareToDevice'. Identify two Temperature-capable devices on the hub (deviceA + deviceB)."
 ,
-  "test_prompt": "Add a Required Expression to 'BAT CompareToDevice' using addRequiredExpression: {conditions:[{capability:'Temperature', deviceIds:[<deviceA>], comparator:'>', state:70, compareToDevice:{deviceId:<deviceB>, attribute:'temperature'}}]}. Inspect result.partial and result.settingsSkipped after the call.",
+  "test_prompt": "Add a Required Expression to 'BAT CompareToDevice' using addRequiredExpression: {conditions:[{capability:'Temperature', deviceIds:[<deviceA>], comparator:'>', compareToDevice:{deviceId:<deviceB>, attribute:'temperature', offset:-2}}]}. Inspect the rule paragraph on mainPage and result.partial / result.settingsApplied / result.settingsSkipped.",
   "teardown_prompt": "Delete 'BAT CompareToDevice'."
 }
 ```
 
-**Expected** (on RM 5.1.8 -- the firmware tracked by task #177): `addRequiredExpression` returns `success=true` and `partial=true`. `settingsSkipped` contains a Map entry with `key='compareToDevice'`, `reason='rhs_type_not_revealed'`, and `fallbackApplied=true` (the literal `state:70` was written as `state_<N>` fallback). The Required Expression paragraph renders with deviceA's temperature compared to the literal threshold (the device-relative wire write did not land because the RHS-type toggle is absent in this firmware). `result.brokenMarkers` is empty AND `result.health.ok=true` -- the fallback path produces a valid (if degraded) condition, not a broken row.
+**Expected**: `addRequiredExpression` returns `success=true` and `partial=false`. The Required Expression paragraph on mainPage renders the device-relative comparison with the offset -- e.g. "Temperature of deviceA is > deviceB - 2.0" -- NOT a literal threshold and NOT "deviceA > 0". `settingsApplied` includes `isDev_<N>`, the discovered `relDevice_<N>` reference-device picker field, and `state_<N>` (the offset). `result.brokenMarkers` is empty AND `result.health.ok=true`. Omitting `offset` is also valid (offset 0); the only difference is no `state_<N>` write and the paragraph renders without the "- N.0" tail.
 
-**Firmware dependence**: this scenario reflects the firmware-fallback contract task #177 documents -- the `rhsType_<N>` toggle is absent on RM 5.1.8 so the walker degrades with a sentinel rather than commit the full device-relative wire shape. On future firmware that exposes the toggle, `partial` flips false and the sentinel disappears; agents reading T618 should treat the sentinel as the expected-on-current-firmware path, not a regression.
+**Wire-format note**: the walker writes the comparator `RelrDev_<N>`, toggles `isDev_<N>=true` to reveal the SINGLE `relDevice_<N>` picker, writes the bare device id, then writes the offset to `state_<N>`. `relDevice_<N>` is a `capability.*` DEVICE picker; RM populates its dropdown client-side, so the schema exposes NO options for it. The walker therefore does NOT pre-validate deviceB against an option list (empty options is normal and does NOT flag `partial`) -- a wrong-capability reference device surfaces in the rendered/broken state, not a pre-write check. There is no separate reference-attribute picker -- the compared attribute is implied by the shared capability.
 
-**Failure modes**: `success=false` with a fail-loud reject (regression to the pre-fix path where the walker threw on missing rhsType). `partial=true` but no `rhs_type_not_revealed` sentinel (the fallback path fired but the sentinel push was dropped -- caller has no diagnostic for the degraded write). `fallbackApplied=false` despite `state:70` being supplied (the fallback-applied logic broke; caller thinks the condition is incomplete when it actually has a literal threshold). `brokenMarkers` non-empty (the fallback wrote something inconsistent that RM rendered as `*BROKEN*`).
+**Failure modes**: paragraph renders deviceA against a literal value / "deviceA > 0" (the device-relative write fell through -- the `isDev_<N>` toggle or `relDevice_<N>` reveal regressed). `success=false` with "reference-device picker relDevice_<N> not revealed after isDev_<N>=true" (the toggle did not reveal the picker -- fail-loud, caught by `hub_set_rule`'s backup-and-catch wrapper as a structured `success=false` map). `partial=true` with a `compareToDevice-validation` skip (REGRESSION: the empty device-picker option list was wrongly treated as a validation gap -- this is the false-partial the live-validation round fixed; the normal case must be `partial=false` with NO such skip). `settingsSkipped` carries `offset_field_not_revealed` and `partial=true` (the offset field was absent -- the comparison still committed without the offset). `brokenMarkers` non-empty (a partial write rendered the condition as `*BROKEN*`).
 
 ---
 
