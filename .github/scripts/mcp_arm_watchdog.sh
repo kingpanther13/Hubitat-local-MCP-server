@@ -2,12 +2,13 @@
 # Arm the standing "E2E Dead-Man Watchdog v2" for THIS run (issue #243 install fix + e2e safety net).
 #
 # v2 is a STANDALONE on-hub app that doubles as a small MCP server: its dead-man timer auto-restores
-# the WHOLE MCP package (the MCP Rule Server app + every library it #includes) from a known-good File
-# Manager cache if an e2e session bricks the hub and can't disarm. This script (1) ensures the v2
-# watchdog is installed AND has a live runEvery1Minute schedule, (2) BACKS UP main by reading the
-# app class + each #include'd library through the WATCHDOG's own hub_get_source (whose File-Manager
-# auto-save side effect writes the cache files), assembling the restore manifest, (3) asserts the app
-# cache is real (>1MB) -- if main is not cached, e2e HALTS -- then (4) writes the manifest-shaped
+# the WHOLE MCP package (the MCP Rule Server app + the child MCP Rule app + every library the server
+# #includes) from a known-good File Manager cache if an e2e session bricks the hub and can't disarm.
+# Full HPM repair redeploys EVERY manifest app, so the cache must include the child app too. This script
+# (1) ensures the v2 watchdog is installed AND has a live runEvery1Minute schedule, (2) BACKS UP main by
+# reading each app class + each #include'd library through the WATCHDOG's own hub_get_source (whose
+# File-Manager auto-save side effect writes the cache files), assembling the restore manifest, (3) asserts
+# the server-app cache is real (>1MB) -- if main is not cached, e2e HALTS -- then (4) writes the manifest-shaped
 # armed flag with the ARM_WINDOW_MS deadline (35 min). The matching "Disarm dead-man watchdog (final)"
 # always() step flips it to {armed:false, intent:"disarm"}; if a run crashes before that, the watchdog
 # fires and restores the package on its own.
@@ -421,17 +422,68 @@ for TOKEN in "${INCLUDE_TOKENS[@]:-}"; do
     '$acc + [{id:$id, file:$file, namespace:$ns, name:$name}]')
 done
 
-# Assemble the restore manifest: {app:{classId,file}, libraries:[{id,file,namespace,name}],
-# bundles:[{namespace,name}]} -- the exact shape restorePackage() reads (drop the PR's stale bundle,
-# restore libraries first, app last, drop the PR's stale libraries; namespace/name let it re-resolve a
-# library id the deploy changed via delete+recreate, and identify main's bundles vs the PR's).
+# 3e) Back up the CHILD app (mcp:MCP Rule). Full HPM repair redeploys EVERY manifest app, so the restore
+# must cache + restore the child too -- otherwise a PR that changes the child app would leave the PR's
+# child live on the hub after the run (an incomplete restore). Resolve its class id from the same
+# hub_list_apps response, cache it (the child is >64KB so hub_get_source auto-saves the full body), and
+# assert the cache landed. HALT if it can't be cached: arming without it means an unrestorable child app.
+CHILD_NAMESPACE="mcp"
+CHILD_NAME="MCP Rule"
+CHILD_CLASS_ID=$(echo "$LIST_TEXT" | jq -r --arg ns "$CHILD_NAMESPACE" --arg name "$CHILD_NAME" \
+  '.apps[]? | select(.namespace == $ns and .name == $name) | .id' | head -n1)
+if [ -z "$CHILD_CLASS_ID" ] || [ "$CHILD_CLASS_ID" = "null" ]; then
+  echo "::error::e2e HALT: child Apps Code class for $CHILD_NAMESPACE:$CHILD_NAME not found via hub_list_apps -- full repair redeploys it, so it must be cached to restore. Refusing to arm."
+  exit 1
+fi
+CHILD_RESTORE_FILE="mcp-source-app-${CHILD_CLASS_ID}.groovy"
+echo "Backing up the child app $CHILD_NAMESPACE:$CHILD_NAME (id=$CHILD_CLASS_ID): watchdog hub_get_source(type=app, id=$CHILD_CLASS_ID)..."
+CHILD_SRC_RPC=$(jq -nc --arg id "$CHILD_CLASS_ID" \
+  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:65000}}}')
+if ! CHILD_SRC_TEXT=$(mcp_tool_call_text "hub_get_source (backup child app)" "$CHILD_SRC_RPC"); then
+  echo "::error::hub_get_source(app $CHILD_CLASS_ID) returned non-JSON $RPC_ATTEMPTS times -- could not back up the child app. Re-run the job."
+  exit 1
+fi
+CHILD_SRC_OK=$(echo "$CHILD_SRC_TEXT" | jq -r '.success // false')
+CHILD_SRC_FILE=$(echo "$CHILD_SRC_TEXT" | jq -r '.sourceFile // empty')
+if [ "$CHILD_SRC_OK" != "true" ] || [ "$CHILD_SRC_FILE" != "$CHILD_RESTORE_FILE" ]; then
+  echo "::error::e2e HALT: hub_get_source(app $CHILD_CLASS_ID) did not write the expected child cache (success=$CHILD_SRC_OK sourceFile=$CHILD_SRC_FILE, expected $CHILD_RESTORE_FILE). Response: $(printf '%s' "$CHILD_SRC_TEXT" | head -c 600)"
+  exit 1
+fi
+# Assert the child cache is real (>1000 chars). The child app is ~179KB, far above this floor; it is not
+# the >1MB brick-critical server parent, so this gate is a sanity floor, not the dead-man HALT gate.
+READ_CHILD_RPC=$(jq -nc --arg fn "$CHILD_RESTORE_FILE" \
+  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')
+if ! CHILD_BACKUP_TEXT=$(mcp_tool_call_text "hub_read_file (child app backup existence check)" "$READ_CHILD_RPC"); then
+  echo "::error::hub_read_file('$CHILD_RESTORE_FILE') returned non-JSON $RPC_ATTEMPTS times -- transient relay/timeout. Re-run the job."
+  exit 1
+fi
+CHILD_BACKUP_LEN=$(echo "$CHILD_BACKUP_TEXT" | jq -r '.totalLength // 0')
+if ! [ "$CHILD_BACKUP_LEN" -gt 1000 ] 2>/dev/null; then
+  echo "::error::e2e HALT: child app backup '$CHILD_RESTORE_FILE' is missing or too small (totalLength=$CHILD_BACKUP_LEN, need >1000). Refusing to arm against an unrestorable child app."
+  exit 1
+fi
+echo "Child app backup '$CHILD_RESTORE_FILE' present (totalLength=$CHILD_BACKUP_LEN bytes)."
+
+# Assemble the restore manifest: {app:{classId,file}, apps:[{classId,file},...],
+# libraries:[{id,file,namespace,name}], bundles:[{namespace,name}]} -- the exact shape restorePackage()
+# reads (drop the PR's stale bundle, restore libraries first, then EVERY app in `apps`, drop the PR's
+# stale libraries; namespace/name let it re-resolve a library id the deploy changed via delete+recreate,
+# and identify main's bundles vs the PR's). `apps` lists the server parent + the child app (full repair
+# redeploys both, so both must restore); the singular `app` is kept for the flag-readback assertion and
+# back-compat -- restorePackage prefers `apps` when present.
 MANIFEST_JSON=$(jq -nc \
   --arg classId "$CLASS_ID" \
   --arg appFile "$APP_RESTORE_FILE" \
   --arg mainChars "$APP_BACKUP_LEN" \
+  --arg childClassId "$CHILD_CLASS_ID" \
+  --arg childFile "$CHILD_RESTORE_FILE" \
+  --arg childChars "$CHILD_BACKUP_LEN" \
   --argjson libs "$LIB_MANIFEST_JSON" \
   --argjson bundles "${MAIN_BUNDLES_JSON:-[]}" \
-  '{app:{classId:$classId, file:$appFile, mainChars:$mainChars}, libraries:$libs, bundles:$bundles}')
+  '{app:{classId:$classId, file:$appFile, mainChars:$mainChars},
+    apps:[{classId:$classId, file:$appFile, mainChars:$mainChars},
+          {classId:$childClassId, file:$childFile, mainChars:$childChars}],
+    libraries:$libs, bundles:$bundles}')
 echo "Assembled restore manifest: $MANIFEST_JSON"
 
 # --- 4) Write the manifest-shaped armed flag, then READ IT BACK and assert ------------------------

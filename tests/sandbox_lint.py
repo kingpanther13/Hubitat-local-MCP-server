@@ -892,6 +892,10 @@ COUNT_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bexposing\s+(\d+)\s+tools?\b", re.IGNORECASE), "total"),
     (re.compile(r"\bhas\s+(\d+)\s+tools?\s+total\b", re.IGNORECASE), "total"),
     (re.compile(r"\b(\d+)\s+MCP\s+tools?\b", re.IGNORECASE), "total"),
+    # "N (total) distinct (MCP) tools" — the word "distinct" between the number and
+    # "tools" defeats the "N tools" / "N MCP tools" / "N total" patterns above, so this
+    # class of total-count drift used to escape the lint (issue #250 review finding).
+    (re.compile(r"\b(\d+)\s+(?:total\s+)?distinct\s+(?:MCP\s+)?tools?\b", re.IGNORECASE), "total"),
     # "search across all N tools" / "for all N tools" — catalog references.
     (re.compile(r"\b(?:across|for|reference\s+for)\s+all\s+(\d+)\s+(?:MCP\s+)?tools?\b", re.IGNORECASE), "total"),
     # "All N tools are covered" — BAT test-coverage claim that tracks the
@@ -2532,6 +2536,11 @@ COUNT_SELF_TEST_CASES = [
     (
         "total in `All N tools are covered`",
         "All 101 tools are covered by at least one BAT scenario.",
+        {"total": 102}, ["total"],
+    ),
+    (
+        "total in `N (total) distinct tools`",
+        "The codebase has 101 total distinct tools.",
         {"total": 102}, ["total"],
     ),
     (
