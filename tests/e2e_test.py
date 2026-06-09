@@ -1352,6 +1352,7 @@ class TestRunner:
         for k in ("safeMode", "active", "details"):
             assert k in ha, f"healthAlerts missing '{k}': {ha}"
         assert isinstance(ha["active"], list), f"healthAlerts.active not a list: {ha['active']}"
+        assert isinstance(ha["details"], dict), f"healthAlerts.details not a dict: {ha['details']}"
         # platform-update fields are surfaced via platformUpdate, not duplicated in the alert details
         assert "platformUpdateAvailable" not in ha["details"], \
             f"platformUpdate leaked into healthAlerts.details: {sorted(ha['details'])}"

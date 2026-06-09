@@ -2403,7 +2403,7 @@ Verify rule after creation.""",
                     readDisabledNote: [type: "string", description: "Present when the Read master is disabled; PII excluded"],
                     identifyHubTriggered: [type: "boolean", description: "Present when identifyHub requested; LED blink result"],
                     identifyHubError: [type: "string", description: "Present when identifyHub blink failed"],
-                    platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available)}. Distinct from hub_get_update_status's MCP-server-app check; available=null means /hub2/hubData was unreadable."],
+                    platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available), note (only when available=null)}. Distinct from hub_get_update_status's MCP-server-app check; available=null means /hub2/hubData was unreadable/unrecognized and the note explains why."],
                     safeMode: [type: "boolean", description: "Whether the hub is running in Safe Mode (from /hub2/hubData). Absent if /hub2/hubData was unreadable."],
                     healthAlerts: [type: "object", description: "Present only when includeHealthAlerts=true: the hub's health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags), details (full alert map + message strings)}."]
                 ]
@@ -3045,7 +3045,7 @@ def _getAllToolDefinitions_part4() {
                     latestVersion: [type: "string", description: "Latest MCP server app version on GitHub; 'unknown' while async check pending"],
                     updateAvailable: [type: "boolean", description: "Whether a newer MCP server app version is available"],
                     lastChecked: [type: "string", description: "When the app-version check last completed"],
-                    platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available)}. Separate from the MCP server app check above; available=null when /hub2/hubData was unreadable."],
+                    platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available), note (only when available=null)}. Separate from the MCP server app check above; available=null when /hub2/hubData was unreadable/unrecognized and the note explains why."],
                     note: [type: "string", description: "Guidance distinguishing the two update types + async-check hint"]
                 ],
                 required: ["success", "installedVersion"]
@@ -6872,7 +6872,10 @@ def _getHub2HubData() {
         def parsed = new groovy.json.JsonSlurper().parseText(raw)
         return (parsed instanceof Map) ? parsed : null
     } catch (Exception e) {
-        mcpLog("debug", "server", "_getHub2HubData read/parse failed: ${e.message}")
+        // warn, not debug: the default log threshold is "error", so a debug line would be invisible --
+        // and a /hub2/hubData fetch/parse failure (transient 5xx, auth hiccup, or a firmware that
+        // changed the JSON shape) is exactly the cause an operator needs when platformUpdate degrades.
+        mcpLog("warn", "server", "_getHub2HubData read/parse failed: ${e.message}")
         return null
     }
 }
@@ -6883,13 +6886,19 @@ def _getHub2HubData() {
 def _platformUpdateFromHub2(hub2) {
     def fw = null
     try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception e) { }
-    if (!(hub2 instanceof Map)) {
-        return [available: null, currentVersion: fw,
-                note: "Pending-firmware status unavailable (/hub2/hubData unreadable -- older firmware or a transient read failure)."]
+    def hubVer = (hub2 instanceof Map) ? hub2.version?.toString() : null
+    // available:null is the schema's documented "unreadable" signal -- honor it for BOTH a missing
+    // /hub2/hubData AND a present-but-unrecognized shape (alerts not a Map, or a non-Boolean
+    // platformUpdateAvailable), so a malformed/changed payload can never masquerade as a confident
+    // "no update available".
+    def alerts = (hub2 instanceof Map && hub2.alerts instanceof Map) ? hub2.alerts : null
+    def pa = alerts?.platformUpdateAvailable
+    if (alerts == null || (pa != null && !(pa instanceof Boolean))) {
+        return [available: null, currentVersion: fw ?: hubVer,
+                note: "Pending-firmware status unreadable (/hub2/hubData missing, or its alerts block has an unrecognized shape)."]
     }
-    def alerts = (hub2.alerts instanceof Map) ? hub2.alerts : [:]
-    boolean avail = alerts.platformUpdateAvailable == true
-    def out = [available: avail, currentVersion: fw ?: hub2.version?.toString()]
+    boolean avail = (pa == true)
+    def out = [available: avail, currentVersion: fw ?: hubVer]
     if (avail) out.availableVersion = alerts.platformUpdateVersion?.toString()
     return out
 }
