@@ -285,6 +285,29 @@ win() {
   ctx "$PA" 'postBody\[btn\]' 14 20 4000
 } > "$OUT/C0-form-template-full.txt" 2>&1
 
+############################################################
+# D0 - exhaustive /app/ruleBuilderJson classic-RM compiled-shape hunt (all bundles)
+############################################################
+{
+  echo "# /app/ruleBuilderJson — every reference + every compiled-state field consumer, all bundles"
+  for f in "$PV" "$PA" "$PM"; do
+    [ -f "$f" ] || continue
+    echo "===== $(basename "$f") : ruleBuilderJson call sites ====="
+    ctx "$f" 'ruleBuilderJson' 6 46 18000
+  done
+  echo
+  echo "## compiled-state field tokens (a consumer would reveal the classic-RM response shape)"
+  for f in "$PV" "$PA" "$PM"; do
+    [ -f "$f" ] || continue
+    echo "===== $(basename "$f") ====="
+    for tok in 'broken' 'hasPredicate' 'predCapabs' 'condOper' 'capabsfalse' 'capabstrue' 'inUseConds' 'unusedConds' 'trigCustoms' 'trigDevs' 'condDevs' 'ruleStateText' 'whenNodes' 'thenNodes' 'elseNodes' 'promptHistory' '\.parens' '\.eval'; do
+      hits=$(grep -oEi ".{0,45}${tok}.{0,70}" "$f" 2>/dev/null | head -n 10 | head -c 1800)
+      [ -n "$hits" ] && { echo "--- $tok ---"; echo "$hits"; }
+    done
+    echo
+  done
+} > "$OUT/D0-rulebuilderjson-shape.txt" 2>&1
+
 echo "== evidence files =="
 ls -la "$OUT"
 echo "== total evidence bytes (excl pretty sources) =="
