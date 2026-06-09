@@ -16495,8 +16495,10 @@ private Set _collectLiveAppIds() {
  * parent id is per-hub.
  *
  * Cache in atomicState.parentAppIds[<appType>] -- one network call per type per
- * fresh install. Throws user-actionable error if the app type's parent
- * is not installed (e.g., RM was never enabled on this hub).
+ * fresh install. If the app type's built-in parent is not installed yet (e.g. RM
+ * or Button Controllers was never enabled on this hub), bootstrap it via the
+ * "Add Built-In App" endpoint (GET /installedapp/sysApp/<parentTypeName>) and
+ * re-discover; throws a user-actionable error only if that bootstrap fails.
  */
 private Integer _discoverParentAppId(String appType) {
     // atomicState read-modify-write: direct nested-map writes to state silently
@@ -16528,27 +16530,46 @@ private Integer _discoverParentAppId(String appType) {
     }
     def parentTypeName = reg.parentTypeName
 
-    def responseText = hubInternalGet("/hub2/appsList")
-    if (!responseText) {
-        throw new IllegalArgumentException("Cannot discover '${parentTypeName}' parent: empty response from /hub2/appsList")
-    }
-    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-    def parentNode = null
-    def recurse
-    recurse = { node ->
-        if (parentNode != null) return
-        def d = node?.data
-        if (d?.type == parentTypeName && d?.hidden != true) {
-            parentNode = d
-            return
+    // Search /hub2/appsList for the (non-hidden) built-in parent node by type name.
+    def findParentNode = {
+        def responseText = hubInternalGet("/hub2/appsList")
+        if (!responseText) {
+            throw new IllegalArgumentException("Cannot discover '${parentTypeName}' parent: empty response from /hub2/appsList")
         }
-        node?.children?.each { c -> recurse(c) }
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        def found = null
+        def recurse
+        recurse = { node ->
+            if (found != null) return
+            def d = node?.data
+            if (d?.type == parentTypeName && d?.hidden != true) { found = d; return }
+            node?.children?.each { c -> recurse(c) }
+        }
+        (parsed?.apps ?: []).each { a -> recurse(a) }
+        return found
     }
-    (parsed?.apps ?: []).each { a -> recurse(a) }
+
+    def parentNode = findParentNode()
+    if (parentNode?.id == null) {
+        // The built-in parent app is not installed yet. Hubitat installs a built-in
+        // (system) app via GET /installedapp/sysApp/<display name> -- exactly the link
+        // the "Add Built-In App" page uses, and parentTypeName IS that display name.
+        // Bootstrap the parent here, then re-discover, rather than dead-ending the
+        // caller. Only fires when the parent is absent, so it never duplicates an
+        // existing singleton parent.
+        def sysAppPath = "/installedapp/sysApp/" + URLEncoder.encode(parentTypeName, "UTF-8").replace("+", "%20")
+        mcpLog("info", "rm-native", "'${parentTypeName}' parent not installed -- bootstrapping via GET ${sysAppPath}")
+        try {
+            hubInternalGetRaw(sysAppPath)
+        } catch (Exception e) {
+            mcpLog("warn", "rm-native", "sysApp bootstrap of '${parentTypeName}' threw (continuing to re-discover): ${e.message}")
+        }
+        parentNode = findParentNode()
+    }
 
     if (parentNode?.id == null) {
         throw new IllegalArgumentException(
-            "'${parentTypeName}' parent not found on this hub. Install it via Apps --> Add Built-In App before creating an app of appType=${appType}.")
+            "'${parentTypeName}' parent not found on this hub and the /installedapp/sysApp bootstrap did not surface it. Install it via Apps --> Add Built-In App, then retry appType=${appType}.")
     }
     def id = parentNode.id.toString().toInteger()
     ids[appType] = id

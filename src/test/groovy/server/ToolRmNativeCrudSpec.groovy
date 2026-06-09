@@ -250,6 +250,56 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.parentAppId == 21
     }
 
+    def "_discoverParentAppId bootstraps a missing built-in parent via /installedapp/sysApp, then re-discovers it (button_controller on a clean hub, issue #185)"() {
+        given:
+        // The hub starts WITHOUT a Button Controllers parent; after the sysApp
+        // ("Add Built-In App") install GET fires, /hub2/appsList surfaces it at id=88.
+        boolean installed = false
+        int appsListCalls = 0
+        hubGet.register('/hub2/appsList') { params ->
+            appsListCalls++
+            installed
+                ? JsonOutput.toJson([apps: [[data: [id: 88, name: "Button Controllers", type: "Button Controllers", user: false, hidden: false], children: []]]])
+                : JsonOutput.toJson([apps: []])
+        }
+        def rawCalls = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            rawCalls << path
+            if (path.startsWith("/installedapp/sysApp/")) installed = true
+            [status: 302, location: "/installedapp/configure/88", data: ""]
+        }
+
+        when:
+        def id = script._discoverParentAppId("button_controller")
+
+        then: "the sysApp Add-Built-In-App endpoint was hit with the URL-encoded parent name"
+        rawCalls.any { it == "/installedapp/sysApp/Button%20Controllers" }
+
+        and: "the bootstrapped parent id is returned (re-discovered after install)"
+        id == 88
+
+        and: "appsList was queried twice -- once before the bootstrap, once after"
+        appsListCalls == 2
+    }
+
+    def "_discoverParentAppId throws a clear error when the sysApp bootstrap still does not surface the parent"() {
+        given:
+        // sysApp install GET fires but the parent never appears (e.g. unsupported on
+        // this firmware) -- the caller must get a clear error, not a silent failure.
+        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: []]) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapp/list", data: ""]
+        }
+
+        when:
+        script._discoverParentAppId("button_controller")
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Button Controllers")
+        ex.message.contains("sysApp")
+    }
+
     def "create_rm_rule force-deletes orphan when setup fails after createchild succeeds"() {
         given:
         enableWrite()
