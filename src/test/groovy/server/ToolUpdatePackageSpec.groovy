@@ -329,7 +329,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         then:
         result.success == false
         result.aborted == true
-        result.abortReason == 'manifest_unparseable'
+        result.abortReason == 'bundle_location_unusable'
         result.error.contains('unusable location')
         calls == []
     }
@@ -405,6 +405,41 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.bundles[0].success == true
         result.apps.size() == 2
         result.apps.every { it.success == true }
+    }
+
+    def "with TWO non-self apps, both deploy in manifest order, then the self app LAST"() {
+        // Pins that the self-app-last ordering preserves the non-self apps' relative manifest order
+        // (not just 'self is last'); a single non-self app can't distinguish the two.
+        given:
+        enableDev()
+        hubGet.register('/hub2/userAppTypes') { params ->
+            groovy.json.JsonOutput.toJson([
+                [id: '228', name: 'MCP Rule Server', namespace: 'mcp'],
+                [id: '230', name: 'MCP Rule', namespace: 'mcp'],
+                [id: '231', name: 'MCP Extra', namespace: 'mcp']
+            ])
+        }
+        // Manifest lists the SELF app first, then two non-self apps -- the tool must still emit them
+        // non-self-first (in their manifest order: 230 then 231) and the self app (228) last.
+        def apps = [
+            [name: 'MCP Rule Server', namespace: 'mcp', location: "${RAW}/main/hubitat-mcp-server.groovy".toString(), required: true, primary: true],
+            [name: 'MCP Rule', namespace: 'mcp', location: "${RAW}/main/hubitat-mcp-rule.groovy".toString(), required: true],
+            [name: 'MCP Extra', namespace: 'mcp', location: "${RAW}/main/mcp-extra.groovy".toString(), required: true]
+        ]
+        nextManifestBody = manifest(BUNDLE_LIBS, apps)
+        def calls = []
+        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> calls << "app:${a.appId}".toString(); [success: true, appId: a.appId] }
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then: 'bundle -> child (230) -> extra (231) -> self (228) LAST'
+        calls == ['bundle', 'app:230', 'app:231', 'app:228']
+        result.success == true
+        result.apps.size() == 3
+        result.apps[-1].isSelf == true
+        result.apps[-1].classId == '228'
     }
 
     def "a no-include app with no bundle deploys apps only (self last), no bundle step"() {
@@ -564,6 +599,39 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
     def "_parseIncludeDirectives returns empty when there are no includes"() {
         expect:
         script._parseIncludeDirectives(APP_NO_INCLUDE) == []
+    }
+
+    // -------- helper unit: re-anchor a manifest location to the ref --------
+
+    @spock.lang.Unroll
+    def "_reanchorToRef strips host/owner/repo/ref and rebuilds against base+ref (#desc)"() {
+        // The load-bearing transform that makes unmerged-PR installs work: strip exactly the 4-segment
+        // host/owner/repo/branch prefix, keep the rest of the path, re-anchor to base/ref. Pins the exact
+        // boundary behaviour so a regex change that strips one segment too many/few is caught.
+        expect:
+        script._reanchorToRef(location, base, ref) == expected
+
+        where:
+        desc                      | location                                                              | base                  | ref    || expected
+        'canonical bundle'        | 'https://raw.githubusercontent.com/o/r/main/bundles/mcp-libraries.zip' | 'https://example/raw' | 'feat' || 'https://example/raw/feat/bundles/mcp-libraries.zip'
+        'deeper relpath survives' | 'https://raw.githubusercontent.com/o/r/main/bundles/sub/x.zip'         | 'https://b'           | 'sha1' || 'https://b/sha1/bundles/sub/x.zip'
+        'http scheme'             | 'http://raw.githubusercontent.com/o/r/main/hubitat-mcp-rule.groovy'    | 'https://b'           | 'main' || 'https://b/main/hubitat-mcp-rule.groovy'
+        'top-level file'          | 'https://raw.githubusercontent.com/o/r/main/hubitat-mcp-server.groovy' | 'https://b'           | 'r2'   || 'https://b/r2/hubitat-mcp-server.groovy'
+    }
+
+    @spock.lang.Unroll
+    def "_reanchorToRef returns null (fail-closed) for an unusable location: #desc"() {
+        expect:
+        script._reanchorToRef(location, 'https://b', 'main') == null
+
+        where:
+        desc                | location
+        'too few segments'  | 'https://raw.githubusercontent.com/o/r/main'
+        'no path after ref' | 'https://raw.githubusercontent.com/o/r/main/'
+        'not a url'         | 'not-a-real-url'
+        'blank'             | '   '
+        'null'              | null
+        'non-string'        | 42
     }
 
     // -------- dispatch happy path --------

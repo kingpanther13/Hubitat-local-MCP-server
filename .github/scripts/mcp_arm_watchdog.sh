@@ -229,6 +229,12 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
   STORED_MAIN_SHA=$(mcp_tool_call_text "hub_read_file (last deployed-main sha)" \
     "$(jq -nc --arg fn "$MAIN_SHA_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')" \
     | jq -r '.content // ""' 2>/dev/null | tr -d '[:space:]' || true)
+  # Fast-path skip is parent-only (server length + SHA marker), yet it skips the CHILD refresh too. That
+  # is sound because the SHA marker is a WHOLE-PACKAGE token: it is written (line below) only AFTER both
+  # the parent AND every child refreshed this run, and the deploy clears it before PR code lands. So a
+  # marker that still matches main means the whole package (parent + child) is canonical main -- the child
+  # cannot have drifted under a matching marker in normal flow (the disarm restores every manifest app and
+  # only re-stamps on a confirmed full restore).
   if [ "$LIVE_MAIN_LEN" = "$MAIN_CHARS" ] && [ "$STORED_MAIN_SHA" = "$MAIN_SHA" ]; then
     echo "Hub already on canonical main (length ${LIVE_MAIN_LEN}, sha ${MAIN_SHA:0:12}) -- no download needed."
   else
@@ -280,6 +286,14 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
     # re-evaluates the whole refresh rather than caching a partial-main baseline.
     MAIN_CHILD_RECS=$(printf '%s' "$MAIN_PKG_MANIFEST" | jq -r \
       '.apps[]? | select(.namespace == "mcp" and .name != "MCP Rule Server") | "\(.namespace)\t\(.name)\t\(.location)"' 2>/dev/null || true)
+    # The package ships a child app (mcp:MCP Rule), so 0 non-server mcp apps means the filter/manifest
+    # drifted. Without this floor the loop body would be skipped, the SHA marker stamped below, and the
+    # NEXT run would skip the refresh entirely on the stale marker -- silently caching a stale child. The
+    # 3e backup section hard-fails the same way; keep the two in lockstep. (Mirrors that strictness.)
+    if [ -z "$MAIN_CHILD_RECS" ]; then
+      echo "::error::e2e HALT: main's packageManifest.json declared no non-server mcp app to refresh, but the package ships a child app (mcp:MCP Rule). Filter/manifest drift -- refusing to stamp the canonical-main SHA marker against a server-only refresh."
+      exit 1
+    fi
     while IFS=$'\t' read -r C_NS C_NAME C_LOC; do
       [ -z "$C_NS" ] && continue
       if [ -z "$C_LOC" ] || [ "$C_LOC" = "null" ]; then
@@ -302,7 +316,17 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
       C_PRE_AT=$(printf '%s' "$C_PRE_INFO" | jq -r '(.lastSelfDeploy.at // 0) | floor' 2>/dev/null || echo 0)
       C_DEP_RPC=$(jq -nc --arg id "$C_ID" --arg url "$C_URL" \
         '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_update_app",arguments:{appId:$id,importUrl:$url,confirm:true}}}')
-      mcp_call "$C_DEP_RPC" >/dev/null 2>&1 || true
+      # The child app is small (~179KB) and the deploy goes through the WATCHDOG (a separate app that is
+      # NOT recompiled by the child's save), so it usually returns SYNCHRONOUSLY. Capture that response: a
+      # synchronous success:false carries the hub's verbatim compile error -- surface it NOW instead of
+      # discarding it and re-deriving a generic failure from the poll (or a 300s timeout). A relay-dropped
+      # (empty) response falls through to the fresh-lastSelfDeploy poll below.
+      C_DEP_RESP=$(mcp_call "$C_DEP_RPC" 2>/dev/null || true)
+      C_DEP_TEXT=$(printf '%s' "$C_DEP_RESP" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
+      if [ -n "$C_DEP_TEXT" ] && [ "$(printf '%s' "$C_DEP_TEXT" | jq -r '.success // "unknown"' 2>/dev/null || echo unknown)" = "false" ]; then
+        echo "::error::e2e HALT: canonical-main child deploy (${C_NS}:${C_NAME}) REJECTED synchronously by the hub. Verbatim: $(printf '%s' "$C_DEP_TEXT" | jq -r '.error // .errorMessage // .message // "<none>"' 2>/dev/null || echo '<none>')."
+        exit 1
+      fi
       C_LANDED=""
       C_DEADLINE=$(( $(date +%s) + 300 ))
       while [ "$(date +%s)" -lt "$C_DEADLINE" ]; do

@@ -1564,8 +1564,8 @@ def getHiddenToolNames() {
 // Mode is off -- not merely runtime-refused. hub_update_package is the first: a self-
 // deploy tool that full-repairs the package (apps + library bundle) at a git ref, only
 // meaningful (and only safe to expose) during dev work with the toggle on. Returned as
-// String names; getHiddenToolNames
-// folds them into `hide` when settings.enableDeveloperMode is falsy.
+// String names; getHiddenToolNames folds them into `hide` when settings.enableDeveloperMode
+// is falsy.
 def getDeveloperModeOnlyToolNames() {
     return ["hub_update_package"] as Set
 }
@@ -2687,7 +2687,7 @@ def _getAllToolDefinitions_part2() {
             name: "hub_update_package",
             description: """Developer Mode self-deploy: full HPM-repair of the MCP package at a git ref in one call -- OVERRIDES whatever is installed, the same way Hubitat Package Manager's Repair does, but anchored to packageManifest.json AT `ref` so an UNMERGED PR installs (HPM repair only reads the published manifest).
 
-Flow: fetch packageManifest.json at `ref` -> install every declared library BUNDLE first (the hub fetches + unpacks the .zip, overwriting libraries in place) -> then deploy every declared app, the SELF app (mcp / "MCP Rule Server", the running parent) LAST so its recompile (which can drop the response, #237) is the final act. Deploys the parent app code class, the child app (mcp / "MCP Rule", class 230), AND the library bundle. Does NOT touch app INSTANCES, undeclared drivers, or anything outside this package's manifest.
+Flow: fetch packageManifest.json at `ref` -> install every declared library BUNDLE first (the hub fetches + unpacks the .zip, overwriting libraries in place) -> then deploy every declared app, the SELF app (mcp / "MCP Rule Server", the running parent) LAST so its recompile (which can drop the response, #237) is the final act. Deploys the parent app code class, the child app (mcp / "MCP Rule"), AND the library bundle -- each app's Apps Code class id is resolved at runtime from /hub2/userAppTypes by namespace+name (not hard-coded). Does NOT touch app INSTANCES, undeclared drivers, or anything outside this package's manifest.
 
 Brick-safe: if ANYTHING before the self app save fails (app/manifest fetch, an unresolved app class, a bundle install, a non-self app), it aborts BEFORE touching the self app -- the running server is left exactly as-is and still updatable via hub_update_app, the always-available escape hatch. Self-modification is gated by this tool's own enableDeveloperMode check (it deploys by Apps Code CLASS id, so hub_update_app's instance-id self-update guard does not fire here).
 
@@ -2710,14 +2710,14 @@ Gated on enableDeveloperMode (the tool is hidden from tools/list when Developer 
                     dryRun: [type: "boolean", description: "True when this was a plan-only run (no writes)"],
                     aborted: [type: "boolean", description: "True when the deploy stopped before the self app save; the running server was left untouched"],
                     partial: [type: "boolean", description: "True when bundle(s) + other apps landed but the self app did not update -- its call threw (likely the self-update recompile dropped the response) OR returned a failure"],
-                    abortReason: [type: "string", description: "Machine-readable abort cause (app_source_fetch_failed / manifest_fetch_failed / manifest_unparseable / bundle_required_but_undeclared / app_class_unresolved / bundle_install_failed / bundle_install_threw / app_update_failed / app_update_threw)"],
+                    abortReason: [type: "string", description: "Machine-readable abort cause (app_source_fetch_failed / manifest_fetch_failed / manifest_unparseable / bundle_location_unusable / bundle_required_but_undeclared / app_class_unresolved / bundle_install_failed / bundle_install_threw / app_update_failed / app_update_threw)"],
                     appUrl: [type: "string", description: "Raw URL the self app source was fetched from (for the #include coverage check)"],
                     includes: [type: "array", description: "Parsed #include tokens (namespace.Name) from the self app source", items: [type: "string"]],
                     plannedBundles: [type: "array", description: "dryRun: library bundles that would be installed (name, ref-anchored url)", items: [type: "object"]],
                     plannedApps: [type: "array", description: "dryRun: apps that would be deployed (name, namespace, classId, url, isSelf); self app last", items: [type: "object"]],
                     bundles: [type: "array", description: "Per-bundle install results (name, url, success, error)", items: [type: "object"]],
                     apps: [type: "array", description: "Per-app deploy results (name, namespace, classId, isSelf, success, app); self app last", items: [type: "object"]],
-                    app: [type: "object", description: "The hub_update_app result for the self app leg (present on a self-app failure)"],
+                    app: [type: "object", description: "The hub_update_app result for the self app leg (present only when the self app update RETURNED a failure, not on the threw/dropped-response path)"],
                     message: [type: "string", description: "Human-readable summary"],
                     error: [type: "string", description: "Failure detail; present on abort / failure"]
                 ],
@@ -13806,8 +13806,9 @@ def getPackageSourceBase() {
 // are full raw URLs committed against a fixed branch (e.g. .../main/bundles/mcp-libraries.zip);
 // strip the scheme://host/owner/repo/<branch>/ prefix to the repo-relative path, then rebuild
 // against base+ref. This is what lets hub_update_package install an UNMERGED PR's artifacts --
-// HPM repair trusts the manifest's branch-pinned URL; we can't. Mirrors the transform in
-// .github/scripts/mcp_watchdog_deploy.sh. Returns null when the location is not in the expected
+// HPM repair trusts the manifest's branch-pinned URL; we can't. Same 4-segment prefix-strip as
+// .github/scripts/mcp_watchdog_deploy.sh (that one hard-codes the raw.githubusercontent.com host;
+// this regex is host-agnostic). Returns null when the location is not in the expected
 // scheme://host/owner/repo/ref/<path> shape, so the caller fails closed.
 def _reanchorToRef(location, String base, String ref) {
     if (!(location instanceof String) || !location.trim()) return null
@@ -13927,7 +13928,7 @@ def toolUpdatePackage(args) {
         def url = _reanchorToRef(b?.location, base, ref)
         if (!url) {
             return [
-                success: false, aborted: true, abortReason: "manifest_unparseable", ref: ref,
+                success: false, aborted: true, abortReason: "bundle_location_unusable", ref: ref,
                 error: "Bundle '${b?.name ?: b?.id ?: '?'}' in packageManifest.json has an unusable location '${b?.location}' (expected a scheme://host/owner/repo/ref/<path> raw URL). Nothing was changed."
             ]
         }
@@ -13992,7 +13993,11 @@ def toolUpdatePackage(args) {
     // BUNDLES FIRST (override). HPM repair installs every manifest bundle via the hub's
     // uploadZipFromUrl endpoint, which overwrites the libraries in place. Abort the WHOLE
     // deploy on the first failure, BEFORE touching any app, so an app is never saved
-    // against a missing/stale library.
+    // against a missing/stale library. We trust the hub's success signal (no separate
+    // library-presence re-read): uploadZipFromUrl unpacks + registers the libraries
+    // SYNCHRONOUSLY before returning success -- the same signal HPM relies on -- and the
+    // self app #includes them, so the final backstop is its compile: a missing #include
+    // makes the self app save fail (app_update_failed/threw, reported), never silently land.
     def bundleResults = []
     for (b in plannedBundles) {
         def r

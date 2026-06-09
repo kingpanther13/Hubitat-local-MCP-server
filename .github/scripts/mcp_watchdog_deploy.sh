@@ -146,7 +146,12 @@ fi
 #    stale/wrong source can never false-green. As a belt-and-suspenders cross-check we
 #    also confirm each app's live totalLength matches this PR's file.
 # ===========================================================================
-APP_RECS=$(jq -r '.apps[]? | "\(.namespace)\t\(.name)\t\(.location)"' "$MANIFEST_FILE")
+# Deploy the SELF app (mcp:MCP Rule Server) LAST, like the production toolUpdatePackage does, so the e2e
+# installs in the same app order that ships (and a mid-loop failure leaves the small child changed rather
+# than the 1.6MB server). Not a brick risk on this path -- every call goes through the WATCHDOG, a separate
+# app the server's recompile never drops -- but matching the shipped order keeps e2e faithful. sort_by a
+# boolean puts false (non-self) before true (self).
+APP_RECS=$(jq -r '[.apps[]?] | sort_by(.namespace == "mcp" and .name == "MCP Rule Server") | .[] | "\(.namespace)\t\(.name)\t\(.location)"' "$MANIFEST_FILE")
 if [ -z "$APP_RECS" ]; then
   echo "::error::packageManifest.json declares no apps -- nothing to deploy. Refusing to pass as a successful install."
   exit 1

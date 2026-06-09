@@ -765,7 +765,7 @@ def _extract_canonical_counts() -> dict | None:
     # total = len(list) > len(docs) and fires; the self-test cross-
     # checks list-len vs set-len. If we collapsed both into len(set),
     # duplicate-name regressions would be silent on both gates.
-    raw_name_list = re.findall(r"^\s*name:\s*['\"]([a-z_]+)['\"]", all_defs_text, re.MULTILINE)
+    raw_name_list = re.findall(r"^\s*name:\s*['\"]([a-z0-9_]+)['\"]", all_defs_text, re.MULTILINE)
     tool_names: set[str] = set(raw_name_list)
     total = len(raw_name_list)
 
@@ -786,7 +786,7 @@ def _extract_canonical_counts() -> dict | None:
         r"def getDeveloperModeOnlyToolNames\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE
     )
     if dev_match:
-        dev_only_names = set(re.findall(r"['\"]([a-z_]+)['\"]", dev_match.group(1)))
+        dev_only_names = set(re.findall(r"['\"]([a-z0-9_]+)['\"]", dev_match.group(1)))
     dev_only_top_level = dev_only_names - proxied_names
 
     core = total - proxied - len(dev_only_top_level)

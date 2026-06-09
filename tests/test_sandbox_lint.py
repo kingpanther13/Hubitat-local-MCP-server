@@ -693,3 +693,84 @@ def test_lockstep_duplicate_library_declaration_flagged(monkeypatch, tmp_path):
     dups = [f for f in findings if "Duplicate library declaration" in f["message"]]
     assert dups, f"expected a duplicate-declaration finding, got: {findings}"
     assert "McpFooLib" in dups[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# _extract_canonical_counts dev_only_top_level partition (issue #250)
+# ---------------------------------------------------------------------------
+# core = total - proxied - dev_only_top_level. A Developer-Mode-only TOP-LEVEL tool
+# (in getDeveloperModeOnlyToolNames(), NOT behind a gateway) is hidden from the default
+# tools/list, so it's excluded from `core`/`tools_list` but still counted in `total`.
+# This is the arithmetic that replaced the deleted registry-leg lockstep tests; the
+# registry tests were direct, so the new partition gets a direct test too.
+
+_CANON_GATEWAY = (
+    "def getGatewayConfig() {\n"
+    "    return [\n"
+    "        hub_read_things: [\n"
+    '            description: "read things",\n'
+    '            tools: ["hub_get_thing", "hub_list_things"]\n'
+    "        ]\n"
+    "    ]\n"
+    "}\n"
+)
+
+
+def _canon_defs(*names):
+    # Tool defs with `name:` on its OWN line, matching the real source the extractor scans.
+    body = ",\n".join(f'        [\n            name: "{n}"\n        ]' for n in names)
+    return f"def _getAllToolDefinitions_part1() {{\n    return [\n{body}\n    ]\n}}\n"
+
+
+def test_extract_canonical_counts_excludes_dev_only_top_level(monkeypatch, tmp_path):
+    """A dev-only top-level tool counts in total but is subtracted from core/tools_list."""
+    src = (
+        _CANON_GATEWAY
+        + _canon_defs("hub_get_thing", "hub_list_things", "hub_top_level_a", "hub_dev_tool")
+        + 'def getDeveloperModeOnlyToolNames() {\n    return ["hub_dev_tool"] as Set\n}\n'
+    )
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(src)
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    c = sl._extract_canonical_counts()
+    assert c is not None
+    assert c["total"] == 4              # every name, dev tool included
+    assert c["proxied"] == 2            # hub_get_thing, hub_list_things
+    assert c["dev_only_top_level"] == 1  # hub_dev_tool (dev-only, not proxied)
+    assert c["core"] == 1              # 4 - 2 - 1 = hub_top_level_a only
+    assert c["gateways"] == 1
+    assert c["tools_list"] == 2        # core + gateways
+    # The self-test invariant must hold on this synthetic source too.
+    assert c["core"] + c["proxied"] + c["dev_only_top_level"] == c["total"]
+
+
+def test_extract_canonical_counts_no_dev_only_tool(monkeypatch, tmp_path):
+    """With an empty getDeveloperModeOnlyToolNames(), dev_only_top_level is 0 and core = total - proxied."""
+    src = (
+        _CANON_GATEWAY.replace('"hub_get_thing", "hub_list_things"', '"hub_get_thing"')
+        + _canon_defs("hub_get_thing", "hub_top_level_a")
+        + "def getDeveloperModeOnlyToolNames() {\n    return [] as Set\n}\n"
+    )
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(src)
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    c = sl._extract_canonical_counts()
+    assert c is not None
+    assert c["dev_only_top_level"] == 0
+    assert c["total"] == 2
+    assert c["proxied"] == 1
+    assert c["core"] == 1              # 2 - 1 - 0
+
+
+def test_extract_canonical_counts_dev_only_name_with_digits(monkeypatch, tmp_path):
+    """Gemini #261: the dev-only name regex must capture digit-containing names (e.g. hub_tool_v2)."""
+    src = (
+        _CANON_GATEWAY
+        + _canon_defs("hub_get_thing", "hub_list_things", "hub_tool_v2")
+        + 'def getDeveloperModeOnlyToolNames() {\n    return ["hub_tool_v2"] as Set\n}\n'
+    )
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(src)
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    c = sl._extract_canonical_counts()
+    assert c is not None
+    assert c["total"] == 3
+    assert c["dev_only_top_level"] == 1  # hub_tool_v2 matched despite the digit
+    assert c["core"] == 0              # 3 - 2 - 1
