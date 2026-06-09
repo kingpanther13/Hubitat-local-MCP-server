@@ -1328,6 +1328,51 @@ class TestRunner:
         assert result is not None, "hub_get_metrics returned None"
 
     @test("system_tools")
+    def test_hub_get_info_platform_update_and_safemode(self) -> None:
+        # #12/#13: hub_get_info folds in the pending platform/firmware update + safeMode from
+        # /hub2/hubData. On a reachable hub the endpoint is readable, so these resolve (not the
+        # null degrade path); the full alerts block stays out unless opted in.
+        info = self.client.call_tool("hub_get_info", {})
+        assert "platformUpdate" in info, f"hub_get_info missing platformUpdate: {sorted(info)}"
+        pu = info["platformUpdate"]
+        assert "currentVersion" in pu, f"platformUpdate missing currentVersion: {pu}"
+        assert isinstance(pu.get("available"), bool), \
+            f"platformUpdate.available not resolved -- /hub2/hubData unreadable? {pu}"
+        if pu["available"]:
+            assert pu.get("availableVersion"), f"available=true but no availableVersion: {pu}"
+        assert "safeMode" in info, f"hub_get_info missing safeMode: {sorted(info)}"
+        assert "healthAlerts" not in info, "healthAlerts must be absent without includeHealthAlerts=true"
+
+    @test("system_tools")
+    def test_hub_get_info_health_alerts_opt_in(self) -> None:
+        # #13: the full alerts block appears only with includeHealthAlerts=true.
+        info = self.client.call_tool("hub_get_info", {"includeHealthAlerts": True})
+        ha = info.get("healthAlerts")
+        assert ha is not None, f"includeHealthAlerts=true but healthAlerts absent/null: {sorted(info)}"
+        for k in ("safeMode", "active", "details"):
+            assert k in ha, f"healthAlerts missing '{k}': {ha}"
+        assert isinstance(ha["active"], list), f"healthAlerts.active not a list: {ha['active']}"
+        # platform-update fields are surfaced via platformUpdate, not duplicated in the alert details
+        assert "platformUpdateAvailable" not in ha["details"], \
+            f"platformUpdate leaked into healthAlerts.details: {sorted(ha['details'])}"
+
+    @test("system_tools")
+    def test_hub_get_update_status_platform_update(self) -> None:
+        # #12: hub_get_update_status surfaces the hub firmware update separately from the MCP-app check.
+        res = self.client.call_tool("hub_get_update_status", {})
+        assert "installedVersion" in res, f"missing MCP-app installedVersion: {sorted(res)}"
+        assert "platformUpdate" in res, f"missing platformUpdate: {sorted(res)}"
+        assert "available" in res["platformUpdate"], f"platformUpdate shape wrong: {res['platformUpdate']}"
+
+    @test("system_tools")
+    def test_hub_get_metrics_health_alerts(self) -> None:
+        # #13: hub_get_metrics folds in the full healthAlerts block alongside the trend metrics.
+        res = self.client.call_tool("hub_manage_diagnostics", {"tool": "hub_get_metrics"})
+        assert "healthAlerts" in res, f"hub_get_metrics missing healthAlerts: {sorted(res)}"
+        ha = res["healthAlerts"]
+        assert ha is not None and "active" in ha and "safeMode" in ha, f"healthAlerts shape wrong: {ha}"
+
+    @test("system_tools")
     def test_get_memory_history(self) -> None:
         result = self.client.call_tool("hub_manage_diagnostics", {
             "tool": "hub_get_memory_history",
