@@ -148,8 +148,10 @@ fi
 # BUNDLE (from main's packageManifest.json at MAIN_SHA) so the #include'd libraries are refreshed to
 # canonical main too -- not just the app. That closes the stale-library gap: a main change touching only
 # a library is caught (the app would otherwise recompile against stale libs on a coupled change), and the
-# cache taken below is the whole canonical-main package. The APP is then redeployed only when it drifted
-# (the 1.6MB redeploy stays gated on the length+SHA check). MAIN_* absent (older workflow) -> skip.
+# cache taken below is the whole canonical-main package. The server APP is then redeployed when it drifted
+# (the 1.6MB redeploy stays gated on the length+SHA check), and the CHILD app(s) are refreshed alongside it
+# -- full repair: EVERY manifest app must track canonical main, not just the server, so the cache can never
+# capture a stale child. MAIN_* absent (older workflow) -> skip.
 MAIN_SHA_FILE="mcp-main-deployed-sha.txt"
 # main's BUNDLE set (namespace+name as the hub registers them) for the restore-time orphan cleanup + the
 # disarm no-stale assertion. Derived from each main bundle .zip's own install.txt (line 1 = namespace,
@@ -268,6 +270,63 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
       echo "::error::e2e HALT: canonical main deploy did not confirm within 420s (no fresh lastSelfDeploy success for class $CLASS_ID). Refusing to arm against a non-canonical baseline."
       exit 1
     fi
+
+    # Refresh the CHILD app(s) to canonical main too -- full repair: every manifest app must track main,
+    # not just the server parent, or the cache below would capture a stale child. Deploy each non-server
+    # app from main's manifest (the hub fetches via importUrl, the same path as the parent), confirmed via
+    # a FRESH lastSelfDeploy for THAT app's class (the watchdog records the appId it deployed). The child is
+    # ~179KB so it usually returns in the relay window, but we tolerate a dropped response and poll, exactly
+    # like the parent. HALT (do NOT record the main SHA) if any child can't be confirmed, so the next run
+    # re-evaluates the whole refresh rather than caching a partial-main baseline.
+    MAIN_CHILD_RECS=$(printf '%s' "$MAIN_PKG_MANIFEST" | jq -r \
+      '.apps[]? | select(.namespace == "mcp" and .name != "MCP Rule Server") | "\(.namespace)\t\(.name)\t\(.location)"' 2>/dev/null || true)
+    while IFS=$'\t' read -r C_NS C_NAME C_LOC; do
+      [ -z "$C_NS" ] && continue
+      if [ -z "$C_LOC" ] || [ "$C_LOC" = "null" ]; then
+        echo "::error::e2e HALT: main manifest app ${C_NS}:${C_NAME} has no usable location -- cannot refresh it to canonical main. Refusing to arm a partial-main baseline."
+        exit 1
+      fi
+      C_REL=$(printf '%s' "$C_LOC" | sed -E 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+/##')
+      C_URL="${MAIN_RAW_PREFIX}/${C_REL}"
+      C_ID=$(printf '%s' "$LIST_TEXT" | jq -r --arg ns "$C_NS" --arg name "$C_NAME" \
+        '.apps[]? | select(.namespace == $ns and .name == $name) | .id' | head -n1)
+      if [ -z "$C_ID" ] || [ "$C_ID" = "null" ]; then
+        echo "::error::e2e HALT: canonical-main refresh needs the Apps Code class for child ${C_NS}:${C_NAME} but it was not found via hub_list_apps. Refusing to arm a partial-main baseline."
+        exit 1
+      fi
+      echo "Refreshing child app ${C_NS}:${C_NAME} (class ${C_ID}) to canonical main: ${C_URL} ..."
+      if ! C_PRE_INFO=$(mcp_tool_call_text "hub_get_info (child-refresh baseline)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}'); then
+        echo "::error::e2e HALT: could not read hub_get_info to baseline the child refresh (${C_NS}:${C_NAME}). Re-run."
+        exit 1
+      fi
+      C_PRE_AT=$(printf '%s' "$C_PRE_INFO" | jq -r '(.lastSelfDeploy.at // 0) | floor' 2>/dev/null || echo 0)
+      C_DEP_RPC=$(jq -nc --arg id "$C_ID" --arg url "$C_URL" \
+        '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_update_app",arguments:{appId:$id,importUrl:$url,confirm:true}}}')
+      mcp_call "$C_DEP_RPC" >/dev/null 2>&1 || true
+      C_LANDED=""
+      C_DEADLINE=$(( $(date +%s) + 300 ))
+      while [ "$(date +%s)" -lt "$C_DEADLINE" ]; do
+        sleep 5
+        C_INFO=$(mcp_tool_call_text "hub_get_info (child-refresh poll)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' || true)
+        C_APP=$(printf '%s' "$C_INFO" | jq -r '.lastSelfDeploy.appId // empty' 2>/dev/null || true)
+        C_AT=$(printf '%s' "$C_INFO" | jq -r '(.lastSelfDeploy.at // 0) | floor' 2>/dev/null || echo 0)
+        C_OK=$(printf '%s' "$C_INFO" | jq -r '.lastSelfDeploy.success // empty' 2>/dev/null || true)
+        C_ERR=$(printf '%s' "$C_INFO" | jq -r '.lastSelfDeploy.error // empty' 2>/dev/null || true)
+        if [ "$C_APP" = "$C_ID" ] && [ "${C_AT:-0}" -gt "${C_PRE_AT:-0}" ] 2>/dev/null; then
+          if [ "$C_OK" = "false" ]; then
+            echo "::error::e2e HALT: canonical-main child deploy (${C_NS}:${C_NAME}) REJECTED by the hub (fresh lastSelfDeploy). Verbatim: ${C_ERR:-<none>}."
+            exit 1
+          fi
+          if [ "$C_OK" = "true" ]; then echo "Child app ${C_NS}:${C_NAME} on canonical main (fresh lastSelfDeploy, at ${C_AT})."; C_LANDED="yes"; break; fi
+        fi
+        echo "  ...child refresh in progress (lsd.appId=${C_APP:-?} at=${C_AT:-?}/${C_PRE_AT}); waiting for a fresh lastSelfDeploy..."
+      done
+      if [ -z "$C_LANDED" ]; then
+        echo "::error::e2e HALT: canonical-main child deploy (${C_NS}:${C_NAME}) did not confirm within 300s. Refusing to arm a partial-main baseline."
+        exit 1
+      fi
+    done <<< "$MAIN_CHILD_RECS"
+
     mcp_tool_call_text "hub_write_file (record deployed-main sha)" \
       "$(jq -nc --arg fn "$MAIN_SHA_FILE" --arg c "$MAIN_SHA" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:$c,confirm:true}}}')" >/dev/null \
       || echo "::warning::could not record the deployed-main SHA; next run will re-evaluate by length/sha. Continuing."
