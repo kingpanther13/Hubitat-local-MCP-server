@@ -50,19 +50,29 @@ fi
 
 OK=$(echo "$TEXT" | jq -r '.success // false')
 DRY=$(echo "$TEXT" | jq -r '.dryRun // false')
-APP_CLASS=$(echo "$TEXT" | jq -r '.appClassId // empty')
+# Issue #250 output shape: plannedBundles[] + plannedApps[] (the self app carries isSelf=true);
+# the old registry tool's appClassId / plannedLibraries are gone.
+SELF_CLASS=$(echo "$TEXT" | jq -r 'first(.plannedApps[]? | select(.isSelf == true) | .classId) // empty')
 N_INCLUDES=$(echo "$TEXT" | jq -r '(.includes // []) | length')
-N_PLANNED=$(echo "$TEXT" | jq -r '(.plannedLibraries // []) | length')
-echo "Tool response: success=$OK dryRun=$DRY appClassId=$APP_CLASS includes=$N_INCLUDES plannedLibraries=$N_PLANNED abortReason=$(echo "$TEXT" | jq -r '.abortReason // "none"')"
+N_BUNDLES=$(echo "$TEXT" | jq -r '(.plannedBundles // []) | length')
+N_APPS=$(echo "$TEXT" | jq -r '(.plannedApps // []) | length')
+echo "Tool response: success=$OK dryRun=$DRY selfAppClass=$SELF_CLASS includes=$N_INCLUDES plannedBundles=$N_BUNDLES plannedApps=$N_APPS abortReason=$(echo "$TEXT" | jq -r '.abortReason // "none"')"
 
 if [ "$OK" != "true" ] || [ "$DRY" != "true" ]; then
   echo "::error::hub_update_package dryRun did not succeed: $(echo "$TEXT" | jq -c '{success,dryRun,aborted,abortReason,error}')"
   exit 1
 fi
 
-if [ -z "$APP_CLASS" ] || [ "$APP_CLASS" = "null" ]; then
-  echo "::error::hub_update_package dryRun succeeded but did not resolve the self app-class id"
+if [ -z "$SELF_CLASS" ] || [ "$SELF_CLASS" = "null" ]; then
+  echo "::error::hub_update_package dryRun succeeded but plannedApps carried no self app (isSelf=true) with a class id: $(echo "$TEXT" | jq -c '.plannedApps')"
   exit 1
 fi
 
-echo "hub_update_package dryRun validated: tool present, source fetched/parsed, self app-class ${APP_CLASS} resolved."
+# The PR app #includes libraries, so the full-repair plan MUST carry a bundle to deliver them
+# (issue #250 -- the registry-free, bundle-based deploy). 0 bundles with >0 #includes is a regression.
+if [ "$N_INCLUDES" -gt 0 ] && [ "$N_BUNDLES" -lt 1 ]; then
+  echo "::error::hub_update_package dryRun planned $N_INCLUDES #include(s) but 0 bundles -- the bundle that delivers them is missing from the plan"
+  exit 1
+fi
+
+echo "hub_update_package dryRun validated: tool present, manifest fetched, ${N_BUNDLES} bundle(s) + ${N_APPS} app(s) planned, self app-class ${SELF_CLASS} resolved (deployed last)."

@@ -573,38 +573,27 @@ def test_check_tool_guide_pointers_8space_indent_required(monkeypatch, tmp_path)
 
 # ---------------------------------------------------------------------------
 # check_include_library_lockstep — #include <-> library file <-> build-bundle
-# LIBS <-> getPackageLibraryRegistry() lockstep (issue #209)
+# LIBS lockstep (issues #209/#250)
 # ---------------------------------------------------------------------------
 # This check is the safety net that keeps the modularization shippable: every
-# `#include mcp.X` in the app must have (1) a libraries/*.groovy declaring it,
-# (2) a tools/build-bundle.py LIBS entry (so the HPM bundle delivers it), and
-# (3) a getPackageLibraryRegistry() entry (so hub_update_package doesn't abort).
-# A gap means the app won't compile on a user's hub. These hermetic tmp_path
-# corpora exercise the clean path and each of the three failure branches via
-# the REAL check, so a regex typo or path bug can't silently no-op in CI.
+# `#include mcp.X` in the app must have (1) a libraries/*.groovy declaring it and
+# (2) a tools/build-bundle.py LIBS entry (so the HPM bundle delivers it -- the sole
+# delivery path, and what hub_update_package's full-repair deploy installs). A gap
+# means the app won't compile on a user's hub. These hermetic tmp_path corpora
+# exercise the clean path and each failure branch via the REAL check, so a regex
+# typo or path bug can't silently no-op in CI.
 
-def _write_lockstep_repo(tmp_path, *, includes, libraries, libs, registry):
-    """Lay down the four lockstep sources under tmp_path and point REPO_ROOT at it.
+def _write_lockstep_repo(tmp_path, *, includes, libraries, libs):
+    """Lay down the three lockstep sources under tmp_path and point REPO_ROOT at it.
 
     includes  -- list of (ns, name) -> one `#include ns.name` line in the app
     libraries -- list of (filename, ns, name) -> one libraries/<filename> with a
                  matching library(name:.., namespace:..) declaration
     libs      -- list of names -> one `{NAMESPACE}.<name>.groovy` LIBS dest in
                  tools/build-bundle.py (the regex the check scans for)
-    registry  -- list of "ns.Name" tokens -> keys in getPackageLibraryRegistry()
     """
     include_lines = "\n".join(f"#include {ns}.{name}" for ns, name in includes)
-    registry_entries = "\n".join(f'        "{key}": "url{i}",'
-                                 for i, key in enumerate(registry))
-    server = (
-        f"{include_lines}\n\n"
-        "def getPackageLibraryRegistry() {\n"
-        "    return [\n"
-        f"{registry_entries}\n"
-        "    ]\n"
-        "}\n"
-    )
-    (tmp_path / "hubitat-mcp-server.groovy").write_text(server)
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(include_lines + "\n")
 
     lib_dir = tmp_path / "libraries"
     lib_dir.mkdir()
@@ -623,17 +612,16 @@ def _write_lockstep_repo(tmp_path, *, includes, libraries, libs, registry):
     )
 
 
-# A complete, in-lockstep quartet for one library.
+# A complete, in-lockstep trio for one library.
 _LOCKSTEP_OK = {
     "includes": [("mcp", "McpFooLib")],
     "libraries": [("mcp-foo-lib.groovy", "mcp", "McpFooLib")],
     "libs": ["McpFooLib"],
-    "registry": ["mcp.McpFooLib"],
 }
 
 
-def test_lockstep_complete_quartet_clean(monkeypatch, tmp_path):
-    """All four sources agree -> zero findings."""
+def test_lockstep_complete_trio_clean(monkeypatch, tmp_path):
+    """All three sources agree -> zero findings."""
     _write_lockstep_repo(tmp_path, **_LOCKSTEP_OK)
     monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
     assert sl.check_include_library_lockstep() == []
@@ -654,44 +642,20 @@ def test_lockstep_missing_library_file_flagged(monkeypatch, tmp_path):
 
 def test_lockstep_missing_libs_entry_flagged(monkeypatch, tmp_path):
     """Library present but absent from build-bundle.py LIBS -> the bundle won't
-    deliver it; flagged with the LIBS-specific message."""
+    deliver it; flagged with the LIBS-specific message (and nothing else)."""
     _write_lockstep_repo(tmp_path, **{**_LOCKSTEP_OK, "libs": []})
     monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
     findings = sl.check_include_library_lockstep()
     libs_findings = [f for f in findings if "tools/build-bundle.py LIBS" in f["message"]]
     assert libs_findings, f"expected a LIBS finding, got: {findings}"
     assert libs_findings[0]["rule"] == "INCLUDE_LOCKSTEP"
-
-
-def test_lockstep_missing_registry_entry_flagged(monkeypatch, tmp_path):
-    """Library present but absent from getPackageLibraryRegistry() ->
-    hub_update_package would abort; flagged with the registry-specific message."""
-    _write_lockstep_repo(tmp_path, **{**_LOCKSTEP_OK, "registry": []})
-    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
-    findings = sl.check_include_library_lockstep()
-    reg_findings = [f for f in findings if "getPackageLibraryRegistry()" in f["message"]]
-    assert reg_findings, f"expected a registry finding, got: {findings}"
-    assert reg_findings[0]["rule"] == "INCLUDE_LOCKSTEP"
-
-
-def test_lockstep_both_legs_missing_reports_both(monkeypatch, tmp_path):
-    """When the library file IS present but BOTH the LIBS and registry legs are
-    missing, the check reports both (it only short-circuits on a missing file)."""
-    _write_lockstep_repo(tmp_path, **{**_LOCKSTEP_OK, "libs": [], "registry": []})
-    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
-    findings = sl.check_include_library_lockstep()
-    msgs = " ".join(f["message"] for f in findings)
-    assert "tools/build-bundle.py LIBS" in msgs
-    assert "getPackageLibraryRegistry()" in msgs
-    assert len(findings) == 2, f"expected exactly two findings, got: {findings}"
+    assert len(findings) == 1, f"expected exactly one finding, got: {findings}"
 
 
 def test_lockstep_no_includes_is_clean(monkeypatch, tmp_path):
     """An app with no #include lines -> early return, zero findings (even with
     no libraries/ dir or build-bundle.py)."""
-    (tmp_path / "hubitat-mcp-server.groovy").write_text(
-        "def getPackageLibraryRegistry() {\n    return [:]\n}\n"
-    )
+    (tmp_path / "hubitat-mcp-server.groovy").write_text("def foo() { return 1 }\n")
     monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
     assert sl.check_include_library_lockstep() == []
 
@@ -704,9 +668,9 @@ def test_lockstep_missing_server_file_is_clean(monkeypatch, tmp_path):
 
 
 def test_lockstep_real_source_clean():
-    """The real shipped repo must satisfy the lockstep in all three legs. Guards
-    against a future PR adding an #include without the library file / LIBS entry /
-    registry entry (the exact 'app won't compile on a user's hub' regression)."""
+    """The real shipped repo must satisfy the lockstep in both legs. Guards against
+    a future PR adding an #include without the library file / LIBS entry (the exact
+    'app won't compile on a user's hub' regression)."""
     findings = sl.check_include_library_lockstep()
     assert findings == [], (
         "INCLUDE_LOCKSTEP violation(s) in the shipped source:\n  "
@@ -729,3 +693,84 @@ def test_lockstep_duplicate_library_declaration_flagged(monkeypatch, tmp_path):
     dups = [f for f in findings if "Duplicate library declaration" in f["message"]]
     assert dups, f"expected a duplicate-declaration finding, got: {findings}"
     assert "McpFooLib" in dups[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# _extract_canonical_counts dev_only_top_level partition (issue #250)
+# ---------------------------------------------------------------------------
+# core = total - proxied - dev_only_top_level. A Developer-Mode-only TOP-LEVEL tool
+# (in getDeveloperModeOnlyToolNames(), NOT behind a gateway) is hidden from the default
+# tools/list, so it's excluded from `core`/`tools_list` but still counted in `total`.
+# This is the arithmetic that replaced the deleted registry-leg lockstep tests; the
+# registry tests were direct, so the new partition gets a direct test too.
+
+_CANON_GATEWAY = (
+    "def getGatewayConfig() {\n"
+    "    return [\n"
+    "        hub_read_things: [\n"
+    '            description: "read things",\n'
+    '            tools: ["hub_get_thing", "hub_list_things"]\n'
+    "        ]\n"
+    "    ]\n"
+    "}\n"
+)
+
+
+def _canon_defs(*names):
+    # Tool defs with `name:` on its OWN line, matching the real source the extractor scans.
+    body = ",\n".join(f'        [\n            name: "{n}"\n        ]' for n in names)
+    return f"def _getAllToolDefinitions_part1() {{\n    return [\n{body}\n    ]\n}}\n"
+
+
+def test_extract_canonical_counts_excludes_dev_only_top_level(monkeypatch, tmp_path):
+    """A dev-only top-level tool counts in total but is subtracted from core/tools_list."""
+    src = (
+        _CANON_GATEWAY
+        + _canon_defs("hub_get_thing", "hub_list_things", "hub_top_level_a", "hub_dev_tool")
+        + 'def getDeveloperModeOnlyToolNames() {\n    return ["hub_dev_tool"] as Set\n}\n'
+    )
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(src)
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    c = sl._extract_canonical_counts()
+    assert c is not None
+    assert c["total"] == 4              # every name, dev tool included
+    assert c["proxied"] == 2            # hub_get_thing, hub_list_things
+    assert c["dev_only_top_level"] == 1  # hub_dev_tool (dev-only, not proxied)
+    assert c["core"] == 1              # 4 - 2 - 1 = hub_top_level_a only
+    assert c["gateways"] == 1
+    assert c["tools_list"] == 2        # core + gateways
+    # The self-test invariant must hold on this synthetic source too.
+    assert c["core"] + c["proxied"] + c["dev_only_top_level"] == c["total"]
+
+
+def test_extract_canonical_counts_no_dev_only_tool(monkeypatch, tmp_path):
+    """With an empty getDeveloperModeOnlyToolNames(), dev_only_top_level is 0 and core = total - proxied."""
+    src = (
+        _CANON_GATEWAY.replace('"hub_get_thing", "hub_list_things"', '"hub_get_thing"')
+        + _canon_defs("hub_get_thing", "hub_top_level_a")
+        + "def getDeveloperModeOnlyToolNames() {\n    return [] as Set\n}\n"
+    )
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(src)
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    c = sl._extract_canonical_counts()
+    assert c is not None
+    assert c["dev_only_top_level"] == 0
+    assert c["total"] == 2
+    assert c["proxied"] == 1
+    assert c["core"] == 1              # 2 - 1 - 0
+
+
+def test_extract_canonical_counts_dev_only_name_with_digits(monkeypatch, tmp_path):
+    """Gemini #261: the dev-only name regex must capture digit-containing names (e.g. hub_tool_v2)."""
+    src = (
+        _CANON_GATEWAY
+        + _canon_defs("hub_get_thing", "hub_list_things", "hub_tool_v2")
+        + 'def getDeveloperModeOnlyToolNames() {\n    return ["hub_tool_v2"] as Set\n}\n'
+    )
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(src)
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    c = sl._extract_canonical_counts()
+    assert c is not None
+    assert c["total"] == 3
+    assert c["dev_only_top_level"] == 1  # hub_tool_v2 matched despite the digit
+    assert c["core"] == 0              # 3 - 2 - 1

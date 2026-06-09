@@ -2,12 +2,13 @@
 # Arm the standing "E2E Dead-Man Watchdog v2" for THIS run (issue #243 install fix + e2e safety net).
 #
 # v2 is a STANDALONE on-hub app that doubles as a small MCP server: its dead-man timer auto-restores
-# the WHOLE MCP package (the MCP Rule Server app + every library it #includes) from a known-good File
-# Manager cache if an e2e session bricks the hub and can't disarm. This script (1) ensures the v2
-# watchdog is installed AND has a live runEvery1Minute schedule, (2) BACKS UP main by reading the
-# app class + each #include'd library through the WATCHDOG's own hub_get_source (whose File-Manager
-# auto-save side effect writes the cache files), assembling the restore manifest, (3) asserts the app
-# cache is real (>1MB) -- if main is not cached, e2e HALTS -- then (4) writes the manifest-shaped
+# the WHOLE MCP package (the MCP Rule Server app + the child MCP Rule app + every library the server
+# #includes) from a known-good File Manager cache if an e2e session bricks the hub and can't disarm.
+# Full HPM repair redeploys EVERY manifest app, so the cache must include the child app too. This script
+# (1) ensures the v2 watchdog is installed AND has a live runEvery1Minute schedule, (2) BACKS UP main by
+# reading each app class + each #include'd library through the WATCHDOG's own hub_get_source (whose
+# File-Manager auto-save side effect writes the cache files), assembling the restore manifest, (3) asserts
+# the server-app cache is real (>1MB) -- if main is not cached, e2e HALTS -- then (4) writes the manifest-shaped
 # armed flag with the ARM_WINDOW_MS deadline (35 min). The matching "Disarm dead-man watchdog (final)"
 # always() step flips it to {armed:false, intent:"disarm"}; if a run crashes before that, the watchdog
 # fires and restores the package on its own.
@@ -147,8 +148,10 @@ fi
 # BUNDLE (from main's packageManifest.json at MAIN_SHA) so the #include'd libraries are refreshed to
 # canonical main too -- not just the app. That closes the stale-library gap: a main change touching only
 # a library is caught (the app would otherwise recompile against stale libs on a coupled change), and the
-# cache taken below is the whole canonical-main package. The APP is then redeployed only when it drifted
-# (the 1.6MB redeploy stays gated on the length+SHA check). MAIN_* absent (older workflow) -> skip.
+# cache taken below is the whole canonical-main package. The server APP is then redeployed when it drifted
+# (the 1.6MB redeploy stays gated on the length+SHA check), and the CHILD app(s) are refreshed alongside it
+# -- full repair: EVERY manifest app must track canonical main, not just the server, so the cache can never
+# capture a stale child. MAIN_* absent (older workflow) -> skip.
 MAIN_SHA_FILE="mcp-main-deployed-sha.txt"
 # main's BUNDLE set (namespace+name as the hub registers them) for the restore-time orphan cleanup + the
 # disarm no-stale assertion. Derived from each main bundle .zip's own install.txt (line 1 = namespace,
@@ -226,6 +229,12 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
   STORED_MAIN_SHA=$(mcp_tool_call_text "hub_read_file (last deployed-main sha)" \
     "$(jq -nc --arg fn "$MAIN_SHA_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')" \
     | jq -r '.content // ""' 2>/dev/null | tr -d '[:space:]' || true)
+  # Fast-path skip is parent-only (server length + SHA marker), yet it skips the CHILD refresh too. That
+  # is sound because the SHA marker is a WHOLE-PACKAGE token: it is written (line below) only AFTER both
+  # the parent AND every child refreshed this run, and the deploy clears it before PR code lands. So a
+  # marker that still matches main means the whole package (parent + child) is canonical main -- the child
+  # cannot have drifted under a matching marker in normal flow (the disarm restores every manifest app and
+  # only re-stamps on a confirmed full restore).
   if [ "$LIVE_MAIN_LEN" = "$MAIN_CHARS" ] && [ "$STORED_MAIN_SHA" = "$MAIN_SHA" ]; then
     echo "Hub already on canonical main (length ${LIVE_MAIN_LEN}, sha ${MAIN_SHA:0:12}) -- no download needed."
   else
@@ -267,6 +276,81 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
       echo "::error::e2e HALT: canonical main deploy did not confirm within 420s (no fresh lastSelfDeploy success for class $CLASS_ID). Refusing to arm against a non-canonical baseline."
       exit 1
     fi
+
+    # Refresh the CHILD app(s) to canonical main too -- full repair: every manifest app must track main,
+    # not just the server parent, or the cache below would capture a stale child. Deploy each non-server
+    # app from main's manifest (the hub fetches via importUrl, the same path as the parent), confirmed via
+    # a FRESH lastSelfDeploy for THAT app's class (the watchdog records the appId it deployed). The child is
+    # ~179KB so it usually returns in the relay window, but we tolerate a dropped response and poll, exactly
+    # like the parent. HALT (do NOT record the main SHA) if any child can't be confirmed, so the next run
+    # re-evaluates the whole refresh rather than caching a partial-main baseline.
+    MAIN_CHILD_RECS=$(printf '%s' "$MAIN_PKG_MANIFEST" | jq -r \
+      '.apps[]? | select(.namespace == "mcp" and .name != "MCP Rule Server") | "\(.namespace)\t\(.name)\t\(.location)"' 2>/dev/null || true)
+    # The package ships a child app (mcp:MCP Rule), so 0 non-server mcp apps means the filter/manifest
+    # drifted. Without this floor the loop body would be skipped, the SHA marker stamped below, and the
+    # NEXT run would skip the refresh entirely on the stale marker -- silently caching a stale child. The
+    # 3e backup section hard-fails the same way; keep the two in lockstep. (Mirrors that strictness.)
+    if [ -z "$MAIN_CHILD_RECS" ]; then
+      echo "::error::e2e HALT: main's packageManifest.json declared no non-server mcp app to refresh, but the package ships a child app (mcp:MCP Rule). Filter/manifest drift -- refusing to stamp the canonical-main SHA marker against a server-only refresh."
+      exit 1
+    fi
+    while IFS=$'\t' read -r C_NS C_NAME C_LOC; do
+      [ -z "$C_NS" ] && continue
+      if [ -z "$C_LOC" ] || [ "$C_LOC" = "null" ]; then
+        echo "::error::e2e HALT: main manifest app ${C_NS}:${C_NAME} has no usable location -- cannot refresh it to canonical main. Refusing to arm a partial-main baseline."
+        exit 1
+      fi
+      C_REL=$(printf '%s' "$C_LOC" | sed -E 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+/##')
+      C_URL="${MAIN_RAW_PREFIX}/${C_REL}"
+      C_ID=$(printf '%s' "$LIST_TEXT" | jq -r --arg ns "$C_NS" --arg name "$C_NAME" \
+        '.apps[]? | select(.namespace == $ns and .name == $name) | .id' | head -n1)
+      if [ -z "$C_ID" ] || [ "$C_ID" = "null" ]; then
+        echo "::error::e2e HALT: canonical-main refresh needs the Apps Code class for child ${C_NS}:${C_NAME} but it was not found via hub_list_apps. Refusing to arm a partial-main baseline."
+        exit 1
+      fi
+      echo "Refreshing child app ${C_NS}:${C_NAME} (class ${C_ID}) to canonical main: ${C_URL} ..."
+      if ! C_PRE_INFO=$(mcp_tool_call_text "hub_get_info (child-refresh baseline)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}'); then
+        echo "::error::e2e HALT: could not read hub_get_info to baseline the child refresh (${C_NS}:${C_NAME}). Re-run."
+        exit 1
+      fi
+      C_PRE_AT=$(printf '%s' "$C_PRE_INFO" | jq -r '(.lastSelfDeploy.at // 0) | floor' 2>/dev/null || echo 0)
+      C_DEP_RPC=$(jq -nc --arg id "$C_ID" --arg url "$C_URL" \
+        '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_update_app",arguments:{appId:$id,importUrl:$url,confirm:true}}}')
+      # The child app is small (~179KB) and the deploy goes through the WATCHDOG (a separate app that is
+      # NOT recompiled by the child's save), so it usually returns SYNCHRONOUSLY. Capture that response: a
+      # synchronous success:false carries the hub's verbatim compile error -- surface it NOW instead of
+      # discarding it and re-deriving a generic failure from the poll (or a 300s timeout). A relay-dropped
+      # (empty) response falls through to the fresh-lastSelfDeploy poll below.
+      C_DEP_RESP=$(mcp_call "$C_DEP_RPC" 2>/dev/null || true)
+      C_DEP_TEXT=$(printf '%s' "$C_DEP_RESP" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
+      if [ -n "$C_DEP_TEXT" ] && [ "$(printf '%s' "$C_DEP_TEXT" | jq -r '.success // "unknown"' 2>/dev/null || echo unknown)" = "false" ]; then
+        echo "::error::e2e HALT: canonical-main child deploy (${C_NS}:${C_NAME}) REJECTED synchronously by the hub. Verbatim: $(printf '%s' "$C_DEP_TEXT" | jq -r '.error // .errorMessage // .message // "<none>"' 2>/dev/null || echo '<none>')."
+        exit 1
+      fi
+      C_LANDED=""
+      C_DEADLINE=$(( $(date +%s) + 300 ))
+      while [ "$(date +%s)" -lt "$C_DEADLINE" ]; do
+        sleep 5
+        C_INFO=$(mcp_tool_call_text "hub_get_info (child-refresh poll)" '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' || true)
+        C_APP=$(printf '%s' "$C_INFO" | jq -r '.lastSelfDeploy.appId // empty' 2>/dev/null || true)
+        C_AT=$(printf '%s' "$C_INFO" | jq -r '(.lastSelfDeploy.at // 0) | floor' 2>/dev/null || echo 0)
+        C_OK=$(printf '%s' "$C_INFO" | jq -r '.lastSelfDeploy.success // empty' 2>/dev/null || true)
+        C_ERR=$(printf '%s' "$C_INFO" | jq -r '.lastSelfDeploy.error // empty' 2>/dev/null || true)
+        if [ "$C_APP" = "$C_ID" ] && [ "${C_AT:-0}" -gt "${C_PRE_AT:-0}" ] 2>/dev/null; then
+          if [ "$C_OK" = "false" ]; then
+            echo "::error::e2e HALT: canonical-main child deploy (${C_NS}:${C_NAME}) REJECTED by the hub (fresh lastSelfDeploy). Verbatim: ${C_ERR:-<none>}."
+            exit 1
+          fi
+          if [ "$C_OK" = "true" ]; then echo "Child app ${C_NS}:${C_NAME} on canonical main (fresh lastSelfDeploy, at ${C_AT})."; C_LANDED="yes"; break; fi
+        fi
+        echo "  ...child refresh in progress (lsd.appId=${C_APP:-?} at=${C_AT:-?}/${C_PRE_AT}); waiting for a fresh lastSelfDeploy..."
+      done
+      if [ -z "$C_LANDED" ]; then
+        echo "::error::e2e HALT: canonical-main child deploy (${C_NS}:${C_NAME}) did not confirm within 300s. Refusing to arm a partial-main baseline."
+        exit 1
+      fi
+    done <<< "$MAIN_CHILD_RECS"
+
     mcp_tool_call_text "hub_write_file (record deployed-main sha)" \
       "$(jq -nc --arg fn "$MAIN_SHA_FILE" --arg c "$MAIN_SHA" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:$c,confirm:true}}}')" >/dev/null \
       || echo "::warning::could not record the deployed-main SHA; next run will re-evaluate by length/sha. Continuing."
@@ -421,17 +505,68 @@ for TOKEN in "${INCLUDE_TOKENS[@]:-}"; do
     '$acc + [{id:$id, file:$file, namespace:$ns, name:$name}]')
 done
 
-# Assemble the restore manifest: {app:{classId,file}, libraries:[{id,file,namespace,name}],
-# bundles:[{namespace,name}]} -- the exact shape restorePackage() reads (drop the PR's stale bundle,
-# restore libraries first, app last, drop the PR's stale libraries; namespace/name let it re-resolve a
-# library id the deploy changed via delete+recreate, and identify main's bundles vs the PR's).
+# 3e) Back up the CHILD app (mcp:MCP Rule). Full HPM repair redeploys EVERY manifest app, so the restore
+# must cache + restore the child too -- otherwise a PR that changes the child app would leave the PR's
+# child live on the hub after the run (an incomplete restore). Resolve its class id from the same
+# hub_list_apps response, cache it (the child is >64KB so hub_get_source auto-saves the full body), and
+# assert the cache landed. HALT if it can't be cached: arming without it means an unrestorable child app.
+CHILD_NAMESPACE="mcp"
+CHILD_NAME="MCP Rule"
+CHILD_CLASS_ID=$(echo "$LIST_TEXT" | jq -r --arg ns "$CHILD_NAMESPACE" --arg name "$CHILD_NAME" \
+  '.apps[]? | select(.namespace == $ns and .name == $name) | .id' | head -n1)
+if [ -z "$CHILD_CLASS_ID" ] || [ "$CHILD_CLASS_ID" = "null" ]; then
+  echo "::error::e2e HALT: child Apps Code class for $CHILD_NAMESPACE:$CHILD_NAME not found via hub_list_apps -- full repair redeploys it, so it must be cached to restore. Refusing to arm."
+  exit 1
+fi
+CHILD_RESTORE_FILE="mcp-source-app-${CHILD_CLASS_ID}.groovy"
+echo "Backing up the child app $CHILD_NAMESPACE:$CHILD_NAME (id=$CHILD_CLASS_ID): watchdog hub_get_source(type=app, id=$CHILD_CLASS_ID)..."
+CHILD_SRC_RPC=$(jq -nc --arg id "$CHILD_CLASS_ID" \
+  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"app",id:$id,offset:0,length:65000}}}')
+if ! CHILD_SRC_TEXT=$(mcp_tool_call_text "hub_get_source (backup child app)" "$CHILD_SRC_RPC"); then
+  echo "::error::hub_get_source(app $CHILD_CLASS_ID) returned non-JSON $RPC_ATTEMPTS times -- could not back up the child app. Re-run the job."
+  exit 1
+fi
+CHILD_SRC_OK=$(echo "$CHILD_SRC_TEXT" | jq -r '.success // false')
+CHILD_SRC_FILE=$(echo "$CHILD_SRC_TEXT" | jq -r '.sourceFile // empty')
+if [ "$CHILD_SRC_OK" != "true" ] || [ "$CHILD_SRC_FILE" != "$CHILD_RESTORE_FILE" ]; then
+  echo "::error::e2e HALT: hub_get_source(app $CHILD_CLASS_ID) did not write the expected child cache (success=$CHILD_SRC_OK sourceFile=$CHILD_SRC_FILE, expected $CHILD_RESTORE_FILE). Response: $(printf '%s' "$CHILD_SRC_TEXT" | head -c 600)"
+  exit 1
+fi
+# Assert the child cache is real (>1000 chars). The child app is ~179KB, far above this floor; it is not
+# the >1MB brick-critical server parent, so this gate is a sanity floor, not the dead-man HALT gate.
+READ_CHILD_RPC=$(jq -nc --arg fn "$CHILD_RESTORE_FILE" \
+  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')
+if ! CHILD_BACKUP_TEXT=$(mcp_tool_call_text "hub_read_file (child app backup existence check)" "$READ_CHILD_RPC"); then
+  echo "::error::hub_read_file('$CHILD_RESTORE_FILE') returned non-JSON $RPC_ATTEMPTS times -- transient relay/timeout. Re-run the job."
+  exit 1
+fi
+CHILD_BACKUP_LEN=$(echo "$CHILD_BACKUP_TEXT" | jq -r '.totalLength // 0')
+if ! [ "$CHILD_BACKUP_LEN" -gt 1000 ] 2>/dev/null; then
+  echo "::error::e2e HALT: child app backup '$CHILD_RESTORE_FILE' is missing or too small (totalLength=$CHILD_BACKUP_LEN, need >1000). Refusing to arm against an unrestorable child app."
+  exit 1
+fi
+echo "Child app backup '$CHILD_RESTORE_FILE' present (totalLength=$CHILD_BACKUP_LEN bytes)."
+
+# Assemble the restore manifest: {app:{classId,file}, apps:[{classId,file},...],
+# libraries:[{id,file,namespace,name}], bundles:[{namespace,name}]} -- the exact shape restorePackage()
+# reads (drop the PR's stale bundle, restore libraries first, then EVERY app in `apps`, drop the PR's
+# stale libraries; namespace/name let it re-resolve a library id the deploy changed via delete+recreate,
+# and identify main's bundles vs the PR's). `apps` lists the server parent + the child app (full repair
+# redeploys both, so both must restore); the singular `app` is kept for the flag-readback assertion and
+# back-compat -- restorePackage prefers `apps` when present.
 MANIFEST_JSON=$(jq -nc \
   --arg classId "$CLASS_ID" \
   --arg appFile "$APP_RESTORE_FILE" \
   --arg mainChars "$APP_BACKUP_LEN" \
+  --arg childClassId "$CHILD_CLASS_ID" \
+  --arg childFile "$CHILD_RESTORE_FILE" \
+  --arg childChars "$CHILD_BACKUP_LEN" \
   --argjson libs "$LIB_MANIFEST_JSON" \
   --argjson bundles "${MAIN_BUNDLES_JSON:-[]}" \
-  '{app:{classId:$classId, file:$appFile, mainChars:$mainChars}, libraries:$libs, bundles:$bundles}')
+  '{app:{classId:$classId, file:$appFile, mainChars:$mainChars},
+    apps:[{classId:$classId, file:$appFile, mainChars:$mainChars},
+          {classId:$childClassId, file:$childFile, mainChars:$childChars}],
+    libraries:$libs, bundles:$bundles}')
 echo "Assembled restore manifest: $MANIFEST_JSON"
 
 # --- 4) Write the manifest-shaped armed flag, then READ IT BACK and assert ------------------------
