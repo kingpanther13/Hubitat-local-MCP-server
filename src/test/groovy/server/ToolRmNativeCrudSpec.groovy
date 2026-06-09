@@ -273,7 +273,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def id = script._discoverParentAppId("button_controller")
 
         then: "the sysApp Add-Built-In-App endpoint was hit with the URL-encoded parent name"
-        rawCalls.any { it == "/installedapp/sysApp/Button%20Controllers" }
+        rawCalls.any { it == "/installedapp/sysApp/Button Controllers" }
 
         and: "the parent is re-discovered by type and returned -- no commit needed (already installed)"
         id == 88

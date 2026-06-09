@@ -16561,7 +16561,11 @@ private Integer _discoverParentAppId(String appType) {
         // by type. Only fires when the parent is absent (never duplicates a singleton).
         // Falls back to parsing the new id from the response + a Done commit for firmware
         // that lists the parent only once the install commits.
-        def sysAppPath = "/installedapp/sysApp/" + URLEncoder.encode(parentTypeName, "UTF-8").replace("+", "%20")
+        // Pass the display name with LITERAL spaces (no pre-encoding) -- the HTTP layer
+        // encodes the path, exactly like the createchild call does with "Basic Rule-1.0".
+        // Pre-encoding to %20 here makes the client double-encode it to %2520, which the
+        // hub decodes to the literal "%20" -> no app matches -> a 34-byte stub, no create.
+        def sysAppPath = "/installedapp/sysApp/" + parentTypeName
         mcpLog("info", "rm-native", "'${parentTypeName}' parent not installed -- bootstrapping via GET ${sysAppPath}")
         def created = null
         try {
