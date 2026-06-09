@@ -818,7 +818,7 @@ The right move when `partial: true` is to follow the `repairHints`, NOT to delet
 
 The `hub_manage_mcp` gateway exposes self-administration tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration without manual UI intervention. **Requires the opt-in `Enable Developer Mode Tools` toggle** in the MCP rule app settings page (default OFF). Each successful write is logged at WARN level for audit. If the user sees "Developer Mode tools are disabled" errors, direct them to enable the toggle in the MCP Rule Server app settings.
 
-### hub_manage_mcp (2 tools)
+### hub_manage_mcp (1 tool)
 
 - **`hub_update_mcp_settings`** — update one or more of the MCP rule app's own settings (toggles, log level, tuning params)
   - Args: `settings` (map of `{key: value}`), `confirm=true`
@@ -827,11 +827,15 @@ The `hub_manage_mcp` gateway exposes self-administration tools that let an LLM a
   - After changing any `enable*` toggle or `useGateways`, MCP clients (Claude Code, etc.) may need to reconnect to refresh the cached tool schema
   - Gated on: `enableDeveloperMode` + the Write master + `confirm=true` + a recent backup
 
-- **`hub_update_package`** — self-deploy the whole package (this app + every library it `#include`s) at a git `ref`, in one call (the libraries-aware counterpart to `hub_update_app(importUrl)`). For low-context dev/CI deploys during the issue #209 modularization.
+### hub_update_package (top-level, Developer Mode)
+
+`hub_update_package` is its own **top-level** tool (issue #250 pulled it out of the `hub_manage_mcp` gateway), surfaced on `tools/list` only when Developer Mode is on.
+
+- **`hub_update_package`** — full HPM-repair self-deploy of the whole package at a git `ref`, in one call: **OVERRIDES whatever is installed**, the same way Hubitat Package Manager's Repair does, but anchored to `packageManifest.json` AT the `ref` so an unmerged PR installs (HPM repair reads only the published manifest).
   - Args: `ref` (branch/tag/SHA), `dryRun?` (plan-only, no writes), `baseUrl?` (raw-source base override for forks/CI), `confirm=true` (real deploy only)
-  - Flow: fetch the app source at `ref` → parse its `#include mcp.<Name>` directives → install/update each referenced library from `libraries/<file>.groovy` (idempotent: update if present, else create) → **then** update the app. **Libraries first, app last.**
-  - **Brick-safe:** any failure before the app save (source fetch, an `#include` with no known library mapping, any library write or an unverified install) aborts **before** touching the app — the app is left exactly as-is and still updatable via `hub_update_app`, which is never modified and always available as the escape hatch.
-  - **Hidden from `tools/list` when Developer Mode is off** (not merely runtime-refused). Use `dryRun=true` to fetch + parse + plan with zero writes (no `confirm`/backup needed).
+  - Flow: fetch `packageManifest.json` at `ref` → install every declared library **bundle** first (the hub fetches + unpacks the `.zip`, overwriting libraries in place) → then deploy every declared **app**, the **self** app (`mcp`/`MCP Rule Server`) **last** so its recompile (which can drop the response, #237) is the final act. Deploys the parent app, the child app (`mcp`/`MCP Rule`), and the library bundle (each app's Apps Code class id is resolved at runtime by namespace+name).
+  - **Brick-safe:** any failure before the self app save (app/manifest fetch, an unresolved app class, a bundle install, a non-self app) aborts **before** touching the self app — the running server is left exactly as-is and still updatable via `hub_update_app`, which is never modified and always available as the escape hatch.
+  - **Hidden from `tools/list` when Developer Mode is off** (not merely runtime-refused). Use `dryRun=true` to fetch + parse + plan with zero writes (no `confirm`/backup needed) and see the bundles + apps that would deploy.
   - Gated on: `enableDeveloperMode` (hidden when off) + the Write master + `confirm=true` + a recent backup
 
 ### hub_manage_variables — `hub_delete_variable`

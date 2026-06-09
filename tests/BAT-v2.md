@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B 19-gateway read/write split (11 flat core + 19 gateways = 30 on tools/list, 91 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B 19-gateway read/write split (11 flat core + 19 gateways = 30 on tools/list, 94 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -650,17 +650,17 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Discovers `hub_read_apps_code` → `hub_list_libraries`.
 
-### T44b — Discover hub_update_package dry-run (hub_manage_mcp, Developer Mode)
+### T44b — Discover hub_update_package dry-run (top-level, Developer Mode)
 
-> Precondition: **Developer Mode ON**. `hub_update_package` is hidden from `tools/list` when Developer Mode is off, so with it off the agent should report the tool is unavailable. With it on, the dry run performs no writes.
+> Precondition: **Developer Mode ON**. `hub_update_package` is hidden from `tools/list` when Developer Mode is off, so with it off the agent should report the tool is unavailable. With it on it is a **top-level** tool (issue #250 pulled it out of the `hub_manage_mcp` gateway), and the dry run performs no writes.
 
 ```json
 {
-  "test_prompt": "Developer Mode is on. Without changing anything, do a dry-run package deploy of ref 'main' and tell me which libraries it would install and which app it would update."
+  "test_prompt": "Developer Mode is on. Without changing anything, do a dry-run package deploy of ref 'main' and tell me which bundles and apps it would deploy."
 }
 ```
 
-**Expected**: Discovers `hub_manage_mcp` → `hub_update_package` with `dryRun=true` (no `confirm` needed). Reports `success=true`, `dryRun=true`, the resolved `appClassId`, and the planned libraries (zero until a `#include` is added in the modularization work). No library or app write occurs.
+**Expected**: Discovers the top-level `hub_update_package` and calls it with `dryRun=true` (no `confirm` needed). Reports `success=true`, `dryRun=true`, the planned bundles (the library bundle) and planned apps (parent + child, the parent flagged as the self app, deployed last). No bundle or app write occurs.
 
 ### T45 — Discover hub_list_backups (hub_read_apps_code)
 
@@ -2364,7 +2364,7 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 11 |
 | Gateways on `tools/list` | 19 |
 | Total visible on `tools/list` | 30 |
-| Total distinct tools in codebase | 90 |
+| Total distinct tools in codebase | 94 |
 
 **7 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (4), `hub_read_variables` (3)
 
@@ -2374,7 +2374,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 ### Tool Coverage (non-destructive tools only)
 
-All 90 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 94 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -3739,7 +3739,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **11 flat core + 19 gateways (30 on tools/list, 90 total distinct tools)** post installed-apps + RM interop + native CRUD + hub_list_app_pages + poll_until_attribute + library management + HPM package state + the PR1B read/write gateway split (was 23 core + 13 gateways / 36 total / 103 tools before PR1B; 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
+1. **Architecture**: 18 core + 8 gateways (26 total) → **11 flat core + 19 gateways (30 on tools/list, 94 total distinct tools)** post installed-apps + RM interop + native CRUD + hub_list_app_pages + poll_until_attribute + library management + HPM package state + the PR1B read/write gateway split (was 23 core + 13 gateways / 36 total / 103 tools before PR1B; 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
 2. **Merged tools**: `enable_rule`/`disable_rule` → `hub_update_custom_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `hub_manage_virtual_device` (action enum)
 3. **Promoted to core**: `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `hub_manage_diagnostics`, other tools merged into `hub_get_info` (core) or promoted

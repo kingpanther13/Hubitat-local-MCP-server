@@ -765,7 +765,7 @@ def _extract_canonical_counts() -> dict | None:
     # total = len(list) > len(docs) and fires; the self-test cross-
     # checks list-len vs set-len. If we collapsed both into len(set),
     # duplicate-name regressions would be silent on both gates.
-    raw_name_list = re.findall(r"^\s*name:\s*['\"]([a-z_]+)['\"]", all_defs_text, re.MULTILINE)
+    raw_name_list = re.findall(r"^\s*name:\s*['\"]([a-z0-9_]+)['\"]", all_defs_text, re.MULTILINE)
     tool_names: set[str] = set(raw_name_list)
     total = len(raw_name_list)
 
@@ -774,7 +774,22 @@ def _extract_canonical_counts() -> dict | None:
     # reads are listed in both their mixed manage_ gateway and a read_ gateway),
     # so sum(per_gateway.values()) over-counts and would drive `core` negative.
     proxied = len(proxied_names)
-    core = total - proxied
+
+    # Developer-Mode-only tools (getDeveloperModeOnlyToolNames) are hidden from the DEFAULT
+    # tools/list -- they appear only with the dev toggle on. A dev-only TOP-LEVEL tool (one
+    # not proxied behind a gateway) is not part of the default advertised surface, so exclude
+    # it from `core`/`tools_list` for the default-catalog math -- the same way a gateway
+    # sub-tool is excluded. (Issue #250 moved hub_update_package out of the hub_manage_mcp
+    # gateway to exactly this: a dev-only top-level tool. It still counts in `total`.)
+    dev_only_names: set[str] = set()
+    dev_match = re.search(
+        r"def getDeveloperModeOnlyToolNames\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE
+    )
+    if dev_match:
+        dev_only_names = set(re.findall(r"['\"]([a-z0-9_]+)['\"]", dev_match.group(1)))
+    dev_only_top_level = dev_only_names - proxied_names
+
+    core = total - proxied - len(dev_only_top_level)
     gateways = len(per_gateway)
     tools_list = core + gateways
 
@@ -784,6 +799,9 @@ def _extract_canonical_counts() -> dict | None:
         "gateways": gateways,
         "tools_list": tools_list,
         "proxied": proxied,
+        # Dev-mode-only TOP-LEVEL tools, excluded from `core`/`tools_list` (default catalog):
+        # total == core + proxied + dev_only_top_level (see the self-test invariant).
+        "dev_only_top_level": len(dev_only_top_level),
         "per_gateway": per_gateway,
         # Name sets for tool-name consistency check (separate from counts):
         "tool_names": tool_names,           # all tool identifiers in getAllToolDefinitions()
@@ -874,6 +892,10 @@ COUNT_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bexposing\s+(\d+)\s+tools?\b", re.IGNORECASE), "total"),
     (re.compile(r"\bhas\s+(\d+)\s+tools?\s+total\b", re.IGNORECASE), "total"),
     (re.compile(r"\b(\d+)\s+MCP\s+tools?\b", re.IGNORECASE), "total"),
+    # "N (total) distinct (MCP) tools" — the word "distinct" between the number and
+    # "tools" defeats the "N tools" / "N MCP tools" / "N total" patterns above, so this
+    # class of total-count drift used to escape the lint (issue #250 review finding).
+    (re.compile(r"\b(\d+)\s+(?:total\s+)?distinct\s+(?:MCP\s+)?tools?\b", re.IGNORECASE), "total"),
     # "search across all N tools" / "for all N tools" — catalog references.
     (re.compile(r"\b(?:across|for|reference\s+for)\s+all\s+(\d+)\s+(?:MCP\s+)?tools?\b", re.IGNORECASE), "total"),
     # "All N tools are covered" — BAT test-coverage claim that tracks the
@@ -2517,6 +2539,11 @@ COUNT_SELF_TEST_CASES = [
         {"total": 102}, ["total"],
     ),
     (
+        "total in `N (total) distinct tools`",
+        "The codebase has 101 total distinct tools.",
+        {"total": 102}, ["total"],
+    ),
+    (
         "total in `N tool definitions`",
         "getAllToolDefinitions() returns all 101 tool definitions.",
         {"total": 102}, ["total"],
@@ -2868,7 +2895,7 @@ def _check_doc_against_canonical(content: str, canonical_override: dict) -> set[
     """
     real = _extract_canonical_counts() or {
         "total": 0, "core": 0, "gateways": 0, "tools_list": 0,
-        "proxied": 0, "per_gateway": {}, "tool_names": set(),
+        "proxied": 0, "dev_only_top_level": 0, "per_gateway": {}, "tool_names": set(),
         "gateway_names": set(), "proxied_names": set(),
     }
     canonical = dict(real)
@@ -3106,23 +3133,25 @@ def run_self_test() -> int:
         # multi-gateway membership (a read listed in both its hub_read_* and a
         # hub_manage_* gateway), the per-gateway sum DOUBLE-COUNTS those reads and
         # exceeds the DISTINCT proxied count. The canonical relationship is on the
-        # distinct count: total == core + distinct_proxied (and core is derived as
-        # total - distinct_proxied, so this also guards a future core-formula change).
+        # distinct count: total == core + distinct_proxied + dev_only_top_level. core is
+        # derived as total - distinct_proxied - dev_only_top_level (dev-mode-only top-level
+        # tools are excluded from the default-catalog `core`; issue #250), so this also guards
+        # a future core-formula change.
         sum_with_dups = sum(canonical["per_gateway"].values())
         if canonical["core"] < 0:
             failures += 1
             print(
                 f"SELF-TEST FAIL [tool-count extractor]\n"
                 f"  core {canonical['core']} is negative — distinct proxied "
-                f"({canonical['proxied']}) exceeds total ({canonical['total']}); "
-                "_extract_canonical_counts() is inconsistent."
+                f"({canonical['proxied']}) + dev-only top-level ({canonical['dev_only_top_level']}) "
+                f"exceeds total ({canonical['total']}); _extract_canonical_counts() is inconsistent."
             )
-        if canonical["core"] + canonical["proxied"] != canonical["total"]:
+        if canonical["core"] + canonical["proxied"] + canonical["dev_only_top_level"] != canonical["total"]:
             failures += 1
             print(
                 f"SELF-TEST FAIL [tool-count extractor]\n"
-                f"  core ({canonical['core']}) + distinct proxied "
-                f"({canonical['proxied']}) != total ({canonical['total']}) — "
+                f"  core ({canonical['core']}) + distinct proxied ({canonical['proxied']}) + "
+                f"dev-only top-level ({canonical['dev_only_top_level']}) != total ({canonical['total']}) — "
                 "internal inconsistency in _extract_canonical_counts()."
             )
         # Multi-membership means the per-gateway sum must be >= the distinct
@@ -3231,17 +3260,17 @@ def run_self_test() -> int:
 
 
 def check_include_library_lockstep() -> list[dict]:
-    """Every `#include mcp.X` in the app must stay in lockstep with its delivery (issue #209):
-    (1) a libraries/*.groovy whose library() declares (namespace=X.ns, name=X.name),
-    (2) a tools/build-bundle.py LIBS entry (else the HPM bundle won't deliver it), and
-    (3) a getPackageLibraryRegistry() entry (else hub_update_package aborts before deploy).
+    """Every `#include mcp.X` in the app must stay in lockstep with its delivery (issues #209/#250):
+    (1) a libraries/*.groovy whose library() declares (namespace=X.ns, name=X.name), and
+    (2) a tools/build-bundle.py LIBS entry (else the HPM bundle -- the sole delivery path, and
+        what hub_update_package's full-repair deploy installs -- won't deliver it).
 
     A gap means the library can't load on a user's hub, so the app's #include fails to compile.
     Catches it cheaply here (no hub) instead of at install/recompile time.
 
     Direction: this is #include -> delivery (every include must resolve). It does NOT flag an
-    orphan library/LIBS/registry entry with no #include (a stale-but-harmless entry). It DOES flag
-    two library files declaring the same (namespace, name), since a duplicate makes the hub's
+    orphan library/LIBS entry with no #include (a stale-but-harmless entry). It DOES flag two
+    library files declaring the same (namespace, name), since a duplicate makes the hub's
     #include bind ambiguously (only one of the two copies wins).
     """
     findings: list[dict] = []
@@ -3292,14 +3321,6 @@ def check_include_library_lockstep() -> list[dict]:
             re.findall(r"\{NAMESPACE\}\.(\w+)\.groovy", bb.read_text(encoding="utf-8", errors="replace"))
         )
 
-    # (3) getPackageLibraryRegistry() keys ("ns.Name").
-    reg_match = re.search(
-        r"def getPackageLibraryRegistry\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE
-    )
-    registry_keys: set[str] = set()
-    if reg_match:
-        registry_keys = set(re.findall(r'"([A-Za-z0-9_]+\.[A-Za-z0-9_]+)"\s*:', reg_match.group(1)))
-
     include_line: dict[str, int] = {}
     for i, line in enumerate(src.splitlines(), 1):
         m = re.match(r"^[ \t]*#include[ \t]+([A-Za-z0-9_]+\.[A-Za-z0-9_]+)", line)
@@ -3326,14 +3347,6 @@ def check_include_library_lockstep() -> list[dict]:
                     f"#include {token} ({declared[(ns, name)]}) is not in tools/build-bundle.py LIBS -- "
                     f"the HPM bundle won't deliver it, so the app fails to compile on a user's hub after "
                     f"update. Add it to LIBS and rebuild the bundle."
-                ),
-            })
-        if token not in registry_keys:
-            findings.append({
-                "file": rel, "line": ln, "severity": "error", "rule": "INCLUDE_LOCKSTEP", "source": "",
-                "message": (
-                    f"#include {token} is not in getPackageLibraryRegistry() -- hub_update_package would "
-                    f'abort before deploying. Add the "{token}" entry.'
                 ),
             })
     return findings
@@ -3387,9 +3400,9 @@ def main() -> int:
     # class, which mislabels the read as a write and hides it from the read path.
     all_findings.extend(check_read_write_split())
 
-    # Issue #209 lockstep: every #include'd library must have a libraries/ file + a build-bundle.py
-    # LIBS entry + a getPackageLibraryRegistry() entry, so a broken/undelivered library fails CI
-    # here instead of failing the app's compile on a user's hub.
+    # Issue #209/#250 lockstep: every #include'd library must have a libraries/ file + a
+    # build-bundle.py LIBS entry, so a broken/undelivered library fails CI here instead of
+    # failing the app's compile on a user's hub.
     all_findings.extend(check_include_library_lockstep())
 
     # Sort by file, then line
