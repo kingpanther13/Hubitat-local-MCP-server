@@ -4,15 +4,17 @@ import spock.lang.Unroll
 import support.ToolSpecBase
 
 /**
- * Pins the MCP `annotations.readOnlyHint` / `destructiveHint` contract emitted
- * by getToolDefinitions(). Claude.ai's connector UI groups a server's catalog
- * into Read vs Write blocks from readOnlyHint; entries missing the annotation
- * fall into a generic "Other tools" bucket. This spec ensures every entry
- * (base tools, gateway entries, flat-mode and gateway-mode) carries
- * readOnlyHint, that writes also carry destructiveHint=true (matching the
- * MCP spec default and the project's "writes are destructive" policy), and
- * that gateway aggregation rolls leaf labels up correctly (any write sub-tool
- * flips the gateway to write+destructive).
+ * Pins the four-hint MCP annotations contract emitted by getToolDefinitions()
+ * (issue #238): readOnlyHint + idempotentHint + openWorldHint on every entry,
+ * destructiveHint on every write. Claude.ai's connector UI groups a server's
+ * catalog into Read vs Write blocks from readOnlyHint; entries missing the
+ * annotation fall into a generic "Other tools" bucket. This spec ensures every
+ * entry (base tools, gateway entries, flat-mode and gateway-mode) carries the
+ * hints, that the positive classification sets (getIdempotentWriteToolNames,
+ * getOpenWorldToolNames) resolve to real tools, and that gateway aggregation
+ * rolls leaf hints up correctly (any write sub-tool flips the gateway to
+ * write+destructive; any non-idempotent sub-tool flips it non-idempotent; any
+ * open-world sub-tool flips it open-world).
  */
 class McpToolAnnotationsSpec extends ToolSpecBase {
 
@@ -29,7 +31,9 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         !tools.isEmpty()
         tools.every {
             it.annotations instanceof Map &&
-            it.annotations.readOnlyHint instanceof Boolean
+            it.annotations.readOnlyHint instanceof Boolean &&
+            it.annotations.idempotentHint instanceof Boolean &&
+            it.annotations.openWorldHint instanceof Boolean
         }
     }
 
@@ -45,7 +49,9 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         !tools.isEmpty()
         tools.every {
             it.annotations instanceof Map &&
-            it.annotations.readOnlyHint instanceof Boolean
+            it.annotations.readOnlyHint instanceof Boolean &&
+            it.annotations.idempotentHint instanceof Boolean &&
+            it.annotations.openWorldHint instanceof Boolean
         }
     }
 
@@ -188,7 +194,9 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         // the larger getToolDefinitions() integration path.
         when:
         def readOnly = ['hub_list_rooms', 'hub_get_room'] as Set
-        def ann = script.annotationsForLeaf('hub_list_rooms', readOnly)
+        // displayMeta is a required param; null deliberately skips title emission
+        // (the hint contract under test here is independent of titles).
+        def ann = script.annotationsForLeaf('hub_list_rooms', readOnly, null, [] as Set, [] as Set)
 
         then:
         ann.readOnlyHint == true
@@ -198,7 +206,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     def "annotationsForLeaf: write name returns readOnlyHint=false and destructiveHint=true"() {
         when:
         def readOnly = ['hub_list_rooms'] as Set
-        def ann = script.annotationsForLeaf('hub_delete_room', readOnly)
+        def ann = script.annotationsForLeaf('hub_delete_room', readOnly, null, [] as Set, [] as Set)
 
         then:
         ann.readOnlyHint == false
@@ -208,7 +216,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     def "annotationsForGateway: all-read sub-tools roll up to read-only, no destructiveHint"() {
         when:
         def readOnly = ['hub_list_rooms', 'hub_get_room', 'hub_list_devices'] as Set
-        def ann = script.annotationsForGateway(['hub_list_rooms', 'hub_get_room'], readOnly)
+        def ann = script.annotationsForGateway(['hub_list_rooms', 'hub_get_room'], readOnly, [] as Set, [] as Set)
 
         then:
         ann.readOnlyHint == true
@@ -218,7 +226,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     def "annotationsForGateway: any write sub-tool flips gateway to write+destructive"() {
         when:
         def readOnly = ['hub_list_rooms', 'hub_get_room'] as Set
-        def ann = script.annotationsForGateway(['hub_list_rooms', 'hub_delete_room'], readOnly)
+        def ann = script.annotationsForGateway(['hub_list_rooms', 'hub_delete_room'], readOnly, [] as Set, [] as Set)
 
         then:
         ann.readOnlyHint == false
@@ -227,7 +235,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
     def "annotationsForGateway: empty visibleSubTools throws (precondition guard)"() {
         when:
-        script.annotationsForGateway([], ['hub_list_rooms'] as Set)
+        script.annotationsForGateway([], ['hub_list_rooms'] as Set, [] as Set, [] as Set)
 
         then:
         thrown(IllegalArgumentException)
@@ -242,8 +250,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         // unit-level test pins the helper contract directly.
         when:
         def readOnly = ['hub_list_rooms', 'hub_get_room', 'hub_list_devices'] as Set
-        def withWrites = script.annotationsForGateway(['hub_list_rooms', 'hub_delete_room'], readOnly)
-        def writesHidden = script.annotationsForGateway(['hub_list_rooms', 'hub_get_room'], readOnly)
+        def withWrites = script.annotationsForGateway(['hub_list_rooms', 'hub_delete_room'], readOnly, [] as Set, [] as Set)
+        def writesHidden = script.annotationsForGateway(['hub_list_rooms', 'hub_get_room'], readOnly, [] as Set, [] as Set)
 
         then:
         withWrites.readOnlyHint == false
@@ -271,6 +279,170 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         diag != null
         diag.annotations.readOnlyHint == true
         diag.annotations.containsKey('destructiveHint') == false
+    }
+
+    def "every name in getIdempotentWriteToolNames() resolves to a real WRITE tool"() {
+        // Guards against typos/stale entries AND against accidentally listing a
+        // read-only tool (reads are implicitly idempotent and must not be here).
+        when:
+        def allNames = script.getAllToolDefinitions()*.name as Set
+        def idempotent = script.getIdempotentWriteToolNames()
+        def readOnly = script.getReadOnlyToolNames()
+
+        then:
+        (idempotent - allNames) == [] as Set
+        idempotent.intersect(readOnly) == [] as Set
+    }
+
+    def "every name in getOpenWorldToolNames() resolves to a real tool"() {
+        when:
+        def allNames = script.getAllToolDefinitions()*.name as Set
+
+        then:
+        (script.getOpenWorldToolNames() - allNames) == [] as Set
+    }
+
+    def "every write tool is explicitly classified for idempotency (symmetric snapshot)"() {
+        // Mirror of the read/write completeness snapshot: the positive set means an
+        // unlisted write silently defaults to non-idempotent, so this snapshot forces
+        // the per-tool retry-safety decision into code review. set/update/delete
+        // writes converge on retry (idempotent); create/clone/import make another
+        // one and invoke-style writes re-fire the action (non-idempotent).
+        when:
+        def allWrites = (script.getAllToolDefinitions()*.name as Set) - script.getReadOnlyToolNames()
+        def idempotent = script.getIdempotentWriteToolNames()
+        def nonIdempotent = allWrites - idempotent
+
+        def expectedIdempotent = [
+            'hub_update_custom_rule', 'hub_delete_custom_rule',
+            'hub_set_mode', 'hub_set_hsm',
+            'hub_set_variable', 'hub_delete_variable', 'hub_create_connector', 'hub_delete_connector',
+            'hub_update_mcp_settings', 'hub_set_log_level', 'hub_delete_debug_logs',
+            'hub_delete_captured_state',
+            'hub_update_device', 'hub_delete_device',
+            'hub_update_room', 'hub_delete_room',
+            'hub_update_app', 'hub_update_driver', 'hub_update_library',
+            'hub_delete_item', 'hub_restore_backup',
+            'hub_install_bundle', 'hub_delete_bundle', 'hub_export_bundle',
+            'hub_write_file', 'hub_delete_file',
+            'hub_set_rule_paused', 'hub_set_rule_private_boolean',
+            'hub_export_native_app',
+            'hub_delete_visual_rule',
+            'hub_update_package'
+        ] as Set
+
+        def expectedNonIdempotent = [
+            'hub_call_device_command',
+            'hub_create_custom_rule', 'hub_import_custom_rule', 'hub_clone_custom_rule',
+            'hub_export_custom_rule',
+            'hub_create_variable',
+            'hub_create_backup',
+            'hub_reboot', 'hub_shutdown', 'hub_call_zwave_repair', 'hub_call_gc',
+            'hub_manage_virtual_device',
+            'hub_create_room',
+            'hub_create_app', 'hub_create_driver', 'hub_create_library',
+            'hub_call_rule', 'hub_set_rule', 'hub_set_native_app',
+            'hub_clone_native_app', 'hub_import_native_app', 'hub_delete_native_app',
+            'hub_set_visual_rule'
+        ] as Set
+
+        then:
+        idempotent == expectedIdempotent
+        nonIdempotent == expectedNonIdempotent
+    }
+
+    def "the open-world set is exactly the internet-reaching tools"() {
+        // The hub, its devices, and its radios are the closed-world system; only
+        // GitHub fetches, bundle-URL downloads, and importUrl source modes leave it.
+        expect:
+        script.getOpenWorldToolNames() == [
+            'hub_get_update_status', 'hub_update_package', 'hub_install_bundle',
+            'hub_create_app', 'hub_create_driver', 'hub_create_library',
+            'hub_update_app', 'hub_update_driver', 'hub_update_library',
+            'hub_get_device_health'
+        ] as Set
+    }
+
+    def "wire spot checks: idempotent and open-world hints land on leaves, gateways, and the dev-mode tool"() {
+        given:
+        settingsMap.remove('useGateways')
+        settingsMap.enableDeveloperMode = true
+
+        when:
+        def tools = script.getToolDefinitions()
+        def byName = tools.collectEntries { [(it.name): it.annotations] }
+
+        then: 'read-only core tool: idempotent, closed-world'
+        byName.hub_get_info.idempotentHint == true
+        byName.hub_get_info.openWorldHint == false
+
+        and: 'pure-read gateway rolls up idempotent + closed-world'
+        byName.hub_read_rooms.idempotentHint == true
+        byName.hub_read_rooms.openWorldHint == false
+
+        and: 'a creates-bearing gateway is non-idempotent; importUrl tools make it open-world'
+        byName.hub_manage_code.idempotentHint == false
+        byName.hub_manage_code.openWorldHint == true
+
+        and: 'a mixed gateway whose every write converges on retry stays idempotent'
+        byName.hub_manage_logs.idempotentHint == true
+        byName.hub_manage_logs.openWorldHint == false
+
+        and: 'the Developer Mode self-deploy is retry-safe and reaches GitHub'
+        byName.hub_update_package.idempotentHint == true
+        byName.hub_update_package.openWorldHint == true
+
+        and: 'the ping capability rolls up open-world into the diagnostics gateways, which stay read-only and idempotent'
+        byName.hub_read_diagnostics.readOnlyHint == true
+        byName.hub_read_diagnostics.idempotentHint == true
+        byName.hub_read_diagnostics.openWorldHint == true
+        byName.hub_manage_diagnostics.openWorldHint == true
+    }
+
+    def "getIdempotentToolNames composes the reads plus the retry-safe writes"() {
+        expect:
+        script.getIdempotentToolNames() ==
+            script.getReadOnlyToolNames() + script.getIdempotentWriteToolNames()
+    }
+
+    def "annotationsForLeaf and annotationsForGateway emit the idempotent and open-world hints from the classification sets"() {
+        when:
+        // idempotentNames is the COMPLETE surface (getIdempotentToolNames): a read
+        // NOT in it (the carve-out case) ships idempotentHint=false despite being
+        // read-only.
+        def readOnly = ['hub_list_rooms', 'hub_get_metrics'] as Set
+        def idem = ['hub_list_rooms', 'hub_delete_room'] as Set
+        def open = ['hub_create_app'] as Set
+        def readLeaf = script.annotationsForLeaf('hub_list_rooms', readOnly, null, idem, open)
+        def carveOut = script.annotationsForLeaf('hub_get_metrics', readOnly, null, idem, open)
+        def idemWrite = script.annotationsForLeaf('hub_delete_room', readOnly, null, idem, open)
+        def openCreate = script.annotationsForLeaf('hub_create_app', readOnly, null, idem, open)
+        def gwAllIdem = script.annotationsForGateway(['hub_list_rooms', 'hub_delete_room'], readOnly, idem, open)
+        def gwMixed = script.annotationsForGateway(['hub_list_rooms', 'hub_create_app'], readOnly, idem, open)
+        def gwCarve = script.annotationsForGateway(['hub_list_rooms', 'hub_get_metrics'], readOnly, idem, open)
+
+        then: 'membership in the complete idempotent surface drives the hint'
+        readLeaf.idempotentHint == true
+        idemWrite.idempotentHint == true
+        openCreate.idempotentHint == false
+
+        and: 'a carved-out read stays read-only but loses the idempotent claim'
+        carveOut.readOnlyHint == true
+        carveOut.idempotentHint == false
+
+        and: 'open-world only from the positive set'
+        readLeaf.openWorldHint == false
+        openCreate.openWorldHint == true
+
+        and: 'gateway: idempotent iff every sub-tool is; open-world if any is'
+        gwAllIdem.idempotentHint == true
+        gwAllIdem.openWorldHint == false
+        gwMixed.idempotentHint == false
+        gwMixed.openWorldHint == true
+
+        and: 'a pure-read gateway containing a carved-out read is read-only yet non-idempotent'
+        gwCarve.readOnlyHint == true
+        gwCarve.idempotentHint == false
     }
 
     def "every name in getReadOnlyToolNames() resolves to a real tool in getAllToolDefinitions()"() {

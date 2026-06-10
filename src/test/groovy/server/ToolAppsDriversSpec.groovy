@@ -1113,4 +1113,33 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         where:
         useGateways << [true, false]
     }
+
+    def "hub_restore_backup retry keeps the existing pre-restore undo when the live source already matches the backup"() {
+        // The idempotentHint contract: a retry after a dropped response finds the
+        // live source already restored; capturing it again would overwrite the
+        // real pre-restore undo with the restored content.
+        given: 'a manifest entry whose backup content equals the CURRENT live source'
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        atomicStateMap.itemBackupManifest = [
+            app_228: [type: 'app', id: '228', fileName: 'mcp-backup-app-228.groovy', version: 5, timestamp: 1234567880000L, sourceLength: 9]
+        ]
+        script.metaClass.downloadHubFile = { String name ->
+            name == 'mcp-backup-app-228.groovy' ? 'BACKUPSRC'.getBytes('UTF-8') : null
+        }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
+        script.metaClass.hubInternalGet = { String path, Map params = null -> '{"source":"BACKUPSRC","version":7}' }
+        script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
+            [success: true, id: 228]
+        }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'app_228', confirm: true])
+
+        then: 'the restore reports success without touching the undo artifacts'
+        result.success == true
+        uploads.isEmpty()
+        (atomicStateMap.itemBackupManifest ?: [:]).prerestore_app_228 == null
+    }
 }

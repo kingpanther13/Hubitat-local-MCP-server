@@ -519,7 +519,7 @@ class TestRunner:
             self.created_variable_names.remove(name)
 
     # -----------------------------------------------------------------------
-    # GROUP 1: infrastructure (4 tests)
+    # GROUP 1: infrastructure (7 tests)
     # -----------------------------------------------------------------------
 
     @test("infrastructure")
@@ -543,6 +543,69 @@ class TestRunner:
             f"Expected 30 default tools (11 core + 19 gateways), got {len(default_tools)}: {sorted(names)}"
         assert "hub_update_package" in names, \
             "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
+
+    @test("infrastructure")
+    def test_tools_list_titles(self) -> None:
+        # Issue #245: every tools/list entry (core tools, gateways, dev-mode tools)
+        # carries a human-readable friendly name in annotations.title -- the field
+        # claude.ai renders in place of the bare tool name.
+        result = self.client.list_tools()
+        tools = result.get("tools", [])
+        assert tools, "tools/list returned no tools"
+        missing = [
+            t.get("name") for t in tools
+            if not isinstance((t.get("annotations") or {}).get("title"), str)
+            or not (t.get("annotations") or {}).get("title", "").strip()
+        ]
+        assert not missing, f"tools/list entries missing annotations.title: {missing}"
+        by_name = {t["name"]: t for t in tools}
+        info_title = by_name["hub_get_info"]["annotations"]["title"]
+        assert info_title == "Get Hub Info", f"hub_get_info title unexpected: {info_title!r}"
+        gw_title = by_name["hub_read_devices"]["annotations"]["title"]
+        assert gw_title == "Read Devices", f"hub_read_devices title unexpected: {gw_title!r}"
+
+    @test("infrastructure")
+    def test_tools_list_annotation_hints(self) -> None:
+        # Issue #238: every tools/list entry ships the boolean annotation hints --
+        # readOnlyHint/idempotentHint/openWorldHint always, destructiveHint on writes.
+        result = self.client.list_tools()
+        tools = result.get("tools", [])
+        assert tools, "tools/list returned no tools"
+        bad = []
+        for t in tools:
+            ann = t.get("annotations") or {}
+            for key in ("readOnlyHint", "idempotentHint", "openWorldHint"):
+                if not isinstance(ann.get(key), bool):
+                    bad.append(f"{t.get('name')}.{key}")
+            if ann.get("readOnlyHint") is False and ann.get("destructiveHint") is not True:
+                bad.append(f"{t.get('name')}.destructiveHint")
+        assert not bad, f"entries with missing or mistyped annotation hints: {bad}"
+        by_name = {t["name"]: (t.get("annotations") or {}) for t in tools}
+        assert by_name["hub_update_package"]["openWorldHint"] is True, \
+            "hub_update_package must be open-world (GitHub fetches)"
+        assert by_name["hub_read_devices"]["idempotentHint"] is True, \
+            "pure-read gateway must roll up idempotent"
+        assert by_name["hub_read_devices"]["openWorldHint"] is False, \
+            "pure-read gateway must be closed-world"
+        assert by_name["hub_read_diagnostics"]["openWorldHint"] is True, \
+            "diagnostics gateway must roll up open-world (hub_get_device_health pingHosts)"
+        assert by_name["hub_read_diagnostics"]["idempotentHint"] is True, \
+            "pure-read diagnostics gateway must roll up idempotent"
+
+    @test("infrastructure")
+    def test_gateway_catalog_titles(self) -> None:
+        # Issue #245: the gateway no-arg catalog disclosure also surfaces each
+        # sub-tool's friendly title next to its bare name and schema.
+        catalog = self.client.call_tool("hub_read_rooms", {})
+        assert catalog.get("mode") == "catalog", f"Expected catalog mode, got: {catalog.get('mode')}"
+        entries = catalog.get("tools", [])
+        assert entries, "hub_read_rooms catalog returned no tools"
+        missing = [e.get("name") for e in entries
+                   if not isinstance(e.get("title"), str) or not e.get("title", "").strip()]
+        assert not missing, f"gateway catalog entries missing title: {missing}"
+        rooms = next((e for e in entries if e.get("name") == "hub_list_rooms"), None)
+        assert rooms is not None, "hub_list_rooms not found in catalog"
+        assert rooms["title"] == "List Rooms", f"hub_list_rooms catalog title unexpected: {rooms['title']!r}"
 
     @test("infrastructure")
     def test_health_endpoint(self) -> None:
@@ -1908,6 +1971,132 @@ class TestRunner:
                     })
                 except Exception as exc:
                     print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
+
+    # -----------------------------------------------------------------------
+    # GROUP 4d: app_code_update (1 test) -- the hub_update_app code-deploy path
+    # (POST /app/saveOrUpdateJson). One throwaway code class, three legs before its delete:
+    # a real round-trip edit (success + version advance + source landed), the
+    # hub's verbatim compile error on broken Groovy (not our generic fallback),
+    # and the client-side expectedVersion optimistic lock (refused, no write).
+    # -----------------------------------------------------------------------
+
+    @test("app_code_update")
+    def test_update_app_code_lifecycle(self) -> None:
+        # Throwaway Apps Code class (code only, never installed as an instance). The name
+        # deliberately starts with "Deadman Test Target" (namespace mcptest) so the cleanup
+        # Layer 5 startswith sweep reclaims a stranded copy if a crash skips the finally below.
+        source_v1 = '''\
+definition(
+    name: "Deadman Test Target Update",
+    namespace: "mcptest",
+    author: "ci",
+    description: "Throwaway e2e app-code update-leg target",
+    category: "Utility",
+    iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
+    iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png"
+)
+
+preferences {
+    page(name: "p", title: "Update Leg Target", install: true, uninstall: true) {
+        section { paragraph "Throwaway update-leg target. Marker: ${updateLegMarker()}" }
+    }
+}
+
+def installed() {}
+def updated() {}
+
+def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
+'''
+        code_app_id = None
+        try:
+            created = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_app",
+                "args": {"source": source_v1, "confirm": True},
+            })
+            code_app_id = created.get("appId")
+            assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created}"
+
+            before = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "app", "id": code_app_id},
+            })
+            assert before.get("success") is True and before.get("version") is not None \
+                and "UPDATE-LEG-MARKER-V1" in (before.get("source") or ""), \
+                f"could not read back the created code class: {before}"
+            version_before = int(before["version"])
+
+            # Leg 1: round-trip edit -- valid modified source must save, advance the hub's
+            # version counter, and be readable back via hub_get_source.
+            source_v2 = source_v1.replace("UPDATE-LEG-MARKER-V1", "UPDATE-LEG-MARKER-V2")
+            updated = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_app",
+                "args": {"appId": code_app_id, "source": source_v2, "confirm": True},
+            })
+            assert updated.get("success") is True, f"hub_update_app round-trip failed: {updated}"
+            assert updated.get("previousVersion") is not None, \
+                f"hub_update_app success carries no previousVersion: {updated}"
+            after = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "app", "id": code_app_id},
+            })
+            assert "UPDATE-LEG-MARKER-V2" in (after.get("source") or ""), \
+                f"updated source did not land on the hub: {after}"
+            version_after = int(after["version"])
+            assert version_after > version_before, \
+                f"version did not advance after update ({version_before} -> {version_after})"
+
+            # Leg 2: compile error -- the hub's verbatim compiler text must ride back in
+            # `error`, not our generic fallback string.
+            source_broken = source_v2.replace(
+                "def updated() {}",
+                "def updated() { new ClassThatDoesNotExistBatE2e() }",
+            )
+            failed = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_app",
+                "args": {"appId": code_app_id, "source": source_broken, "confirm": True},
+            })
+            assert failed.get("success") is False, f"broken Groovy was accepted: {failed}"
+            err = str(failed.get("error") or "")
+            assert err and err != "Update failed - the hub returned an error", \
+                f"compile failure did not surface the hub's error text: {failed}"
+            assert "unable to resolve" in err.lower() or "ClassThatDoesNotExistBatE2e" in err, \
+                f"error text is not the hub's compiler output: {err!r}"
+
+            # Leg 3: optimistic lock -- a stale expectedVersion must be refused client-side
+            # with conflict:true, before anything is written.
+            source_v3 = source_v2.replace("UPDATE-LEG-MARKER-V2", "UPDATE-LEG-MARKER-V3")
+            conflicted = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_app",
+                "args": {"appId": code_app_id, "source": source_v3,
+                         "expectedVersion": 99999, "confirm": True},
+            })
+            assert conflicted.get("success") is False, \
+                f"stale expectedVersion was accepted: {conflicted}"
+            assert conflicted.get("conflict") is True, \
+                f"conflict flag missing on optimistic-lock refusal: {conflicted}"
+
+            # One re-read proves NEITHER refused leg wrote anything: still V2, no V3 marker,
+            # version unchanged since the round-trip edit.
+            final = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "app", "id": code_app_id},
+            })
+            final_src = final.get("source") or ""
+            assert "UPDATE-LEG-MARKER-V2" in final_src and "UPDATE-LEG-MARKER-V3" not in final_src, \
+                f"a refused update mutated the stored source: {final}"
+            assert int(final["version"]) == version_after, \
+                f"a refused update advanced the version ({version_after} -> {final.get('version')})"
+
+            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write")
+        finally:
+            if code_app_id:
+                try:
+                    self.client.call_tool("hub_manage_code", {
+                        "tool": "hub_delete_item",
+                        "args": {"type": "app", "id": code_app_id, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] app-code update cleanup: delete code class {code_app_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
     # GROUP 5: trigger_types (1 batched test -- all trigger types in one rule)
@@ -3287,10 +3476,12 @@ class TestRunner:
             except Exception as exc:
                 print(f"  [WARN] Visual Rule sweep failed: {exc}")
 
-        # Layer 5: stranded deadman install-fix throwaway. The @test("deadman") test installs
-        # 'Deadman Test Target' (namespace mcptest) + its code class; neither carries the BAT_E2E_
-        # prefix, so a crash/kill between its create and finally would strand it past the other
-        # sweeps. Reclaim instance(s) + code class by namespace+name (idempotent across runs).
+        # Layer 5: stranded mcptest throwaways. The @test("deadman") test installs 'Deadman Test
+        # Target' (instance + code class) and the @test("app_code_update") test creates the
+        # 'Deadman Test Target Update' code class (named to ride this same startswith match);
+        # none carry the BAT_E2E_ prefix, so a crash/kill between a create and its finally would
+        # strand them past the other sweeps. Reclaim instance(s) + code class by namespace+name
+        # (idempotent across runs).
         try:
             dtypes = self.client.call_tool("hub_read_apps_code",
                                            {"tool": "hub_list_apps", "args": {"scope": "types"}})

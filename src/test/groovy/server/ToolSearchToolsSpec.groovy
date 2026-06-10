@@ -117,15 +117,17 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         given: 'populated caches and a no-op initialize so updated() does not hit platform APIs'
         atomicStateMap.toolSearchCorpus = [[name: 'x', description: 'd']]
         atomicStateMap.toolSearchTokens = [['x']]
+        atomicStateMap.toolSearchCorpusVersion = 'v-test'
         atomicStateMap.requiredParamsByTool = [hub_get_room: ['room']]
         script.metaClass.initialize = { -> }
 
         when:
         script.updated()
 
-        then: 'all three derived caches are cleared (rebuilt lazily on next use)'
+        then: 'all derived caches are cleared (rebuilt lazily on next use)'
         atomicStateMap.toolSearchCorpus == null
         atomicStateMap.toolSearchTokens == null
+        atomicStateMap.toolSearchCorpusVersion == null
         atomicStateMap.requiredParamsByTool == null
 
         and: 'the legacy state entry is never reintroduced'

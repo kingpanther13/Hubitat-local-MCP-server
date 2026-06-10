@@ -450,6 +450,29 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.message.contains('updated')
     }
 
+    def "hub_write_file skips the backup when the existing content equals the incoming content (retry-safe)"() {
+        // The idempotentHint contract: a retry after a dropped response must not
+        // mint another timestamped backup of the very bytes being written.
+        given:
+        enableWrite()
+        def uploads = []
+        script.metaClass.downloadHubFile = { String name ->
+            name == 'notes.txt' ? 'same content'.getBytes('UTF-8') : null
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content ->
+            uploads << [name: name, content: new String(content, 'UTF-8')]
+        }
+
+        when:
+        def result = script.toolWriteFile([fileName: 'notes.txt', content: 'same content', confirm: true])
+
+        then: 'only the byte-identical overwrite lands -- no backup file is created'
+        uploads.size() == 1
+        uploads[0].name == 'notes.txt'
+        result.success == true
+        !result.backupFile
+    }
+
     def "hub_write_file treats a download-throws exception as 'no existing file' and skips the backup step"() {
         // Pins the current server behaviour: the backup attempt is wrapped in
         // a try/catch that swallows ANY download throw and proceeds as if

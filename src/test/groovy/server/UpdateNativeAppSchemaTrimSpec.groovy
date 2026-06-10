@@ -34,6 +34,9 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
     private static final String OPEN_MARKER = '[[FLAT_TRIM]]'
     private static final String CLOSE_MARKER = '[[/FLAT_TRIM]]'
 
+    // Deliberately leaves Developer Mode OFF: the [FLOOR, BUDGET] calibration below
+    // is for the default catalog a normal hub serves. The wider dev-mode-on surface
+    // (adds hub_update_package) gets its own hard-cap + leak guard further down.
     private void enableEveryToggle() {
         settingsMap.enableCustomRuleEngine = true
     }
@@ -80,6 +83,33 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def catalogJson = JsonOutput.toJson(script.getToolDefinitions())
 
         then: 'neither opening nor closing marker appears in the wire payload'
+        !catalogJson.contains(OPEN_MARKER)
+        !catalogJson.contains(CLOSE_MARKER)
+    }
+
+    def "flat-mode tools/list with Developer Mode ON stays under the hub cap and leaks no FLAT_TRIM tokens"() {
+        // hub_update_package is catalog-hidden unless enableDeveloperMode is true, so
+        // the default-toggles guards above never serialize it -- its description carries
+        // FLAT_TRIM markers and its entry widens the flat catalog past what the budget
+        // test measures. This is the only guard for the widest catalog a real hub can
+        // emit; over the hard cap, flat+dev clients get -32603 and ZERO tools.
+        given:
+        settingsMap.useGateways = false
+        enableEveryToggle()
+        settingsMap.enableDeveloperMode = true
+
+        when:
+        def tools = script.getToolDefinitions()
+        def catalogJson = JsonOutput.toJson([tools: tools])
+        def catalogBytes = catalogJson.getBytes('UTF-8').length
+
+        then: 'the dev-mode tool is actually present (guard is not vacuous)'
+        tools*.name.contains('hub_update_package')
+
+        and: 'under the hub hard cap with the dev-mode entry included, less an allowance for the JSON-RPC envelope (jsonrpc/id/result wrapper) the live response adds around this payload'
+        assert catalogBytes < 123_500 : "dev-mode flat tools/list payload is ${catalogBytes} bytes; with the JSON-RPC envelope the live response must stay under the 124,000 hub cap"
+
+        and: 'no marker tokens leak from the dev-mode entry (or any other)'
         !catalogJson.contains(OPEN_MARKER)
         !catalogJson.contains(CLOSE_MARKER)
     }
@@ -429,11 +459,11 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         // bypasses that tool's description.
         //
         // get_hpm_drift was a third site here pre-merge; issue #105 folded it into
-        // hub_list_hpm_packages, which carries NO FLAT_TRIM markers -- the full
-        // drift-signal taxonomy now lives only in hub_get_tool_guide(section=
-        // 'builtin_app_tools'), so there is no flat-vs-gateway description delta to
-        // pin for that tool. The pointer-resolution test still verifies the
-        // hub_list_hpm_packages description carries the builtin_app_tools pointer.
+        // hub_list_hpm_packages, which NOW carries FLAT_TRIM wraps of its own (the
+        // heID-normalization notes, the response-field enumeration, and the
+        // multi-instance error protocol); the generic flat/gateway leak guards cover
+        // them. The pointer-resolution test still verifies the hub_list_hpm_packages
+        // description carries the builtin_app_tools pointer.
         given:
         enableEveryToggle()
 

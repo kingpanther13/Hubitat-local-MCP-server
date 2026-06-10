@@ -748,6 +748,8 @@ Additionally, tools that modify or delete existing apps/drivers automatically ba
 
 Under **Settings > Advanced: Per-tool Overrides**, you can disable individual tools or whole gateways **below** the masters — these only turn things OFF, never re-enable. A disabled tool (or every tool inside a disabled gateway, including tools shared across gateways) drops from `tools/list` and `hub_search_tools`, and a cached call returns a distinct error: "…is disabled in Advanced settings (Per-tool Overrides)…". A disabled tool stays documented in `hub_get_tool_guide`. Use **Reset all overrides** to clear them.
 
+Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[write]` marker, and a one-sentence description — so you can tell what you're disabling without decoding the bare names. The same friendly names are published on `tools/list` as MCP `annotations.title`, so clients that honor that field — claude.ai among them — display them in their tool lists too.
+
 </details>
 
 <details>
@@ -1549,6 +1551,8 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.1.7** - feat: friendly tool titles, descriptive overrides menu, and the full four-hint annotation surface. PRs: [#264](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/264)
+- **v2.1.6** - feat: update app/driver code via saveOrUpdateJson instead of legacy ajax/update. PRs: [#263](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/263)
 - **v2.1.5** - Wire device-relative compareToDevice to the real RM 5.1.8 control (isDev_<N>). PRs: [#262](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/262)
 - **v2.1.4** - feat: register basic_rule, add Button Rule creation + walkStep to the native-app tool. PRs: [#260](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/260)
 - **v2.1.3** - feat: hub_update_package full HPM-repair deploy, top-level dev-mode tool. PRs: [#261](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/261)

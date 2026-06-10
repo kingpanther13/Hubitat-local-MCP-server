@@ -213,10 +213,10 @@ class ToolImportUrlSpec extends ToolSpecBase {
             '{"status": "ok", "source": "old-source", "version": 7}'
         }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
             captured.body = body
-            [status: 200, location: null, data: '{"status":"success"}']
+            [success: true, id: 42]
         }
         // backup helper is a no-op stub
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 7, fileName: 'b.json'] }
@@ -233,8 +233,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.sourceMode == 'importUrl'
         result.sourceLength == 'fetched-source-here'.length()
         result.note?.contains('hub-side fetch')  // pins the "no agent transcript" semantic, not just the substring
-        captured.path == '/app/ajax/update'
-        captured.body.source == 'fetched-source-here'
+        captured.path == '/app/saveOrUpdateJson'
+        new groovy.json.JsonSlurper().parseText(captured.body).source == 'fetched-source-here'
     }
 
     // -------- importUrl integration: hub_create_app --------
@@ -570,11 +570,16 @@ class ToolImportUrlSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "old", "version": 5}'
         }
+        // The code save rides hubInternalPostJson; the lifecycle fire rides hubInternalPostForm.
+        // Both append to one list so the save-then-fire ordering stays pinned.
         def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            posts << [helper: 'json', path: path]
+            [success: true]
+        }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
-            posts << [path: path, body: body]
-            // first POST: code update; second POST: trigger updated
-            [status: 200, location: null, data: '{"status":"success"}']
+            posts << [helper: 'form', path: path]
+            [status: 200, location: null, data: '']
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
 
@@ -591,8 +596,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.triggerUpdated == 194
         result.updatedFired == true
         posts.size() == 2
-        posts[0].path == '/app/ajax/update'
-        posts[1].path == '/installedapp/configure/194/mainPage'
+        posts[0] == [helper: 'json', path: '/app/saveOrUpdateJson']
+        posts[1] == [helper: 'form', path: '/installedapp/configure/194/mainPage']
     }
 
     def "hub_update_app with triggerUpdated reports updatedFired=false + repairHints when lifecycle POST throws"() {
@@ -601,13 +606,15 @@ class ToolImportUrlSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "old", "version": 5}'
         }
-        def postCount = 0
+        def savePostCount = 0
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            savePostCount++
+            [success: true]
+        }
+        def lifecyclePaths = []
         script.metaClass.hubInternalPostForm = { String path, Map body ->
-            postCount++
-            if (path.startsWith('/installedapp/configure/')) {
-                throw new RuntimeException('hub rejected lifecycle POST')
-            }
-            [status: 200, location: null, data: '{"status":"success"}']
+            lifecyclePaths << path
+            throw new RuntimeException('hub rejected lifecycle POST')
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
 
@@ -625,10 +632,11 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.triggerUpdated == 194
         result.updatedFired == false
         result.repairHints?.any { it.toString().contains('lifecycle-fire POST failed') }
-        // Pins that BOTH posts were attempted -- the save (1) + the lifecycle fire (2).
+        // Pins that BOTH posts were attempted -- the save + the lifecycle fire.
         // Without this, a regression that throws before reaching the lifecycle POST
         // could produce the same envelope shape while never trying the second POST.
-        postCount == 2
+        savePostCount == 1
+        lifecyclePaths == ['/installedapp/configure/194/mainPage']
     }
 
     def "hub_update_app without triggerUpdated does NOT fire updated() (negative pin matches UI behavior)"() {
@@ -637,10 +645,15 @@ class ToolImportUrlSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "old", "version": 5}'
         }
-        def posts = []
+        def savePaths = []
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            savePaths << path
+            [success: true]
+        }
+        def lifecyclePaths = []
         script.metaClass.hubInternalPostForm = { String path, Map body ->
-            posts << [path: path]
-            [status: 200, location: null, data: '{"status":"success"}']
+            lifecyclePaths << path
+            [status: 200, location: null, data: '']
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
 
@@ -655,8 +668,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.success == true
         result.containsKey('triggerUpdated') == false
         result.containsKey('updatedFired') == false
-        posts.size() == 1
-        posts[0].path == '/app/ajax/update'  // only the code-save POST, no lifecycle POST
+        savePaths == ['/app/saveOrUpdateJson']  // only the code-save POST...
+        lifecyclePaths.isEmpty()                // ...no lifecycle POST
     }
 
     def "hub_update_app with triggerUpdated lifecycle failure also sets partial:true"() {
@@ -667,9 +680,9 @@ class ToolImportUrlSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "old", "version": 5}'
         }
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
-            if (path.startsWith('/installedapp/configure/')) throw new RuntimeException('hub rejected lifecycle POST')
-            [status: 200, location: null, data: '{"status":"success"}']
+            throw new RuntimeException('hub rejected lifecycle POST')
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
 
@@ -754,8 +767,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
         settingsMap.enableDeveloperMode = true
         stubHttpGet(200, 'fetched-self-source')
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: '{"status":"success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true]
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
 
@@ -777,8 +790,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubHttpGet(200, 'broken-self-source')
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
         // Hub rejects the save with its real validation message (the exact thing CI must recover).
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: '{"status":"error","errorMessage":"name cannot be empty in definition section"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, message: 'name cannot be empty in definition section']
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
 
@@ -802,8 +815,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
         // app.id is 1; the self CLASS id resolves to 178. appId 42 matches neither -> not a self-update.
         hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: '{"status":"success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true]
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
 
@@ -826,8 +839,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubHttpGet(200, 'class-id-self-source')
         hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: '{"status":"error","errorMessage":"name cannot be empty in definition section"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, message: 'name cannot be empty in definition section']
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
 
@@ -843,17 +856,17 @@ class ToolImportUrlSpec extends ToolSpecBase {
     }
 
     def "hub_update_app self-update records lastSelfDeploy when the save THROWS (cloud 504 / exception path)"() {
-        // The big-source importUrl deploy can 504 at the cloud relay: hubInternalPostForm throws
+        // The big-source importUrl deploy can 504 at the cloud relay: hubInternalPostJson throws
         // before any parseable 200 body. The catch block must still persist a failure record so a
         // follow-up hub_get_info can recover it; the message is the exception text (not the hub's
-        // verbatim compiler error -- that only exists on the synchronous 200+errorMessage path).
+        // verbatim compiler error -- that only exists on the synchronous success=false path).
         given:
         enableWrite()
         settingsMap.enableDeveloperMode = true
         atomicStateMap.lastSelfDeploy = null
         stubHttpGet(200, 'self-source-that-504s')
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
-        script.metaClass.hubInternalPostForm = { String path, Map body -> throw new RuntimeException('cloud 504') }
+        script.metaClass.hubInternalPostJson = { String path, String body -> throw new RuntimeException('cloud 504') }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
 
         when:
@@ -910,10 +923,11 @@ class ToolImportUrlSpec extends ToolSpecBase {
         given:
         enableWrite()
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
         def lifecyclePostCount = 0
         script.metaClass.hubInternalPostForm = { String path, Map body ->
-            if (path.startsWith('/installedapp/configure/')) lifecyclePostCount++
-            [status: 200, location: null, data: '{"status":"success"}']
+            lifecyclePostCount++
+            [status: 200, location: null, data: '']
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
 
@@ -957,15 +971,15 @@ class ToolImportUrlSpec extends ToolSpecBase {
         captured.path == '/driver/saveOrUpdateJson'
     }
 
-    def "hub_update_driver with importUrl POSTs the fetched source to /driver/ajax/update"() {
+    def "hub_update_driver with importUrl POSTs the fetched source to /driver/saveOrUpdateJson"() {
         given:
         enableWrite()
         stubHttpGet(200, 'updated-driver-source')
         hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"old","version":3}' }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path; captured.body = body
-            [status: 200, location: null, data: '{"status":"success"}']
+            [success: true, id: 55]
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 3, fileName: 'b.json'] }
 
@@ -975,8 +989,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
         then:
         result.success == true
         result.sourceMode == 'importUrl'
-        captured.path == '/driver/ajax/update'
-        captured.body.source == 'updated-driver-source'
+        captured.path == '/driver/saveOrUpdateJson'
+        new groovy.json.JsonSlurper().parseText(captured.body).source == 'updated-driver-source'
     }
 
     def "hub_update_library with importUrl posts to /library/saveOrUpdateJson"() {
@@ -1036,9 +1050,9 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubHttpGet(200, 'updated-bulk-driver')
         hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"old","version":2}' }
         def postPaths = []
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             postPaths << path
-            [status: 200, location: null, data: '{"status":"success"}']
+            [success: true]
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 2, fileName: 'b.json'] }
 
@@ -1054,7 +1068,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.updates[0].success == true
         result.updates[0].sourceMode == 'importUrl'
         nextHttpGetCaptured.uri == 'https://raw.example/d.groovy'
-        postPaths.contains('/driver/ajax/update')
+        postPaths.contains('/driver/saveOrUpdateJson')
     }
 
     // -------- JSON-RPC dispatch envelope (-32602 on mutex, success on happy path) --------
@@ -1112,8 +1126,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
         stubHttpGet(200, 'dispatch-fetched-source')
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":9}' }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: '{"status":"success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true]
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 9, fileName: 'b.json'] }
 

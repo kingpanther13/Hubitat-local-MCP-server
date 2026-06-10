@@ -377,10 +377,10 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         and: 'capture the version passed into the update POST'
         def posted = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             posted.path = path
-            posted.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+            posted.body = new groovy.json.JsonSlurper().parseText(body)
+            [success: true]
         }
 
         when:
@@ -415,10 +415,10 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         and: 'capture the version passed into the update POST'
         def posted = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             posted.path = path
-            posted.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+            posted.body = new groovy.json.JsonSlurper().parseText(body)
+            [success: true]
         }
 
         when:
@@ -518,9 +518,9 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         and: 'capture the version passed into the update POST'
         def posted = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            posted.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            posted.body = new groovy.json.JsonSlurper().parseText(body)
+            [success: true]
         }
 
         when:
@@ -553,9 +553,9 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         and: 'capture the version passed into the update POST'
         def posted = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            posted.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            posted.body = new groovy.json.JsonSlurper().parseText(body)
+            [success: true]
         }
 
         when:
