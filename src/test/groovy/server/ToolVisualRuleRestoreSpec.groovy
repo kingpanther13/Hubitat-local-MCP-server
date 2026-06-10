@@ -296,6 +296,49 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         body.elseNodes == []
     }
 
+    def "backup capture prefers the rule's own name over a pause-decorated installed-app label"() {
+        given: 'a PAUSED rule: configure/json label carries the hub decoration, the VRB name is clean'
+        stubUploads()
+        hubGet.register('/installedapp/configure/json/702') { params -> vrbChildConfigJson(702, 'Hall light (Paused)') }
+        hubGet.register('/installedapp/statusJson/702') { params -> vrbStatusJson(702) }
+        hubGet.register('/app/ruleBuilder20Json/702') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/702') { params ->
+            json(classicDefinition() + [name: 'Hall light', rulePaused: true, promptHistory: []])
+        }
+
+        when:
+        script._rmBackupRuleSnapshot(702, 'pre-delete')
+
+        then: 'the snapshot appLabel is the UNDECORATED rule name (live-verified hub behavior)'
+        parsedUpload().appLabel == 'Hall light'
+        parsedUpload().vrbRulePaused == true
+    }
+
+    def "restore strips a trailing pause decoration from a decorated-label snapshot"() {
+        given: 'a paused-rule snapshot whose appLabel carries the hub decoration'
+        enableWrite()
+        def snapshot = vrbSnapshot(500, [appLabel: 'Hall light (Paused)', vrbFormat: 'classic',
+                                         vrbRulePaused: true, vrbDefinition: classicDefinition()])
+        stubDownload(json(snapshot).getBytes('UTF-8'))
+        hubGet.register('/app/ruleBuilder20Json/500') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/500') { params -> '{}' }
+        stubRawPage('<html><script>window.HubitatRuleBuilderAppId = 510;</script></html>')
+        def savedState = [:]
+        stubPostJson { path, body -> savedState.putAll(new JsonSlurper().parseText(body) as Map); null }
+        hubGet.register('/app/ruleBuilder20Json/510') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/510') { params -> json(savedState) }
+
+        when:
+        def result = script._rmRestoreFromBackup([fileName: 'mcp-rm-backup-500-t.json'])
+
+        then: 'the replayed name has the decoration stripped; the pause state still restores'
+        result.success == true
+        result.name == 'Hall light'
+        def body = new JsonSlurper().parseText(posts[0].body as String)
+        body.name == 'Hall light'
+        body.rulePaused == true
+    }
+
     @Unroll
     def "hub_restore_backup via dispatch recreates a deleted Visual Rule (useGateways=#useGateways)"() {
         given:
