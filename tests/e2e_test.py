@@ -519,7 +519,7 @@ class TestRunner:
             self.created_variable_names.remove(name)
 
     # -----------------------------------------------------------------------
-    # GROUP 1: infrastructure (4 tests)
+    # GROUP 1: infrastructure (7 tests)
     # -----------------------------------------------------------------------
 
     @test("infrastructure")
@@ -543,6 +543,69 @@ class TestRunner:
             f"Expected 30 default tools (11 core + 19 gateways), got {len(default_tools)}: {sorted(names)}"
         assert "hub_update_package" in names, \
             "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
+
+    @test("infrastructure")
+    def test_tools_list_titles(self) -> None:
+        # Issue #245: every tools/list entry (core tools, gateways, dev-mode tools)
+        # carries a human-readable friendly name in annotations.title -- the field
+        # claude.ai renders in place of the bare tool name.
+        result = self.client.list_tools()
+        tools = result.get("tools", [])
+        assert tools, "tools/list returned no tools"
+        missing = [
+            t.get("name") for t in tools
+            if not isinstance((t.get("annotations") or {}).get("title"), str)
+            or not (t.get("annotations") or {}).get("title", "").strip()
+        ]
+        assert not missing, f"tools/list entries missing annotations.title: {missing}"
+        by_name = {t["name"]: t for t in tools}
+        info_title = by_name["hub_get_info"]["annotations"]["title"]
+        assert info_title == "Get Hub Info", f"hub_get_info title unexpected: {info_title!r}"
+        gw_title = by_name["hub_read_devices"]["annotations"]["title"]
+        assert gw_title == "Read Devices", f"hub_read_devices title unexpected: {gw_title!r}"
+
+    @test("infrastructure")
+    def test_tools_list_annotation_hints(self) -> None:
+        # Issue #238: every tools/list entry ships the boolean annotation hints --
+        # readOnlyHint/idempotentHint/openWorldHint always, destructiveHint on writes.
+        result = self.client.list_tools()
+        tools = result.get("tools", [])
+        assert tools, "tools/list returned no tools"
+        bad = []
+        for t in tools:
+            ann = t.get("annotations") or {}
+            for key in ("readOnlyHint", "idempotentHint", "openWorldHint"):
+                if not isinstance(ann.get(key), bool):
+                    bad.append(f"{t.get('name')}.{key}")
+            if ann.get("readOnlyHint") is False and ann.get("destructiveHint") is not True:
+                bad.append(f"{t.get('name')}.destructiveHint")
+        assert not bad, f"entries with missing or mistyped annotation hints: {bad}"
+        by_name = {t["name"]: (t.get("annotations") or {}) for t in tools}
+        assert by_name["hub_update_package"]["openWorldHint"] is True, \
+            "hub_update_package must be open-world (GitHub fetches)"
+        assert by_name["hub_read_devices"]["idempotentHint"] is True, \
+            "pure-read gateway must roll up idempotent"
+        assert by_name["hub_read_devices"]["openWorldHint"] is False, \
+            "pure-read gateway must be closed-world"
+        assert by_name["hub_read_diagnostics"]["openWorldHint"] is True, \
+            "diagnostics gateway must roll up open-world (hub_get_device_health pingHosts)"
+        assert by_name["hub_read_diagnostics"]["idempotentHint"] is True, \
+            "pure-read diagnostics gateway must roll up idempotent"
+
+    @test("infrastructure")
+    def test_gateway_catalog_titles(self) -> None:
+        # Issue #245: the gateway no-arg catalog disclosure also surfaces each
+        # sub-tool's friendly title next to its bare name and schema.
+        catalog = self.client.call_tool("hub_read_rooms", {})
+        assert catalog.get("mode") == "catalog", f"Expected catalog mode, got: {catalog.get('mode')}"
+        entries = catalog.get("tools", [])
+        assert entries, "hub_read_rooms catalog returned no tools"
+        missing = [e.get("name") for e in entries
+                   if not isinstance(e.get("title"), str) or not e.get("title", "").strip()]
+        assert not missing, f"gateway catalog entries missing title: {missing}"
+        rooms = next((e for e in entries if e.get("name") == "hub_list_rooms"), None)
+        assert rooms is not None, "hub_list_rooms not found in catalog"
+        assert rooms["title"] == "List Rooms", f"hub_list_rooms catalog title unexpected: {rooms['title']!r}"
 
     @test("infrastructure")
     def test_health_endpoint(self) -> None:
