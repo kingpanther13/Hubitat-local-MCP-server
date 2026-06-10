@@ -1293,27 +1293,35 @@ class TestRunner:
             assert not bad, f"unexpected compareToDevice-validation skip (empty device-picker options are normal): {bad}"
 
             # (2) compareToDevice + a literal state RHS is now a HARD reject (fail-loud),
-            # not a silent literal fallback. The mutual-exclusion guard fires before any write.
+            # not a silent literal fallback. The mutual-exclusion guard is a pre-write
+            # check inside the walker, so exercise it on a FRESH rule: adding a second
+            # Required Expression to a rule that already has one (the first-RE committed
+            # above) takes a different path that never reaches the per-condition walker
+            # check, masking the guard's error behind the second-RE failure.
+            reject_app_id = self._create_native_rule("CtdReject")
             try:
-                rej = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_set_rule",
-                    "args": {
-                        "appId": app_id,
-                        "addRequiredExpression": {"conditions": [
-                            {"capability": "Temperature", "deviceIds": [int(dev_a)],
-                             "comparator": ">", "state": 70,
-                             "compareToDevice": {"deviceId": int(dev_b),
-                                                 "attribute": "temperature"}}]},
-                        "confirm": True,
-                    },
-                })
-                assert rej.get("success") is False, \
-                    f"compareToDevice + literal state should hard-reject (not partial/success): {rej}"
-                assert "cannot be combined with 'state'/'value'" in str(rej.get("error", "")), \
-                    f"reject error should name the mutual-exclusion: {rej}"
-            except (McpToolError, McpError) as exc:
-                assert "cannot be combined with 'state'/'value'" in str(exc), \
-                    f"compareToDevice + literal state fail-loud should name the mutual-exclusion: {exc}"
+                try:
+                    rej = self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_set_rule",
+                        "args": {
+                            "appId": reject_app_id,
+                            "addRequiredExpression": {"conditions": [
+                                {"capability": "Temperature", "deviceIds": [int(dev_a)],
+                                 "comparator": ">", "state": 70,
+                                 "compareToDevice": {"deviceId": int(dev_b),
+                                                     "attribute": "temperature"}}]},
+                            "confirm": True,
+                        },
+                    })
+                    assert rej.get("success") is False, \
+                        f"compareToDevice + literal state should hard-reject (not partial/success): {rej}"
+                    assert "cannot be combined with 'state'/'value'" in str(rej.get("error", "")), \
+                        f"reject error should name the mutual-exclusion: {rej}"
+                except (McpToolError, McpError) as exc:
+                    assert "cannot be combined with 'state'/'value'" in str(exc), \
+                        f"compareToDevice + literal state fail-loud should name the mutual-exclusion: {exc}"
+            finally:
+                self._delete_native(reject_app_id)
 
             self._assert_rule_healthy(app_id)
         finally:
