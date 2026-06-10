@@ -1538,6 +1538,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.1.4** - feat: register basic_rule, add Button Rule creation + walkStep to the native-app tool. PRs: [#260](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/260)
 - **v2.1.3** - feat: hub_update_package full HPM-repair deploy, top-level dev-mode tool. PRs: [#261](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/261)
 - **v2.1.2** - fix: enum-recognized Custom Attribute false-partial across all RM 5.1 wizard surfaces. PRs: [#244](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/244)
 - **v2.1.1** - chore: vendor classic-UI dynamicPage engine as RM wire-format reference; ci: speed up the watchdog e2e ~23% (bundle-only deploy, batched fixtures, deferred deletes); docs: point AGENTS.md at resources/hub2-source as the reverse-engineering reference; feat: surface pending hub firmware update + health alerts from /hub2/hubData. PRs: [#253](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/253), [#251](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/251), [#255](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/255), [#256](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/256)
