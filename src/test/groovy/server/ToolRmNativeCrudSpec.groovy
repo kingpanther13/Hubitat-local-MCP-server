@@ -415,6 +415,59 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "deviceList"             | ["479": "BtnDev"]
     }
 
+    def "_rmInitSelectActionsPage tickles the selectActionsX editor page on Button Rule-5.1 (page-graph shift)"() {
+        given:
+        // Button Rule-5.1's ROOT page is named selectActions (playing mainPage's
+        // role); the real actions editor is selectActionsX -- rendering IT is
+        // what initializes state.actNdx. Tickling the root leaves actNdx null
+        // and the doActPage editor renders `actType.null`, so every
+        // actType.<N> write lands not_in_schema (the button-rule addAction
+        // e2e failure, verified live on fw 2.5.0.143).
+        def fetched = []
+        hubGet.register('/installedapp/configure/json/700') { params ->
+            fetched << "root"
+            JsonOutput.toJson([app: [id: 700, installed: true, version: 1, appType: [name: "Button Rule-5.1", namespace: "hubitat"]],
+                               configPage: [name: "selectActions", sections: []], settings: [:]])
+        }
+        hubGet.register('/installedapp/configure/json/700/selectActionsX') { params ->
+            fetched << "selectActionsX"
+            JsonOutput.toJson([app: [id: 700, installed: true, version: 4, appType: [name: "Button Rule-5.1", namespace: "hubitat"]],
+                               configPage: [name: "selectActionsX", sections: []], settings: [:]])
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        script._rmInitSelectActionsPage(700)
+
+        then: "the editor page (selectActionsX), not the root, is rendered and tickled"
+        fetched.contains("selectActionsX")
+        def tickle = posts.find { it.path == "/installedapp/update/json" }
+        tickle != null
+        tickle.body.currentPage == "selectActionsX"
+        tickle.body.version == "4"
+    }
+
+    def "_rmInitSelectActionsPage keeps the RM 5.1 selectActions page for plain rules"() {
+        given:
+        hubGet.register('/installedapp/configure/json/701') { params -> ruleConfigJson(701) }
+        hubGet.register('/installedapp/configure/json/701/selectActions') { params -> ruleConfigJson(701) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        script._rmInitSelectActionsPage(701)
+
+        then:
+        posts.find { it.path == "/installedapp/update/json" }?.body?.currentPage == "selectActions"
+    }
+
     def "create_rm_rule force-deletes orphan when setup fails after createchild succeeds"() {
         given:
         enableWrite()

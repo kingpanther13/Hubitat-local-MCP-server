@@ -19781,16 +19781,33 @@ private boolean _rmModeIdMatches(Object key, String mid) {
 }
 
 private void _rmInitSelectActionsPage(Integer appId) {
+    // Button Rule-5.1's page graph shifts one level vs RM 5.1: its ROOT page
+    // is NAMED selectActions (playing mainPage's role -- origLabel/logging
+    // inputs plus a "Define Actions" href) and the actual actions editor is
+    // selectActionsX. Rendering the EDITOR page is what initializes
+    // state.actNdx; tickling the root leaves it null and the doActPage
+    // editor input renders as `actType.null`, so every actType.<N> write
+    // lands not_in_schema (verified live on fw 2.5.0.143). Once actNdx is
+    // initialized the rest of the action wizard (doActN click, doActPage
+    // walk, selectActions navigation + verification) works unchanged on
+    // Button Rules.
+    def editorPage = "selectActions"
+    try {
+        def rootCfg = _rmFetchConfigJson(appId)
+        if (rootCfg?.app?.appType?.name == "Button Rule-5.1") editorPage = "selectActionsX"
+    } catch (Exception typeExc) {
+        mcpLog("warn", "rm-native", "_rmInitSelectActionsPage: root config fetch failed for app ${appId} (${typeExc.message}) -- assuming the RM 5.1 page graph")
+    }
     def cfg
-    try { cfg = _rmFetchConfigJson(appId, "selectActions") }
+    try { cfg = _rmFetchConfigJson(appId, editorPage) }
     catch (Exception fetchExc) {
-        mcpLog("warn", "rm-native", "_rmInitSelectActionsPage: selectActions fetch failed for app ${appId} (${fetchExc.message}) -- state.actNdx may not initialize, first +N click may NPE")
+        mcpLog("warn", "rm-native", "_rmInitSelectActionsPage: ${editorPage} fetch failed for app ${appId} (${fetchExc.message}) -- state.actNdx may not initialize, first +N click may NPE")
         return
     }
     def body = [
         id: appId.toString(),
         formAction: "update",
-        currentPage: "selectActions",
+        currentPage: editorPage,
         pageBreadcrumbs: '["mainPage"]'
     ]
     def v = cfg?.app?.version
