@@ -1980,7 +1980,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             # Response may not carry the ids -- look the device up by label.
             time.sleep(0.3)
             vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
-            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+            devices_list = vdevs if isinstance(vdevs, list) else (vdevs.get("devices", []) if isinstance(vdevs, dict) else [])
+            for d in devices_list:
                 if label in (d.get("label") or d.get("name") or ""):
                     dev_id = dev_id or str(d["id"])
                     dni = dni or str(d.get("deviceNetworkId", d.get("dni", "")) or "")
