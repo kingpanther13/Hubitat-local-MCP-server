@@ -23140,7 +23140,10 @@ private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         if (vrb != null) {
             snapshot.vrbFormat = vrb.format
             snapshot.vrbRulePaused = vrb.data.rulePaused == true
-            if (snapshot.appLabel == null) snapshot.appLabel = vrb.data.name
+            // Prefer the rule's OWN name over the installed-app label: the hub decorates a
+            // paused rule's label with " (Paused)" (live-verified), and a restore that
+            // replays the decorated label bakes the suffix into the real rule name.
+            if (vrb.data.name?.toString()?.trim()) snapshot.appLabel = vrb.data.name
             if (vrb.format == "classic") {
                 snapshot.vrbDefinition = [whenNodes: vrb.data.whenNodes ?: [],
                                           thenNodes: vrb.data.thenNodes ?: [],
