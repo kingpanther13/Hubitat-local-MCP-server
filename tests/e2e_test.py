@@ -378,6 +378,55 @@ class TestRunner:
         assert self._test_switch_id, "Failed to create test switch"
         return self._test_switch_id
 
+    def get_test_temperature_ids(self) -> tuple[str, str]:
+        """Get or create two BAT_E2E_ virtual temperature sensors for device-relative tests.
+
+        compareToDevice compares one device's reading to another's on the SAME capability,
+        so the walker needs two Temperature-capable devices. Like the test switch, these are
+        persistent scaffolding (NOT tracked in created_device_dnis) so teardown leaves them
+        for the next run to find-and-reuse.
+        """
+        if getattr(self, "_test_temp_ids", None):
+            return self._test_temp_ids
+
+        labels = [f"{PREFIX}Temp_A", f"{PREFIX}Temp_B"]
+        found: dict[str, str] = {}
+        try:
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
+            for d in dev_list:
+                lbl = d.get("label") or d.get("name") or ""
+                for want in labels:
+                    if want in lbl:
+                        found[want] = str(d["id"])
+        except Exception:
+            pass
+
+        for want in labels:
+            if want in found:
+                continue
+            result = self.client.call_tool("hub_manage_virtual_device", {
+                "action": "create",
+                "deviceType": "Virtual Temperature Sensor",
+                "deviceLabel": want,
+                "confirm": True,
+            })
+            dev_id = result.get("id", result.get("deviceId", ""))
+            if not dev_id:
+                time.sleep(0.3)
+                vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+                dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
+                for d in dev_list:
+                    lbl = d.get("label") or d.get("name") or ""
+                    if want in lbl:
+                        dev_id = str(d["id"])
+                        break
+            assert dev_id, f"Failed to create test temperature sensor {want}"
+            found[want] = str(dev_id)
+
+        self._test_temp_ids = (found[labels[0]], found[labels[1]])
+        return self._test_temp_ids
+
     def _record(self, name: str, group: str, status: str,
                 message: str = "", duration: float = 0.0) -> None:
         tag = {"pass": "[PASS]", "fail": "[FAIL]", "skip": "[SKIP]"}[status]
@@ -1258,6 +1307,90 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_set_rule_walker_compare_to_device(self) -> None:
+        # hub_set_rule edit -> addRequiredExpression (STPage reveal walker) with a
+        # device-relative compareToDevice condition. This is the only automated guard
+        # against wire-format drift for two client-observable behaviours this feature
+        # changes: (1) the device-relative RHS now actually lands (isDev_<N> toggles,
+        # relDevice_<N> is written, the rule renders "Temperature of A is > B - 2.0"),
+        # and (2) a literal RHS (state/value) combined with compareToDevice is now a hard
+        # reject, not a silent literal fallback. The unit Spock suite proves the logic in
+        # isolation; this proves it end-to-end against a live hub, where the feature was
+        # unit-green but live-wrong before the wire-up fix.
+        dev_a, dev_b = self.get_test_temperature_ids()
+        app_id = self._create_native_rule("CtdWalk")
+        try:
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "appId": app_id,
+                    "addRequiredExpression": {"conditions": [
+                        {"capability": "Temperature", "deviceIds": [int(dev_a)],
+                         "comparator": ">",
+                         "compareToDevice": {"deviceId": int(dev_b),
+                                             "attribute": "temperature", "offset": -2}}]},
+                    "confirm": True,
+                },
+            })
+            # (1) The device-relative condition committed cleanly.
+            assert result.get("success") is not False, \
+                f"compareToDevice addRequiredExpression reported failure: {result}"
+            assert not result.get("partial"), \
+                f"compareToDevice condition falsely flagged partial (the live-wrong false-partial): {result}"
+            applied = result.get("settingsApplied") or []
+            assert any(str(k).startswith("isDev_") for k in applied), \
+                f"isDev_<N> toggle did not land -- the device-relative RHS was not wired: {applied}"
+            assert any(str(k).startswith("relDevice_") for k in applied), \
+                f"relDevice_<N> reference picker did not land: {applied}"
+            # The rule renders device-relative text, NOT a literal threshold / "A > 0".
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id},
+            })
+            blob = str(cfg)
+            assert ("Temperature of" in blob) or ("temperature of" in blob.lower()), \
+                f"rule paragraph does not render a device-relative Temperature comparison: {blob[:600]}"
+            # No degradation skip for the empty device-picker option list (normal case).
+            skipped = result.get("settingsSkipped") or []
+            bad = [s for s in skipped if isinstance(s, dict)
+                   and s.get("key") == "compareToDevice-validation"]
+            assert not bad, f"unexpected compareToDevice-validation skip (empty device-picker options are normal): {bad}"
+
+            # (2) compareToDevice + a literal state RHS is now a HARD reject (fail-loud),
+            # not a silent literal fallback. The mutual-exclusion guard is a pre-write
+            # check inside the walker, so exercise it on a FRESH rule: adding a second
+            # Required Expression to a rule that already has one (the first-RE committed
+            # above) takes a different path that never reaches the per-condition walker
+            # check, masking the guard's error behind the second-RE failure.
+            reject_app_id = self._create_native_rule("CtdReject")
+            try:
+                try:
+                    rej = self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_set_rule",
+                        "args": {
+                            "appId": reject_app_id,
+                            "addRequiredExpression": {"conditions": [
+                                {"capability": "Temperature", "deviceIds": [int(dev_a)],
+                                 "comparator": ">", "state": 70,
+                                 "compareToDevice": {"deviceId": int(dev_b),
+                                                     "attribute": "temperature"}}]},
+                            "confirm": True,
+                        },
+                    })
+                    assert rej.get("success") is False, \
+                        f"compareToDevice + literal state should hard-reject (not partial/success): {rej}"
+                    assert "cannot be combined with 'state'/'value'" in str(rej.get("error", "")), \
+                        f"reject error should name the mutual-exclusion: {rej}"
+                except (McpToolError, McpError) as exc:
+                    assert "cannot be combined with 'state'/'value'" in str(exc), \
+                        f"compareToDevice + literal state fail-loud should name the mutual-exclusion: {exc}"
+            finally:
+                self._delete_native(reject_app_id)
+
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_required_expression_and_local_var(self) -> None:
         # hub_set_rule edit -> addLocalVariable + addRequiredExpression (STPage) wizards.
         sw = int(self.get_test_switch_id())
@@ -1505,6 +1638,132 @@ class TestRunner:
                     })
                 except Exception as exc:
                     print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
+
+    # -----------------------------------------------------------------------
+    # GROUP 4d: app_code_update (1 test) -- the hub_update_app code-deploy path
+    # (POST /app/saveOrUpdateJson). One throwaway code class, three legs before its delete:
+    # a real round-trip edit (success + version advance + source landed), the
+    # hub's verbatim compile error on broken Groovy (not our generic fallback),
+    # and the client-side expectedVersion optimistic lock (refused, no write).
+    # -----------------------------------------------------------------------
+
+    @test("app_code_update")
+    def test_update_app_code_lifecycle(self) -> None:
+        # Throwaway Apps Code class (code only, never installed as an instance). The name
+        # deliberately starts with "Deadman Test Target" (namespace mcptest) so the cleanup
+        # Layer 5 startswith sweep reclaims a stranded copy if a crash skips the finally below.
+        source_v1 = '''\
+definition(
+    name: "Deadman Test Target Update",
+    namespace: "mcptest",
+    author: "ci",
+    description: "Throwaway e2e app-code update-leg target",
+    category: "Utility",
+    iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
+    iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png"
+)
+
+preferences {
+    page(name: "p", title: "Update Leg Target", install: true, uninstall: true) {
+        section { paragraph "Throwaway update-leg target. Marker: ${updateLegMarker()}" }
+    }
+}
+
+def installed() {}
+def updated() {}
+
+def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
+'''
+        code_app_id = None
+        try:
+            created = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_app",
+                "args": {"source": source_v1, "confirm": True},
+            })
+            code_app_id = created.get("appId")
+            assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created}"
+
+            before = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "app", "id": code_app_id},
+            })
+            assert before.get("success") is True and before.get("version") is not None \
+                and "UPDATE-LEG-MARKER-V1" in (before.get("source") or ""), \
+                f"could not read back the created code class: {before}"
+            version_before = int(before["version"])
+
+            # Leg 1: round-trip edit -- valid modified source must save, advance the hub's
+            # version counter, and be readable back via hub_get_source.
+            source_v2 = source_v1.replace("UPDATE-LEG-MARKER-V1", "UPDATE-LEG-MARKER-V2")
+            updated = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_app",
+                "args": {"appId": code_app_id, "source": source_v2, "confirm": True},
+            })
+            assert updated.get("success") is True, f"hub_update_app round-trip failed: {updated}"
+            assert updated.get("previousVersion") is not None, \
+                f"hub_update_app success carries no previousVersion: {updated}"
+            after = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "app", "id": code_app_id},
+            })
+            assert "UPDATE-LEG-MARKER-V2" in (after.get("source") or ""), \
+                f"updated source did not land on the hub: {after}"
+            version_after = int(after["version"])
+            assert version_after > version_before, \
+                f"version did not advance after update ({version_before} -> {version_after})"
+
+            # Leg 2: compile error -- the hub's verbatim compiler text must ride back in
+            # `error`, not our generic fallback string.
+            source_broken = source_v2.replace(
+                "def updated() {}",
+                "def updated() { new ClassThatDoesNotExistBatE2e() }",
+            )
+            failed = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_app",
+                "args": {"appId": code_app_id, "source": source_broken, "confirm": True},
+            })
+            assert failed.get("success") is False, f"broken Groovy was accepted: {failed}"
+            err = str(failed.get("error") or "")
+            assert err and err != "Update failed - the hub returned an error", \
+                f"compile failure did not surface the hub's error text: {failed}"
+            assert "unable to resolve" in err.lower() or "ClassThatDoesNotExistBatE2e" in err, \
+                f"error text is not the hub's compiler output: {err!r}"
+
+            # Leg 3: optimistic lock -- a stale expectedVersion must be refused client-side
+            # with conflict:true, before anything is written.
+            source_v3 = source_v2.replace("UPDATE-LEG-MARKER-V2", "UPDATE-LEG-MARKER-V3")
+            conflicted = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_app",
+                "args": {"appId": code_app_id, "source": source_v3,
+                         "expectedVersion": 99999, "confirm": True},
+            })
+            assert conflicted.get("success") is False, \
+                f"stale expectedVersion was accepted: {conflicted}"
+            assert conflicted.get("conflict") is True, \
+                f"conflict flag missing on optimistic-lock refusal: {conflicted}"
+
+            # One re-read proves NEITHER refused leg wrote anything: still V2, no V3 marker,
+            # version unchanged since the round-trip edit.
+            final = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "app", "id": code_app_id},
+            })
+            final_src = final.get("source") or ""
+            assert "UPDATE-LEG-MARKER-V2" in final_src and "UPDATE-LEG-MARKER-V3" not in final_src, \
+                f"a refused update mutated the stored source: {final}"
+            assert int(final["version"]) == version_after, \
+                f"a refused update advanced the version ({version_after} -> {final.get('version')})"
+
+            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write")
+        finally:
+            if code_app_id:
+                try:
+                    self.client.call_tool("hub_manage_code", {
+                        "tool": "hub_delete_item",
+                        "args": {"type": "app", "id": code_app_id, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] app-code update cleanup: delete code class {code_app_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
     # GROUP 5: trigger_types (1 batched test -- all trigger types in one rule)
@@ -2849,10 +3108,12 @@ class TestRunner:
             except Exception as exc:
                 print(f"  [WARN] Native rule sweep failed: {exc}")
 
-        # Layer 5: stranded deadman install-fix throwaway. The @test("deadman") test installs
-        # 'Deadman Test Target' (namespace mcptest) + its code class; neither carries the BAT_E2E_
-        # prefix, so a crash/kill between its create and finally would strand it past the other
-        # sweeps. Reclaim instance(s) + code class by namespace+name (idempotent across runs).
+        # Layer 5: stranded mcptest throwaways. The @test("deadman") test installs 'Deadman Test
+        # Target' (instance + code class) and the @test("app_code_update") test creates the
+        # 'Deadman Test Target Update' code class (named to ride this same startswith match);
+        # none carry the BAT_E2E_ prefix, so a crash/kill between a create and its finally would
+        # strand them past the other sweeps. Reclaim instance(s) + code class by namespace+name
+        # (idempotent across runs).
         try:
             dtypes = self.client.call_tool("hub_read_apps_code",
                                            {"tool": "hub_list_apps", "args": {"scope": "types"}})
