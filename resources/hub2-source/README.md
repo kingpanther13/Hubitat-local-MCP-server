@@ -77,17 +77,36 @@ library editor, devices, **Visual Rules Builder** (`VisualRuleBuilder`,
 (`BasicRulesApp`), dashboards, Z-Wave/Zigbee admin, hub/system (backup, hub
 mesh, variables, modes, HSM, onboarding).
 
-**"Rule Builder 2.0" = the Visual Rule Builder.** The component is literally
-`VisualRuleBuilder20` (alongside the older `VisualRuleBuilder`), a graph/edge
-editor backed by `/app/ruleBuilder20Json/<id>` — not a separate engine.
+**There are TWO Vue builder components with different wire formats** behind one
+user-facing app type ("Visual Rules Builder" parent; children are hidden type
+109, type string "Visual Rule Builder"):
+
+- **`VisualRuleBuilder`** (v1.1) — the when/then/else node-list editor that
+  current firmware ships. Wire format: `{whenNodes, thenNodes, elseNodes}` via
+  `GET/POST /app/ruleBuilderJson/<id>`, including the AI-generate flow
+  (`/app/ruleBuilderGenerateRule`, Gemini cloud).
+- **`VisualRuleBuilder20`** — a graph editor (`nodes`/`edges`) backed by
+  `/app/ruleBuilder20Json/<id>`. **Dormant in fw 2.5.0.143**: the component is
+  registered in the bundle but has no PageSwitcher route, so the UI never
+  reaches it. Its endpoint is live, though — a graph-format rule answers on
+  `ruleBuilder20Json` and a classic rule does not, which is how the MCP VRB
+  tools detect a rule's serialization.
 
 ## Endpoints discovered
 
 | Endpoint | Notes |
 |---|---|
 | `POST /app/saveOrUpdateJson` | `{id, source, version}` (app); same shape for `/driver/` and `/library/` |
-| `GET  /app/ruleBuilderJson/<id>` | **Classic RM** rule's compiled internal state as JSON — `broken` flag, `eval`/`parens`/`predCapabs`, rendered condition text. Read-only; not used by the MCP server today. |
-| `GET/POST /app/ruleBuilder20Json/<id>` | Visual Rule Builder 2.0 rule graph — read+write JSON (`GET` → `{name, rulePaused, ruleJson}`; `POST {name, ruleJson}`) |
+| `GET/POST /app/ruleBuilderJson/<id>` | Serializes the raw state of ANY installed app (classic RM rules return their compiled state: `broken` flag, `eval`/`parens`/`predCapabs`, rendered condition text) and returns `{}` for nonexistent ids. ALSO the **classic Visual Rule read+WRITE endpoint**: for a classic-format VRB rule, `GET` returns `{name, rulePaused, whenNodes, thenNodes, elseNodes, promptHistory}`; the builder's `POST` body is `{name, rulePaused, whenNodes, thenNodes, elseNodes}` (the UI never posts `promptHistory` back — the hub retains it). Only the `whenNodes`+`thenNodes` shape identifies a classic VRB rule. Used by `hub_get_visual_rule`/`hub_set_visual_rule`. |
+| `GET/POST /app/ruleBuilder20Json/<id>` | Visual Rule Builder 2.0 (graph) rule — read+write. `ruleJson` is a **JSON STRING** (double-encoded graph). `GET` → `{name, rulePaused, ruleJson, validationErrors}`; `POST {name, ruleJson}` responds `{success?, name, ruleJson, validationErrors, errorMessage}` — treat the save as accepted unless `success === false`. Answers `{success:false, message:"Rule builder instance not found"}` (HTTP 200) for ANY non-graph id (nonexistent, RM, classic VRB alike). |
+| `GET  /app/createVisualRuleBuilderRule` | Navigation create: server-creates a new VRB child and returns (or redirects to) the builder page. The new appId travels ONLY as an injected window global in the HTML — `HubitatRuleBuilder20AppId` (graph editor) or `HubitatRuleBuilderAppId` (classic editor); which global is injected reveals the firmware's native format for new rules. |
+| `GET  /app/ruleBuilderPause/<id>/<true\|false>` | Pause/resume a Visual Rule — boolean rides in the path → `{success}` |
+| `GET  /app/ruleBuilderGenerateRule?appId=&prompt=` | VRB AI generate (Gemini cloud) → `{success, whenNodes, thenNodes, elseNodes}` |
+| `GET  /app/ruleBuilderSuggestions` | Prompt suggestions for the VRB AI-generate dialog |
+| `GET  /device/listWithCapabilities/json` | Device list with capabilities — feeds the VRB device pickers |
+| `GET  /modes/list/json` | Location modes list — feeds the VRB mode trigger/condition/action dialogs |
+| `GET  /appui/createBasicRulesChild` | Server-creates a new Basic Rules child → `{success, appId}` |
+| `GET  /appui/clearEmptyBasicRules` | Sweeps empty (never-saved) Basic Rules children |
 | `GET  /installedapp/configure/json/<id>` | Full live config page (sections, inputs, settings) — the RM **read** path the MCP server uses |
 | `POST /installedapp/update/json` | Classic settings POST (`dynamicPage` submit) — the RM **write** path |
 | `*    /installedapp/btn` | Classic page-button click |

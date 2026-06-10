@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 30 items (11 core + 19 gateways) covering 94 total tools. Use `hub_search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 30 items (11 core + 19 gateways) covering 97 total tools. Use `hub_search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
@@ -12,9 +12,9 @@ As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used 
 
 Gateway verbs encode mutation: **`hub_read_*`** gateways are pure-read (every sub-tool read-only), **`hub_manage_*`** gateways contain at least one write. A read tool may appear in BOTH a `hub_read_*` gateway and a mixed `hub_manage_*` gateway (multi-membership).
 
-**Read gateways:** `hub_read_apps_code` (9), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (4), `hub_read_variables` (3)
+**Read gateways:** `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (5), `hub_read_variables` (3)
 
-**Manage gateways:** `hub_manage_code` (9), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (3), `hub_manage_devices` (6), `hub_manage_diagnostics` (8), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_rooms` (5), `hub_manage_rule_machine` (5), `hub_manage_variables` (8)
+**Manage gateways:** `hub_manage_code` (11), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (3), `hub_manage_devices` (6), `hub_manage_diagnostics` (8), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (10), `hub_manage_rooms` (5), `hub_manage_rule_machine` (10), `hub_manage_variables` (8)
 
 All safety gates are preserved: the Read/Write master gate runs centrally in `executeTool()` and re-applies per sub-tool when a gateway routes back through it, and the destructive `confirm`+backup checks run in the handlers of the destructive write tools.
 
@@ -481,7 +481,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 
 ## Installed-App & Native-Rule Tools
 
-The installed-apps reads (`hub_list_apps` scope=instances, `hub_list_device_dependents`, `hub_get_app_config`, `hub_list_app_pages`, `hub_list_hpm_packages`) live in the `hub_read_apps_code` gateway; the native-app CRUD is split across `hub_manage_native_rules_and_apps` (generic classic apps via `hub_set_native_app`, plus delete/clone/export/import) and `hub_manage_rule_machine` (RM rule authoring via `hub_set_rule`). All of these are gated by the universal masters: the installed-app reads (and the native-rule reads like `hub_list_rules`) are gated by the **Read master**, and the native-app CRUD path (`hub_set_rule`, `hub_set_native_app`, `hub_delete_native_app`, etc.) by the **Write master** — the destructive CRUD additionally enforces `confirm=true` + a hub backup within 24h. If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the MCP Rule Server app settings page to turn the relevant master back ON (both default ON). If a destructive write blocks with a backup-age message, use `hub_create_backup` first. A tool can also be switched off individually under **Advanced: Per-tool Overrides** — that path returns "…is disabled in Advanced settings (Per-tool Overrides)…" and is re-enabled in the same settings page.
+The installed-apps reads (`hub_list_apps` scope=instances, `hub_list_device_dependents`, `hub_get_app_config`, `hub_list_app_pages`, `hub_list_hpm_packages`) live in the `hub_read_apps_code` gateway; the native-app CRUD is split across `hub_manage_native_rules_and_apps` (generic classic apps via `hub_set_native_app`, plus delete/clone/export/import) and `hub_manage_rule_machine` (RM rule authoring via `hub_set_rule`, plus the Visual Rules Builder tools `hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`). All of these are gated by the universal masters: the installed-app reads (and the native-rule reads like `hub_list_rules`) are gated by the **Read master**, and the native-app CRUD path (`hub_set_rule`, `hub_set_native_app`, `hub_delete_native_app`, etc.) by the **Write master** — the destructive CRUD additionally enforces `confirm=true` + a hub backup within 24h. If the user sees "Read tools are disabled" or "Write tools are disabled" errors, direct them to the MCP Rule Server app settings page to turn the relevant master back ON (both default ON). If a destructive write blocks with a backup-age message, use `hub_create_backup` first. A tool can also be switched off individually under **Advanced: Per-tool Overrides** — that path returns "…is disabled in Advanced settings (Per-tool Overrides)…" and is re-enabled in the same settings page.
 
 ### Installed-app reads (in `hub_read_apps_code`)
 
@@ -543,7 +543,7 @@ HPM package state introspection. The tool is gated by the **Read master** and HP
   - Example call: `hub_read_apps_code(tool="hub_list_hpm_packages", args={includeDrift: true, packageFilter: "BOND"})` — checks drift for only packages whose name contains "BOND"
   - Design note: the base package inventory emits `_warning` inline on each component **because** consumers typically enumerate components per-package; the `includeDrift=true` output emits `dataQualityWarnings[]` as a separate aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count
 
-### hub_manage_native_rules_and_apps (11 tools)
+### hub_manage_native_rules_and_apps (10 tools)
 
 Two surfaces under one gateway: RMUtils-based runtime control for RM rules (RM-only because RMUtils is RM-only) plus admin-layer CRUD that works uniformly across any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.). The four RMUtils control tools below are ALSO surfaced (alongside `hub_get_rule_health`) in the `hub_manage_rule_machine` gateway; the read-only members (`hub_list_rules`, `hub_get_rule_health`) additionally appear in `hub_read_rules`.
 
@@ -813,6 +813,67 @@ The tool ALWAYS creates the rule shell (you get an `appId` back) even if some tr
 - Each per-trigger / per-action result has its own `success`, `partial`, `settingsSkipped`, `repairHints`, and `health` block. `success: true, partial: true` on an inner result means the row was written but needs repair.
 
 The right move when `partial: true` is to follow the `repairHints`, NOT to delete the rule and retry from scratch. Tool-only repair via `hub_set_rule(walkStep={...})` / `replaceActions` / `removeAction` can usually finish the job. Only declare failure after exhausting those repair attempts.
+
+### Visual Rules Builder tools (in `hub_manage_rule_machine`; read also in `hub_read_rules`)
+
+- **`hub_get_visual_rule(appId?)`** — list every Visual Rules Builder rule (omit `appId`: `{appId, name, disabled}` entries) or read one rule's full definition. Every single-rule success response carries `format`: `'classic'` (`{whenNodes, thenNodes, elseNodes}`) or `'graph'` (`{version, nodes, edges}`). Read master.
+- **`hub_set_visual_rule(appId?, name, definition, paused?, confirm)`** — create (omit `appId`; `name` + `definition` required) or edit (the `definition` replaces wholesale, `name` renames, `paused` pauses/resumes). The definition's format must match the rule's existing format; responses include a read-back `verified` flag. Write master + `confirm=true` + a backup within 24h.
+- **`hub_delete_visual_rule(appId, confirm)`** — type-gated delete (refuses ids that are not VRB rules); returns the rule's `predeleteDefinition` so it can be recreated. Write master + `confirm=true` + a backup within 24h.
+
+Full node schemas, field catalog, and a worked example: the "Visual Rules Builder reference" section below (`hub_get_tool_guide(section='visual_rule_reference')`).
+
+---
+
+## Visual Rules Builder reference (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`)
+
+Visual Rules Builder (VRB) is Hubitat's simplest rule engine — capability tier similar to Basic Rules, but stored as ONE clean JSON definition (no wizard, no settings[] protocol). PREFER it for simple device automations; use `hub_set_rule` (Rule Machine) when you need: nested IF/THEN/ELSE in actions, loops, local variables, boolean expressions, capture/restore, custom device commands, or running another rule's actions.
+
+### Two serializations (`format` in every single-rule success response)
+
+A VRB rule speaks exactly one of two wire formats, decided by the hub firmware at creation. `hub_get_visual_rule` reports which; an edit's `definition` must match it.
+
+**classic** — `{whenNodes: [...], thenNodes: [...], elseNodes: [...]}` (the when/then/else editor; what current firmware creates):
+- Every node: `triggerType` (or `actionType`), `deviceIds` (ALWAYS present; mirrors the per-type device array), `index` (int, 0-based per list), `type` ("when"/"then"/"else"), optional `description` (HTML label).
+- whenNode example (switch trigger): `{"triggerType": "switch", "switches": [59], "deviceIds": [59], "switchEvent": "Turns off", "index": 0, "type": "when"}`
+- thenNode example (turn off): `{"actionType": "turnOff", "switches": [122], "deviceIds": [122], "index": 0, "type": "then"}`
+- At least one whenNode must be a REAL trigger (the builder refuses rules whose only triggers are `timeIsBetween`/`daysOfWeek`).
+
+**graph** — `{version: 1, nodes: [...], edges: [...]}` (the dormant 2.0 graph editor):
+- Node: `{id, type: "trigger"|"condition"|"action", deviceIds: [...]}` + `triggerType`/`actionType` + per-type fields. Stored graph nodes put the node KIND in `triggerCondition` and the sub-condition in `condition`.
+- Edge: `{from, to, port}`. Ports: `next` (trigger/action source), `true`/`false` (condition source). Triggers have no incoming edges; conditions/actions exactly one. No cycles.
+- On the wire the graph travels as a JSON STRING inside `{name, ruleJson}` — the tool handles the double-encoding for you; always pass `definition` as a normal JSON object.
+
+### Field catalog (classic + graph dialogs share these)
+
+Triggers (`triggerType` → device array + event field):
+- `switch` → `switches`, `switchEvent`: "Turns on" | "Turns off" | "Turns on and stays on for..." | "Turns off and stays off for..." (+ `switchStaysMinutes`/`switchStaysSeconds` on the stays variants)
+- `motion` → `motionSensors`, `motionSensorEvent`: "Motion starts" | "Motion stops" | "Motion stops and stays inactive for..." (+ `motionStaysMinutes`/`motionStaysSeconds`)
+- `contact` → `contactSensors`, `contactSensorEvent`: "Contact opens" | "Contact closes" | "...and stays open/closed for..." (+ `contactStaysMinutes`/`contactStaysSeconds`)
+- `presence` → `presenceSensors`, `presenceSensorEvent`: "Everyone leaves" | "Someone arrives"
+- `lock` → `locks`, `lockEvent`: "Locked" | "Unlocked"
+- `button` → `buttons`, `buttonEvent`: "Pushed" | "Held" | "Released" | "Double tapped", `buttonIndex` (int)
+- `temperature`/`humidity`/`illuminance` → `temperatureSensors`/`humiditySensors`/`illuminanceSensors`, `<type>SensorEvent`: "<Type> has risen above..." | "<Type> has fallen below...", value in `temperature`/`humidity`/`illuminance`
+- `power` → `powerMeters`, `powerMeterEvent` (risen above / fallen below / become and stayed above|below + `power`, `powerStaysMinutes`/`Seconds`)
+- `water`/`smoke`/`co`/`acceleration`/`shock` → `<type>Sensors` + `<type>SensorEvent` (exact English sentences from the builder UI)
+- `timeOfDay` → `timeOfDay`: "HHMM" colon-less string (e.g. "0730")
+- `sunriseSunset` → sub-condition beforeSunrise/sunrise/afterSunrise/beforeSunset/sunset/afterSunset + `minutesBefore/AfterSunrise|Sunset`
+- `systemMode` → `modes`: [mode ids from hub_list_modes]
+
+Conditions (classic: appear as whenNodes with condition `triggerType`s; graph: `type:"condition"` nodes): `switchCondition` (`switchState`: "Turned on"|"Turned off"), `motionCondition` (`motionSensorState`: "Motion is active"|"Motion is inactive"), `contactCondition`, `presenceCondition`, `lockCondition` (`lockState`), `temperatureCondition`/`humidityCondition`/`illuminanceCondition`/`powerCondition` ("... is above..."|"... is below..." + value), `systemModeCondition` (`modes`), `timeIsBetween` (specificTimes + `startTime`/`endTime` "HHMM", or sunriseToSunset/sunsetToSunrise), `daysOfWeek` (`daysOfWeek`: [0-6], 0=Sunday).
+
+Actions (`actionType`): `turnOn`/`turnOff`/`toggle` (`switches`), `setBrightness` (`dimmers`, `brightness` 0-100), `setColorTemp` (`colorTempBulbs`, `colorTemp` Kelvin), `setColor` (`colorBulbs`, `color` {h,s,b}), `lock`/`unlock` (`locks`), `openValve`/`closeValve`, `openGarageDoor`/`closeGarageDoor`, `openWindowShade`/`closeWindowShade`, `pushButton` (`button` single id, `buttonIndex`), `sendNotification` (`notificationDevices`, `notificationMessage`), `speakNotification` (`speechDevices`, `speakMessage`), `controlPlayer` (`musicPlayers`, `musicPlayerAction`), `controlThermostat` (`thermostats`, setMode/mode, setFanMode/fanMode, setHeatingSetpoint/heatingSetpoint, setCoolingSetpoint/coolingSetpoint), `setMode`/`setModeUnlessAway` (`mode` single id), `exitAwayMode`, `wait` (`minutes`, `seconds` — cancelable), `cancelWait`.
+
+Gotchas: event/state strings are EXACT English sentences including the trailing "..."; `deviceIds` must mirror the per-type device array; device ids are integers from hub_list_devices; times are colon-less "HHMM" strings.
+
+### Worked example (classic create)
+
+hub_set_visual_rule(name="Hallway motion light", confirm=true, definition={
+  "whenNodes": [{"triggerType": "motion", "motionSensors": [42], "deviceIds": [42], "motionSensorEvent": "Motion starts", "index": 0, "type": "when"}],
+  "thenNodes": [{"actionType": "turnOn", "switches": [17], "deviceIds": [17], "index": 0, "type": "then"}],
+  "elseNodes": []
+})
+
+Then verify with hub_get_visual_rule(appId=<returned appId>) — the response echoes the persisted definition. Pause/resume with hub_set_visual_rule(appId=N, paused=true|false, confirm=true).
 
 ---
 
