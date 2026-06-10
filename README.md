@@ -1549,6 +1549,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.1.5** - Wire device-relative compareToDevice to the real RM 5.1.8 control (isDev_<N>). PRs: [#262](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/262)
 - **v2.1.4** - feat: register basic_rule, add Button Rule creation + walkStep to the native-app tool. PRs: [#260](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/260)
 - **v2.1.3** - feat: hub_update_package full HPM-repair deploy, top-level dev-mode tool. PRs: [#261](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/261)
 - **v2.1.2** - fix: enum-recognized Custom Attribute false-partial across all RM 5.1 wizard surfaces. PRs: [#244](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/244)

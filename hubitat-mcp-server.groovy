@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 2.1.4 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 2.1.5 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -17028,9 +17028,9 @@ String _rmNormalizeAtTime(String raw) {
  * would be the mechanical class-fix (PIPELINE.md Rule 13) that closes the
  * remaining gap.
  *
- * Genuinely-partial reason codes (`silent_rejection`, `rhs_type_not_revealed`,
- * `offset_field_not_revealed`, `verification_fetch_failed`, `not_in_schema`,
- * `api_unavailable`, etc.) are NOT in this list and continue to flip `partial`.
+ * Genuinely-partial reason codes (`silent_rejection`, `offset_field_not_revealed`,
+ * `verification_fetch_failed`, `not_in_schema`, `api_unavailable`, etc.) are NOT
+ * in this list and continue to flip `partial`.
  * Reason-code is the disambiguator -- doc contract at the inline hub_get_tool_guide
  * content block calls this list out by name.
  */
@@ -20023,6 +20023,12 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             exprConds.eachWithIndex { c, cIdx ->
                 if (c instanceof Map) {
                     _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].deviceIds", (c as Map).deviceIds)
+                    // compareToDevice reference device: existence-validated up front, before
+                    // the walker opens the slot, so a nonexistent reference id fails loud.
+                    def cm = c as Map
+                    if (cm.compareToDevice instanceof Map && (cm.compareToDevice as Map).deviceId != null) {
+                        _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].compareToDevice.deviceId", [(cm.compareToDevice as Map).deviceId])
+                    }
                 }
             }
         }
@@ -24040,7 +24046,7 @@ private Map _rmRevealStep(Integer appId, String page, String pattern, Closure tr
  * the slot.
  *
  * The per-capability sequences (static bounds: Mode=2, Between-two-times=4, Variable=3,
- * Custom Attribute=2, compareToDevice=variable but bounded by firmware-revealed fields):
+ * Custom Attribute=2, Device-relative bounded by firmware-revealed fields):
  *   Mode              -- rCapab -> re-fetch -> discover modes<N> picker -> write IDs -> hasAll
  *   Between two times -- rCapab -> re-fetch -> startType (clock|sunrise|sunset) ->
  *                        re-fetch -> start field -> re-fetch -> endType -> re-fetch ->
@@ -24054,11 +24060,12 @@ private Map _rmRevealStep(Integer appId, String page, String pattern, Closure tr
  *                        bug fix: writing RelrDev back-to-back silently rejected it,
  *                        and an enum-recognized attribute hides RelrDev entirely and
  *                        reveals state_<N>, so the comparator is skipped for that case)
- *   Device-relative   -- rCapab -> rDev_<N> -> re-fetch -> RelrDev_<N> -> re-fetch ->
- *                        attempt enum RHS-type reveal (ABSENT on RM 5.1.8 -- the real
- *                        control is a boolean isDev_<N> toggle; this path currently
- *                        degrades to rhs_type_not_revealed + literal state_<N> fallback,
- *                        boolean wire format is a follow-up) -> hasAll
+ *   Device-relative   -- rCapab -> rDev_<N> -> rCustomAttr_<N> -> re-fetch ->
+ *                        RelrDev_<N> comparator + isDev_<N>=true -> reveal
+ *                        relDevice_<N> (capability-locked SINGLE reference-device
+ *                        picker) -> write reference id -> optional state_<N> offset
+ *                        -> hasAll (no separate reference-attribute picker -- the
+ *                        compared attribute is implied by the shared capability)
  *   Enum/default      -- rCapab -> rDev_<N> -> state_<N> -> hasAll
  *                        (unchanged direct-write path for simple enum/numeric capabilities)
  *
@@ -24173,6 +24180,20 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         cancelInFlightCond()
         def validValues = discreteValid.collect { "'${it}'" }.join(" or ")
         throw new IllegalArgumentException("conditions[${condIdx}]: ${capCanonical} is a discrete-event capability -- pass state: ${validValues} instead of a comparator+value pair. The comparator-without-value shape silently degrades on RM 5.1 (no broken marker, but the condition is functionally meaningless). See rCapab_<N> capability list for the full state-value table.")
+    }
+
+    // ---- Pre-walker guard: compareToDevice capability scope ----
+    // compareToDevice (device-relative RHS) is wired only on the numeric-device path
+    // below (Temperature, Humidity, Illuminance, ...). The capabilities that return
+    // before that path -- Mode, Between two times, Variable, Custom Attribute -- never
+    // reach the isDev_<N>/relDevice_<N> reveal, so a compareToDevice passed alongside
+    // one of them would be silently dropped (the capability block commits a literal
+    // condition and returns). Reject up front so the contract the docs promise holds
+    // unconditionally. Mirrors the DISCRETE_EVENT_CAPS guard's in-pattern shape.
+    def COMPARETODEVICE_UNSUPPORTED_CAPS = ["Mode", "Between two times", "Variable", "Custom Attribute"] as Set
+    if (cond.compareToDevice != null && (capCanonical in COMPARETODEVICE_UNSUPPORTED_CAPS)) {
+        cancelInFlightCond()
+        throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice (device-relative RHS) is only supported with numeric device capabilities (e.g. Temperature, Humidity, Illuminance); capability '${capCanonical}' does not support it. Capabilities with dedicated handling instead: Mode, Between two times, Variable, Custom Attribute.")
     }
 
     // ---- Mode capability ----
@@ -24671,139 +24692,169 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     //        compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}
     // Each _rmRevealStep trigger writes the field that reveals the next field.
     //
-    // KNOWN-DEGRADED on RM 5.1.8 (verified live): this block hunts an enum
-    // RHS-type selector (stateType_<N>/rhsType_<N>) that 5.1.8 does NOT render.
-    // The real control is a BOOLEAN isDev_<N> ("Relative to a device?") toggle,
-    // with relDevice_<N> (the reference device, capability-typed) and state_<N>
-    // (decimal offset). Because the expected enum never appears, the reveal below
-    // returns null and the path degrades to a literal-value fallback recording
-    // rhs_type_not_revealed (partial). The boolean-toggle wire format is a
-    // separate follow-up; do not treat the enum reveal below as correct.
+    // RM 5.1's device-relative RHS is gated by a BOOLEAN toggle, the exact
+    // structural sibling of the Variable capability's isVar_<N> right-hand
+    // picker. Invariant chain: writing the comparator RelrDev_<N> reveals
+    // isDev_<N> ("Relative to a device?"); toggling isDev_<N>=true reveals
+    // relDevice_<N> (the reference device picker, capability-locked to the LHS
+    // capability and SINGLE-select) and re-titles state_<N> from a literal value
+    // into the optional decimal offset. There is no separate reference-attribute
+    // picker -- the compared attribute is implied by the shared capability, so
+    // compareToDevice.attribute is optional and informational (it has no wire
+    // consumer; the walker never validates or writes it). relDevice_<N> is a
+    // capability.* DEVICE picker whose empty-option-list handling is documented at
+    // the option-list check below.
     if (cond.compareToDevice instanceof Map) {
         def ctd = cond.compareToDevice as Map
-        if (!ctd.deviceId) {
+        if (ctd.deviceId == null) {
             cancelInFlightCond()
             throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice requires 'deviceId' (the reference device ID). Got: ${ctd}")
         }
-        if (!ctd.attribute) {
-            cancelInFlightCond()
-            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice requires 'attribute' (the attribute to compare to, e.g. 'temperature'). Got: ${ctd}")
-        }
+        // compareToDevice.attribute is OPTIONAL and informational: the compared attribute
+        // is implied by the shared capability (there is no separate reference-attribute
+        // picker), so it has no wire consumer and is neither validated nor written.
         // A device RHS is only meaningful with a comparator -- it is the operator between
-        // the LHS device attribute and the reference device's attribute. Without it the
-        // RelrDev/RHS-type reveal below is gated on `cond.comparator != null` and skipped,
-        // leaving rCapab/rDev written but no comparator and no RHS -- a half-written
+        // the LHS device attribute and the reference device's attribute. Without it
+        // rCapab/rDev are written but no comparator and no RHS land -- a half-written
         // condition that silently passes through hasAll and renders incomplete. Fail loud
         // before any hub write, mirroring the other pre-write capability validators.
         if (cond.comparator == null) {
             cancelInFlightCond()
             throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice requires 'comparator' (e.g. '>', '<', '=') -- a device RHS needs an operator. Without it the condition writes the capability and device but no comparison and renders incomplete.")
         }
+        // A device RHS is mutually exclusive with every other RHS shape -- RM renders
+        // exactly one. The device-relative path writes the offset (if any) to state_<N>;
+        // a caller-supplied state/value would silently never land, and a caller-supplied
+        // compareToVariable (variable RHS) would silently be dropped. Reject the ambiguous
+        // combination up front, mirroring the Variable path's compareToVariable-vs-state/value
+        // reject.
+        if (cond.state != null || cond.value != null) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice (device-relative RHS) cannot be combined with 'state'/'value' (literal RHS) -- mutually exclusive; use compareToDevice.offset for an offset.")
+        }
+        if (cond.compareToVariable != null) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice (device-relative RHS) cannot be combined with 'compareToVariable' (variable RHS) -- mutually exclusive; either remove compareToVariable (keep compareToDevice) or remove compareToDevice (keep compareToVariable).")
+        }
+        def refDevId = ctd.deviceId.toString()
+        // The reference device is existence-validated hub-wide BEFORE any write -- the
+        // up-front validateDeviceIdsRecursive sweeps in _rmAddRequiredExpression (STPage)
+        // and _rmAddAction (doActPage) include compareToDevice.deviceId, so a
+        // typo'd/nonexistent id is rejected before the walker opens this slot (the walker
+        // contract requires cancel-before-throw, and every throw in this block already
+        // pairs with cancelInFlightCond -- a mid-walk existence throw would not). This is
+        // existence-only, not capability: the LHS is not capability-validated either, and a
+        // wrong-capability reference device renders broken just like a wrong-capability LHS
+        // (acceptable parity). The option-list check further down is a defensive
+        // capability-lock that only fires on the rare firmware variant which surfaces
+        // device-picker options; on normal firmware a capability.* device picker exposes none.
         // Write rCapab and rDev as plain writes (no progressive-disclosure on these for numeric caps).
         writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
         if (cond.deviceIds != null) {
             writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
         }
         if (cond.attribute != null) {
+            // cond.attribute is the LHS condition's own Custom-Attribute name (the attribute
+            // being COMPARED on the left), written to rCustomAttr_<N>. It is NOT
+            // ctd.attribute (compareToDevice.attribute) -- that one names the reference
+            // device's attribute, is implied by the shared capability, and is informational
+            // only (no wire consumer; neither validated nor written). The two are distinct.
             writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
         }
-        // Reveal RelrDev_<N> by writing the last of rCapab/rDev/rCustomAttr as trigger.
-        // For this path the preceding writes have already landed; the re-fetch in
-        // _rmRevealStep with an empty trigger confirms the current schema, then a no-op
-        // trigger allows checking what's already visible vs what appeared after the
-        // previous writes.  Since we cannot know which write gated RelrDev_<N>, we use
-        // a direct fetch to check for it and fail-loud if absent.
+        // RelrDev_<cIdx> (the comparator) must be visible after the rCapab/rDev/rCustomAttr
+        // writes land. We cannot know which of those writes gated it, so direct-fetch the
+        // current schema and fail loud if it is absent. The loose /RelrDev_\d+/ find is the
+        // PRESENCE check only -- it confirms the comparator slot rendered. The actual write
+        // target is the exact RelrDev_<cIdx> key (below): in a multi-condition expression a
+        // lingering sibling slot would let a loose-find write land in another condition's
+        // RelrDev_<other> (writeST verifies the wrong-but-valid field as applied, so the
+        // mistake is silent). The exact-key write mirrors the offset state_<cIdx> anchor.
         def afterBaseFields = _rmFetchConfigJson(appId, page)
         def afterBaseInputs = (afterBaseFields?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-        if (cond.comparator != null) {
-            def relrInput = afterBaseInputs.find { it?.name?.toString() ==~ /RelrDev_\d+/ }
-            if (!relrInput) {
-                cancelInFlightCond()
-                def visible = afterBaseInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none)"
-                throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: RelrDev_<N> not visible after rCapab/rDev/rCustomAttr writes. Visible fields: ${visible}")
-            }
-            // Attempt to reveal an enum RHS-type selector by writing RelrDev as the
-            // trigger. On RM 5.1.8 this selector does NOT exist (the control is a
-            // boolean isDev_<N> toggle, see the block-head note) so the reveal returns
-            // null and the path falls through to the rhs_type_not_revealed degradation
-            // below. Normalize the comparator (!= -> ≠, == -> =) for parity with every
-            // other comparator write -- the RM enum only accepts the Unicode glyphs.
-            def rhsTypeReveal = revealStep(appId, page, /stateType_\d+|rhsType_\d+/, {
-                writeST(hrefParams, "RelrDev_${cIdx}".toString(), _rmNormalizeComparator(cond.comparator.toString()))
-            })
-            if (!rhsTypeReveal.input) {
-                // Expected path on RM 5.1.8: the enum RHS-type selector this hunts for
-                // does NOT exist (the real control is a boolean isDev_<N> toggle, see the
-                // block-head note), so the reveal returns null and we degrade to writing
-                // literal state_<N>. Surface a degradation sentinel so callers can detect
-                // the partial write. Full boolean-toggle wire format is a follow-up.
-                def fallbackNote = (cond.state != null || cond.value != null)
-                    ? "writing literal state_${cIdx} as fallback"
-                    : "no state/value to fall back to -- condition will be incomplete"
-                mcpLog("warn", "rm-native", "conditions[${condIdx}]: compareToDevice: enum RHS-type selector not revealed after RelrDev write (RM 5.1.8 uses a boolean isDev_${cIdx} toggle, not an enum reveal); ${fallbackNote}")
-                if (skippedAccum != null) {
-                    // fallbackApplied=true: state/value was available and written as literal state_<N>.
-                    // fallbackApplied=false: no state/value provided -- condition will be incomplete.
-                    skippedAccum << [key: "compareToDevice", reason: "rhs_type_not_revealed", condIdx: condIdx,
-                                     fallbackApplied: (cond.state != null || cond.value != null)]
-                }
-                def condStateOrValue = cond.state != null ? cond.state : cond.value
-                if (condStateOrValue != null) {
-                    writeST(hrefParams, "state_${cIdx}".toString(), condStateOrValue)
-                }
+        def relrKey = "RelrDev_${cIdx}".toString()
+        def relrInput = afterBaseInputs.find { it?.name?.toString() ==~ /RelrDev_\d+/ }
+        if (!relrInput) {
+            cancelInFlightCond()
+            def visible = afterBaseInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: RelrDev_<N> not visible after rCapab/rDev/rCustomAttr writes. Visible fields: ${visible} (compareToDevice is only supported on numeric device capabilities; '${capCanonical}' does not render a comparator).")
+        }
+        // Normalize the comparator (!= -> the not-equal glyph, == -> =) for parity with
+        // every other comparator write -- the RM enum only accepts the Unicode glyphs.
+        def normalizedComparator = _rmNormalizeComparator(cond.comparator.toString())
+        // Write the comparator, which reveals the isDev_<N> "Relative to a device?"
+        // toggle. Sibling of the Variable path's "write RelrDev, then toggle the RHS
+        // boolean to reveal the picker" sequence.
+        def isDevKey = "isDev_${cIdx}".toString()
+        // Both writes live in ONE reveal closure (the Variable path writes the comparator
+        // BEFORE its closure, then toggles isVar inside it). The two shapes are functionally
+        // equivalent here -- writeST POSTs and re-fetches per call, so the comparator still
+        // commits before isDev toggles regardless of which closure boundary it sits in.
+        // Anchor the reveal pattern to relDevice_<cIdx> exactly so a lingering sibling
+        // relDevice_<other> from another condition cannot satisfy the reveal in this slot.
+        // Verified live on firmware 2.5.0.143: relDevice_<N> reveals and the rule compiles
+        // broken:false, rendering "Temperature of <dev> is > <refDev>-<offset>".
+        def relDeviceReveal = revealStep(appId, page, "relDevice_${cIdx}".toString(), {
+            writeST(hrefParams, relrKey, normalizedComparator)
+            writeST(hrefParams, isDevKey, true)
+        })
+        if (!relDeviceReveal.input) {
+            cancelInFlightCond()
+            def visible = relDeviceReveal.visibleNames?.join(', ') ?: "(none)"
+            throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: reference-device picker relDevice_<N> not revealed after isDev_<N>=true. Without it the condition would render against a literal value (numeric default) instead of device-relative. Visible fields: ${visible}")
+        }
+        def relDeviceField = relDeviceReveal.input.name.toString()
+        // relDevice_<N> is a capability.* DEVICE picker, not an ENUM. Real capability.*
+        // device pickers expose NO options in the configPage schema -- RM populates the
+        // device dropdown client-side, so only ENUM pickers carry an options map. An empty
+        // option list is therefore the NORMAL case here (unlike the Variable ENUM picker,
+        // where empty options signal a genuine anomaly): proceed silently with the write.
+        // Reference-device existence was already validated hub-wide up front (the
+        // validateDeviceIdsRecursive sweep includes compareToDevice.deviceId). The reject
+        // branch below is a defensive capability-lock that only fires on the rare firmware
+        // variant which DOES surface device-picker options -- a wrong-capability reference
+        // device is otherwise caught by the rendered/broken state, not a pre-write option check.
+        // Option shapes RM uses for a picker: a {id:label} Map, a flat scalar List, or a
+        // list of single-key Maps ([{id:label}, ...]). Extract the device-id key from each
+        // shape -- a list of single-key Maps would otherwise stringify each entry as
+        // "[id:label]" and never match refDevId, falsely rejecting a valid reference device.
+        // Mirrors the list-of-single-key-maps idiom used elsewhere in this file.
+        def relOptsRaw = relDeviceReveal.input.options
+        def relOpts
+        if (relOptsRaw instanceof Map) {
+            relOpts = (relOptsRaw as Map).keySet().collect { it?.toString() }.findAll { it }
+        } else {
+            relOpts = ((relOptsRaw ?: []) as List).collect { o ->
+                (o instanceof Map && !(o as Map).isEmpty()) ? (o as Map).keySet().iterator().next()?.toString() : o?.toString()
+            }.findAll { it }
+        }
+        if (relOpts && !relOpts.any { it == refDevId }) {
+            cancelInFlightCond()
+            def availLabel = relOpts.size() == 1 ? "Available device id" : "Available device ids"
+            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice: reference device '${refDevId}' is not in the relDevice_<N> picker -- the picker is locked to the LHS capability '${capCanonical}', so the reference device must carry that capability. ${availLabel}: ${relOpts.sort().join(', ')}")
+        }
+        // relDevice_<N> is multiple:false (SINGLE device); write the bare id.
+        writeST(hrefParams, relDeviceField, refDevId)
+        // Optional decimal offset, written to state_<N> (which re-titles to the offset
+        // field once isDev_<N>=true). Omit -> offset 0. If the offset field is not visible
+        // (firmware variance), degrade with partial:true rather than throw -- the offset
+        // is optional and the device-relative comparison is otherwise complete.
+        if (ctd.offset != null) {
+            def stateKey = "state_${cIdx}".toString()
+            // Re-confirm the offset field is present after the relDevice write (the
+            // schema re-renders on each write) before committing the offset. Anchor the
+            // presence check to THIS slot's state_<cIdx> exactly -- in a multi-condition
+            // rule a lingering sibling state_<other> would mis-gate a loose /state_\d+/
+            // decision. _rmRevealStep uses String.matches (full-string anchor), so passing
+            // the exact stateKey as the pattern matches state_<cIdx> ONLY, never a sibling.
+            // (The sibling branches' looser \d+ patterns are pre-existing and out of scope.)
+            // The write target is already state_<cIdx>-correct.
+            def offsetReveal = discoverField(appId, page, stateKey)
+            if (offsetReveal.input && offsetReveal.input.name?.toString() == stateKey) {
+                writeST(hrefParams, stateKey, ctd.offset)
             } else {
-                // DEAD ON RM 5.1.8: this branch only runs if the enum RHS-type selector
-                // (stateType_<N>/rhsType_<N>) reveals, which 5.1.8 never does (boolean
-                // isDev_<N> toggle, see the block-head note). It is retained for firmware
-                // that may render the enum and as the seed for the boolean-toggle follow-up;
-                // do NOT read the comments below as describing live 5.1.8 behavior.
-                def rhsTypeField = rhsTypeReveal.input.name.toString()
-                // Write the "another device" option value -- validated against schema.
-                // Hub options arrive as Maps (key=id, value=label); normalise to [key:,value:] pairs.
-                def rhsTypeOptsRaw = rhsTypeReveal.input.options
-                def rhsTypeOpts = (rhsTypeOptsRaw instanceof Map)
-                    ? (rhsTypeOptsRaw as Map).collect { k, v -> [key: k?.toString(), value: v?.toString()] }
-                    : (rhsTypeOptsRaw ?: []).collect { o -> [key: o?.toString(), value: o?.toString()] }
-                def anotherDevOption = rhsTypeOpts.find { it.key?.toLowerCase()?.contains("device") || it.value?.toLowerCase()?.contains("device") }
-                if (!anotherDevOption) {
-                    cancelInFlightCond()
-                    def optStrs = rhsTypeOpts.collect { it.key }.join(', ')
-                    throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: could not find 'another device' option in RHS-type selector '${rhsTypeField}'. Options: ${optStrs}")
-                }
-                writeST(hrefParams, rhsTypeField, anotherDevOption.key)
-                // After choosing "another device", the reference device and attribute fields appear.
-                // refDev and refAttr are spec-required (validated at the top of this block).
-                // If the reveal returns null the firmware did not expose the picker even though
-                // the "another device" option was selected -- the only recoverable outcome is
-                // to fail loud + cancel the wizard. A silent no-op would write a Map condition
-                // with no reference device and render success:true, partial:false, which is a
-                // lie. Mirror the rhsTypeReveal pattern's failure surface above.
-                def refDevReveal = discoverField(appId, page, /rDev2_\d+|refDev_\d+|compareDevId_\d+/)
-                if (!refDevReveal.input) {
-                    cancelInFlightCond()
-                    def visible = refDevReveal.visibleNames?.join(', ') ?: "(none)"
-                    throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: reference-device picker not revealed after selecting 'another device' in RHS-type field '${rhsTypeField}'. Expected one of rDev2_<N>/refDev_<N>/compareDevId_<N>. Visible fields: ${visible}")
-                }
-                writeST(hrefParams, refDevReveal.input.name.toString(), [ctd.deviceId.toString()])
-                def refAttrReveal = discoverField(appId, page, /rCustomAttr2_\d+|refAttr_\d+|compareAttr_\d+/)
-                if (!refAttrReveal.input) {
-                    cancelInFlightCond()
-                    def visible = refAttrReveal.visibleNames?.join(', ') ?: "(none)"
-                    throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: reference-attribute picker not revealed after writing reference device. Expected one of rCustomAttr2_<N>/refAttr_<N>/compareAttr_<N>. Visible fields: ${visible}")
-                }
-                writeST(hrefParams, refAttrReveal.input.name.toString(), ctd.attribute.toString())
-                // Optional offset field -- if caller passed offset and the field did not appear,
-                // degrade with partial:true rather than throw (offset is optional in the spec).
-                if (ctd.offset != null) {
-                    def offsetReveal = discoverField(appId, page, /offset_\d+|devOffset_\d+/)
-                    if (offsetReveal.input) {
-                        writeST(hrefParams, offsetReveal.input.name.toString(), ctd.offset)
-                    } else {
-                        mcpLog("warn", "rm-native", "conditions[${condIdx}]: compareToDevice: offset field not revealed after reference-attribute write (firmware may not expose the offset slot for this attribute); offset=${ctd.offset} dropped")
-                        if (skippedAccum != null) {
-                            skippedAccum << [key: "compareToDevice", reason: "offset_field_not_revealed", condIdx: condIdx, offset: ctd.offset]
-                        }
-                    }
+                mcpLog("warn", "rm-native", "conditions[${condIdx}] (slot ${cIdx}): compareToDevice: offset field ${stateKey} not visible after reference-device write (firmware may not expose the offset slot for this capability); offset=${ctd.offset} dropped")
+                if (skippedAccum != null) {
+                    skippedAccum << [key: "compareToDevice", reason: "offset_field_not_revealed", condIdx: condIdx, offset: ctd.offset]
                 }
             }
         }
@@ -25026,6 +25077,12 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             }
             def m = condRaw as Map
             _rmValidateDeviceIdsExist("${pathPrefix}[${i}].deviceIds", m.deviceIds)
+            // compareToDevice's reference device is existence-validated here, up front,
+            // before any walker write -- so a nonexistent reference id fails loud and the
+            // walker never opens a half-written slot for it.
+            if (m.compareToDevice instanceof Map && (m.compareToDevice as Map).deviceId != null) {
+                _rmValidateDeviceIdsExist("${pathPrefix}[${i}].compareToDevice.deviceId", [(m.compareToDevice as Map).deviceId])
+            }
             if (m.subExpression instanceof Map) {
                 def sub = (m.subExpression as Map).conditions
                 if (sub instanceof List) {
@@ -25453,11 +25510,11 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     // the previous stage committed). The doc contract at the inline hub_get_tool_guide
     // content block says these sentinels do NOT flip `partial` by themselves;
     // production must match. Other reason codes (silent_rejection,
-    // rhs_type_not_revealed, offset_field_not_revealed, verification_fetch_failed,
-    // not_in_schema, etc.) ARE genuine degradation and continue to flip `partial`.
-    // Reason-code is the disambiguator -- compareToDevice's genuinely-partial paths
-    // use distinct codes (rhs_type_not_revealed / offset_field_not_revealed), so a
-    // single-code exemption here is safe and contract-aligned. Set sourced from
+    // offset_field_not_revealed, verification_fetch_failed, not_in_schema, etc.)
+    // ARE genuine degradation and continue to flip `partial`.
+    // Reason-code is the disambiguator -- compareToDevice's genuinely-partial path
+    // uses a distinct code (offset_field_not_revealed), so a single-code exemption
+    // here is safe and contract-aligned. Set sourced from
     // _rmInformationalSkippedReasons() so the doActPage callsite in _rmAddAction
     // sees the exact same exemption list without lockstep edits.
     def informationalReasons = _rmInformationalSkippedReasons()
@@ -25488,7 +25545,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             def uniqueCondIdxs = lostEntries.collect { it.condIdx }.findAll { it != null }.unique().size()
             def deg = uniqueCondIdxs > 0 ? uniqueCondIdxs : lostEntries.size()
             def cw = (deg == 1) ? "condition" : "conditions"
-            reRepairHints << "${deg} ${cw} used a degraded write path (e.g. comparator_force_write_failed or rhs_type_not_revealed; see settingsSkipped entries with 'reason'). Re-add the affected field(s) via hub_set_rule(walkStep={page:'STPage', operation:'introspect'}) to see the live schema, then write them one at a time -- or rebuild the expression. Verify first via hub_get_app_config(appId, includeSettings=true): if the expression paragraph renders correctly, the partial flag is cosmetic and no repair is needed."
+            reRepairHints << "${deg} ${cw} used a degraded write path (e.g. comparator_force_write_failed or offset_field_not_revealed; see settingsSkipped entries with 'reason'). Re-add the affected field(s) via hub_set_rule(walkStep={page:'STPage', operation:'introspect'}) to see the live schema, then write them one at a time -- or rebuild the expression. Verify first via hub_get_app_config(appId, includeSettings=true): if the expression paragraph renders correctly, the partial flag is cosmetic and no repair is needed."
         }
         if (!forceWrittenKeys.isEmpty()) {
             def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
@@ -25506,9 +25563,11 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     }
     return [
         success: true,
+        partial: false,
         conditionIndices: conditionIndices,
         settingsApplied: applied,
-        settingsSkipped: skipped
+        settingsSkipped: skipped,
+        repairHints: []
     ]
 }
 
@@ -27720,7 +27779,7 @@ private Map _rmRestoreFromBackup(Map entry) {
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
-    return "2.1.4"
+    return "2.1.5"
 }
 
 def isNewerVersion(String remote, String local) {
@@ -28479,7 +28538,7 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 - **Mode**: `{capability:'Mode', state:'Night'}` or `{capability:'Mode', modeIds:['3']}`. Walker resolves mode names to IDs via `location.modes` and writes the firmware-assigned `modes<N>` picker discovered from the live schema.
 - **Between two times**: `{capability:'Between two times', start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}, end:{...same shape}}`. Precondition: hub `location.timeZone` must be configured.
 - **Variable comparison**: `{capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}` for a constant RHS, OR `{capability:'Variable', variable:'<hubVarName>', comparator:'=', compareToVariable:'<otherHubVarName>'}` for a variable-vs-variable RHS. For value-comparison comparators supply exactly one of `value`/`compareToVariable` -- they are mutually exclusive (passing both is rejected); omit the RHS entirely for state-change comparators (`*changed*`/`*became*`). For the variable RHS the walker toggles `isVar_<N>=true` and discovers the firmware-assigned right-hand picker from the live schema -- it does NOT hardcode `xVarR_<N>` because `selectTriggers` consistently exposes `xVarR` but the walker pages (STPage/doActPage) can expose a differently-suffixed field, so the walker resolves whatever the live schema reveals. Fail-loud when a variable name is not in the schema enum AND the option list is non-empty; degrades with an `api_unavailable` sentinel (`variable-validation` for the LHS picker, `compareToVariable-validation` for the RHS picker) when the enum is empty, flipping `partial`.
-- **Device-relative comparison**: `{capability:'Temperature', deviceIds:[N], comparator:'>', compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}`. Firmware-variant field names: `rDev2_<N>`/`refDev_<N>`/`compareDevId_<N>`, `rCustomAttr2_<N>`/`refAttr_<N>`/`compareAttr_<N>`, `offset_<N>`/`devOffset_<N>`.
+- **Device-relative comparison**: `{capability:'Temperature', deviceIds:[N], comparator:'>', compareToDevice:{deviceId:M, attribute?:'temperature', offset?:-2}}`. The RHS is another device's reading on the SAME capability, optionally offset. The walker writes the comparator `RelrDev_<N>`, toggles `isDev_<N>=true` to reveal the SINGLE reference-device picker `relDevice_<N>`, writes the reference id, then writes the optional decimal offset to `state_<N>` (omit -> offset 0). `relDevice_<N>` is a capability.* device picker locked to the LHS capability; on normal firmware RM populates its dropdown client-side, so the schema exposes no options and the empty option list is normal. The reference `deviceId` is existence-validated hub-wide before any write; a nonexistent id is rejected up front. On the rare firmware variant that DOES surface device-picker options, the walker additionally defensively rejects a reference id not in that list. Mutually exclusive with a literal RHS (`state`/`value`) and with `compareToVariable` -- supply exactly one RHS shape. There is NO separate reference-attribute picker: the compared attribute is implied by the shared capability, so `compareToDevice.attribute` is OPTIONAL and informational (no wire consumer; neither validated nor written). Passing compareToDevice on a non-numeric capability (Mode / Between two times / Variable / Custom Attribute) is rejected up front with a fail-loud error naming the capability -- it is NOT silently dropped. **Intentional isDev/isVar asymmetry (do not "fix"):** an EMPTY option list is NORMAL for `compareToDevice`'s `relDevice_<N>` because it is a capability.* DEVICE picker (RM fills it client-side), so no options, no sentinel, no partial. This deliberately differs from `compareToVariable`, whose right-hand picker is an ENUM picker where an empty option list IS an anomaly and emits an `api_unavailable` sentinel with `partial:true`. The divergence reflects picker type (device vs enum), not an oversight.
 - **Sub-expression (parens) -- addRequiredExpression-only**: `{subExpression:{conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]}}`. The STPage walker recursively handles nesting of arbitrary depth. **`addAction` (ifThen/elseIf/repeatWhile/waitExpression) REJECTS nested subExpression** with `"nested subExpression on this row is not yet supported"`. Flatten the conditions list, or move the nested expression to a Required Expression.
 
 `addTrigger.condition` supports a narrower subset: Variable (incl. `compareToVariable`), Custom Attribute, and enum/numeric device-state. Mode-via-picker / Between two times / compareToDevice are NOT yet supported on `selectTriggers` -- the `_rmBuildCondition` helper is a static direct-write path, not the shared `_rmWalkConditionReveal` walker.
@@ -28525,9 +28584,8 @@ Prefer the structured shortcuts above. Raw mode is the unstructured escape hatch
 ### Partial-success and trailing-updateRule response slots
 
 `settingsSkipped[]` sentinel reasons callers may see:
-- `rhs_type_not_revealed` -- compareToDevice expected an enum RHS-type selector that RM 5.1.8 does not render (5.1.8 uses a boolean `isDev_<N>` toggle for "Relative to a device?", not an enum reveal), so the device-relative RHS is currently a degraded path. Entry also carries `fallbackApplied: true|false` (literal state_<N> fallback applied vs none available). Full device-relative support is a pending follow-up.
-- `offset_field_not_revealed` -- compareToDevice optional offset field absent. Flips `partial:true`.
-- `api_unavailable` paired with `key: "variable-validation"` (LHS Variable picker) OR `key: "compareToVariable-validation"` (RHS variable picker for `compareToVariable`) -- the picker returned an empty option list; write proceeds unvalidated. Flips `partial:true`.
+- `offset_field_not_revealed` -- compareToDevice optional offset field (`state_<N>`) absent after the reference-device write (firmware may not expose the offset slot for this capability); the offset is dropped but the device-relative comparison is otherwise complete. Flips `partial:true`.
+- `api_unavailable` paired with `key: "variable-validation"` (LHS Variable picker) OR `key: "compareToVariable-validation"` (RHS variable picker for `compareToVariable`) -- the ENUM picker returned an empty option list; write proceeds unvalidated. Flips `partial:true`. NOTE: `compareToDevice` does NOT emit this -- its `relDevice_<N>` reference picker is a capability.* DEVICE picker that exposes no options client-side, so an empty option list is normal and is NOT treated as a validation gap (no sentinel, no partial). A wrong-capability reference device surfaces in the rendered/broken state, not a pre-write option check.
 - `not_in_schema` -- a written field was absent from the current page schema, so the value did not land. Genuine degradation on addTrigger, the condition wizard, AND the walker pages (STPage/doActPage); flips `partial:true`. A state-change comparator like `*changed*` is written as a value into the comparator field, so a clean trigger produces no `not_in_schema` skip on a real field. Two exempt cases do NOT flip `partial`. (1) The cosmetic `isCondTrig.<N>` post-commit finalize toggle on addTrigger -- its absence is a clean exit, and the skip that would otherwise be produced is exempted. (2) The enum-recognized Custom Attribute comparator across all FOUR wizard surfaces -- the trigger row (`ReltDev<N>`), the conditional-trigger condition wizard (`RelrDev_<N>`), the STPage walker, and the doActPage walker. Here the comparator is deliberately NOT written, so NO skip is produced in the first place (this case is exempt from `partial` by construction, not by exempting a produced skip): when the hub treats the attribute as an ENUM (switch, motion, contact, lock, ...) the re-render reveals the value picker (`tstate<N>` / `state_<N>`) and HIDES the comparator, the helper detects the picker is exposed and writes only the value, and partial stays false. A free-valued attribute still reveals and writes the comparator normally. The walker's two Custom Attribute sites diverge on the neither-rendered edge case: the dedicated capability-block (Site A) throws because its reveal-step contract has no field to write into without a revealed target, whereas the default enum/numeric block (Site B) still attempts the write because its `writeST` POSTs-then-verifies (no schema-containment pre-gate) -- on a hidden field the post-write verify records a `silent_rejection` skip that flips `partial`, surfacing the degradation without hard-failing the wizard, which is less strict than Site A's throw but still honest about the value loss. (Site B normalizes the comparator and writes it comparator-first: whenever `RelrDev_<N>` is exposed, OR when neither field rendered; it suppresses the comparator only for the positively-detected enum case.) On the trigger row and condition wizard the analogous neither-rendered write goes through `_rmWriteSettingOnPage`, which DOES schema-gate: the comparator is not POSTed and a `not_in_schema` skip flips `partial` instead. On a TRANSIENT exposure-probe re-fetch failure (empty/unparseable hub response after the attribute write), all four surfaces now degrade gracefully rather than aborting: the comparator is force-written best-effort and a `comparator_force_written_unverified` skip flips `partial` (verify via `hub_get_app_config`).
 - `reveal_fallback_to_existing_field` -- walker matched an already-visible field instead of a newly-revealed one (static-schema firmware). INFORMATIONAL -- does NOT flip `partial` by itself.
 - `useST_idempotent_noop` -- the idempotent `useST=true` mainPage toggle (Step 1 of addRequiredExpression) was already set, so the write did not advance the schema. INFORMATIONAL -- does NOT flip `partial` by itself, because the toggle write is idempotent and the schema rejection is cosmetic (the required-expression href is already exposed), not a lost value.
