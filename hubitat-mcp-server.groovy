@@ -293,7 +293,11 @@ def confirmRegenerateTokenPage() {
 def advancedOverridesPage() {
     dynamicPage(name: "advancedOverridesPage", title: "Advanced: Per-tool Overrides") {
         section {
-            paragraph "Deny-only fine-grained control. These selections are applied <b>below</b> the Read/Write masters: they can only turn things OFF, never re-enable something a master already hid. A disabled tool disappears from tools/list and hub_search_tools everywhere it appears (including shared tools in multiple gateways) and returns a clear error if a cached client still calls it; it remains documented in hub_get_tool_guide."
+            // The classic picker modal renders each option as a fixed-height MDL
+            // checkbox row that clips long labels to one line (worst on mobile
+            // browsers). Page-scoped style: let the rich override labels wrap.
+            paragraph "<style>.device-select-item.mdl-checkbox { height: auto; min-height: 24px; } .device-select-item .mdl-checkbox__label { white-space: normal; word-break: break-word; display: inline-block; max-width: calc(100% - 40px); vertical-align: top; }</style>" +
+                "Deny-only fine-grained control. These selections are applied <b>below</b> the Read/Write masters: they can only turn things OFF, never re-enable something a master already hid. A disabled tool disappears from tools/list and hub_search_tools everywhere it appears (including shared tools in multiple gateways) and returns a clear error if a cached client still calls it; it remains documented in hub_get_tool_guide."
         }
         def overrideOptions = buildOverrideOptions()
         section("Disable whole gateways") {
