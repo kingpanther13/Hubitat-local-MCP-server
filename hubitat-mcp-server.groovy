@@ -293,10 +293,17 @@ def confirmRegenerateTokenPage() {
 def advancedOverridesPage() {
     dynamicPage(name: "advancedOverridesPage", title: "Advanced: Per-tool Overrides") {
         section {
-            // The classic picker modal renders each option as a fixed-height MDL
-            // checkbox row that clips long labels to one line (worst on mobile
-            // browsers). Page-scoped style: let the rich override labels wrap.
-            paragraph "<style>.device-select-item.mdl-checkbox { height: auto; min-height: 24px; } .device-select-item .mdl-checkbox__label { white-space: normal; word-break: break-word; display: inline-block; max-width: calc(100% - 40px); vertical-align: top; }</style>" +
+            // The classic picker modal renders each option as a fixed-height (24px)
+            // MDL checkbox row that clips long labels to one line (worst on mobile
+            // browsers). Page-scoped style, !important so no widget state (checked/
+            // focused) or inherited white-space can re-clamp: rows grow to fit and
+            // labels wrap with a hanging indent (the is-upgraded 24px padding-left
+            // keeps every wrapped line clear of the checkbox visuals, which stay
+            // absolutely positioned on the first line).
+            paragraph "<style>" +
+                ".device-select-item.mdl-checkbox, .device-select-item.mdl-checkbox.is-checked, .device-select-item.mdl-checkbox.is-focused { height: auto !important; min-height: 24px; white-space: normal !important; overflow: visible !important; padding-top: 2px; padding-bottom: 6px; } " +
+                ".device-select-item.mdl-checkbox .mdl-checkbox__label { display: inline-block !important; white-space: normal !important; overflow: visible !important; text-overflow: clip !important; word-break: break-word; overflow-wrap: anywhere; max-width: 100%; line-height: 1.4 !important; vertical-align: top; }" +
+                "</style>" +
                 "Deny-only fine-grained control. These selections are applied <b>below</b> the Read/Write masters: they can only turn things OFF, never re-enable something a master already hid. A disabled tool disappears from tools/list and hub_search_tools everywhere it appears (including shared tools in multiple gateways) and returns a clear error if a cached client still calls it; it remains documented in hub_get_tool_guide."
         }
         def overrideOptions = buildOverrideOptions()
