@@ -2313,15 +2313,15 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
             inputSchema: [
                 type: "object",
                 properties: [
-                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands). WARNING: Resource-intensive for large device counts. Use with pagination (limit parameter) for best performance."],
+                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands). WARNING: Resource-intensive for large device counts.[[FLAT_TRIM]] Use with pagination (limit parameter) for best performance.[[/FLAT_TRIM]]"],
                     offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
                     limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true, higher values may slow hub.", default: 0],
                     filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' | 'virtual' (this MCP app's own virtual devices; use to find their IDs/DNIs).[[FLAT_TRIM]] stale example: 'stale:24' = no activity in the last 24 hours; never-reported devices count as stale. 'virtual' returns a different population and shape from the other filters, with driver namespace/type.[[/FLAT_TRIM]]"],
-                    labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set. Applied after filter, before pagination."],
-                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl', 'TemperatureMeasurement'). Applied after labelFilter, before pagination.[[FLAT_TRIM]] When count=0, response includes `capabilityFilterMatchedKnownCapability` to distinguish 'no devices have this capability' from a typo.[[/FLAT_TRIM]]"],
-                    format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands (same as detailed=true). 'ids' = flat array of device ID integers (cheapest, ignores fields arg). detailed=true overrides format='summary'."],
+                    labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set.[[FLAT_TRIM]] Applied after filter, before pagination.[[/FLAT_TRIM]]"],
+                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl', 'TemperatureMeasurement').[[FLAT_TRIM]] Applied after labelFilter, before pagination. When count=0, response includes `capabilityFilterMatchedKnownCapability` to distinguish 'no devices have this capability' from a typo.[[/FLAT_TRIM]]"],
+                    format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands[[FLAT_TRIM]] (same as detailed=true)[[/FLAT_TRIM]]. 'ids' = flat array of device ID integers (cheapest, ignores fields arg).[[FLAT_TRIM]] detailed=true overrides format='summary'.[[/FLAT_TRIM]]"],
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object.[[FLAT_TRIM]] Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section='performance')` for valid field names and projection semantics."],
-                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor returned alongside nextOffset."]
+                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor[[FLAT_TRIM]] returned alongside nextOffset[[/FLAT_TRIM]]."]
                 ]
             ],
             outputSchema: [
@@ -2858,7 +2858,7 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_get_variable",
-            description: "Get one variable's current value by name. Searches the hub-variable namespace first, then falls back to rule-engine variables; the returned source field says which matched. For hub variables it also returns metadata (type, plus deviceId/attribute when a connector is linked). Use hub_list_variables to enumerate; use this when you already know the name.",
+            description: "Get one variable's current value by name. Searches the hub-variable namespace first, then falls back to rule-engine variables[[FLAT_TRIM]]; the returned source field says which matched. For hub variables it also returns metadata (type, plus deviceId/attribute when a connector is linked)[[/FLAT_TRIM]]. Use hub_list_variables to enumerate; use this when you already know the name.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2903,7 +2903,7 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_create_variable",
-            description: "Create a new hub variable (global variable visible to apps and Rule Machine). Use this before hub_set_variable for a name that doesn't exist yet — Hubitat's setGlobalVar cannot create, only update. Drives the Settings → Hub Variables wizard, since creation isn't exposed via the public app API. Name must not contain any of these characters: ' \" \\ ~ [ : ] < >. To also expose the variable to device-only apps, follow up with hub_create_connector.",
+            description: "Create a new hub variable (global variable visible to apps and Rule Machine). Use this before hub_set_variable for a name that doesn't exist yet — Hubitat's setGlobalVar cannot create, only update.[[FLAT_TRIM]] Drives the Settings → Hub Variables wizard, since creation isn't exposed via the public app API. Name must not contain any of these characters: ' \" \\ ~ [ : ] < >.[[/FLAT_TRIM]] To also expose the variable to device-only apps, follow up with hub_create_connector.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2929,7 +2929,7 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_create_connector",
-            description: "Create a virtual-device connector for an existing hub variable so apps that only consume devices can read/write it. For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass connectorType to pick, default 'Variable'. For String/Boolean/DateTime vars, the chooser is skipped. No-op if a connector already exists.",
+            description: "Create a virtual-device connector for an existing hub variable so apps that only consume devices can read/write it.[[FLAT_TRIM]] For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass connectorType to pick, default 'Variable'. For String/Boolean/DateTime vars, the chooser is skipped.[[/FLAT_TRIM]] No-op if a connector already exists.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3633,12 +3633,12 @@ Pass cursor to page through the list at 50 per page when the full response would
                     deviceId: [type: "string", description: "Scope to a single device's log entries (server-side filter, mutually exclusive with appId)"],
                     appId: [type: "string", description: "Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
                     limit: [type: "integer", description: "Max entries to return. Default: 100, max: 500.", default: 100],
-                    pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only -- use source for app/device-name substring matching. Entry is kept when it matches.[[FLAT_TRIM]] Compiled once before the loop. Throws on invalid regex syntax. Note: pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes.[[/FLAT_TRIM]]"],
-                    patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns, same matching rules and caveats as `pattern` (message-field only; throws on invalid regex). Combine via patternMode ('any'=OR, default / 'all'=AND). Compatible with `pattern` (both apply)."],
+                    pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only -- use source for app/device-name substring matching.[[FLAT_TRIM]] Entry is kept when it matches. Compiled once before the loop. Throws on invalid regex syntax. Note: pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes.[[/FLAT_TRIM]]"],
+                    patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns, same matching rules and caveats as `pattern`[[FLAT_TRIM]] (message-field only; throws on invalid regex)[[/FLAT_TRIM]]. Combine via patternMode ('any'=OR, default / 'all'=AND).[[FLAT_TRIM]] Compatible with `pattern` (both apply).[[/FLAT_TRIM]]"],
                     patternMode: [type: "string", description: "How patterns array is combined: 'any' (default) = OR; 'all' = AND.[[FLAT_TRIM]] 'any' keeps an entry if any pattern matches; 'all' only if every pattern matches. Case-insensitive ('ANY' and 'any' both work).[[/FLAT_TRIM]]", enum: ["any", "all"]],
-                    since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d'). Relative offset is subtracted from now. Max relative offset: 30d (throws if exceeded -- use ISO-8601 for longer ranges).[[FLAT_TRIM]] Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise.[[/FLAT_TRIM]]"],
-                    until: [type: "string", description: "Return only entries at or before this time. Same format as since (relative offsets are subtracted from now, same as since; max 30d). Default: now (no upper bound).[[FLAT_TRIM]] Use since='2h', until='1h' to mean '1 to 2 hours ago'.[[/FLAT_TRIM]]"],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Filters + limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                    since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d').[[FLAT_TRIM]] Relative offset is subtracted from now.[[/FLAT_TRIM]] Max relative offset: 30d[[FLAT_TRIM]] (throws if exceeded -- use ISO-8601 for longer ranges)[[/FLAT_TRIM]].[[FLAT_TRIM]] Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise.[[/FLAT_TRIM]]"],
+                    until: [type: "string", description: "Return only entries at or before this time. Same format as since[[FLAT_TRIM]] (relative offsets are subtracted from now, same as since; max 30d)[[/FLAT_TRIM]]. Default: now (no upper bound).[[FLAT_TRIM]] Use since='2h', until='1h' to mean '1 to 2 hours ago'.[[/FLAT_TRIM]]"],
+                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Filters + limit apply first; cursor pages within the filtered result.[[/FLAT_TRIM]] Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
             ],
             outputSchema: [
@@ -4271,12 +4271,12 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""
                     driverId: [type: "string", description: "The driver ID to update (single-driver mode). Omit when using 'updates' array."],
                     source: [type: "string", description: "Inline Groovy source. Stubs only -- fills agent transcript."],
                     sourceFile: [type: "string", description: "File Manager filename. Upload first via curl per tool description."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly. http:// or https://. Mutually exclusive with source/sourceFile/resave."],
+                    importUrl: [type: "string", description: "URL the hub fetches directly. http:// or https://.[[FLAT_TRIM]] Mutually exclusive with source/sourceFile/resave.[[/FLAT_TRIM]]"],
                     resave: [type: "boolean", description: "Re-save the current source without changes. Runs entirely on-hub."],
-                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard. Update aborts with conflict:true on version mismatch. Bulk mode: put expectedVersion inside each updates[] entry."],
+                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard.[[FLAT_TRIM]] Update aborts with conflict:true on version mismatch.[[/FLAT_TRIM]] Bulk mode: put expectedVersion inside each updates[] entry."],
                     updates: [
                         type: "array",
-                        description: "BULK MODE -- one round-trip for many drivers. Each entry: {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}. Cannot mix with single-driver fields. Continue-on-error.",
+                        description: "BULK MODE -- one round-trip for many drivers.[[FLAT_TRIM]] Each entry: {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}. Cannot mix with single-driver fields. Continue-on-error.[[/FLAT_TRIM]]",
                         items: [
                             type: "object",
                             properties: [
@@ -5016,8 +5016,8 @@ Requires the Write master + confirm=true + recent hub backup.""",
                 properties: [
                     appId: [type: "integer", description: "Installed-app id of an existing classic app (from hub_list_apps with scope='instances'). OMIT to CREATE a new app of `appType` (then `name` is required); PROVIDE to EDIT an existing app's settings/button."],
                     appType: [type: "string", enum: ["rule_machine", "button_controller", "groups_scenes", "notifier", "basic_rule"], description: "Native app class to CREATE (appId omitted). Default: rule_machine. Visual Rules are NOT created here -- use hub_set_visual_rule.[[FLAT_TRIM]] Enum is driven by _appTypeRegistry(); add types there. For full RM rule authoring use hub_set_rule. Button Rules are NOT an appType -- use the buttonRule param.[[/FLAT_TRIM]]"],
-                    name: [type: "string", description: "Label for the new app (shown in the hub's app list). Required on CREATE (when appId is omitted); ignored when appId is provided."],
-                    settings: [type: "object", description: "Map {inputName: value} to write to the app's current config page: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs. The multiple=true 3-field contract (settings[name]=csv + name.type=capability.X + name.multiple=true) is emitted automatically and post-write verified with one auto-retry. Discover input names via hub_get_app_config."],
+                    name: [type: "string", description: "Label for the new app[[FLAT_TRIM]] (shown in the hub's app list)[[/FLAT_TRIM]]. Required on CREATE (when appId is omitted); ignored when appId is provided."],
+                    settings: [type: "object", description: "Map {inputName: value} to write to the app's current config page: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs.[[FLAT_TRIM]] The multiple=true 3-field contract (settings[name]=csv + name.type=capability.X + name.multiple=true) is emitted automatically and post-write verified with one auto-retry.[[/FLAT_TRIM]] Discover input names via hub_get_app_config."],
                     button: [type: "string", description: "Page-transition button name to click (discover via hub_get_app_config)."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
