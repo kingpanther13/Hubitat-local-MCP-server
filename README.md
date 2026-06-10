@@ -1551,6 +1551,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.2.0** - docs: list string/decimal for runCommand parameter types; feat: add Visual Rules Builder tools to the rule machine gateway. PRs: [#266](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/266), [#265](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/265)
 - **v2.1.7** - feat: friendly tool titles, descriptive overrides menu, and the full four-hint annotation surface. PRs: [#264](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/264)
 - **v2.1.6** - feat: update app/driver code via saveOrUpdateJson instead of legacy ajax/update. PRs: [#263](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/263)
 - **v2.1.5** - Wire device-relative compareToDevice to the real RM 5.1.8 control (isDev_<N>). PRs: [#262](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/262)
