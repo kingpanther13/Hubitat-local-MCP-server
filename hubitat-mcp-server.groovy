@@ -1525,7 +1525,7 @@ def getGatewayConfig() {
 //     this matches the MCP spec default (destructiveHint defaults to true
 //     when readOnlyHint=false) and gets every write the more cautious
 //     permission prompt in clients that surface destructiveHint.
-//   * Both annotation keys are emitted explicitly (never omitted on writes)
+//   * Both hint keys are emitted explicitly (never omitted on writes)
 //     so clients do not need to rely on spec defaults.
 //   * The read-only set is POSITIVE: a tool that nobody lists here falls
 //     to write+destructive. New tools default to the safer prompt; the
@@ -1646,7 +1646,9 @@ def getReadOnlyToolNames() {
 
 // Human-facing display metadata for every leaf tool AND every gateway:
 // `title` is the friendly name (MCP `annotations.title` -- what claude.ai's
-// tool list renders instead of the bare name), `summary` is a one-sentence
+// tool list renders instead of the bare name; also surfaced in the gateway
+// catalog disclosure and tokenized into the hub_search_tools BM25 corpus, so
+// editing a title changes search ranking), `summary` is a one-sentence
 // plain-English description for the Advanced per-tool overrides menu.
 // Summaries are deliberately NOT the LLM-facing tool descriptions -- those
 // stay in the tool definitions; these are for humans scanning a settings UI.
@@ -1784,12 +1786,15 @@ def getToolDisplayMeta() {
     ]
 }
 
-// Returns the MCP `annotations` map for a leaf tool name. Both hint keys are
-// emitted explicitly so the wire payload is unambiguous regardless of which
-// spec-default a given client honours. When the caller passes the display-meta
-// map, the friendly name rides along as `annotations.title` (the field
-// claude.ai and other MCP clients render in place of the bare tool name).
-def annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta = null) {
+// Returns the MCP `annotations` map for a leaf tool name. readOnlyHint is
+// always emitted explicitly, destructiveHint on every write, so the wire
+// payload is unambiguous regardless of which spec-default a given client
+// honours. displayMeta is REQUIRED (pass null only to deliberately skip the
+// title, e.g. in unit tests) so a new wire surface cannot silently ship
+// title-less annotations by forgetting the argument; when provided, the
+// friendly name rides along as `annotations.title` (the field claude.ai and
+// other MCP clients render in place of the bare tool name).
+def annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta) {
     def isReadOnly = readOnlyNames.contains(toolName)
     def ann = [:]
     def title = displayMeta?.get(toolName)?.title
@@ -5281,7 +5286,7 @@ Requires Write master + confirm=true + recent hub backup.""",
         // Tool Search (BM25)
         [
             name: "hub_search_tools",
-            description: "Search all MCP tools by natural language query (BM25 ranking). Searches tool names, descriptions, and parameter names. Returns matching tools with their gateway location so you know how to call them. Use when unsure which gateway contains the tool you need.",
+            description: "Search all MCP tools by natural language query (BM25 ranking). Searches tool names, friendly titles, descriptions, and parameter names. Returns matching tools with their gateway location so you know how to call them. Use when unsure which gateway contains the tool you need.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -5298,6 +5303,7 @@ Requires Write master + confirm=true + recent hub backup.""",
                     totalToolsSearched: [type: "integer", description: "Size of the searched tool corpus"],
                     results: [type: "array", description: "Ranked matching tools", items: [type: "object", properties: [
                         tool: [type: "string", description: "Tool name"],
+                        title: [type: "string", description: "Friendly tool name (absent when served from a pre-title cached corpus)"],
                         description: [type: "string", description: "Tool description"],
                         relevance: [type: "number", description: "BM25 relevance score"],
                         gateway: [type: "string", description: "Owning gateway, present for proxied tools"],
@@ -27975,10 +27981,15 @@ def toolSearchTools(args) {
     // effect immediately without invalidating the cache. The per-doc tokenization is cached
     // in lockstep (atomicState.toolSearchTokens, index-aligned to the FULL corpus) so
     // queries never re-tokenize; both entries invalidate together in updated(). The cache
-    // is a pure function of the tool definitions, so app-update invalidation is sufficient.
+    // is a pure function of the static tool surface (definitions, gateway config,
+    // display meta), so app-update invalidation is sufficient.
     def corpus = atomicState.toolSearchCorpus
     def docTokensAll = atomicState.toolSearchTokens
-    if (!corpus || !docTokensAll || docTokensAll.size() != corpus.size()) {
+    // The shape check (corpus[0] has no `title` key) self-heals a cache written by a
+    // pre-title version of this app: a code deploy does NOT fire updated() (that takes
+    // a settings save), so without it the size-aligned stale corpus -- title tokens
+    // missing from every BM25 doc -- would be served indefinitely.
+    if (!corpus || !docTokensAll || docTokensAll.size() != corpus.size() || !(corpus[0]?.containsKey('title'))) {
         corpus = buildToolSearchCorpus()
         // Tokenize every corpus entry once, in corpus order, so docTokensAll[i] is the
         // tokenization of corpus[i] (a pure function of that entry). Plain List<List<String>>
@@ -28047,7 +28058,9 @@ def toolSearchTools(args) {
             description: tool.description,
             relevance: Math.round(r.score * 100) / 100.0
         ]
-        // Cached pre-title corpus entries (until updated() invalidates) have no title.
+        // Defensive: a corpus entry can lack a title if a gateway lists a tool name
+        // with no display-meta entry (the rebuild guard above already self-heals the
+        // pre-title cached-corpus case).
         if (tool.title) entry.title = tool.title
         if (tool.gateway) {
             entry.gateway = tool.gateway
@@ -28075,8 +28088,10 @@ private buildToolSearchCorpus() {
     // SHOULD (so hub_search_tools still matches "switch motion contact").
     def allDefs = applyDescriptionTransform(getAllToolDefinitions(), false)
     def allDefsMap = allDefs.collectEntries { [(it.name): it] }
-    // Friendly names join the searchable text: arcane bare names (hub_call_gc)
-    // become findable by their human phrasing ("garbage collection").
+    // Friendly names join the searchable text: titles add tokens the bare
+    // name/description lack (hub_set_rule gains 'author' from "Author Rule
+    // Machine Rule" -- its corpus text otherwise only has 'authoring', and
+    // the tokenizer does not stem).
     def displayMeta = getToolDisplayMeta()
 
     def corpus = []

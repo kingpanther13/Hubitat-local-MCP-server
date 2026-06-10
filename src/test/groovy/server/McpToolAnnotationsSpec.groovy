@@ -188,7 +188,9 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         // the larger getToolDefinitions() integration path.
         when:
         def readOnly = ['hub_list_rooms', 'hub_get_room'] as Set
-        def ann = script.annotationsForLeaf('hub_list_rooms', readOnly)
+        // displayMeta is a required param; null deliberately skips title emission
+        // (the hint contract under test here is independent of titles).
+        def ann = script.annotationsForLeaf('hub_list_rooms', readOnly, null)
 
         then:
         ann.readOnlyHint == true
@@ -198,7 +200,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     def "annotationsForLeaf: write name returns readOnlyHint=false and destructiveHint=true"() {
         when:
         def readOnly = ['hub_list_rooms'] as Set
-        def ann = script.annotationsForLeaf('hub_delete_room', readOnly)
+        def ann = script.annotationsForLeaf('hub_delete_room', readOnly, null)
 
         then:
         ann.readOnlyHint == false

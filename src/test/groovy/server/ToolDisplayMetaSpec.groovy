@@ -20,10 +20,9 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         def gatewayNames = script.getGatewayConfig().keySet() as Set
         def expected = (leafNames + gatewayNames) as Set
 
-        then:
+        then: 'set equality covers both directions: a missing entry AND a stale one for a renamed/removed tool'
         !meta.isEmpty()
-        (expected - meta.keySet()) == [] as Set   // every tool/gateway covered
-        (meta.keySet() - expected) == [] as Set   // no entry for a renamed/removed tool
+        meta.keySet() == expected
     }
 
     def "every display-meta entry has a non-empty title and a short single-line summary"() {
@@ -48,8 +47,8 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         when:
         def titles = script.getToolDisplayMeta().values()*.title
 
-        then:
-        titles.size() == (titles as Set).size()
+        then: 'group-by exposes the exact duplicated titles on failure'
+        titles.groupBy { it }.findAll { it.value.size() > 1 } == [:]
     }
 
     def "every gateway-mode tools/list entry carries a non-empty annotations.title"() {
@@ -102,14 +101,14 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         def readOnly = ['hub_list_rooms'] as Set
         def withMeta = script.annotationsForLeaf('hub_list_rooms', readOnly,
             [hub_list_rooms: [title: 'List Rooms', summary: 'List all rooms.']])
-        def withoutMeta = script.annotationsForLeaf('hub_list_rooms', readOnly)
+        def withoutMeta = script.annotationsForLeaf('hub_list_rooms', readOnly, null)
 
         then: 'title rides along with the unchanged hint contract'
         withMeta.title == 'List Rooms'
         withMeta.readOnlyHint == true
         !withMeta.containsKey('destructiveHint')
 
-        and: 'the two-arg form (no meta) emits no title key at all'
+        and: 'an explicit null meta emits no title key at all'
         !withoutMeta.containsKey('title')
         withoutMeta.readOnlyHint == true
     }
@@ -163,12 +162,13 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         atomicStateMap.toolSearchTokens[idx].contains('author')
     }
 
-    def "a pre-title cached corpus (deployed-over previous version) serves results without titles and without crashing"() {
+    def "a pre-title cached corpus (deployed-over previous version) self-heals on the first search"() {
         // On a live hub this change lands on an atomicState corpus cached by the
-        // previous version (entries have no title key) until updated() invalidates.
-        // The rebuild guard only checks size alignment, so the stale shape IS served;
-        // the result builder must tolerate it.
-        given: 'an old-shape cache: one entry, no title key, tokens size-aligned'
+        // previous version (entries have no title key). A code deploy does NOT fire
+        // updated() (that takes a settings save), so the size-only rebuild guard
+        // would serve the stale shape indefinitely -- the shape check in
+        // toolSearchTools rebuilds it on first use instead.
+        given: 'an old-shape cache: entries lack the title key, tokens size-aligned'
         settingsMap.useGateways = true
         settingsMap.enableCustomRuleEngine = true
         atomicStateMap.toolSearchCorpus = [
@@ -181,10 +181,12 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         when:
         def result = script.toolSearchTools([query: 'list rooms', maxResults: 5])
 
-        then: 'the stale cache is served as-is: a clean result with no title key'
-        result.results.size() == 1
-        result.results[0].tool == 'hub_list_rooms'
-        !result.results[0].containsKey('title')
+        then: 'the stale cache was rebuilt with titles on every entry'
+        atomicStateMap.toolSearchCorpus.size() > 1
+        atomicStateMap.toolSearchCorpus.every { it.containsKey('title') }
+
+        and: 'the result carries the friendly title'
+        result.results.find { it.tool == 'hub_list_rooms' }?.title == 'List Rooms'
     }
 
     def "buildOverrideOptions keys stay the bare names and labels carry the friendly format"() {

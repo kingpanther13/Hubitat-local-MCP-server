@@ -34,6 +34,9 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
     private static final String OPEN_MARKER = '[[FLAT_TRIM]]'
     private static final String CLOSE_MARKER = '[[/FLAT_TRIM]]'
 
+    // Deliberately leaves Developer Mode OFF: the [FLOOR, BUDGET] calibration below
+    // is for the default catalog a normal hub serves. The wider dev-mode-on surface
+    // (adds hub_update_package) gets its own hard-cap + leak guard further down.
     private void enableEveryToggle() {
         settingsMap.enableCustomRuleEngine = true
     }
@@ -80,6 +83,33 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def catalogJson = JsonOutput.toJson(script.getToolDefinitions())
 
         then: 'neither opening nor closing marker appears in the wire payload'
+        !catalogJson.contains(OPEN_MARKER)
+        !catalogJson.contains(CLOSE_MARKER)
+    }
+
+    def "flat-mode tools/list with Developer Mode ON stays under the hub cap and leaks no FLAT_TRIM tokens"() {
+        // hub_update_package is catalog-hidden unless enableDeveloperMode is true, so
+        // the default-toggles guards above never serialize it -- its description carries
+        // FLAT_TRIM markers and its entry widens the flat catalog past what the budget
+        // test measures. This is the only guard for the widest catalog a real hub can
+        // emit; over the hard cap, flat+dev clients get -32603 and ZERO tools.
+        given:
+        settingsMap.useGateways = false
+        enableEveryToggle()
+        settingsMap.enableDeveloperMode = true
+
+        when:
+        def tools = script.getToolDefinitions()
+        def catalogJson = JsonOutput.toJson([tools: tools])
+        def catalogBytes = catalogJson.getBytes('UTF-8').length
+
+        then: 'the dev-mode tool is actually present (guard is not vacuous)'
+        tools*.name.contains('hub_update_package')
+
+        and: 'under the hub hard cap with the dev-mode entry included'
+        assert catalogBytes < 124000 : "dev-mode flat tools/list is ${catalogBytes} bytes, over the 124,000 cap"
+
+        and: 'no marker tokens leak from the dev-mode entry (or any other)'
         !catalogJson.contains(OPEN_MARKER)
         !catalogJson.contains(CLOSE_MARKER)
     }

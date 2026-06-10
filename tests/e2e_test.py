@@ -526,7 +526,8 @@ class TestRunner:
         missing = [e.get("name") for e in entries
                    if not isinstance(e.get("title"), str) or not e.get("title", "").strip()]
         assert not missing, f"gateway catalog entries missing title: {missing}"
-        rooms = next(e for e in entries if e.get("name") == "hub_list_rooms")
+        rooms = next((e for e in entries if e.get("name") == "hub_list_rooms"), None)
+        assert rooms is not None, "hub_list_rooms not found in catalog"
         assert rooms["title"] == "List Rooms", f"hub_list_rooms catalog title unexpected: {rooms['title']!r}"
 
     @test("infrastructure")
