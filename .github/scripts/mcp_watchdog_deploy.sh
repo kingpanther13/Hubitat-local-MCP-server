@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Install THIS PR's package onto the live test hub via the WATCHDOG MCP endpoint,
-# in Hubitat Package Manager's order: the BUNDLE (which delivers every #included
-# library) first, then the APP last. Libraries are NOT installed individually --
+# in Hubitat Package Manager's REPAIR order: the BUNDLE (which delivers every #included
+# library) first, then EVERY app the manifest declares (parent + child) -- full HPM
+# repair, overriding whatever is installed. Libraries are NOT installed individually --
 # the bundle ships them; doing both was redundant and forced an extra recompile.
 #
 # This single script REPLACES the four cloud-relay deploy scripts it consolidates:
@@ -27,9 +28,9 @@
 # and poll hub_get_source until the new source lands, consulting lastSelfDeploy only
 # as a secondary source for the hub's verbatim compile error if it never does.
 #
-# Install order (HPM's order; #include deps must exist before the app compiles):
-#   1. BUNDLE  hub_install_bundle  importUrl=<bundle zip url>  confirm:true  (delivers EVERY #included library)
-#   2. APP     hub_update_app  appId=<MCP class id>  importUrl=<app raw url>  confirm:true
+# Install order (HPM's repair order; #include deps must exist before the app compiles):
+#   1. BUNDLE(S)  hub_install_bundle  importUrl=<bundle zip url>  confirm:true  (delivers EVERY #included library)
+#   2. APPS       hub_update_app for EVERY manifest app (parent + child), importUrl=<app raw url>, confirm:true
 # Libraries are delivered ONLY by the bundle -- there is no per-#include hub_update_library/hub_create_library
 # step (section 1 only DISCOVERS the #includes + sanity-checks the manifest declares a bundle to deliver them).
 #
@@ -54,11 +55,6 @@ if [ ! -f "$APP_FILE" ]; then
   echo "::error::App file not found: $APP_FILE (wrong working directory or bad path arg). Refusing to silently report 'nothing to install'."
   exit 1
 fi
-
-# Pulled from the parent app's definition() block -- keep in sync if the parent
-# ever changes its namespace/name (HPM tracks it, so it shouldn't).
-APP_NAMESPACE="mcp"
-APP_NAME="MCP Rule Server"
 
 # The package's bundle .zip(s), DERIVED from packageManifest.json -- never hardcoded. The bundle
 # name changes with the #209 modularization, and a hardcoded name would silently stop proving HPM
@@ -139,24 +135,27 @@ else
 fi
 
 # ===========================================================================
-# 3) APP LAST -- deploy the app via hub_update_app importUrl (the hub fetches the
-#    ~1.5MB raw source itself; issue #228). A clean compile that returns within the
-#    ~10s relay window comes back success:true; a rejected save comes back
-#    success:false WITH the hub's verbatim errorMessage. But the ~1.6MB app deploy
-#    usually runs ~200s hub-side and the relay drops its response -- so when the
-#    response is empty we tolerate it and POLL hub_get_source until the saved source
-#    advances to this PR's length (lastSelfDeploy is a secondary compile-error source).
-#    VERIFY = the app's code version (source totalLength) advanced to this PR's length.
+# 3) APPS -- full HPM repair deploys EVERY app the manifest declares (parent AND
+#    child), not just the parent. For each: resolve its Apps Code class id by
+#    namespace+name, build its raw URL at THIS PR's head SHA (re-anchored from the
+#    manifest location, the same prefix-strip as the bundle in section 2), and deploy
+#    via hub_update_app importUrl (the hub fetches the raw source itself; issue #228).
+#    deploy_app_via_watchdog CONFIRMS each landed via a FRESH lastSelfDeploy success
+#    (the watchdog records the appId it deployed) -- the only signal that survives the
+#    ~1.6MB parent app's relay-dropped ~200s response AND a same-length change, so a
+#    stale/wrong source can never false-green. As a belt-and-suspenders cross-check we
+#    also confirm each app's live totalLength matches this PR's file.
 # ===========================================================================
-CLASS_ID="$(resolve_class_id "$APP_NAMESPACE" "$APP_NAME")"
-echo "Resolved Apps Code class id for ${APP_NAMESPACE}:${APP_NAME}: ${CLASS_ID}"
-
-APP_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/$(basename "$APP_FILE")"
-NEW_BYTES=$(wc -c < "$APP_FILE")
-# The hub's totalLength is a CHARACTER count (Groovy String.length() = UTF-16 code units). wc -m gives
-# codepoints == UTF-16 units for all-BMP source (the repo is ASCII), used as a belt-and-suspenders
-# "right source landed" cross-check below.
-NEW_CHARS=$(LC_ALL=C.UTF-8 wc -m < "$APP_FILE" | tr -d '[:space:]')
+# Deploy the SELF app (mcp:MCP Rule Server) LAST, like the production toolUpdatePackage does, so the e2e
+# installs in the same app order that ships (and a mid-loop failure leaves the small child changed rather
+# than the 1.6MB server). Not a brick risk on this path -- every call goes through the WATCHDOG, a separate
+# app the server's recompile never drops -- but matching the shipped order keeps e2e faithful. sort_by a
+# boolean puts false (non-self) before true (self).
+APP_RECS=$(jq -r '[.apps[]?] | sort_by(.namespace == "mcp" and .name == "MCP Rule Server") | .[] | "\(.namespace)\t\(.name)\t\(.location)"' "$MANIFEST_FILE")
+if [ -z "$APP_RECS" ]; then
+  echo "::error::packageManifest.json declares no apps -- nothing to deploy. Refusing to pass as a successful install."
+  exit 1
+fi
 
 # Mark the hub DIRTY for the canonical-main refresh: we are about to deploy PR code over the app, so the
 # recorded "hub is on canonical main" SHA marker is no longer valid. Clearing it means that if THIS run's
@@ -166,19 +165,34 @@ NEW_CHARS=$(LC_ALL=C.UTF-8 wc -m < "$APP_FILE" | tr -d '[:space:]')
 echo "Clearing the canonical-main SHA marker (about to deploy PR code -- hub no longer guaranteed canonical main)..."
 call_tool "$(jq -nc '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:"mcp-main-deployed-sha.txt",content:"",confirm:true}}}')" >/dev/null || true
 
-# Deploy the PR's app and CONFIRM it landed via a FRESH lastSelfDeploy success (shared helper). This is
-# the only confirmation that survives the relay-dropped 1.6MB response AND a same-length source change --
-# a stale/wrong source can never false-green as "landed". deploy_app_via_watchdog exits 1 (with the hub's
-# verbatim compile error) on a rejection or if it can't confirm.
-deploy_app_via_watchdog "$CLASS_ID" "$APP_URL" "install PR app"
+DEPLOYED_APPS=0
+while IFS=$'\t' read -r A_NS A_NAME A_LOC; do
+  [ -z "$A_NS" ] && continue
+  # Re-anchor the manifest location (committed against a fixed branch) to THIS PR's head SHA --
+  # the same host/owner/repo/ref prefix-strip used for the bundle in section 2.
+  A_REL=$(printf '%s' "$A_LOC" | sed -E 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+/##')
+  A_FILE="$(dirname "$APP_FILE")/${A_REL}"
+  if [ ! -f "$A_FILE" ]; then
+    echo "::error::packageManifest.json declares app '${A_NS}:${A_NAME}' at '${A_REL}' but it is not in the checkout ($A_FILE). Manifest/repo drift -- failing instead of deploying a stale revision."
+    exit 1
+  fi
+  A_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/${A_REL}"
+  A_CLASS="$(resolve_class_id "$A_NS" "$A_NAME")"
+  echo "Deploying app ${A_NS}:${A_NAME} (class ${A_CLASS}) from ${A_URL} via the watchdog ..."
+  deploy_app_via_watchdog "$A_CLASS" "$A_URL" "install ${A_NAME}"
 
-# Belt-and-suspenders: the fresh lastSelfDeploy proves a deploy of THIS importUrl succeeded; cross-check
-# the live source length is this PR's length (the RIGHT revision). Skipped if the length read fails.
-POST_LEN="$(app_total_length "$CLASS_ID")"
-if [ -n "$POST_LEN" ] && [ "$POST_LEN" != "0" ] && [ "$POST_LEN" != "$NEW_CHARS" ]; then
-  echo "::error::App deploy confirmed by lastSelfDeploy, but the live source totalLength (${POST_LEN}) does not match this PR's length (${NEW_CHARS}) -- a different revision may be live. Investigate."
-  exit 1
-fi
+  # Belt-and-suspenders: the fresh lastSelfDeploy proves THIS importUrl deployed; cross-check the live
+  # source length is this PR's length (the RIGHT revision). totalLength is a CHARACTER count (Groovy
+  # String.length() = UTF-16 units); wc -m == UTF-16 units for all-BMP source (the repo is ASCII).
+  A_CHARS=$(LC_ALL=C.UTF-8 wc -m < "$A_FILE" | tr -d '[:space:]')
+  POST_LEN="$(app_total_length "$A_CLASS")"
+  if [ -n "$POST_LEN" ] && [ "$POST_LEN" != "0" ] && [ "$POST_LEN" != "$A_CHARS" ]; then
+    echo "::error::App ${A_NS}:${A_NAME} deploy confirmed by lastSelfDeploy, but the live source totalLength (${POST_LEN}) does not match this PR's length (${A_CHARS}) -- a different revision may be live. Investigate."
+    exit 1
+  fi
+  echo "App ${A_NS}:${A_NAME} live at class ${A_CLASS} (totalLength ${POST_LEN:-<unreadable>})."
+  DEPLOYED_APPS=$((DEPLOYED_APPS + 1))
+done <<< "$APP_RECS"
 
-echo "Deploy succeeded via watchdog: PR app source (${NEW_BYTES} bytes) is live on the hub at class ${CLASS_ID} (totalLength ${POST_LEN:-<unreadable>})."
-echo "WATCHDOG_DEPLOY_OK classId=${CLASS_ID} libraries=${#INCLUDES[@]} appUrl=${APP_URL}"
+echo "Full-repair deploy succeeded via watchdog: ${DEPLOYED_APPS} app(s) + their library bundle(s) live on the hub."
+echo "WATCHDOG_DEPLOY_OK apps=${DEPLOYED_APPS} libraries=${#INCLUDES[@]}"
