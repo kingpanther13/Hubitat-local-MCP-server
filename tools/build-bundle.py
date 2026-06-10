@@ -59,6 +59,10 @@ LIBS = [
         "source": LIB_DIR / "mcp-bundles-lib.groovy",
         "dest": f"{NAMESPACE}.McpBundlesLib.groovy",
     },
+    {
+        "source": LIB_DIR / "mcp-visual-rules-lib.groovy",
+        "dest": f"{NAMESPACE}.McpVisualRulesLib.groovy",
+    },
 ]
 
 # Fixed DOS-epoch timestamp + stored (uncompressed) entries make rebuilds
@@ -70,6 +74,10 @@ def _add(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
     info = zipfile.ZipInfo(filename=name, date_time=_FIXED_DT)
     info.compress_type = zipfile.ZIP_STORED
     info.external_attr = 0o644 << 16
+    # ZipInfo defaults create_system from the running platform (0 on Windows,
+    # 3 elsewhere) -- pin it so a zip built on Windows is byte-identical to the
+    # CI drift gate's Linux rebuild.
+    info.create_system = 3
     zf.writestr(info, data)
 
 
