@@ -1356,7 +1356,7 @@ def getGatewayConfig() {
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId, action (rule/actions/stop/start, default rule). rule/actions use RMUtils; stop/start toggle the stopRule button (start also resets private boolean).",
                 hub_set_rule_paused: "Pause or resume an RM rule (RMUtils). Args: ruleId, value (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set an RM rule's private boolean (RMUtils). Args: ruleId, value (bool)",
-                hub_set_native_app: "Create or edit any classic native app (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule, etc.) — generic upsert. Omit appId to create (appType, name); provide appId to edit via settings/button. Auto-backs-up before edits. NO RM trigger/action sugar — use hub_set_rule (in hub_manage_rule_machine) for Rule Machine rules. Args: appId (omit=create), appType, name, settings|button, pageName (opt), stateAttribute (opt), confirm.",
+                hub_set_native_app: "Create or edit any classic native app (Room Lighting, Button Controller, Basic Rule, Notifier, Groups+Scenes, etc.) — generic upsert. Omit appId to create (appType, name); provide appId to edit via settings/button/walkStep. buttonRule={controllerId, buttonNumber, event} creates a Button Rule through its parent controller. Auto-backs-up before edits. For Rule Machine RULES use hub_set_rule (in hub_manage_rule_machine). Args: appId (omit=create), appType, name, settings|button|walkStep|buttonRule, pageName (opt), stateAttribute (opt), confirm.",
                 hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
                 hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner. Cheaper than rebuilding from scratch via the wizard. Args: appId (alias sourceAppId), newName (opt), confirm. Returns newAppId.",
                 hub_export_native_app: "Export a rule/app to its canonical JSON shape via Hubitat's first-party appCloner. Args: appId (alias sourceAppId), saveAs (opt File Manager filename). Returns the JSON content (and writes to File Manager if saveAs given).",
@@ -4609,7 +4609,7 @@ Omit appId to CREATE a new app of `appType` (provide name). Provide appId to EDI
 
 [[FLAT_TRIM]]The shell is created via the hub's admin-layer createchild endpoint, which bypasses the SmartApp parent-type check that blocks third-party addChildApp('hubitat', ...) calls. The new app appears under Apps / Automations exactly as if created via the native UI. appType is enum-driven by _appTypeRegistry().[[/FLAT_TRIM]]
 
-This is the GENERIC tool for any classic SmartApp.[[FLAT_TRIM]] Button Rules can't be created standalone (use `buttonRule`); `walkStep` and the RM authoring shortcuts also work here on RM-wire-format classic apps, though Rule Machine RULES belong in hub_set_rule. Separate from the MCP custom rule engine (hub_*_custom_rule).[[/FLAT_TRIM]]
+This is the GENERIC tool for any classic SmartApp.[[FLAT_TRIM]] Button Rules can't be created standalone (use `buttonRule`); `walkStep` and the RM authoring shortcuts also work here on EDIT (appId present) for RM-wire-format classic apps — the create arm honors none of them and rejects rather than drops. Rule Machine RULES belong in hub_set_rule. Separate from the MCP custom rule engine (hub_*_custom_rule).[[/FLAT_TRIM]]
 
 [[FLAT_TRIM]]BEFORE EVERY edit-write a full snapshot is saved to File Manager; the response carries backup.backupKey for hub_restore_backup (in hub_manage_code) if a write goes wrong.[[/FLAT_TRIM]]
 
@@ -8835,6 +8835,9 @@ def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRe
  * which responds with a 302 pointing at /installedapp/configure/<newId>; the
  * new child id lives in that Location header and is lost if the client auto-
  * follows. Shape matches hubInternalPostForm's return for consistency.
+ * Caveat: ABSOLUTE Location values may still be auto-followed by the platform
+ * client (observed live on /installedapp/sysApp), returning 200 with no
+ * Location -- callers must not depend on the 302 shape.
  *
  * Exception handling is duck-typed rather than referencing
  * groovyx.net.http.HttpResponseException by name — that class isn't on the
@@ -16348,12 +16351,11 @@ private Map _appTypeRegistry() {
     // "For input string: updateRule" (verified live on Basic Rule).
     return [
         rule_machine: [namespace: "hubitat", appName: "Rule-5.1", parentTypeName: "Rule Machine"],
-        // Button Controller-5.1's mainPage is submitOnChange (selecting buttonDev re-renders
-        // to reveal the button-action table), with no updateRule button -- so commitButton is
-        // null. Verified live: a settings write of buttonDev (capability.pushableButton) commits
-        // via the submitOnChange re-render, but the default trailing updateRule click re-inits
-        // the app and DROPS the just-selected device (settings.buttonDev silently reverts to
-        // null while the app label still gets the device name -- a false-positive "success").
+        // Button Controller-5.1's mainPage is submitOnChange (selecting buttonDev
+        // re-renders to reveal the button-action table) with NO updateRule button,
+        // so commitButton is null -- same class as basic_rule. (The buttonDev-wipe
+        // failure mode on these app types is a separate mechanism, documented and
+        // fixed at _rmLiveSettingsFromStatus.)
         button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers", commitButton: null],
         groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes"],
         notifier: [namespace: "hubitat", appName: "Notifier", parentTypeName: "Notifications"],
@@ -16607,6 +16609,7 @@ private Integer _discoverParentAppId(String appType) {
 
     def parentNode = findParentNode()
     def bootstrapDiag = null
+    def commitUnverified = false
     if (parentNode?.id == null) {
         // The built-in parent app is not installed yet. Hubitat's "Add Built-In App"
         // link is GET /installedapp/sysApp/<display name> (parentTypeName IS that name);
@@ -16626,8 +16629,8 @@ private Integer _discoverParentAppId(String appType) {
         def created = null
         try {
             created = hubInternalGetRaw(sysAppPath)
-            // Front-load the most diagnostic bits (body length + context around `appId`)
-            // because the e2e harness truncates the surfaced error to ~156 chars.
+            // Front-load the most diagnostic bits (body length + context around
+            // `appId`) -- downstream surfaces truncate long error strings.
             def _body = created?.data?.toString() ?: ""
             def _ai = _body.indexOf("appId")
             def _ctx = _ai >= 0 ? _body.substring(_ai, Math.min(_ai + 36, _body.length())).replaceAll(/\s+/, ' ') : "noAppId"
@@ -16663,10 +16666,25 @@ private Integer _discoverParentAppId(String appType) {
             if (newId != null) {
                 // Commit via Done so the parent is fully installed, then trust the id
                 // directly rather than re-reading the (possibly cache-lagging) appsList.
+                // A commit that MEASURABLY did not take (app.installed reads false)
+                // must not be papered over with a fabricated installed:true -- the
+                // cached id would send every future createchild at an inert shell
+                // with a misleading registry-blame error.
                 try {
                     def commit = _commitUserAppInstall(newId, firstPage)
                     bootstrapDiag += " committed=${commit?.success}"
-                } catch (Exception ce) { bootstrapDiag += " commitThrew=${ce.message}" }
+                    if (commit?.success == false) {
+                        throw new IllegalArgumentException(
+                            "[bootstrap ${bootstrapDiag}] '${parentTypeName}' parent was created (id=${newId}) but its install commit did not take (app.installed reads false). Open it once in the Hubitat UI (Apps > ${parentTypeName}, press Done) and retry.")
+                    }
+                } catch (IllegalArgumentException iae) {
+                    throw iae
+                } catch (Exception ce) {
+                    // Transient commit failure: state unknown -- proceed (createchild may
+                    // still work) but flag it so the id is NOT cached below.
+                    bootstrapDiag += " commitThrew=${ce.message}"
+                    commitUnverified = true
+                }
                 parentNode = [id: newId, installed: true]
             }
         } else if (parentNode?.id != null && parentNode.installed != true) {
@@ -16674,9 +16692,21 @@ private Integer _discoverParentAppId(String appType) {
             try {
                 def commit = _commitUserAppInstall(parentNode.id.toString().toInteger(), null)
                 bootstrapDiag += " committed=${commit?.success}"
-            } catch (Exception ce) { bootstrapDiag += " commitThrew=${ce.message}" }
+                if (commit?.success == false) {
+                    throw new IllegalArgumentException(
+                        "[bootstrap ${bootstrapDiag}] '${parentTypeName}' parent (id=${parentNode.id}) is install-pending and its install commit did not take (app.installed reads false). Open it once in the Hubitat UI (Apps > ${parentTypeName}, press Done) and retry.")
+                }
+            } catch (IllegalArgumentException iae) {
+                throw iae
+            } catch (Exception ce) {
+                bootstrapDiag += " commitThrew=${ce.message}"
+                commitUnverified = true
+            }
             parentNode = findParentNode()
         }
+        // The diag evidence (st/loc/newId/committed) previously evaporated on
+        // every non-throw path -- keep a record of what the bootstrap did.
+        mcpLog(commitUnverified ? "warn" : "info", "rm-native", "sysApp bootstrap for '${parentTypeName}': ${bootstrapDiag}")
     }
 
     if (parentNode?.id == null) {
@@ -16684,8 +16714,14 @@ private Integer _discoverParentAppId(String appType) {
             "[bootstrap ${bootstrapDiag}] '${parentTypeName}' parent not surfaced by /installedapp/sysApp (appType=${appType}); install via Apps > Add Built-In App.")
     }
     def id = parentNode.id.toString().toInteger()
-    ids[appType] = id
-    atomicState.parentAppIds = ids
+    if (commitUnverified) {
+        // Don't poison the permanent cache with an id whose install commit is
+        // unconfirmed -- the next call re-discovers (cheap) and re-verifies.
+        mcpLog("warn", "rm-native", "Parent ${parentTypeName} id ${id}: install commit unverified (commit call threw) -- id NOT cached; the next create re-discovers")
+    } else {
+        ids[appType] = id
+        atomicState.parentAppIds = ids
+    }
     mcpLog("info", "rm-native", "Discovered ${parentTypeName} parent app id: ${id} (appType=${appType})")
     return id
 }
@@ -19382,24 +19418,6 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
 }
 
 /**
- * Submit a sub-page back to its parent via _action_previous=Done, carrying
- * ALL the page's current setting values + sidecar fields. The form-encoded
- * Done is what bakes the trigger/action description into the parent's row;
- * forward-nav markers (_action_href_*) reach the parent visually but leave
- * the row unrendered ("?").
- *
- * Live-captured 2026-04-25 from Hubitat's Periodic Schedule "Done" XHR
- * (firmware 2.5.0.123): the body carries settings[X] values for every
- * input on the page + per-type sidecars (X.type, X.multiple,
- * checkbox[X]=on for bools, hours/minutes/amPm[X] for times) +
- * paramsForPage:{n:1} + pageBreadcrumbs:[mainPage,parent].
- *
- * Used by both walkStep's "done" op and the high-level addTrigger flow
- * for sub-page-driven capabilities (Periodic Schedule, Cron String,
- * etc.). Caller passes the current page name + parent page + the href
- * params (so paramsForPage routes correctly).
- */
-/**
  * Rebuild a name->value map of an app's live settings from statusJson
  * appSettings, for re-submitting a full page form. Capability/device
  * settings report value=null even when devices ARE assigned -- the live
@@ -19425,6 +19443,24 @@ private Map _rmLiveSettingsFromStatus(Map status) {
     }
 }
 
+/**
+ * Submit a sub-page back to its parent via _action_previous=Done, carrying
+ * ALL the page's current setting values + sidecar fields. The form-encoded
+ * Done is what bakes the trigger/action description into the parent's row;
+ * forward-nav markers (_action_href_*) reach the parent visually but leave
+ * the row unrendered ("?").
+ *
+ * Live-captured 2026-04-25 from Hubitat's Periodic Schedule "Done" XHR
+ * (firmware 2.5.0.123): the body carries settings[X] values for every
+ * input on the page + per-type sidecars (X.type, X.multiple,
+ * checkbox[X]=on for bools, hours/minutes/amPm[X] for times) +
+ * paramsForPage:{n:1} + pageBreadcrumbs:[mainPage,parent].
+ *
+ * Used by both walkStep's "done" op and the high-level addTrigger flow
+ * for sub-page-driven capabilities (Periodic Schedule, Cron String,
+ * etc.). Caller passes the current page name + parent page + the href
+ * params (so paramsForPage routes correctly).
+ */
 private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage, String hrefName, Map hrefParams) {
     // Sub-pages with route params (periodic.n, etc.) lose state.<paramKey>
     // on a plain GET — `_rmFetchConfigJson(appId, page)` returns the page
@@ -19498,21 +19534,42 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
  * Verified live by capturing the working UI's Done click on
  * a rule's mainPage: body carries _action_update=Done plus all mainPage
  * input fields echoed with their type + multiple sidecars + (where
- * applicable) checkbox/hours/minutes/amPm markers. After Done, the
- * server redirects to /installedapp/list?section=automations.
+ * applicable) checkbox/hours/minutes/amPm markers, plus the
+ * appTypeId/appTypeName/_cancellable fields the classic Done form always
+ * submits — the hub's update handler 500s without them on standalone
+ * classic apps (Button Controller-5.1, verified live on fw 2.5.0.143;
+ * same trio as _commitUserAppInstall). After Done, the server redirects
+ * to /installedapp/list?section=automations.
  *
  * Best-effort — even if Done fails the underlying app data is usually
- * already committed by prior writes; the user just wants belt-and-suspenders.
+ * already committed by prior writes. Returns [done: true] or
+ * [done: false, reason: <why>] so callers can surface the miss: for
+ * commitButton:null app types (Basic Rule, Button Controller) the Done
+ * is the session's ONLY lifecycle event, so a silent miss matters there.
  */
-private void _rmSubmitMainPageDone(Integer appId) {
+private Map _rmSubmitMainPageDone(Integer appId) {
     def cfg
     try { cfg = _rmFetchConfigJson(appId, "mainPage") }
     catch (Exception fetchExc) {
         mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: mainPage fetch failed for app ${appId} (${fetchExc.message}) -- skipping Done click; lingering state markers (state.editAct/state.editCond) may corrupt subsequent edits")
-        return
+        return [done: false, reason: "mainPage fetch failed: ${fetchExc.message}".toString()]
     }
     def schema = _rmCollectInputSchema(cfg?.configPage)
-    def status = _rmFetchStatusJson(appId)
+    def status
+    try { status = _rmFetchStatusJson(appId) }
+    catch (Exception statusExc) {
+        mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: statusJson fetch failed for app ${appId} (${statusExc.message}) -- skipping Done click rather than re-submitting the page blind")
+        return [done: false, reason: "statusJson fetch failed: ${statusExc.message}".toString()]
+    }
+    // Anomalous-shape guard: if statusJson parses but carries no appSettings
+    // LIST, rebuilding the form would submit EVERY input as "" -- the
+    // all-fields variant of the capability wipe _rmLiveSettingsFromStatus
+    // exists to prevent. Skip the Done instead. (A legitimately EMPTY list
+    // on a fresh shell still proceeds -- there is nothing to wipe.)
+    if (!(status?.appSettings instanceof List)) {
+        mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: statusJson for app ${appId} has no appSettings list -- skipping Done click rather than blanking ${schema.size()} inputs")
+        return [done: false, reason: "statusJson carried no appSettings list"]
+    }
     def liveSettings = _rmLiveSettingsFromStatus(status)
     def settingsMap = [:]
     schema.each { name, meta ->
@@ -19539,9 +19596,22 @@ private void _rmSubmitMainPageDone(Integer appId) {
         }
     }
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
-    try { hubInternalPostForm("/installedapp/update/json", body) } catch (Exception e) {
+    // The classic Done form always submits these; without them the hub's
+    // update handler 500s on standalone classic apps (verified live on
+    // Button Controller-5.1 -- the 500 was previously swallowed here).
+    body.appTypeId = ""
+    body.appTypeName = ""
+    body._cancellable = "false"
+    def resp
+    try { resp = hubInternalPostForm("/installedapp/update/json", body) } catch (Exception e) {
         mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: final Done POST for app ${appId} failed (${e.message}) -- state.editAct / state.editCond markers from in-flight edits may not have been cleared; next edit session should verify via hub_get_app_config")
+        return [done: false, reason: "Done POST failed: ${e.message}".toString()]
     }
+    if (resp?.status != null && resp.status >= 400) {
+        mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: Done POST for app ${appId} returned status ${resp.status}")
+        return [done: false, reason: "Done POST returned status ${resp.status}".toString()]
+    }
+    return [done: true]
 }
 
 /**
@@ -19808,12 +19878,15 @@ private void _rmInitSelectActionsPage(Integer appId) {
         id: appId.toString(),
         formAction: "update",
         currentPage: editorPage,
+        // Kept "mainPage" for BOTH page graphs: on Button Rules the hub accepts
+        // it for this transition (verified live -- the e2e authors an action on
+        // a fresh button rule through exactly this path).
         pageBreadcrumbs: '["mainPage"]'
     ]
     def v = cfg?.app?.version
     if (v != null) body.version = v.toString()
     try { hubInternalPostForm("/installedapp/update/json", body) } catch (Exception e) {
-        mcpLog("warn", "rm-native", "_rmInitSelectActionsPage: selectActions tickle POST for app ${appId} failed (${e.message}) -- state.actNdx may not initialize; first +N click may throw 'Cannot invoke method startsWith() on null object'")
+        mcpLog("warn", "rm-native", "_rmInitSelectActionsPage: ${editorPage} tickle POST for app ${appId} failed (${e.message}) -- state.actNdx may not initialize; first +N click may throw 'Cannot invoke method startsWith() on null object'")
     }
 }
 
@@ -23140,10 +23213,10 @@ def toolSetRule(args) {
         // walkStep, etc.) plus the raw-mode page-field params (settings, button)
         // makes no sense on a brand-new empty rule -- they require an existing
         // wizard session -- and -- if left unread -- would be silently dropped
-        // while the call still returned success:true on an empty shell. Mirror
-        // the sibling hub_set_native_app's reject-don't-drop posture: the create
-        // arm must HONOR or LOUDLY REJECT every shortcut it is handed, never
-        // silent-success.
+        // while the call still returned success:true on an empty shell. The
+        // create arm must HONOR or LOUDLY REJECT every shortcut it is handed,
+        // never silent-success (hub_set_native_app's create arm enforces the
+        // same posture for the shortcuts it does not honor).
         def CREATE_HONORED = ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression'] as Set
         def EDIT_ONLY = ['addLocalVariable', 'patches', 'replaceActions', 'removeAction', 'clearActions',
                          'moveAction', 'removeTrigger', 'modifyTrigger', 'walkStep', 'settings', 'button']
@@ -23186,19 +23259,35 @@ def toolSetNativeApp(args) {
     // Button Rules are grandchildren of a Button Controller and only get their
     // button/event context via the controller's add-button flow -- a bare
     // createchild yields an un-renderable orphan. buttonRule routes through the
-    // parent controller (see _createButtonRuleViaController).
+    // parent controller (see _createButtonRuleViaController, which also rejects
+    // any other operative param bundled alongside buttonRule).
     if (args instanceof Map && args.buttonRule != null) {
         return _createButtonRuleViaController(args)
     }
     // Generic create-or-edit for any classic SmartApp. The authoring shortcuts
     // (walkStep / addTrigger / addAction / addRequiredExpression / patches / ...)
-    // are NOT rejected here: walkStep is a generic classic-dynamicPage walker,
-    // and the RM-wire-format shortcuts genuinely apply to RM-format classic apps
-    // (Basic Rules, Button Rules, etc.). They flow through to the shared edit
-    // engine below. They stay out of this tool's lean schema to keep the catalog
-    // small and to steer callers toward hub_set_rule for actual Rule Machine
-    // RULES -- but a hand-crafted call may use them where they apply.
+    // are NOT rejected on EDIT (appId present): walkStep is a generic classic-
+    // dynamicPage walker, and the RM-wire-format shortcuts genuinely apply to
+    // RM-format classic apps (Basic Rules, Button Rules, etc.). They flow
+    // through to the shared edit engine below. They stay out of this tool's
+    // lean schema to keep the catalog small and to steer callers toward
+    // hub_set_rule for actual Rule Machine RULES -- but a hand-crafted call
+    // may use them where they apply.
     if (args?.appId == null) {
+        // CREATE arm: _createNativeAppShell honors only triggers/actions/
+        // requiredExpression (and only on RM-format types). Any edit-path
+        // shortcut handed to a create would be silently dropped while the
+        // call returned success:true on an empty shell -- same honor-or-
+        // loudly-reject posture as hub_set_rule's create gate.
+        def droppedOnCreate = ['addTrigger', 'addTriggers', 'addAction', 'addActions',
+                               'addRequiredExpression', 'addLocalVariable', 'patches', 'replaceActions',
+                               'removeAction', 'clearActions', 'moveAction', 'removeTrigger',
+                               'modifyTrigger', 'walkStep', 'settings', 'button'].findAll {
+            args instanceof Map && args.containsKey(it)
+        }
+        if (droppedOnCreate) {
+            throw new IllegalArgumentException("hub_set_native_app CREATE (no appId) does not honor ${droppedOnCreate.join(', ')} -- ${droppedOnCreate.size() == 1 ? 'it requires' : 'they require'} an existing app. Create the app first (appType + name), then re-call with the returned appId; for Rule Machine authoring sugar on create, use hub_set_rule.")
+        }
         return _createNativeAppShell(args)
     }
     return _applyNativeAppEdit(args)
@@ -23212,13 +23301,14 @@ def toolSetNativeApp(args) {
  * un-renderable "Cannot set property '1' on null object" orphan.
  *
  * Replicates the classic UI sequence (verified live, captured from appUI.js'
- * buttonClick/jsonSubmit). All steps run in ONE in-session flow with NO
- * state-resetting GET between the mutations -- the add-button mode lives only in
- * the POST-response chain and a fresh GET collapses it:
- *   1. btn click name="true" stateAttribute="addBut"   (enter add-button mode)
- *   2. full-form update/json (no newBut)                (re-render -> button picker)
- *   3. full-form update/json + newBut=[buttonNumber]    (define the button)
- *   4. btn click name="<N> <event>" stateAttribute="setBut" (spawn the rule)
+ * buttonClick/jsonSubmit). The wire steps (body comments 2-5) run in ONE
+ * in-session flow with NO state-resetting GET between the mutations -- the
+ * add-button mode lives only in the POST-response chain and a fresh GET
+ * collapses it:
+ *   - btn click name="true" stateAttribute="addBut"   (enter add-button mode)
+ *   - full-form update/json (no newBut)                (re-render -> button picker)
+ *   - full-form update/json + newBut=[buttonNumber]    (define the button)
+ *   - btn click name="<N> <event>" stateAttribute="setBut" (spawn the rule)
  *
  * Returns the new rule's appId so the caller authors its actions via
  * hub_set_rule(appId=<buttonRuleId>, addAction=...). An empty button rule stays
@@ -23229,6 +23319,18 @@ def _createButtonRuleViaController(args) {
     def br = args?.buttonRule
     if (!(br instanceof Map)) {
         throw new IllegalArgumentException("buttonRule must be an object: {controllerId, buttonNumber, event}")
+    }
+    // buttonRule is exclusive: every other operative param would be silently
+    // ignored by this flow (same honor-or-loudly-reject posture as the create
+    // gates). confirm rides along; everything else is a caller mistake.
+    def bundledExtras = ['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute',
+                         'walkStep', 'addTrigger', 'addTriggers', 'addAction', 'addActions',
+                         'addRequiredExpression', 'addLocalVariable', 'patches', 'replaceActions',
+                         'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger'].findAll {
+        args instanceof Map && args.containsKey(it)
+    }
+    if (bundledExtras) {
+        throw new IllegalArgumentException("buttonRule is exclusive -- ${bundledExtras.join(', ')} would be silently ignored. Create the button rule first, then apply edits in a follow-up call using the returned buttonRuleId as appId.")
     }
     def controllerId = null
     try { controllerId = (br.controllerId as Integer) } catch (Exception ignore) {}
@@ -23263,41 +23365,61 @@ def _createButtonRuleViaController(args) {
 
     def backup = _rmBackupRuleSnapshot(controllerId, "pre-buttonRule")
 
-    // 2. Enter add-button mode (minimal btn click -- no pageName so no GET).
-    _rmClickAppButton(controllerId, "true", "addBut")
+    // Runtime-error envelope: a mid-flow throw after the backup would otherwise
+    // surface as a flat "Tool error: <msg>" with no backupKey/controllerId and
+    // no hint that the controller may be mid add-button mode -- and a throw on
+    // the step-6 discovery fetch would lose the id of a rule that DID spawn.
+    // Mirrors _applyNativeAppEdit's _rmBuildUpdateErrorResponse posture.
+    try {
+        // 2. Enter add-button mode (minimal btn click -- no pageName so no GET).
+        _rmClickAppButton(controllerId, "true", "addBut")
 
-    // 3. Full-form re-render (the UI's changeSubmit after addBut) so the button
-    //    picker materializes. Re-send the controller's current form unchanged.
-    def baseSettings = [buttonDev: buttonDevIds, origLabel: origLabel]
-    hubInternalPostForm("/installedapp/update/json", _rmBuildSettingsBody(controllerId, baseSettings, schema))
+        // 3. Full-form re-render (the UI's changeSubmit after addBut) so the button
+        //    picker materializes. Re-send the controller's current form unchanged.
+        def baseSettings = [buttonDev: buttonDevIds, origLabel: origLabel]
+        hubInternalPostForm("/installedapp/update/json", _rmBuildSettingsBody(controllerId, baseSettings, schema))
 
-    // 4. Define the button: full form + newBut as a multi-select enum. Force the
-    //    enum/multiple schema -- newBut is a transient input not in the static
-    //    page schema, so the JSON-array serialization needs the hint.
-    def defineSchema = (schema ?: [:]) + [newBut: [type: "enum", multiple: true]]
-    def defineSettings = baseSettings + [newBut: [buttonNumber]]
-    hubInternalPostForm("/installedapp/update/json", _rmBuildSettingsBody(controllerId, defineSettings, defineSchema))
+        // 4. Define the button: full form + newBut as a multi-select enum. Force the
+        //    enum/multiple schema -- newBut is a transient input not in the static
+        //    page schema, so the JSON-array serialization needs the hint.
+        def defineSchema = (schema ?: [:]) + [newBut: [type: "enum", multiple: true]]
+        def defineSettings = baseSettings + [newBut: [buttonNumber]]
+        hubInternalPostForm("/installedapp/update/json", _rmBuildSettingsBody(controllerId, defineSettings, defineSchema))
 
-    // 5. Spawn the rule for "<N> <event>" (minimal btn click).
-    _rmClickAppButton(controllerId, "${buttonNumber} ${event}".toString(), "setBut")
+        // 5. Spawn the rule for "<N> <event>" (minimal btn click).
+        _rmClickAppButton(controllerId, "${buttonNumber} ${event}".toString(), "setBut")
 
-    // 6. Discover the new grandchild by diffing the controller's children.
-    def afterCfg = _rmFetchConfigJson(controllerId)
-    def afterIds = (afterCfg?.childApps ?: []).collect { it?.id?.toString() } as Set
-    def newIds = (afterIds - beforeIds).toList()
-    if (!newIds) {
+        // 6. Discover the new grandchild by diffing the controller's children.
+        def afterCfg = _rmFetchConfigJson(controllerId)
+        def afterIds = (afterCfg?.childApps ?: []).collect { it?.id?.toString() } as Set
+        def newIds = (afterIds - beforeIds).toList()
+        if (!newIds) {
+            return [success: false, controllerId: controllerId, buttonNumber: buttonNumber, event: event,
+                backup: backup,
+                error: "Button rule create did not produce a new child under controller ${controllerId}.",
+                note: "Verify the controller's button device is valid and button ${buttonNumber} exists on it. If a rule for this button/event already existed, the controller may have reused it instead of spawning -- inspect childApps via hub_get_app_config(appId=${controllerId})."]
+        }
+        def newRuleId = (newIds[0] as Integer)
+        def ruleHealth = _rmCheckRuleHealth(newRuleId)
+        def result = [success: true, buttonRuleId: newRuleId, controllerId: controllerId,
+            buttonNumber: buttonNumber, event: event, backup: backup, health: ruleHealth,
+            note: ("Empty button rule created (it shows '(Not Installed)' until it has an action). " +
+                "Author its actions with hub_set_rule(appId=${newRuleId}, addAction={...}) -- the rule is RM-wire-format. " +
+                "Trigger (Button ${buttonNumber} ${event}) is already seeded by the controller.").toString()]
+        if (newIds.size() > 1) {
+            // More than one new child appeared during the flow (concurrent UI
+            // session?) -- expose all of them rather than silently picking one.
+            result.newChildIds = newIds
+            result.note = (result.note + " NOTE: ${newIds.size()} new children appeared during the flow (${newIds.join(', ')}); buttonRuleId is the first -- verify via hub_get_app_config.").toString()
+        }
+        return result
+    } catch (Exception flowExc) {
+        mcpLogError("rm-native", "buttonRule flow failed mid-stream for controller ${controllerId}", flowExc)
         return [success: false, controllerId: controllerId, buttonNumber: buttonNumber, event: event,
-            backup: backup,
-            error: "Button rule create did not produce a new child under controller ${controllerId}.",
-            note: "Verify the controller's button device is valid and button ${buttonNumber} exists on it. Inspect via hub_get_app_config(appId=${controllerId})."]
+            backup: backup, error: flowExc.message ?: flowExc.toString(),
+            note: ("The add-button flow failed mid-stream; the controller may be left in add-button mode (a fresh page open in the UI collapses it) and the rule may or may not have spawned -- check childApps via hub_get_app_config(appId=${controllerId}). " +
+                "Restore the controller via hub_restore_backup(backupKey='${backup.backupKey}') if its config looks damaged.").toString()]
     }
-    def newRuleId = (newIds[0] as Integer)
-    def ruleHealth = _rmCheckRuleHealth(newRuleId)
-    return [success: true, buttonRuleId: newRuleId, controllerId: controllerId,
-        buttonNumber: buttonNumber, event: event, backup: backup, health: ruleHealth,
-        note: ("Empty button rule created (it shows '(Not Installed)' until it has an action). " +
-            "Author its actions with hub_set_rule(appId=${newRuleId}, addAction={...}) -- the rule is RM-wire-format. " +
-            "Trigger (Button ${buttonNumber} ${event}) is already seeded by the controller.").toString()]
 }
 
 /**
@@ -23479,7 +23601,7 @@ def _createNativeAppShell(args) {
         // ALWAYS fires this as the last step of every create/modify session
         // (verified). Without it, the rule's session-end state
         // can be incomplete and subsequent reads/edits may behave oddly.
-        _rmSubmitMainPageDone(newId)
+        def createDone = _rmSubmitMainPageDone(newId)
 
         def status = _rmFetchStatusJson(newId)
         def health = _rmCheckRuleHealth(newId)
@@ -23527,6 +23649,14 @@ def _createNativeAppShell(args) {
                 "Created ${appType} app (id=${newId}) with ${triggerResults.count { it?.success == true }}/${triggerSpecs.size()} triggers + ${actionResults.count { it?.success == true }}/${actionSpecs.size()} actions${reSpec != null ? " + Required Expression (${reFailed ? "failed" : (rePartial ? "partial" : "applied")})" : ""} FULLY committed${partialTriggers || partialActions || reFailed || rePartial ? " (some partial -- see partialTriggers/partialActions/requiredExpression for repair)" : ""}. updateRule fired to commit each section${reSpec != null ? (reResult?.updateRuleFailed ? " but the Required Expression re-init updateRule was REJECTED -- the expression may not be live (see requiredExpression.updateRuleError)" : " (including a trailing updateRule after the Required Expression so it is live)") : ""}." :
                 "Empty ${appType} app created (id=${newId}). Use hub_set_rule (RM rules) or hub_set_native_app (other classic apps) to populate, or hub_get_app_config to inspect."
         ]
+        // Surface a missed session-end Done. For commitButton:null app types
+        // (Basic Rule, Button Controller) the Done is the session's ONLY
+        // lifecycle event, so a swallowed miss would be a false-clean create.
+        if (createDone?.done == false) {
+            result.mainPageDoneFailed = true
+            result.mainPageDoneError = createDone.reason
+            result.repairHints = (result.repairHints ?: []) + ["The session-end mainPage Done click did not commit (${createDone.reason}). Settings are already written, but the app's update lifecycle did not run -- verify via hub_get_app_config(appId=${newId}) and re-commit via hub_set_native_app(appId=${newId}, button='updateRule') for RM-family apps.".toString()]
+        }
         if (triggerSpecs) result.triggers = triggerResults
         if (actionSpecs) result.actions = actionResults
         if (reSpec != null) {
@@ -25431,8 +25561,13 @@ def _applyNativeAppEdit(args) {
             // For introspect/write/click/navigate ops in the middle of a
             // multi-step walk, skip Done since the caller is mid-flow.
             if (walkStepSpec?.operation?.toString() == "done") {
-                try { _rmSubmitMainPageDone(appId) }
+                def walkDone = null
+                try { walkDone = _rmSubmitMainPageDone(appId) }
                 catch (Exception doneExc) { mcpLog("warn", "rm-native", "walkStep: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} -- in-flight state markers may linger and corrupt subsequent edits") }
+                if (walkDone?.done == false) {
+                    result.mainPageDoneFailed = true
+                    result.mainPageDoneError = walkDone.reason
+                }
             }
             return result
         } catch (Exception e) {
@@ -26639,9 +26774,16 @@ def _applyNativeAppEdit(args) {
         // Final commit: click the mainPage Done button. Mirrors the live UI's
         // last-step behavior on every modify session. Without it, in-flight
         // state markers (state.editAct, state.editCond, etc.) can linger and
-        // cause subsequent edits to misbehave.
-        try { _rmSubmitMainPageDone(appId) }
+        // cause subsequent edits to misbehave. A miss is surfaced (not just
+        // warn-logged): for commitButton:null app types this Done is the
+        // session's ONLY lifecycle event.
+        def editDone = null
+        try { editDone = _rmSubmitMainPageDone(appId) }
         catch (Exception doneExc) { mcpLog("warn", "rm-native", "hub_set_rule: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} -- in-flight state markers may linger and corrupt subsequent edits") }
+        if (editDone?.done == false) {
+            result.mainPageDoneFailed = true
+            result.mainPageDoneError = editDone.reason
+        }
         return result
     } catch (Exception e) {
         def msg = e.message ?: e.toString()

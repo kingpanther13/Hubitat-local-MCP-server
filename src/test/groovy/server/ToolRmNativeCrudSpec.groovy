@@ -272,7 +272,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def id = script._discoverParentAppId("button_controller")
 
-        then: "the sysApp Add-Built-In-App endpoint was hit with the URL-encoded parent name"
+        then: "the sysApp endpoint was hit with the LITERAL-SPACE parent name (the HTTP layer encodes; pre-encoding double-encodes to %2520)"
         rawCalls.any { it == "/installedapp/sysApp/Button Controllers" }
 
         and: "the parent is re-discovered by type and returned -- no commit needed (already installed)"
@@ -365,6 +365,112 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.any { it.path == "/installedapp/update/json" && it.body._action_update == "Done" }
     }
 
+    def "_discoverParentAppId raises a clear IAE when the bootstrapped parent's install commit does not take (app.installed reads false)"() {
+        given:
+        // PENDING parent that gets committed via Done, but the post-commit
+        // confirmation read (_commitUserAppInstall re-reads configure/json and
+        // checks app.installed) comes back false -- an inert shell. The discovery
+        // must surface that loudly rather than caching an id whose createchild
+        // would hit a dead parent. configure/json/88 reports installed:false so
+        // _commitUserAppInstall returns success:false.
+        boolean created = false
+        hubGet.register('/hub2/appsList') { params ->
+            created
+                ? JsonOutput.toJson([apps: [[data: [id: 88, name: "Button Controllers", type: "Button Controllers", user: false, installed: null, hidden: false], children: []]]])
+                : JsonOutput.toJson([apps: []])
+        }
+        hubGet.register('/installedapp/configure/json/88') { params ->
+            JsonOutput.toJson([app: [id: 88, installed: false, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
+        }
+        hubGet.register('/installedapp/configure/json/88/mainPage') { params ->
+            JsonOutput.toJson([app: [id: 88, installed: false, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
+        }
+        hubGet.register('/installedapp/statusJson/88') { params -> statusJson(88) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            if (path.startsWith("/installedapp/sysApp/")) created = true
+            [status: 200, location: null, data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        script._discoverParentAppId("button_controller")
+
+        then: "the install-pending parent whose commit didn't take is surfaced loudly (app.installed reads false)"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("commit did not take")
+        ex.message.contains("app.installed reads false")
+    }
+
+    def "_discoverParentAppId does NOT cache the parent id when the install commit threw (next create re-discovers)"() {
+        given:
+        // PENDING parent: the Done commit POST throws (transient hub failure). The
+        // discovery proceeds (createchild may still work) but the id must NOT be
+        // cached -- an unverified install should be re-discovered + re-verified on
+        // the next call, not papered over in atomicState.parentAppIds. The Done POST
+        // is the only POST in this flow, so failing every POST fails exactly the commit.
+        boolean created = false
+        hubGet.register('/hub2/appsList') { params ->
+            created
+                ? JsonOutput.toJson([apps: [[data: [id: 88, name: "Button Controllers", type: "Button Controllers", user: false, installed: null, hidden: false], children: []]]])
+                : JsonOutput.toJson([apps: []])
+        }
+        hubGet.register('/installedapp/configure/json/88') { params ->
+            JsonOutput.toJson([app: [id: 88, installed: true, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
+        }
+        hubGet.register('/installedapp/configure/json/88/mainPage') { params ->
+            JsonOutput.toJson([app: [id: 88, installed: true, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
+        }
+        hubGet.register('/installedapp/statusJson/88') { params -> statusJson(88) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            if (path.startsWith("/installedapp/sysApp/")) created = true
+            [status: 200, location: null, data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            throw new RuntimeException("transient commit failure")
+        }
+
+        when:
+        def id = script._discoverParentAppId("button_controller")
+
+        then: "the id is still returned (createchild may work), but the unverified install is NOT cached"
+        id == 88
+        !(atomicStateMap.parentAppIds?.containsKey("button_controller"))
+    }
+
+    def "_discoverParentAppId 302-Location bootstrap: pulls the id from the redirect Location, commits, and returns it"() {
+        given:
+        // Variant of the absolute-redirect 200 case: the sysApp GET 302-redirects
+        // and the client preserves the Location header (rather than following it to
+        // a 200 body). The new id rides in the Location's /installedapp/configure/<id>/<page>
+        // path -- the code parses it from there, commits via Done, and returns it directly
+        // without re-reading the lagging appsList.
+        hubGet.register('/hub2/appsList') { params -> JsonOutput.toJson([apps: []]) }   // never surfaces
+        hubGet.register('/installedapp/configure/json/91') { params ->
+            JsonOutput.toJson([app: [id: 91, installed: true, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
+        }
+        hubGet.register('/installedapp/configure/json/91/mainPage') { params ->
+            JsonOutput.toJson([app: [id: 91, installed: true, version: 1], configPage: [name: "mainPage", sections: []], settings: [:]])
+        }
+        hubGet.register('/installedapp/statusJson/91') { params -> statusJson(91) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "http://hub/installedapp/configure/91/mainPage", data: ""]
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def id = script._discoverParentAppId("button_controller")
+
+        then: "the id came from the 302 Location, the parent was committed via Done, and the id was returned"
+        id == 91
+        posts.any { it.path == "/installedapp/update/json" && it.body._action_update == "Done" }
+    }
+
     def "_rmSubmitMainPageDone re-submits capability device ids from statusJson #idsField (value is null for device settings)"() {
         given:
         // Button Controller-5.1 keeps its device picker ON mainPage (unlike RM,
@@ -408,6 +514,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         done.body["buttonDev.type"] == "capability.pushableButton"
         done.body["buttonDev.multiple"] == "true"
         done.body.version == "3"
+
+        and: "the classic Done form always carries the appTypeId/appTypeName/_cancellable trio (hub 500s without them on standalone classic apps)"
+        done.body.appTypeId == ""
+        done.body.appTypeName == ""
+        done.body._cancellable == "false"
 
         where:
         idsField                 | idsValue
@@ -466,6 +577,145 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         posts.find { it.path == "/installedapp/update/json" }?.body?.currentPage == "selectActions"
+    }
+
+    def "_rmSubmitSubPageDone reconstructs device-id settings from statusJson when rebuilding the sub-page Done form"() {
+        given:
+        // The sub-page Done form is rebuilt via _rmLiveSettingsFromStatus, the same
+        // null-value device reconstruction _rmSubmitMainPageDone uses: a capability
+        // setting reports value=null with the live ids in deviceIdsForDeviceList.
+        // Rebuilding from `value` alone would post settings[tDev1]="" and WIPE the
+        // assignment on the Done. With hrefParams=null and a non-JSON POST response,
+        // _rmNavigateToPage returns null so the helper falls back to the plain page
+        // fetch (registered below) -- that fallback path is the one under test (a
+        // metaClass stub on the private _rmNavigateToPage is NOT honored on the
+        // intra-class call, so we steer the real helper to return null instead).
+        hubGet.register('/installedapp/configure/json/650/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 650, name: "Rule-5.1", label: "r", installed: true, version: 5,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", install: true, error: null, sections: [
+                    [title: "", input: [[name: "tDev1", type: "capability.switch", multiple: true]]]
+                ]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/650') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 650],
+                appSettings: [[name: "tDev1", type: "capability.switch", multiple: true, value: null, deviceIdsForDeviceList: [8]]],
+                eventSubscriptions: [], scheduledJobs: [], appState: [:], childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            // Empty data so _rmNavigateToPage's nav POST yields no parseable JSON ->
+            // navResp == null -> _rmSubmitSubPageDone falls back to the plain page fetch.
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmSubmitSubPageDone(650, "STPage", "mainPage", "name", null)
+
+        then: "the back-nav Done carries the live device id -- NOT an empty value that wipes it"
+        def done = posts.find { it.path == "/installedapp/update/json" && it.body._action_previous == "Done" }
+        done != null
+        done.body["settings[tDev1]"] == "8"
+        done.body["tDev1.multiple"] == "true"
+    }
+
+    def "_rmSubmitMainPageDone returns done:false with the failure reason when the Done POST throws -- no exception propagates"() {
+        given:
+        // The session-end Done is best-effort: a thrown POST must degrade to a
+        // structured [done:false, reason:...] signal (so commitButton:null app
+        // types can surface the miss) rather than bubbling an exception up to the
+        // create/edit caller.
+        hubGet.register('/installedapp/configure/json/660/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 660, name: "Rule-5.1", label: "r", installed: true, version: 2,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", install: true, error: null, sections: [
+                    [title: "", input: [[name: "origLabel", type: "text"]]]
+                ]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/660') { params -> statusJson(660) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            throw new RuntimeException("boom 500")
+        }
+
+        when:
+        def r = script._rmSubmitMainPageDone(660)
+
+        then:
+        noExceptionThrown()
+        r.done == false
+        r.reason.contains("boom 500")
+    }
+
+    def "_rmSubmitMainPageDone skips the Done click when statusJson carries no appSettings list -- no blanking POST fires"() {
+        given:
+        // Anomalous-shape guard: if statusJson parses but has no appSettings LIST,
+        // rebuilding the form would submit EVERY input as "" (the all-fields variant
+        // of the capability wipe). The helper must skip the Done entirely -- NOT POST
+        // a form that blanks the page's inputs.
+        hubGet.register('/installedapp/configure/json/670/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 670, name: "Rule-5.1", label: "r", installed: true, version: 2,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", install: true, error: null, sections: [
+                    [title: "", input: [[name: "origLabel", type: "text"]]]
+                ]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/670') { params ->
+            JsonOutput.toJson([installedApp: [id: 670]])   // NO appSettings key at all
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def r = script._rmSubmitMainPageDone(670)
+
+        then: "the Done is skipped with an appSettings reason -- no update/json POST blanks the inputs"
+        r.done == false
+        r.reason.contains("appSettings")
+        !posts.any { it.path == "/installedapp/update/json" }
+    }
+
+    def "_rmInitSelectActionsPage falls back to the RM 5.1 page graph when the root config fetch throws"() {
+        given:
+        // The app-type probe (root config fetch) is wrapped in a try/catch: if it
+        // throws, the helper assumes the RM 5.1 graph (editor page = selectActions)
+        // rather than aborting -- the tickle still fires so state.actNdx initializes.
+        hubGet.register('/installedapp/configure/json/680') { params ->
+            throw new RuntimeException("root fetch broke")
+        }
+        hubGet.register('/installedapp/configure/json/680/selectActions') { params ->
+            JsonOutput.toJson([app: [id: 680, installed: true, version: 7,
+                                     appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                               configPage: [name: "selectActions", sections: []], settings: [:]])
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        script._rmInitSelectActionsPage(680)
+
+        then: "no exception, and the selectActions editor was tickled (RM 5.1 fallback graph)"
+        noExceptionThrown()
+        def tickle = posts.find { it.path == "/installedapp/update/json" }
+        tickle != null
+        tickle.body.currentPage == "selectActions"
     }
 
     def "create_rm_rule force-deletes orphan when setup fails after createchild succeeds"() {
@@ -28611,6 +28861,193 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("buttonRule.event must be one of")
     }
 
+    def "hub_set_rule routes a buttonRule arg through the same controller add-button flow as hub_set_native_app"() {
+        given:
+        // Button Controllers are RM-family and their grandchild Button Rules are
+        // RM-wire-format, so creating a Button Rule is exposed on hub_set_rule too --
+        // it must dispatch to the SAME _createButtonRuleViaController flow as
+        // hub_set_native_app and return the same buttonRuleId. Clones the
+        // hub_set_native_app buttonRule happy-path fixture on a fresh controller id.
+        enableWrite()
+        def beforeJson = JsonOutput.toJson([
+            app: [id: 610, name: "Button Controller-5.1", label: "BC", installed: true, appType: [name: "Button Controller-5.1", namespace: "hubitat"]],
+            configPage: [name: "mainPage", error: null, sections: [[title: "", input: [
+                [name: "buttonDev", type: "capability.pushableButton", multiple: true],
+                [name: "origLabel", type: "text"]
+            ]]]],
+            settings: [buttonDev: ["43": "Virtual Button"], origLabel: "BC"],
+            childApps: []
+        ])
+        def afterJson = JsonOutput.toJson([
+            app: [id: 610, name: "Button Controller-5.1", appType: [name: "Button Controller-5.1", namespace: "hubitat"]],
+            configPage: [name: "mainPage", error: null, sections: []],
+            settings: [:],
+            childApps: [[id: 611, name: "Virtual Button: button 1 pushed"]]
+        ])
+        def fetches = [n: 0]
+        hubGet.register('/installedapp/configure/json/610') { params -> (++fetches.n <= 2) ? beforeJson : afterJson }
+        hubGet.register('/installedapp/statusJson/610') { params -> statusJson(610) }
+        hubGet.register('/installedapp/configure/json/611') { params -> ruleConfigJson(611, "Virtual Button: button 1 pushed", []) }
+        hubGet.register('/installedapp/statusJson/611') { params -> statusJson(611) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolSetRule([buttonRule: [controllerId: 610, buttonNumber: 1, event: "pushed"], confirm: true])
+
+        then: "hub_set_rule returned the spawned button rule id (routed through the controller flow)"
+        result.success == true
+        result.buttonRuleId == 611
+        result.controllerId == 610
+    }
+
+    def "hub_set_rule schema advertises the buttonRule create helper"() {
+        when:
+        def def_ = script.getAllToolDefinitions().find { it.name == 'hub_set_rule' }
+        def props = def_.inputSchema.properties.keySet()
+
+        then: "buttonRule is a first-class create param on hub_set_rule (parity with hub_set_native_app)"
+        props.contains("buttonRule")
+    }
+
+    def "buttonRule returns success:false with a backup and a 'did not produce' error when no new child spawns"() {
+        given:
+        // The controller flow discovers the new grandchild by diffing childApps
+        // before/after. If the final fetch shows the SAME children (no new id), the
+        // create did not spawn a rule -- the flow must NOT throw; it returns a
+        // structured success:false carrying the pre-flow backup so the caller can
+        // recover, with an error naming that nothing was produced.
+        enableWrite()
+        def sameJson = JsonOutput.toJson([
+            app: [id: 620, name: "Button Controller-5.1", label: "BC", installed: true, appType: [name: "Button Controller-5.1", namespace: "hubitat"]],
+            configPage: [name: "mainPage", error: null, sections: [[title: "", input: [
+                [name: "buttonDev", type: "capability.pushableButton", multiple: true],
+                [name: "origLabel", type: "text"]
+            ]]]],
+            settings: [buttonDev: ["43": "Virtual Button"], origLabel: "BC"],
+            childApps: []   // never gains a child -- before == after
+        ])
+        hubGet.register('/installedapp/configure/json/620') { params -> sameJson }
+        hubGet.register('/installedapp/statusJson/620') { params -> statusJson(620) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolSetNativeApp([buttonRule: [controllerId: 620, buttonNumber: 1, event: "pushed"], confirm: true])
+
+        then: "no throw -- a structured failure carrying the backup and a clear error"
+        noExceptionThrown()
+        result.success == false
+        result.backup != null
+        result.error.contains("did not produce")
+    }
+
+    def "buttonRule is exclusive -- bundling any other operative param throws before any hub I/O"() {
+        given:
+        // buttonRule routes through a self-contained controller flow; every other
+        // operative param (settings, button, walkStep, ...) would be silently ignored.
+        // The exclusivity gate fires right after requireDestructiveConfirm, BEFORE any
+        // controller fetch -- so no hub stubs are needed. enableWrite() satisfies the
+        // confirm+backup gate so the exclusivity check (not the safety check) is what throws.
+        enableWrite()
+
+        when:
+        script.toolSetNativeApp([buttonRule: [controllerId: 1, buttonNumber: 1, event: "pushed"], settings: [x: 1], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("buttonRule is exclusive")
+    }
+
+    def "buttonRule rejects a controller whose button device is unassigned, naming the missing assignment"() {
+        given:
+        // The controller must have a button device before a Button Rule can be
+        // spawned (the grandchild inherits the device context). A controller with
+        // buttonDev unset is a clear caller error -- reject it by name rather than
+        // letting the add-button flow produce an un-renderable orphan.
+        enableWrite()
+        def noDevJson = JsonOutput.toJson([
+            app: [id: 630, name: "Button Controller-5.1", label: "BC", installed: true, appType: [name: "Button Controller-5.1", namespace: "hubitat"]],
+            configPage: [name: "mainPage", error: null, sections: [[title: "", input: [
+                [name: "buttonDev", type: "capability.pushableButton", multiple: true],
+                [name: "origLabel", type: "text"]
+            ]]]],
+            settings: [buttonDev: null, origLabel: "BC"],
+            childApps: []
+        ])
+        hubGet.register('/installedapp/configure/json/630') { params -> noDevJson }
+        hubGet.register('/installedapp/statusJson/630') { params -> statusJson(630) }
+
+        when:
+        script.toolSetNativeApp([buttonRule: [controllerId: 630, buttonNumber: 1, event: "pushed"], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("has no button device assigned")
+    }
+
+    def "hub_set_native_app CREATE rejects an arm shortcut (walkStep) it does not honor -- no silent empty shell"() {
+        given:
+        // The create arm of hub_set_native_app honors only appType+name; an edit-path
+        // shortcut like walkStep makes no sense on a brand-new empty app and would be
+        // silently dropped while the call still reported success. It must be loudly
+        // rejected (same honor-or-loudly-reject posture as hub_set_rule's create gate).
+        enableWrite()
+
+        when:
+        script.toolSetNativeApp([appType: "rule_machine", name: "BAT-x",
+                                 walkStep: [page: "mainPage", operation: "introspect"], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("does not honor")
+    }
+
+    def "create shell degrades to partial with repairHints when the Required Expression walk fails (not a clean success)"() {
+        given:
+        // The create arm runs the RE walk between triggers and actions. When the RE
+        // helper reports success:false, the create must NOT report clean: the result
+        // is success:false + partial:true + non-empty repairHints so an LLM driver
+        // sees the incomplete piece. The shell builder drives the REAL
+        // _createNativeAppShell; only _rmAddRequiredExpression (a same-class helper) is
+        // stubbed to fail, so the partial-rollup logic is what's under test.
+        enableWrite()
+        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapp/configure/988", data: ""]
+        }
+        hubGet.register('/installedapp/configure/json/988') { params ->
+            ruleConfigJson(988, "", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/configure/json/988/mainPage') { params ->
+            ruleConfigJson(988, "BAT-RE", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/988') { params -> statusJson(988) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass._rmAddRequiredExpression = { Integer appId, Map spec -> [success: false, error: "stub fail"] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            name: "BAT-RE",
+            confirm: true,
+            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]]
+        ])
+
+        then: "the failed RE is rolled up: not a clean success, flagged partial, repairHints populated"
+        result.success == false
+        result.partial == true
+        result.repairHints != null
+        !result.repairHints.isEmpty()
+        result.requiredExpression?.success == false
+    }
+
     def "hub_set_rule create dispatch-envelope through the rule_machine gateway returns the new appId"() {
         given:
         settingsMap.useGateways = true
@@ -28967,7 +29404,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "addRequiredExpression" | [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]]
     }
 
-    def "hub_set_rule CREATE type-checks the honored shortcuts -- a wrong-typed one is rejected, not silently dropped to an empty shell (#244 review follow-up)"() {
+    def "hub_set_rule CREATE type-checks the honored shortcuts -- a wrong-typed one is rejected, not silently dropped to an empty shell"() {
         // The completeness gate rejects edit-only shortcuts, but the honored ones need a
         // type check too: addTrigger/addAction/addRequiredExpression as a List/String
         // (instead of a Map), or addTriggers/addActions as a non-List, slip past the

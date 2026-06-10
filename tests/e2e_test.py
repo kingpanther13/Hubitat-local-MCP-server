@@ -733,9 +733,9 @@ class TestRunner:
         return self.created_rule_ids[-1] if self.created_rule_ids else None
 
     # -----------------------------------------------------------------------
-    # GROUP 4b: native_apps -- the issue #137 hub_set_rule / hub_set_native_app
-    # split plus the issue #185 additions (basic_rule appType, button-rule create
-    # via buttonRule, walkStep on the generic tool), end-to-end against the live hub.
+    # GROUP 4b: native_apps -- the hub_set_rule / hub_set_native_app split
+    # plus basic_rule appType, button-rule create via buttonRule, and walkStep
+    # on the generic tool, end-to-end against the live hub.
     # These are distinct from rule_crud above, which drives the LEGACY custom
     # rule engine (custom_* tools); these drive the NATIVE Rule Machine + classic
     # SmartApp surface that appears in Hubitat's own UI.
@@ -823,10 +823,10 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_native_app_allows_walkstep(self) -> None:
-        # issue #185: hub_set_native_app no longer REJECTS walkStep -- it's a generic
-        # classic-dynamicPage walker that routes to the shared edit engine and works
-        # on any classic app (the rmOnly guard was an oversight). No mutation here
-        # (introspect is read-only).
+        # The rmOnly reject on walkStep was removed: it's a generic classic-
+        # dynamicPage walker that routes to the shared edit engine and works on
+        # any classic app. The introspect op itself doesn't modify the app
+        # (a pre-walkStep backup snapshot is still written).
         app_id = self._create_native_rule("WalkStep")
         try:
             result = self.client.call_tool("hub_manage_native_rules_and_apps", {
@@ -839,10 +839,10 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_native_app_basic_rule_lifecycle(self) -> None:
-        # issue #185 items 1+3: basic_rule is a registered appType (a classic
-        # dynamicPage app, not a Vue SPA). Create via generic createchild, edit a
-        # setting -- which must NOT poison the page with the "For input string:
-        # updateRule" error (the commitButton=null fix) -- then delete.
+        # basic_rule is a registered appType (a classic dynamicPage app, not a
+        # Vue SPA). Create via generic createchild, edit a setting -- which must
+        # NOT poison the page with the "For input string: updateRule" error
+        # (the commitButton=null fix) -- then delete.
         created = self.client.call_tool("hub_manage_native_rules_and_apps", {
             "tool": "hub_set_native_app",
             "args": {"appType": "basic_rule", "name": f"{PREFIX}BasicRule", "confirm": True},
@@ -851,30 +851,32 @@ class TestRunner:
         assert app_id, f"basic_rule create did not return an appId: {created}"
         self.created_native_app_ids.append(str(app_id))
 
-        # The created Basic Rule renders a real classic configPage (proves it's not
-        # a Vue-SPA redirect that would silently swallow writes).
-        cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
-        assert (cfg.get("app") or {}).get("name") == "Basic Rule-1.0", f"unexpected Basic Rule config: {cfg}"
+        try:
+            # The created Basic Rule renders a real classic configPage (proves it's not
+            # a Vue-SPA redirect that would silently swallow writes).
+            cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
+            assert (cfg.get("app") or {}).get("name") == "Basic Rule-1.0", f"unexpected Basic Rule config: {cfg}"
 
-        # EDIT: write the Notes field. The item-3 fix means NO updateRule click
-        # fires (Basic Rule is submitOnChange), so the render stays clean.
-        edited = self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_set_native_app",
-            "args": {"appId": app_id, "settings": {"comments": f"{PREFIX}note"}, "confirm": True},
-        })
-        assert "updateRule" not in str(edited.get("configPageError") or ""), \
-            f"Basic Rule edit poisoned the render with the updateRule error: {edited}"
-        assert edited.get("success") is not False, f"Basic Rule edit reported failure: {edited}"
-
-        # DELETE.
-        self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
-        })
-        self._untrack_native_app(app_id)
+            # EDIT: write the Notes field. NO updateRule click fires (Basic Rule
+            # is submitOnChange), so the render stays clean.
+            edited = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": app_id, "settings": {"comments": f"{PREFIX}note"}, "confirm": True},
+            })
+            assert "updateRule" not in str(edited.get("configPageError") or ""), \
+                f"Basic Rule edit poisoned the render with the updateRule error: {edited}"
+            assert edited.get("success") is not False, f"Basic Rule edit reported failure: {edited}"
+        finally:
+            # DELETE inline (not just via the global-cleanup backstop) so an
+            # assertion failure above doesn't strand the fixture mid-run.
+            self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+            })
+            self._untrack_native_app(app_id)
 
     @test("native_apps")
     def test_button_rule_create_via_controller(self) -> None:
-        # issue #185 item 2: a Button Rule is a grandchild of a Button Controller and
+        # A Button Rule is a grandchild of a Button Controller and
         # only renders when created through the controller's add-button flow. Create
         # a controller + a virtual button device, then create a button rule via the
         # buttonRule param, author an action via hub_set_rule, and clean up.
@@ -946,12 +948,17 @@ class TestRunner:
             })
             assert acted.get("success") is not False, f"authoring the button rule's action failed: {acted}"
         finally:
-            # Deleting the controller cascades to its grandchild rules.
+            # Deleting the controller cascades to its grandchild rules. Guarded:
+            # an unguarded raise here would REPLACE the real test failure, and
+            # the controller stays tracked for the global-cleanup backstop.
             if controller_id:
-                self.client.call_tool("hub_manage_native_rules_and_apps", {
-                    "tool": "hub_delete_native_app", "args": {"appId": controller_id, "force": True, "confirm": True},
-                })
-                self._untrack_native_app(controller_id)
+                try:
+                    self.client.call_tool("hub_manage_native_rules_and_apps", {
+                        "tool": "hub_delete_native_app", "args": {"appId": controller_id, "force": True, "confirm": True},
+                    })
+                    self._untrack_native_app(controller_id)
+                except (McpToolError, McpError) as exc:
+                    print(f"  [WARN] button-rule e2e cleanup: delete controller {controller_id} failed: {exc}")
             # Delete the virtual button device now (not just via global cleanup) so the hub
             # stays clean even if a later test fails or the run is interrupted.
             if button_dni:
@@ -2752,8 +2759,11 @@ class TestRunner:
             for app_id in list(self.created_native_app_ids):
                 try:
                     print(f"  Deleting tracked native app {app_id}")
+                    # force: tracked artifacts can carry children (a Button
+                    # Controller's grandchild button rules); the soft delete
+                    # refuses those and would strand the whole subtree.
                     self.client.call_tool("hub_manage_rule_machine", {
-                        "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+                        "tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] Failed to delete native app {app_id}: {exc}")
