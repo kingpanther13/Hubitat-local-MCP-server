@@ -3539,6 +3539,218 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         atomicStateMap.itemBackupManifest.containsKey('app_99')
     }
 
+    def "hub_restore_backup self-restore is detected via the Apps Code CLASS id (the real CI deploy path), not just the instance id"() {
+        // A code restore targets the Apps Code CLASS id (e.g. 178), which differs from app.id
+        // (the running instance, 1). The REAL _resolveSelfAppClassId runs here against a stubbed
+        // /hub2/userAppTypes -- if detection only checked the instance id, this self-restore
+        // would fail closed instead of getting the empty-body leniency.
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [
+            'app_178': [type: 'app', id: '178', fileName: 'mcp-backup-app-178.groovy',
+                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
+        ]
+        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
+        script.metaClass.downloadHubFile = { String fileName -> 'self backup source'.getBytes('UTF-8') }
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 9, "source": "current self source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'app_178', confirm: true])
+
+        then: 'empty-body leniency fires via the class-id match'
+        result.success == true
+        result.assumed == true
+        result.note.contains('hub_get_info')
+
+        and: 'the stash records the restore outcome'
+        atomicStateMap.lastSelfDeploy?.success == true
+        atomicStateMap.lastSelfDeploy.assumed == true
+        atomicStateMap.lastSelfDeploy.sourceMode == 'restore'
+    }
+
+    def "hub_restore_backup self-restore stashes lastSelfDeploy when the save THROWS (exception path)"() {
+        // A big self-restore can kill the connection before any response body exists. The catch
+        // block must still persist a failure record so a follow-up hub_get_info can recover it.
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [
+            'app_1': [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
+                      version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
+        ]
+        script.metaClass._resolveSelfAppClassId = { -> null }
+        script.metaClass.downloadHubFile = { String fileName -> 'self backup source'.getBytes('UTF-8') }
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 9, "source": "current self source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            throw new RuntimeException('connection reset mid-restore')
+        }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'app_1', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('Restore failed:')
+        result.error.contains('connection reset mid-restore')
+
+        and: 'the failure is stashed for a follow-up read, marked as a restore'
+        atomicStateMap.lastSelfDeploy?.success == false
+        atomicStateMap.lastSelfDeploy.sourceMode == 'restore'
+        atomicStateMap.lastSelfDeploy.error.contains('connection reset mid-restore')
+        !atomicStateMap.lastSelfDeploy.containsKey('assumed')
+    }
+
+    def "hub_restore_backup self-restore records the hub's VERBATIM error to lastSelfDeploy on a rejected save"() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [
+            'app_1': [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
+                      version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
+        ]
+        script.metaClass._resolveSelfAppClassId = { -> null }
+        script.metaClass.downloadHubFile = { String fileName -> 'self backup source'.getBytes('UTF-8') }
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 9, "source": "current self source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+
+        and: 'the hub rejects the save with its real compile error'
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, message: 'unable to resolve class Foo']
+        }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'app_1', confirm: true])
+
+        then: 'the result carries the verbatim message'
+        result.success == false
+        result.error.contains('unable to resolve class Foo')
+
+        and: 'the stash carries it verbatim (un-prefixed), the thing a follow-up read must recover'
+        atomicStateMap.lastSelfDeploy?.success == false
+        atomicStateMap.lastSelfDeploy.error == 'unable to resolve class Foo'
+        atomicStateMap.lastSelfDeploy.sourceMode == 'restore'
+    }
+
+    def "hub_restore_backup failure with neither message nor errorMessage still returns a concrete error"() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [
+            'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
+                       version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
+        ]
+        script.metaClass.downloadHubFile = { String fileName -> 'old source v4'.getBytes('UTF-8') }
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 9, "source": "current source on hub"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, foo: 'bar']
+        }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'app_99', confirm: true])
+
+        then: 'the raw response rides in the error instead of a null/blank message'
+        result.success == false
+        result.error.contains('hub response lacked success=true')
+        result.error.contains('foo')
+        atomicStateMap.itemBackupManifest.containsKey('app_99')
+    }
+
+    def "hub_restore_backup success without an echoed id is accepted (id-echo guard tolerates a missing id)"() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [
+            'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
+                       version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
+        ]
+        script.metaClass.downloadHubFile = { String fileName -> 'old source v4'.getBytes('UTF-8') }
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 9, "source": "current source on hub"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true]   // no id key at all
+        }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'app_99', confirm: true])
+
+        then: 'the duplicate-save guard only fires on a PRESENT mismatched id'
+        result.success == true
+        result.id == '99'
+        !result.containsKey('assumed')
+    }
+
+    def "hub_restore_backup driver restore fails closed on an empty response even when the driver id collides with app.id"() {
+        // isSelfRestore is keyed on type=='app'; a driver whose code id happens to equal the
+        // MCP server's instance id must NOT inherit the self-restore empty-body leniency.
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [
+            'driver_1': [type: 'driver', id: '1', fileName: 'mcp-backup-driver-1.groovy',
+                         version: 2, timestamp: 1_234_000_000_000L, sourceLength: 10]
+        ]
+        script.metaClass.downloadHubFile = { String fileName -> 'driver backup'.getBytes('UTF-8') }
+        hubGet.register('/driver/ajax/code') { params ->
+            '{"status": "ok", "version": 3, "source": "current"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'driver_1', confirm: true])
+
+        then: 'fails closed on the DRIVER save path -- no leniency bleed across types'
+        result.success == false
+        result.error.contains('Empty response from /driver/saveOrUpdateJson')
+        atomicStateMap.itemBackupManifest.containsKey('driver_1')
+
+        and: 'no self-deploy stash was written'
+        atomicStateMap.lastSelfDeploy == null
+    }
+
+    def "hub_restore_backup self-restore with a Map-confirmed success carries no assumed flag (hub-confirmed, not inferred)"() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [
+            'app_1': [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
+                      version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
+        ]
+        script.metaClass._resolveSelfAppClassId = { -> null }
+        script.metaClass.downloadHubFile = { String fileName -> 'self backup source'.getBytes('UTF-8') }
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 9, "source": "current self source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+
+        and: 'the response survived the recompile and confirms the save (matching echoed id)'
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 1]
+        }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'app_1', confirm: true])
+
+        then: 'a hub-confirmed self-restore is a plain success -- no assumed flag, no verification note'
+        result.success == true
+        !result.containsKey('assumed')
+        !result.containsKey('note')
+
+        and: 'the stash records the confirmed outcome without assumed'
+        atomicStateMap.lastSelfDeploy?.success == true
+        atomicStateMap.lastSelfDeploy.error == null
+        atomicStateMap.lastSelfDeploy.sourceMode == 'restore'
+        !atomicStateMap.lastSelfDeploy.containsKey('assumed')
+    }
+
     def "hub_restore_backup returns clear error for library type and directs user to hub_update_library"() {
         given:
         enableWrite()
