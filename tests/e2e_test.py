@@ -378,6 +378,55 @@ class TestRunner:
         assert self._test_switch_id, "Failed to create test switch"
         return self._test_switch_id
 
+    def get_test_temperature_ids(self) -> tuple[str, str]:
+        """Get or create two BAT_E2E_ virtual temperature sensors for device-relative tests.
+
+        compareToDevice compares one device's reading to another's on the SAME capability,
+        so the walker needs two Temperature-capable devices. Like the test switch, these are
+        persistent scaffolding (NOT tracked in created_device_dnis) so teardown leaves them
+        for the next run to find-and-reuse.
+        """
+        if getattr(self, "_test_temp_ids", None):
+            return self._test_temp_ids
+
+        labels = [f"{PREFIX}Temp_A", f"{PREFIX}Temp_B"]
+        found: dict[str, str] = {}
+        try:
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
+            for d in dev_list:
+                lbl = d.get("label") or d.get("name") or ""
+                for want in labels:
+                    if want in lbl:
+                        found[want] = str(d["id"])
+        except Exception:
+            pass
+
+        for want in labels:
+            if want in found:
+                continue
+            result = self.client.call_tool("hub_manage_virtual_device", {
+                "action": "create",
+                "deviceType": "Virtual Temperature Sensor",
+                "deviceLabel": want,
+                "confirm": True,
+            })
+            dev_id = result.get("id", result.get("deviceId", ""))
+            if not dev_id:
+                time.sleep(0.3)
+                vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+                dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
+                for d in dev_list:
+                    lbl = d.get("label") or d.get("name") or ""
+                    if want in lbl:
+                        dev_id = str(d["id"])
+                        break
+            assert dev_id, f"Failed to create test temperature sensor {want}"
+            found[want] = str(dev_id)
+
+        self._test_temp_ids = (found[labels[0]], found[labels[1]])
+        return self._test_temp_ids
+
     def _record(self, name: str, group: str, status: str,
                 message: str = "", duration: float = 0.0) -> None:
         tag = {"pass": "[PASS]", "fail": "[FAIL]", "skip": "[SKIP]"}[status]
@@ -1052,6 +1101,82 @@ class TestRunner:
             # what makes the end-to-end health assertion meaningful.
             self._set_rule(app_id, {"addAction": {"capability": "log", "message": "fired"}})
             self._set_rule(app_id, {"addAction": {"capability": "endIf"}})
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_walker_compare_to_device(self) -> None:
+        # hub_set_rule edit -> addRequiredExpression (STPage reveal walker) with a
+        # device-relative compareToDevice condition. This is the only automated guard
+        # against wire-format drift for two client-observable behaviours this feature
+        # changes: (1) the device-relative RHS now actually lands (isDev_<N> toggles,
+        # relDevice_<N> is written, the rule renders "Temperature of A is > B - 2.0"),
+        # and (2) a literal RHS (state/value) combined with compareToDevice is now a hard
+        # reject, not a silent literal fallback. The unit Spock suite proves the logic in
+        # isolation; this proves it end-to-end against a live hub, where the feature was
+        # unit-green but live-wrong before the wire-up fix.
+        dev_a, dev_b = self.get_test_temperature_ids()
+        app_id = self._create_native_rule("CtdWalk")
+        try:
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "appId": app_id,
+                    "addRequiredExpression": {"conditions": [
+                        {"capability": "Temperature", "deviceIds": [int(dev_a)],
+                         "comparator": ">",
+                         "compareToDevice": {"deviceId": int(dev_b),
+                                             "attribute": "temperature", "offset": -2}}]},
+                    "confirm": True,
+                },
+            })
+            # (1) The device-relative condition committed cleanly.
+            assert result.get("success") is not False, \
+                f"compareToDevice addRequiredExpression reported failure: {result}"
+            assert not result.get("partial"), \
+                f"compareToDevice condition falsely flagged partial (the live-wrong false-partial): {result}"
+            applied = result.get("settingsApplied") or []
+            assert any(str(k).startswith("isDev_") for k in applied), \
+                f"isDev_<N> toggle did not land -- the device-relative RHS was not wired: {applied}"
+            assert any(str(k).startswith("relDevice_") for k in applied), \
+                f"relDevice_<N> reference picker did not land: {applied}"
+            # The rule renders device-relative text, NOT a literal threshold / "A > 0".
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id},
+            })
+            blob = str(cfg)
+            assert ("Temperature of" in blob) or ("temperature of" in blob.lower()), \
+                f"rule paragraph does not render a device-relative Temperature comparison: {blob[:600]}"
+            # No degradation skip for the empty device-picker option list (normal case).
+            skipped = result.get("settingsSkipped") or []
+            bad = [s for s in skipped if isinstance(s, dict)
+                   and s.get("key") == "compareToDevice-validation"]
+            assert not bad, f"unexpected compareToDevice-validation skip (empty device-picker options are normal): {bad}"
+
+            # (2) compareToDevice + a literal state RHS is now a HARD reject (fail-loud),
+            # not a silent literal fallback. The mutual-exclusion guard fires before any write.
+            try:
+                rej = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_rule",
+                    "args": {
+                        "appId": app_id,
+                        "addRequiredExpression": {"conditions": [
+                            {"capability": "Temperature", "deviceIds": [int(dev_a)],
+                             "comparator": ">", "state": 70,
+                             "compareToDevice": {"deviceId": int(dev_b),
+                                                 "attribute": "temperature"}}]},
+                        "confirm": True,
+                    },
+                })
+                assert rej.get("success") is False, \
+                    f"compareToDevice + literal state should hard-reject (not partial/success): {rej}"
+                assert "cannot be combined with 'state'/'value'" in str(rej.get("error", "")), \
+                    f"reject error should name the mutual-exclusion: {rej}"
+            except (McpToolError, McpError) as exc:
+                assert "cannot be combined with 'state'/'value'" in str(exc), \
+                    f"compareToDevice + literal state fail-loud should name the mutual-exclusion: {exc}"
+
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)

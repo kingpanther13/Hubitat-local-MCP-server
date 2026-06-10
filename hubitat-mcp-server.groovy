@@ -19753,6 +19753,12 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             exprConds.eachWithIndex { c, cIdx ->
                 if (c instanceof Map) {
                     _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].deviceIds", (c as Map).deviceIds)
+                    // compareToDevice reference device: existence-validated up front, before
+                    // the walker opens the slot, so a nonexistent reference id fails loud.
+                    def cm = c as Map
+                    if (cm.compareToDevice instanceof Map && (cm.compareToDevice as Map).deviceId != null) {
+                        _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].compareToDevice.deviceId", [(cm.compareToDevice as Map).deviceId])
+                    }
                 }
             }
         }
@@ -23682,6 +23688,20 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         throw new IllegalArgumentException("conditions[${condIdx}]: ${capCanonical} is a discrete-event capability -- pass state: ${validValues} instead of a comparator+value pair. The comparator-without-value shape silently degrades on RM 5.1 (no broken marker, but the condition is functionally meaningless). See rCapab_<N> capability list for the full state-value table.")
     }
 
+    // ---- Pre-walker guard: compareToDevice capability scope ----
+    // compareToDevice (device-relative RHS) is wired only on the numeric-device path
+    // below (Temperature, Humidity, Illuminance, ...). The capabilities that return
+    // before that path -- Mode, Between two times, Variable, Custom Attribute -- never
+    // reach the isDev_<N>/relDevice_<N> reveal, so a compareToDevice passed alongside
+    // one of them would be silently dropped (the capability block commits a literal
+    // condition and returns). Reject up front so the contract the docs promise holds
+    // unconditionally. Mirrors the DISCRETE_EVENT_CAPS guard's in-pattern shape.
+    def COMPARETODEVICE_UNSUPPORTED_CAPS = ["Mode", "Between two times", "Variable", "Custom Attribute"] as Set
+    if (cond.compareToDevice != null && (capCanonical in COMPARETODEVICE_UNSUPPORTED_CAPS)) {
+        cancelInFlightCond()
+        throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice (device-relative RHS) is only supported with numeric device capabilities (e.g. Temperature, Humidity, Illuminance); capability '${capCanonical}' does not support it. Capabilities with dedicated handling instead: Mode, Between two times, Variable, Custom Attribute.")
+    }
+
     // ---- Mode capability ----
     // RM reveals a modes<cIdx> picker (e.g. modes6) after rCapab is committed --
     // the exact name is firmware-assigned and must be discovered, not hardcoded.
@@ -24186,21 +24206,19 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // capability and SINGLE-select) and re-titles state_<N> from a literal value
     // into the optional decimal offset. There is no separate reference-attribute
     // picker -- the compared attribute is implied by the shared capability, so
-    // compareToDevice.attribute is validation-only here. relDevice_<N> is a
-    // capability.* DEVICE picker; RM populates its dropdown client-side, so the
-    // configPage schema exposes NO options for it. The walker therefore does not
-    // gate on the option list (empty options is normal) -- a wrong-capability
-    // reference device surfaces in the rendered/broken state, not a pre-write check.
+    // compareToDevice.attribute is optional and informational (it has no wire
+    // consumer; the walker never validates or writes it). relDevice_<N> is a
+    // capability.* DEVICE picker whose empty-option-list handling is documented at
+    // the option-list check below.
     if (cond.compareToDevice instanceof Map) {
         def ctd = cond.compareToDevice as Map
-        if (!ctd.deviceId) {
+        if (ctd.deviceId == null) {
             cancelInFlightCond()
             throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice requires 'deviceId' (the reference device ID). Got: ${ctd}")
         }
-        if (!ctd.attribute) {
-            cancelInFlightCond()
-            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice requires 'attribute' (the attribute to compare to, e.g. 'temperature'). Got: ${ctd}")
-        }
+        // compareToDevice.attribute is OPTIONAL and informational: the compared attribute
+        // is implied by the shared capability (there is no separate reference-attribute
+        // picker), so it has no wire consumer and is neither validated nor written.
         // A device RHS is only meaningful with a comparator -- it is the operator between
         // the LHS device attribute and the reference device's attribute. Without it
         // rCapab/rDev are written but no comparator and no RHS land -- a half-written
@@ -24210,45 +24228,62 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             cancelInFlightCond()
             throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice requires 'comparator' (e.g. '>', '<', '=') -- a device RHS needs an operator. Without it the condition writes the capability and device but no comparison and renders incomplete.")
         }
-        // A device RHS and a literal RHS are mutually exclusive -- RM renders one OR the
-        // other, never both. The device-relative path writes the offset (if any) to
-        // state_<N>; a caller-supplied state/value would silently never land. Reject the
-        // ambiguous combination up front, mirroring the Variable path's
-        // compareToVariable-vs-state/value reject.
+        // A device RHS is mutually exclusive with every other RHS shape -- RM renders
+        // exactly one. The device-relative path writes the offset (if any) to state_<N>;
+        // a caller-supplied state/value would silently never land, and a caller-supplied
+        // compareToVariable (variable RHS) would silently be dropped. Reject the ambiguous
+        // combination up front, mirroring the Variable path's compareToVariable-vs-state/value
+        // reject.
         if (cond.state != null || cond.value != null) {
             cancelInFlightCond()
             throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice (device-relative RHS) cannot be combined with 'state'/'value' (literal RHS) -- mutually exclusive; use compareToDevice.offset for an offset.")
         }
+        if (cond.compareToVariable != null) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice (device-relative RHS) cannot be combined with 'compareToVariable' (variable RHS) -- mutually exclusive; either remove compareToVariable (keep compareToDevice) or remove compareToDevice (keep compareToVariable).")
+        }
         def refDevId = ctd.deviceId.toString()
-        // Existence-validate the reference device hub-wide via _rmValidateDeviceIdsExist
-        // (the same /device/fullJson check the LHS deviceIds get) -- a typo'd/nonexistent
-        // id would otherwise write through to a silent broken rule. This is existence-only,
-        // not capability: the LHS is not capability-validated either, and a wrong-capability
-        // reference device renders broken just like a wrong-capability LHS (acceptable
-        // parity). The option-list check further down is a defensive capability-lock that
-        // only fires on the rare firmware variant which surfaces device-picker options;
-        // on normal firmware a capability.* device picker exposes none.
-        _rmValidateDeviceIdsExist("conditions[${condIdx}].compareToDevice.deviceId", [refDevId])
+        // The reference device is existence-validated hub-wide BEFORE any write -- the
+        // up-front validateDeviceIdsRecursive sweeps in _rmAddRequiredExpression (STPage)
+        // and _rmAddAction (doActPage) include compareToDevice.deviceId, so a
+        // typo'd/nonexistent id is rejected before the walker opens this slot (the walker
+        // contract requires cancel-before-throw, and every throw in this block already
+        // pairs with cancelInFlightCond -- a mid-walk existence throw would not). This is
+        // existence-only, not capability: the LHS is not capability-validated either, and a
+        // wrong-capability reference device renders broken just like a wrong-capability LHS
+        // (acceptable parity). The option-list check further down is a defensive
+        // capability-lock that only fires on the rare firmware variant which surfaces
+        // device-picker options; on normal firmware a capability.* device picker exposes none.
         // Write rCapab and rDev as plain writes (no progressive-disclosure on these for numeric caps).
         writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
         if (cond.deviceIds != null) {
             writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
         }
         if (cond.attribute != null) {
+            // cond.attribute is the LHS condition's own Custom-Attribute name (the attribute
+            // being COMPARED on the left), written to rCustomAttr_<N>. It is NOT
+            // ctd.attribute (compareToDevice.attribute) -- that one names the reference
+            // device's attribute, is implied by the shared capability, and is informational
+            // only (no wire consumer; neither validated nor written). The two are distinct.
             writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
         }
-        // RelrDev_<N> (the comparator) must be visible after the rCapab/rDev/rCustomAttr
+        // RelrDev_<cIdx> (the comparator) must be visible after the rCapab/rDev/rCustomAttr
         // writes land. We cannot know which of those writes gated it, so direct-fetch the
-        // current schema and fail loud if it is absent.
+        // current schema and fail loud if it is absent. The loose /RelrDev_\d+/ find is the
+        // PRESENCE check only -- it confirms the comparator slot rendered. The actual write
+        // target is the exact RelrDev_<cIdx> key (below): in a multi-condition expression a
+        // lingering sibling slot would let a loose-find write land in another condition's
+        // RelrDev_<other> (writeST verifies the wrong-but-valid field as applied, so the
+        // mistake is silent). The exact-key write mirrors the offset state_<cIdx> anchor.
         def afterBaseFields = _rmFetchConfigJson(appId, page)
         def afterBaseInputs = (afterBaseFields?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        def relrKey = "RelrDev_${cIdx}".toString()
         def relrInput = afterBaseInputs.find { it?.name?.toString() ==~ /RelrDev_\d+/ }
         if (!relrInput) {
             cancelInFlightCond()
             def visible = afterBaseInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none)"
-            throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: RelrDev_<N> not visible after rCapab/rDev/rCustomAttr writes. Visible fields: ${visible}")
+            throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: RelrDev_<N> not visible after rCapab/rDev/rCustomAttr writes. Visible fields: ${visible} (compareToDevice is only supported on numeric device capabilities; '${capCanonical}' does not render a comparator).")
         }
-        def relrField = relrInput.name.toString()
         // Normalize the comparator (!= -> the not-equal glyph, == -> =) for parity with
         // every other comparator write -- the RM enum only accepts the Unicode glyphs.
         def normalizedComparator = _rmNormalizeComparator(cond.comparator.toString())
@@ -24260,9 +24295,12 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         // BEFORE its closure, then toggles isVar inside it). The two shapes are functionally
         // equivalent here -- writeST POSTs and re-fetches per call, so the comparator still
         // commits before isDev toggles regardless of which closure boundary it sits in.
-        // Live-validated: relDevice_<N> reveals and the rule compiles broken:false.
-        def relDeviceReveal = revealStep(appId, page, /relDevice_\d+/, {
-            writeST(hrefParams, relrField, normalizedComparator)
+        // Anchor the reveal pattern to relDevice_<cIdx> exactly so a lingering sibling
+        // relDevice_<other> from another condition cannot satisfy the reveal in this slot.
+        // Verified live on firmware 2.5.0.143: relDevice_<N> reveals and the rule compiles
+        // broken:false, rendering "Temperature of <dev> is > <refDev>-<offset>".
+        def relDeviceReveal = revealStep(appId, page, "relDevice_${cIdx}".toString(), {
+            writeST(hrefParams, relrKey, normalizedComparator)
             writeST(hrefParams, isDevKey, true)
         })
         if (!relDeviceReveal.input) {
@@ -24276,15 +24314,25 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         // device dropdown client-side, so only ENUM pickers carry an options map. An empty
         // option list is therefore the NORMAL case here (unlike the Variable ENUM picker,
         // where empty options signal a genuine anomaly): proceed silently with the write.
-        // Reference-device existence was already validated hub-wide above via
-        // _rmValidateDeviceIdsExist. The reject branch below is a defensive capability-lock
-        // that only fires on the rare firmware variant which DOES surface device-picker
-        // options -- a wrong-capability reference device is otherwise caught by the
-        // rendered/broken state, not a pre-write option check.
+        // Reference-device existence was already validated hub-wide up front (the
+        // validateDeviceIdsRecursive sweep includes compareToDevice.deviceId). The reject
+        // branch below is a defensive capability-lock that only fires on the rare firmware
+        // variant which DOES surface device-picker options -- a wrong-capability reference
+        // device is otherwise caught by the rendered/broken state, not a pre-write option check.
+        // Option shapes RM uses for a picker: a {id:label} Map, a flat scalar List, or a
+        // list of single-key Maps ([{id:label}, ...]). Extract the device-id key from each
+        // shape -- a list of single-key Maps would otherwise stringify each entry as
+        // "[id:label]" and never match refDevId, falsely rejecting a valid reference device.
+        // Mirrors the list-of-single-key-maps idiom used elsewhere in this file.
         def relOptsRaw = relDeviceReveal.input.options
-        def relOpts = (relOptsRaw instanceof Map)
-            ? (relOptsRaw as Map).keySet().collect { it?.toString() }.findAll { it }
-            : (relOptsRaw ?: []).collect { it?.toString() }.findAll { it }
+        def relOpts
+        if (relOptsRaw instanceof Map) {
+            relOpts = (relOptsRaw as Map).keySet().collect { it?.toString() }.findAll { it }
+        } else {
+            relOpts = ((relOptsRaw ?: []) as List).collect { o ->
+                (o instanceof Map && !(o as Map).isEmpty()) ? (o as Map).keySet().iterator().next()?.toString() : o?.toString()
+            }.findAll { it }
+        }
         if (relOpts && !relOpts.any { it == refDevId }) {
             cancelInFlightCond()
             def availLabel = relOpts.size() == 1 ? "Available device id" : "Available device ids"
@@ -24535,6 +24583,12 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             }
             def m = condRaw as Map
             _rmValidateDeviceIdsExist("${pathPrefix}[${i}].deviceIds", m.deviceIds)
+            // compareToDevice's reference device is existence-validated here, up front,
+            // before any walker write -- so a nonexistent reference id fails loud and the
+            // walker never opens a half-written slot for it.
+            if (m.compareToDevice instanceof Map && (m.compareToDevice as Map).deviceId != null) {
+                _rmValidateDeviceIdsExist("${pathPrefix}[${i}].compareToDevice.deviceId", [(m.compareToDevice as Map).deviceId])
+            }
             if (m.subExpression instanceof Map) {
                 def sub = (m.subExpression as Map).conditions
                 if (sub instanceof List) {
@@ -25015,9 +25069,11 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     }
     return [
         success: true,
+        partial: false,
         conditionIndices: conditionIndices,
         settingsApplied: applied,
-        settingsSkipped: skipped
+        settingsSkipped: skipped,
+        repairHints: []
     ]
 }
 
@@ -27959,7 +28015,7 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 - **Mode**: `{capability:'Mode', state:'Night'}` or `{capability:'Mode', modeIds:['3']}`. Walker resolves mode names to IDs via `location.modes` and writes the firmware-assigned `modes<N>` picker discovered from the live schema.
 - **Between two times**: `{capability:'Between two times', start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}, end:{...same shape}}`. Precondition: hub `location.timeZone` must be configured.
 - **Variable comparison**: `{capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}` for a constant RHS, OR `{capability:'Variable', variable:'<hubVarName>', comparator:'=', compareToVariable:'<otherHubVarName>'}` for a variable-vs-variable RHS. For value-comparison comparators supply exactly one of `value`/`compareToVariable` -- they are mutually exclusive (passing both is rejected); omit the RHS entirely for state-change comparators (`*changed*`/`*became*`). For the variable RHS the walker toggles `isVar_<N>=true` and discovers the firmware-assigned right-hand picker from the live schema -- it does NOT hardcode `xVarR_<N>` because `selectTriggers` consistently exposes `xVarR` but the walker pages (STPage/doActPage) can expose a differently-suffixed field, so the walker resolves whatever the live schema reveals. Fail-loud when a variable name is not in the schema enum AND the option list is non-empty; degrades with an `api_unavailable` sentinel (`variable-validation` for the LHS picker, `compareToVariable-validation` for the RHS picker) when the enum is empty, flipping `partial`.
-- **Device-relative comparison**: `{capability:'Temperature', deviceIds:[N], comparator:'>', compareToDevice:{deviceId:M, attribute:'temperature', offset?:-2}}`. The RHS is another device's reading on the SAME capability, optionally offset. The walker writes the comparator `RelrDev_<N>`, toggles `isDev_<N>=true` to reveal the SINGLE reference-device picker `relDevice_<N>`, writes the reference id, then writes the optional decimal offset to `state_<N>` (omit -> offset 0). `relDevice_<N>` is a capability.* device picker locked to the LHS capability; RM populates its dropdown client-side, so the schema exposes no options and the walker does NOT pre-validate the id against an option list -- a wrong-capability reference device surfaces in the rendered/broken state. There is NO separate reference-attribute picker: the compared attribute is implied by the shared capability, so `compareToDevice.attribute` is validation-only here (numeric-capability case).
+- **Device-relative comparison**: `{capability:'Temperature', deviceIds:[N], comparator:'>', compareToDevice:{deviceId:M, attribute?:'temperature', offset?:-2}}`. The RHS is another device's reading on the SAME capability, optionally offset. The walker writes the comparator `RelrDev_<N>`, toggles `isDev_<N>=true` to reveal the SINGLE reference-device picker `relDevice_<N>`, writes the reference id, then writes the optional decimal offset to `state_<N>` (omit -> offset 0). `relDevice_<N>` is a capability.* device picker locked to the LHS capability; on normal firmware RM populates its dropdown client-side, so the schema exposes no options and the empty option list is normal. The reference `deviceId` is existence-validated hub-wide before any write; a nonexistent id is rejected up front. On the rare firmware variant that DOES surface device-picker options, the walker additionally defensively rejects a reference id not in that list. Mutually exclusive with a literal RHS (`state`/`value`) and with `compareToVariable` -- supply exactly one RHS shape. There is NO separate reference-attribute picker: the compared attribute is implied by the shared capability, so `compareToDevice.attribute` is OPTIONAL and informational (no wire consumer; neither validated nor written). Passing compareToDevice on a non-numeric capability (Mode / Between two times / Variable / Custom Attribute) is rejected up front with a fail-loud error naming the capability -- it is NOT silently dropped. **Intentional isDev/isVar asymmetry (do not "fix"):** an EMPTY option list is NORMAL for `compareToDevice`'s `relDevice_<N>` because it is a capability.* DEVICE picker (RM fills it client-side), so no options, no sentinel, no partial. This deliberately differs from `compareToVariable`, whose right-hand picker is an ENUM picker where an empty option list IS an anomaly and emits an `api_unavailable` sentinel with `partial:true`. The divergence reflects picker type (device vs enum), not an oversight.
 - **Sub-expression (parens) -- addRequiredExpression-only**: `{subExpression:{conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]}}`. The STPage walker recursively handles nesting of arbitrary depth. **`addAction` (ifThen/elseIf/repeatWhile/waitExpression) REJECTS nested subExpression** with `"nested subExpression on this row is not yet supported"`. Flatten the conditions list, or move the nested expression to a Required Expression.
 
 `addTrigger.condition` supports a narrower subset: Variable (incl. `compareToVariable`), Custom Attribute, and enum/numeric device-state. Mode-via-picker / Between two times / compareToDevice are NOT yet supported on `selectTriggers` -- the `_rmBuildCondition` helper is a static direct-write path, not the shared `_rmWalkConditionReveal` walker.
