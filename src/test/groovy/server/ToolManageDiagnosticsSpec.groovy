@@ -75,22 +75,6 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         ex.message.contains('Read tools are disabled')
     }
 
-    def "hub_get_metrics refuses recordSnapshot=true when the Write master is disabled"() {
-        // Read-classified tool: its single mutating mode (CSV snapshot to File
-        // Manager) is gated on the Write master so a read tool can never write
-        // while writes are off; also why it is carved out of read-implies-idempotent.
-        given:
-        settingsMap.enableWrite = false
-
-        when:
-        def result = script.toolGetHubPerformance([recordSnapshot: true])
-
-        then: 'structured refusal, no throw, with the read-only recovery path'
-        result.success == false
-        result.error.contains('Write master')
-        result.note.contains('without recordSnapshot')
-    }
-
     def "hub_get_metrics snapshots memory/temp/db and records a CSV row"() {
         given:
         settingsMap.enableRead = true

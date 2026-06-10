@@ -1720,14 +1720,12 @@ def getIdempotentWriteToolNames() {
 }
 
 // The COMPLETE idempotent surface consumed by the annotation helpers: every
-// read-only tool EXCEPT the documented carve-outs whose optional modes append
-// durable artifacts, plus the retry-safe writes. Hoisted once per catalog
-// build alongside the other classification sets.
+// read-only tool plus the retry-safe writes, hoisted once per catalog build
+// alongside the other classification sets. Optional telemetry side effects of
+// read tools (e.g. hub_get_metrics' recordSnapshot CSV trend row) are by
+// maintainer decision NOT writes and do not break the read classification.
 def getIdempotentToolNames() {
-    // hub_get_metrics: recordSnapshot=true appends a CSV row per call (a
-    // Write-master-gated mutation), so the read-implies-idempotent rule does
-    // not hold for it at the tool level.
-    return (getReadOnlyToolNames() - (["hub_get_metrics"] as Set)) + getIdempotentWriteToolNames()
+    return getReadOnlyToolNames() + getIdempotentWriteToolNames()
 }
 
 // Tools that reach BEYOND the hub to the open internet (MCP `openWorldHint`):
@@ -11932,18 +11930,6 @@ def toolGetHubJobs(args) {
 def toolGetHubPerformance(args) {
 
     def recordSnapshot = args.recordSnapshot == true
-    // The tool is classified read-only (Read master), but recordSnapshot=true
-    // persists a CSV row to File Manager -- a mutation. Gate that one mode on
-    // the Write master so a read-classified tool can never write while writes
-    // are disabled; it is also why this tool is carved out of the
-    // read-implies-idempotent rule in getIdempotentToolNames().
-    if (recordSnapshot && settings.enableWrite == false) {
-        return [
-            success: false,
-            error: "recordSnapshot=true persists a CSV snapshot to File Manager, which requires the Write master.",
-            note: "Write tools are disabled in MCP settings. Call again without recordSnapshot for the read-only metrics view, or enable Write tools."
-        ]
-    }
     def trendPoints = Math.min(args.trendPoints ?: 10, 50)
 
     // Gather current metrics

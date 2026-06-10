@@ -390,25 +390,17 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         byName.hub_update_package.idempotentHint == true
         byName.hub_update_package.openWorldHint == true
 
-        and: 'the carve-out and the ping capability roll up into the diagnostics gateways'
+        and: 'the ping capability rolls up open-world into the diagnostics gateways, which stay read-only and idempotent'
         byName.hub_read_diagnostics.readOnlyHint == true
-        byName.hub_read_diagnostics.idempotentHint == false
+        byName.hub_read_diagnostics.idempotentHint == true
         byName.hub_read_diagnostics.openWorldHint == true
         byName.hub_manage_diagnostics.openWorldHint == true
-
-        when: 'flat mode, where the metrics tool is advertised individually'
-        settingsMap.useGateways = false
-        def flatByName = script.getToolDefinitions().collectEntries { [(it.name): it.annotations] }
-
-        then: 'the read-implies-idempotent carve-out: read-only, but its recordSnapshot mode appends per call'
-        flatByName.hub_get_metrics.readOnlyHint == true
-        flatByName.hub_get_metrics.idempotentHint == false
     }
 
-    def "getIdempotentToolNames composes reads minus carve-outs plus the retry-safe writes"() {
+    def "getIdempotentToolNames composes the reads plus the retry-safe writes"() {
         expect:
         script.getIdempotentToolNames() ==
-            (script.getReadOnlyToolNames() - (['hub_get_metrics'] as Set)) + script.getIdempotentWriteToolNames()
+            script.getReadOnlyToolNames() + script.getIdempotentWriteToolNames()
     }
 
     def "annotationsForLeaf and annotationsForGateway emit the idempotent and open-world hints from the classification sets"() {
