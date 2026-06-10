@@ -153,6 +153,24 @@ class IncludeResolverSpec extends Specification {
         !out.contains('library(name: "McpBundlesLib"')
     }
 
+    def "resolving against the REAL repo libraries dir inlines the live McpVisualRulesLib impls + defs"() {
+        given: 'the actual checked-in Visual Rules library -- impl AND tool definitions live with it (issue #215)'
+        def realLibs = new File('libraries')
+        assert realLibs.isDirectory(), "expected the repo 'libraries' dir relative to cwd ${new File('.').absolutePath} -- run from the repo root"
+        def src = "#include mcp.McpVisualRulesLib\n"
+
+        when:
+        def out = IncludeResolver.resolve(src, realLibs)
+
+        then: 'the VRB tool impls + the def-chunk method are inlined; directive + library() decl stripped'
+        out.contains('def toolGetVisualRule')
+        out.contains('def toolSetVisualRule')
+        out.contains('def toolDeleteVisualRule')
+        out.contains('def _getAllToolDefinitions_partVisualRules')
+        !(out =~ /(?m)^\s*#include\b/)
+        !out.contains('library(name: "McpVisualRulesLib"')
+    }
+
     def "indexLibraries matches name/namespace even when a description ) appears BEFORE the keys"() {
         given: 'regression for the old [^)]* index regex, which a ) in an earlier field truncated'
         def libs = libsDir()

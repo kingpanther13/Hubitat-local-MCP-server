@@ -59,6 +59,10 @@ LIBS = [
         "source": LIB_DIR / "mcp-bundles-lib.groovy",
         "dest": f"{NAMESPACE}.McpBundlesLib.groovy",
     },
+    {
+        "source": LIB_DIR / "mcp-visual-rules-lib.groovy",
+        "dest": f"{NAMESPACE}.McpVisualRulesLib.groovy",
+    },
 ]
 
 # Fixed DOS-epoch timestamp + stored (uncompressed) entries make rebuilds

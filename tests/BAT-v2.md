@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B 19-gateway read/write split (11 flat core + 19 gateways = 30 on tools/list, 94 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B 19-gateway read/write split (11 flat core + 19 gateways = 30 on tools/list, 97 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2364,21 +2364,21 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 11 |
 | Gateways on `tools/list` | 19 |
 | Total visible on `tools/list` | 30 |
-| Total distinct tools in codebase | 94 |
+| Total distinct tools in codebase | 97 |
 
-**7 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (4), `hub_read_variables` (3)
+**7 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (5), `hub_read_variables` (3)
 
-**12 manage gateways**: `hub_manage_code` (8), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (3), `hub_manage_devices` (6), `hub_manage_diagnostics` (8), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_rooms` (5), `hub_manage_rule_machine` (5), `hub_manage_variables` (8)
+**12 manage gateways**: `hub_manage_code` (11), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (3), `hub_manage_devices` (6), `hub_manage_diagnostics` (8), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (10), `hub_manage_rooms` (5), `hub_manage_rule_machine` (10), `hub_manage_variables` (8)
 
 **11 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_set_mode`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_get_update_status`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 94 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 97 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 234 test scenarios** (120 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness) plus 13 excluded destructive operations documented for manual testing
+**Total: 237 test scenarios** (120 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -3732,6 +3732,60 @@ Tools in this section require **the Read master** and HPM itself must be install
 **Expected**: the call is rejected with an `IllegalArgumentException` (JSON-RPC -32602) whose message names `replaceActions`, says it is an `edit-only` operation requiring an existing rule, and points the caller to create-then-edit. NO rule is created. This is the create-arm completeness contract: every shortcut the create arm is handed is HONORED or LOUDLY REJECTED, never silently dropped to a `success=true` empty shell. The same rejection holds for `addLocalVariable`, `patches`, `removeAction`, `clearActions`, `moveAction`, `removeTrigger`, `modifyTrigger`, and `walkStep`.
 
 **Failure modes**: a `success=true` envelope with an empty rule (the edit-only op was silently dropped -- the exact pre-fix bug, regressed). A raw internal error with no actionable guidance, or a rule created despite the rejection, also fails this scenario.
+
+---
+
+## Section 16: Visual Rules Builder Tests (hub_get_visual_rule / hub_set_visual_rule / hub_delete_visual_rule)
+
+The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (the read, `hub_get_visual_rule`, is also in `hub_read_rules`). Reads require the Read master; `hub_set_visual_rule` / `hub_delete_visual_rule` require the Write master + `confirm=true` + a hub backup within 24h. The Visual Rules Builder parent app must be installed on the hub (the list mode returns an actionable error if not).
+
+### Safety Rules for Section 16
+
+- Only create/edit/delete **BAT-prefixed** Visual Rules created within the same scenario — never touch existing Visual Rules
+- Device-facing nodes only target BAT-created virtual switches
+- The current firmware creates **classic**-format rules (`whenNodes`/`thenNodes`/`elseNodes`); if a hub creates graph-format rules instead, `hub_set_visual_rule` returns `hubNativeFormat: "graph"` and cleans up the empty child — re-issue with a graph definition in that case
+
+### T700 — hub_set_visual_rule create + hub_get_visual_rule read-back (classic format)
+
+```json
+{
+  "setup_prompt": "The Write master is enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Create a virtual switch named 'BAT VRB Switch' via hub_manage_virtual_device and note its device ID.",
+  "test_prompt": "Create a Visual Rules Builder rule named 'BAT VRB Create' with hub_set_visual_rule (confirm=true): when 'BAT VRB Switch' turns on, turn it off. Use the classic definition format: {whenNodes:[{triggerType:'switch', switches:[<id>], deviceIds:[<id>], switchEvent:'Turns on', index:0, type:'when'}], thenNodes:[{actionType:'turnOff', switches:[<id>], deviceIds:[<id>], index:0, type:'then'}], elseNodes:[]}. Then read it back with hub_get_visual_rule and report the appId, format, and whether the persisted definition matches what was sent.",
+  "teardown_prompt": "Delete the Visual Rule 'BAT VRB Create' with hub_delete_visual_rule (confirm=true). Delete the virtual switch 'BAT VRB Switch'."
+}
+```
+
+**Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_visual_rule)` with NO `appId`, `name='BAT VRB Create'`, the classic `definition`, and `confirm=true`. The response returns a new `appId`, `created=true`, `format='classic'`, and `verified=true` (the tool's read-back confirmed the persisted name); the echoed `definition` contains the whenNode/thenNode pair. A follow-up `hub_get_visual_rule(appId=N)` returns `success=true`, `format='classic'`, `name='BAT VRB Create'`, `rulePaused=false`, and the same `whenNodes`/`thenNodes`. The rule also appears in list mode (`hub_get_visual_rule` with no `appId` — `rules[]` contains `{appId, name:'BAT VRB Create', disabled:false}`).
+
+**Failure modes**: the call is issued without `confirm=true` (rejected -32602 — the AI must include it after user approval, not retry blindly). `verified=false` (the save POST was sent but the read-back did not confirm — inspect with `hub_get_visual_rule`). A format-mismatch response (`success=false` + `hubNativeFormat='graph'`) on graph-native firmware — the AI should re-issue with a graph definition, and the empty child app created during the attempt must have been cleaned up, not stranded. The AI routes to `hub_set_native_app(appType='visual_rule')` instead — that path now throws with a redirect to `hub_set_visual_rule`.
+
+### T701 — hub_set_visual_rule pause + rename without touching the definition
+
+```json
+{
+  "setup_prompt": "The Write master is enabled and a recent backup exists. Create a virtual switch 'BAT VRB PauseSwitch' and a Visual Rule named 'BAT VRB Pause' via hub_set_visual_rule (classic definition: when the switch turns on, turn it off). Note the returned appId.",
+  "test_prompt": "First pause the Visual Rule 'BAT VRB Pause' (hub_set_visual_rule with its appId, paused=true, confirm=true) and verify rulePaused=true via hub_get_visual_rule. Then rename it to 'BAT VRB Renamed' and resume it in one call (name + paused=false, NO definition). Verify via hub_get_visual_rule that the name changed, rulePaused=false, and the whenNodes/thenNodes are UNCHANGED from setup.",
+  "teardown_prompt": "Delete the Visual Rule 'BAT VRB Renamed' with hub_delete_visual_rule (confirm=true). Delete the virtual switch 'BAT VRB PauseSwitch'."
+}
+```
+
+**Expected**: the pause call returns `success=true` with `rulePaused=true` (pause state rides `GET /app/ruleBuilderPause/<id>/true` under the hood); `hub_get_visual_rule` confirms. The rename+resume call (with `appId`, `name`, `paused=false`, no `definition`) re-saves the EXISTING nodes under the new name — the read-back shows `name='BAT VRB Renamed'`, `rulePaused=false`, and the original whenNode/thenNode pair intact. No `definition` replacement happens.
+
+**Failure modes**: the rename wipes the nodes (empty `whenNodes`/`thenNodes` after the rename — the re-save dropped the existing definition). The pause flag is silently ignored (`rulePaused` stays `false` after `paused=true`). The AI re-sends the whole definition just to rename (works, but a Partial — `name`-only is the point). A no-op call (`appId` with no `definition`/`name`/`paused`) must reject -32602 "Nothing to change", not return `success=true`.
+
+### T702 — hub_delete_visual_rule type-gate refusal + verified delete with recovery definition
+
+```json
+{
+  "setup_prompt": "The Write master is enabled and a recent backup exists. Create (1) a virtual switch 'BAT VRB DelSwitch', (2) a Visual Rule named 'BAT VRB Delete' via hub_set_visual_rule (classic definition over that switch), and (3) a Rule Machine rule named 'BAT VRB NotVisual' via hub_set_rule. Note both appIds.",
+  "test_prompt": "First call hub_delete_visual_rule on the RM rule 'BAT VRB NotVisual' (confirm=true) and report what happens. Then delete the Visual Rule 'BAT VRB Delete' with hub_delete_visual_rule (confirm=true) and report the verified flag and whether the response includes the pre-delete definition.",
+  "teardown_prompt": "Delete the RM rule 'BAT VRB NotVisual' with hub_delete_native_app (confirm=true). Delete the virtual switch 'BAT VRB DelSwitch'. Confirm via hub_get_visual_rule (list mode) that no rule named 'BAT VRB Delete' remains."
+}
+```
+
+**Expected**: the first call does NOT delete anything: the RM rule's appId fails the VRB type-gate and returns `success=false` with the app's real type (e.g. `appType: 'Rule Machine'` / `'Rule-5.1'`) and a note redirecting to `hub_delete_native_app` — the RM rule still exists afterward (verify with `hub_list_rules`). The second call deletes the Visual Rule: `success=true`, `verified=true` (the app is confirmed gone), and `predeleteDefinition` carries the whenNodes/thenNodes so the rule could be recreated via `hub_set_visual_rule`. A follow-up `hub_get_visual_rule(appId=N)` returns `success=false` ("No installed app...") and list mode no longer contains the rule.
+
+**Failure modes**: the type-gate is bypassed and the RM rule is force-deleted (the exact failure the gate exists to prevent — automatic Fail). `predeleteDefinition` missing from the delete response (the recovery contract broken). `verified=false` with the app still present but reported as deleted. A nonexistent-appId delete returning anything other than the structured `success=false` "No installed app with appId N" envelope.
 
 ---
 

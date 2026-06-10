@@ -1372,6 +1372,224 @@ class TestRunner:
         self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
 
     # -----------------------------------------------------------------------
+    # GROUP 4b2: visual_rules (issue #215) -- the Visual Rules Builder tools
+    # (hub_get_visual_rule / hub_set_visual_rule / hub_delete_visual_rule).
+    # VRB rules are Vue-JSON apps (NOT classic dynamicPage apps), saved over the
+    # /app/ruleBuilderJson endpoint family in one of two wire formats the hub
+    # FIRMWARE picks at creation: 'classic' ({whenNodes, thenNodes, elseNodes})
+    # or 'graph' ({version, nodes, edges}).
+    # -----------------------------------------------------------------------
+
+    def _vrb_definition(self, fmt: str, switch_id: int, switch_event: str) -> dict:
+        """Equivalent VRB definition in either wire format: when the test switch
+        fires `switch_event`, turn it off. The firmware (not the caller) decides
+        which format newly-created rules speak, so the lifecycle test needs the
+        same semantic rule expressible both ways."""
+        if fmt == "classic":
+            return {
+                "whenNodes": [{"triggerType": "switch", "switches": [switch_id], "deviceIds": [switch_id],
+                               "switchEvent": switch_event, "index": 0, "type": "when"}],
+                "thenNodes": [{"actionType": "turnOff", "switches": [switch_id], "deviceIds": [switch_id],
+                               "index": 0, "type": "then"}],
+                "elseNodes": [],
+            }
+        return {
+            "version": 1,
+            "nodes": [
+                {"id": "t1", "type": "trigger", "triggerCondition": "trigger", "triggerType": "switch",
+                 "switches": [switch_id], "deviceIds": [switch_id], "switchEvent": switch_event},
+                {"id": "a1", "type": "action", "actionType": "turnOff",
+                 "switches": [switch_id], "deviceIds": [switch_id]},
+            ],
+            "edges": [{"from": "t1", "to": "a1", "port": "next"}],
+        }
+
+    def _get_visual_rule(self, app_id: Any = None) -> Any:
+        """hub_get_visual_rule through the PURE-READ gateway (hub_read_rules cross-listing)."""
+        args = {} if app_id is None else {"appId": app_id}
+        return self.client.call_tool("hub_read_rules", {"tool": "hub_get_visual_rule", "args": args})
+
+    @test("visual_rules")
+    def test_visual_rule_classic_lifecycle(self) -> None:
+        # Full VRB round-trip: create (classic-first, one graph retry -- the hub
+        # firmware decides the native format), read back via the pure-read gateway,
+        # list, rename+pause, resume, wholesale replace, delete-with-verify.
+        switch_id = int(self.get_test_switch_id())
+        name = f"{PREFIX}VisualRule"
+        created = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_visual_rule",
+            "args": {"name": name, "confirm": True,
+                     "definition": self._vrb_definition("classic", switch_id, "Turns off")},
+        })
+        if created.get("success") is False and created.get("hubNativeFormat") == "graph":
+            # This firmware's builder creates graph-format rules (the tool already
+            # force-deleted the orphan shell); retry once with the equivalent graph
+            # definition so the lifecycle still executes deterministically.
+            created = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_visual_rule",
+                "args": {"name": name, "confirm": True,
+                         "definition": self._vrb_definition("graph", switch_id, "Turns off")},
+            })
+        app_id = created.get("appId")
+        assert app_id, f"hub_set_visual_rule create did not return an appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+        assert created.get("success") is True, f"hub_set_visual_rule create did not verify: {created}"
+        assert created.get("created") is True, f"create response missing created=true: {created}"
+        fmt = created.get("format")
+        assert fmt in ("classic", "graph"), f"create returned an unknown format {fmt!r}: {created}"
+
+        try:
+            # READ back through the pure-read gateway: name/format/definition round-trip.
+            got = self._get_visual_rule(app_id)
+            assert got.get("success") is True, f"read-back of new VRB rule {app_id} failed: {got}"
+            assert got.get("name") == name, f"read-back name mismatch: {got.get('name')!r} != {name!r}"
+            assert got.get("format") == fmt, f"read-back format {got.get('format')!r} != create format {fmt!r}"
+            nodes_blob = json.dumps(got.get("whenNodes") if fmt == "classic" else got.get("definition"))
+            assert str(switch_id) in nodes_blob, \
+                f"trigger device {switch_id} did not round-trip in the {fmt} definition: {nodes_blob[:300]}"
+
+            # LIST: no-args mode must include the new rule.
+            listed = self._get_visual_rule()
+            assert listed.get("success") is True, f"hub_get_visual_rule list mode failed: {listed}"
+            ids = [str(r.get("appId")) for r in (listed.get("rules") or [])]
+            assert str(app_id) in ids, f"created VRB rule {app_id} not in the listing: {ids}"
+
+            # RENAME + PAUSE in one call, then prove both landed via an independent read.
+            renamed = f"{PREFIX}VisualRuleRenamed"
+            res = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_visual_rule",
+                "args": {"appId": app_id, "name": renamed, "paused": True, "confirm": True},
+            })
+            assert res.get("success") is True, f"rename+pause reported failure: {res}"
+            got = self._get_visual_rule(app_id)
+            assert got.get("name") == renamed, f"rename did not land: {got.get('name')!r}"
+            assert got.get("rulePaused") is True, f"pause did not land: {got}"
+
+            # RESUME.
+            res = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_visual_rule",
+                "args": {"appId": app_id, "paused": False, "confirm": True},
+            })
+            assert res.get("success") is True, f"resume reported failure: {res}"
+            got = self._get_visual_rule(app_id)
+            assert got.get("rulePaused") is False, f"resume did not land: {got}"
+
+            # REPLACE: wholesale definition edit in the SAME format the rule speaks
+            # ('Turns on' variant), verified by the tool's read-back AND our own.
+            res = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_visual_rule",
+                "args": {"appId": app_id, "confirm": True,
+                         "definition": self._vrb_definition(fmt, switch_id, "Turns on")},
+            })
+            assert res.get("success") is True and res.get("verified") is True, \
+                f"definition replacement not verified: {res}"
+            got = self._get_visual_rule(app_id)
+            replaced_blob = json.dumps(got.get("whenNodes") if fmt == "classic" else got.get("definition"))
+            assert "Turns on" in replaced_blob, \
+                f"replaced definition did not round-trip 'Turns on': {replaced_blob[:300]}"
+        finally:
+            # DELETE inline -- the delete contract IS part of the lifecycle under
+            # test (the tracked-id sweep stays as backstop if this raises).
+            deleted = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_delete_visual_rule", "args": {"appId": app_id, "confirm": True},
+            })
+            assert deleted.get("success") is True, f"hub_delete_visual_rule reported failure: {deleted}"
+            assert deleted.get("verified") is True, f"delete not verified gone: {deleted}"
+            assert deleted.get("predeleteDefinition"), \
+                f"delete response missing the predeleteDefinition recovery aid: {deleted}"
+            self._untrack_native_app(app_id)
+            gone = self._get_visual_rule(app_id)
+            assert gone.get("success") is False, f"rule {app_id} still readable after delete: {gone}"
+
+    @test("visual_rules")
+    def test_visual_rule_error_contracts(self) -> None:
+        # (a) Nonexistent appId -> structured runtime error (success:false envelope,
+        # NOT a throw), enriched via /installedapp/json so the model can re-route.
+        res = self._get_visual_rule(99999999)
+        assert res.get("success") is False, f"nonexistent appId should report success:false: {res}"
+        assert "no installed app" in str(res.get("error", "")).lower(), \
+            f"not-found error should name the missing app: {res}"
+
+        # (b) confirm safety gate on the write: same refusal contract as the rooms
+        # gates -- a missing REQUIRED confirm surfaces as an isError envelope
+        # (returned by call_tool as the parsed dict) or a raised McpError/-32602.
+        switch_id = int(self.get_test_switch_id())
+        no_confirm_name = f"{PREFIX}VisualNoConfirm"
+        refused = False
+        detail = None
+        try:
+            detail = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_visual_rule",
+                "args": {"name": no_confirm_name,
+                         "definition": self._vrb_definition("classic", switch_id, "Turns off")},
+            })
+            if isinstance(detail, dict) and detail.get("appId"):
+                # The gate regressed and actually created a rule -- track it so the
+                # cleanup backstop reaps it; the refusal assert below still fails.
+                self.created_native_app_ids.append(str(detail["appId"]))
+            blob = (detail if isinstance(detail, str) else json.dumps(detail)).lower()
+            refused = (isinstance(detail, dict) and bool(detail.get("isError"))) \
+                or "confirm" in blob or "required parameter" in blob
+        except McpError as e:  # also catches McpToolError (subclass): a raised envelope / -32602
+            detail = str(e)
+            refused = any(s in detail.lower() for s in ("confirm", "safety check", "required parameter"))
+        assert refused, \
+            f"hub_set_visual_rule without confirm should have been refused by the safety gate, got: {detail}"
+        listed = self._get_visual_rule()
+        assert not any(
+            r.get("name") == no_confirm_name for r in (listed.get("rules") or [])
+        ), "hub_set_visual_rule without confirm must NOT create the rule"
+
+        # (c) hub_set_native_app refuses appType=visual_rule (VRB children are
+        # Vue-JSON apps the classic wizard cannot configure) and redirects to the
+        # dedicated tool. IAE -> -32602; mirrors the kelvin fail-fast pattern.
+        try:
+            res = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appType": "visual_rule", "name": f"{PREFIX}VisualViaNative", "confirm": True},
+            })
+            blob = res if isinstance(res, str) else json.dumps(res)
+            assert "hub_set_visual_rule" in blob, \
+                f"appType=visual_rule should redirect to hub_set_visual_rule, got: {res}"
+        except McpError as exc:
+            assert "hub_set_visual_rule" in str(exc), \
+                f"appType=visual_rule error should point at hub_set_visual_rule: {exc}"
+
+    @test("visual_rules")
+    def test_visual_rule_type_gate(self) -> None:
+        # The VRB tools are type-gated: an RM rule's appId must be refused by the
+        # read AND by the delete (forcedelete removes ANY installed app, so the
+        # gate is all that stands between a wrong id and a destroyed RM rule).
+        rm_id = self._create_native_rule("VrbTypeGate")
+        try:
+            got = self._get_visual_rule(rm_id)
+            assert got.get("success") is False, f"hub_get_visual_rule must refuse an RM rule id: {got}"
+            assert str(got.get("appType", "")).startswith("Rule"), \
+                f"type-gate error should carry the real appType (Rule-5.1): {got}"
+            assert "hub_set_rule" in str(got.get("note", "")), \
+                f"type-gate note should route to the RM tools: {got}"
+
+            deleted = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_delete_visual_rule", "args": {"appId": rm_id, "confirm": True},
+            })
+            assert deleted.get("success") is False, \
+                f"hub_delete_visual_rule must refuse (not delete) an RM rule: {deleted}"
+            assert "not a visual rules builder rule" in str(deleted.get("error", "")).lower(), \
+                f"refused delete should explain the type gate: {deleted}"
+
+            # The RM rule must have survived the refused delete: health still reads
+            # it (a deleted rule fetch fails -> ok:false, label:null).
+            health = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": rm_id},
+            })
+            assert f"{PREFIX}VrbTypeGate" in str(health.get("label") or ""), \
+                f"RM rule {rm_id} did not survive the type-gated delete: {health}"
+            assert health.get("ok") is not False, \
+                f"RM rule {rm_id} unhealthy after the refused delete: {health}"
+        finally:
+            self._delete_native(rm_id)
+
+    # -----------------------------------------------------------------------
     # GROUP 4c: deadman (1 test) -- the issue #243 install-commit fix, the exact
     # bug the E2E Dead-Man Watchdog tripped on. installAsUserApp must actually
     # COMMIT the install (submit Done) so initialize() runs and the instance is
@@ -2762,6 +2980,10 @@ class TestRunner:
                     # force: tracked artifacts can carry children (a Button
                     # Controller's grandchild button rules); the soft delete
                     # refuses those and would strand the whole subtree.
+                    # Tracked ids may also be Visual Rules Builder children
+                    # (issue #215) -- force-delete works on those too, and this
+                    # loop is their ONLY sweep (the hub_list_rules prefix sweep
+                    # below lists RM rules, not VRB rules).
                     self.client.call_tool("hub_manage_rule_machine", {
                         "tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True},
                     })

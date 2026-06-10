@@ -51,6 +51,13 @@ definition(
 // and impl methods live in the library.
 #include mcp.McpBundlesLib
 
+// issue #215: Visual Rules Builder tool implementations (hub_get_visual_rule /
+// hub_set_visual_rule / hub_delete_visual_rule) live in the McpVisualRulesLib library
+// (libraries/mcp-visual-rules-lib.groovy), authored library-first. The gateway entries
+// and dispatch cases stay in this file; the tool definitions
+// (_getAllToolDefinitions_partVisualRules) and impl methods live in the library.
+#include mcp.McpVisualRulesLib
+
 preferences {
     page(name: "mainPage")
     page(name: "confirmDeletePage")
@@ -1333,19 +1340,21 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_rules: [
-            description: "Read-only inspection of automation rules: list/inspect MCP custom rules (legacy engine) and list native Rule Machine rules + check rule health. All operations are read-only; rule writes live in hub_manage_custom_rules, hub_manage_rule_machine, and hub_manage_native_rules_and_apps.",
-            tools: ["hub_get_custom_rule", "hub_test_custom_rule", "hub_list_rules", "hub_get_rule_health"],
+            description: "Read-only inspection of automation rules: list/inspect MCP custom rules (legacy engine), list native Rule Machine rules + check rule health, and list/read Visual Rules Builder rules. All operations are read-only; rule writes live in hub_manage_custom_rules, hub_manage_rule_machine, and hub_manage_native_rules_and_apps.",
+            tools: ["hub_get_custom_rule", "hub_test_custom_rule", "hub_list_rules", "hub_get_rule_health", "hub_get_visual_rule"],
             summaries: [
                 hub_get_custom_rule: "List MCP custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
                 hub_test_custom_rule: "Dry-run an MCP custom rule without executing actions. Args: ruleId",
                 hub_list_rules: "List all native Rule Machine rules (RM 4.x + 5.x) with IDs and labels",
-                hub_get_rule_health: "Inspect a native rule/app for broken state (BROKEN markers, configPage errors, multiple-flag corruption). Args: appId"
+                hub_get_rule_health: "Inspect a native rule/app for broken state (BROKEN markers, configPage errors, multiple-flag corruption). Args: appId",
+                hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?"
             ],
             searchHints: [
                 hub_get_custom_rule: "read fetch inspect list show custom mcp sandbox rule automation diagnostics",
                 hub_test_custom_rule: "simulate preview validate check automation custom dry run",
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
-                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption"
+                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption",
+                hub_get_visual_rule: "visual rules builder VRB read list show inspect simple automation json definition when then else nodes graph"
             ]
         ],
         hub_manage_native_rules_and_apps: [
@@ -1461,8 +1470,8 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_rule_machine: [
-            description: "Dedicated Rule Machine gateway. CREATE and EDIT RM rules with hub_set_rule (the full authoring surface — triggers, actions, conditions, required expressions, IF/THEN/ELSE, local variables, walkStep), DELETE them with hub_delete_native_app, plus RMUtils runtime control: list rules, trigger/run, pause/resume, set the private boolean, and check rule health. THIS is the right path for 'create a rule machine rule' / 'make a Hubitat rule'. For NON-RM classic apps (Room Lighting, Button Controllers, Notifier, Groups+Scenes, etc.) use hub_manage_native_rules_and_apps. Read-only views are also in hub_read_rules.",
-            tools: ["hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_get_rule_health", "hub_delete_native_app"],
+            description: "Dedicated rule-authoring gateway. For SIMPLE device automations (motion lights, contact alerts, schedules) PREFER the Visual Rules Builder tools — hub_set_visual_rule / hub_get_visual_rule / hub_delete_visual_rule — one clean JSON write, no wizard. CREATE and EDIT full RM rules with hub_set_rule (triggers, actions, conditions, required expressions, IF/THEN/ELSE, local variables, walkStep) when the automation needs branching logic, loops, variables, or arbitrary device commands; DELETE RM rules with hub_delete_native_app, plus RMUtils runtime control: list rules, trigger/run, pause/resume, set the private boolean, and check rule health. THIS is the right path for 'create a rule' / 'make a Hubitat automation'. For NON-RM classic apps (Room Lighting, Button Controllers, Notifier, Groups+Scenes, etc.) use hub_manage_native_rules_and_apps. Read-only views are also in hub_read_rules.",
+            tools: ["hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_get_rule_health", "hub_delete_native_app", "hub_get_visual_rule", "hub_set_visual_rule", "hub_delete_visual_rule"],
             summaries: [
                 hub_set_rule: "Create or edit a Rule Machine rule (RM 5.1) — the full authoring surface. Omit appId to create (name; optionally bundle addTriggers/addActions); provide appId to edit via addTrigger / addAction / addRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / addLocalVariable / patches / walkStep, or raw settings/button. Auto-backs-up first. Args: appId (omit=create), name, <shortcut>|settings|button, confirm.",
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (RMUtils — RM only)",
@@ -1470,7 +1479,10 @@ def getGatewayConfig() {
                 hub_set_rule_paused: "Pause or resume an RM rule. Args: ruleId, value (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set an RM rule's private boolean. Args: ruleId, value (bool)",
                 hub_get_rule_health: "Inspect a rule for broken state (BROKEN markers, configPage errors, multiple-flag corruption). Args: appId",
-                hub_delete_native_app: "Delete any classic native app incl. RM rules (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm."
+                hub_delete_native_app: "Delete any classic native app incl. RM rules (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm.",
+                hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?",
+                hub_set_visual_rule: "Create or update a Visual Rules Builder rule — simplest rule engine, one JSON write. PREFER for simple automations; use hub_set_rule when you need branching/loops/variables. Args: appId (omit=create), name, definition, paused (opt), confirm.",
+                hub_delete_visual_rule: "Delete a Visual Rules Builder rule (type-gated; returns the pre-delete definition for recovery). Args: appId, confirm."
             ],
             searchHints: [
                 hub_set_rule: "create edit modify make rule machine rule trigger action condition required expression walkStep RM authoring native automation hubitat rule upsert",
@@ -1479,7 +1491,10 @@ def getGatewayConfig() {
                 hub_set_rule_paused: "pause resume disable enable stop unpause rule machine rule",
                 hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
                 hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger multiple flag corruption",
-                hub_delete_native_app: "remove delete destroy rule machine rule native app classic smartapp"
+                hub_delete_native_app: "remove delete destroy rule machine rule native app classic smartapp",
+                hub_get_visual_rule: "visual rules builder VRB read list show inspect simple automation json definition when then else nodes graph",
+                hub_set_visual_rule: "visual rules builder VRB create edit update make simple automation motion light contact alert schedule json easiest rule",
+                hub_delete_visual_rule: "visual rules builder VRB remove delete destroy simple automation"
             ]
         ]
     ]
@@ -1611,6 +1626,8 @@ def getReadOnlyToolNames() {
         // Native rules (read) -- hub_get_rule_health inspects only.
         // (hub_export_native_app instantiates a cloner app + persists -> write.)
         "hub_list_rules", "hub_get_rule_health",
+        // Visual Rules Builder (read)
+        "hub_get_visual_rule",
         // Meta
         "hub_get_tool_guide", "hub_search_tools"
     ] as Set
@@ -1934,10 +1951,11 @@ def getToolDefinitions() {
 
 // Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)
 def getAllToolDefinitions() {
-    // _partRooms / _partBundles are contributed by the McpRoomsLib / McpBundlesLib #include
-    // libraries (issue #209 modularization -- a domain's tool DEFINITIONS live with its impl in
-    // the library; only the gateway membership + dispatch case stay in this file).
-    return _getAllToolDefinitions_part1() + _getAllToolDefinitions_part2() + _getAllToolDefinitions_part3() + _getAllToolDefinitions_part4() + _getAllToolDefinitions_part5() + _getAllToolDefinitions_part6() + _getAllToolDefinitions_part7() + _getAllToolDefinitions_part8() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles()
+    // _partRooms / _partBundles / _partVisualRules are contributed by the McpRoomsLib /
+    // McpBundlesLib / McpVisualRulesLib #include libraries (issue #209 modularization -- a
+    // domain's tool DEFINITIONS live with its impl in the library; only the gateway membership
+    // + dispatch case stay in this file).
+    return _getAllToolDefinitions_part1() + _getAllToolDefinitions_part2() + _getAllToolDefinitions_part3() + _getAllToolDefinitions_part4() + _getAllToolDefinitions_part5() + _getAllToolDefinitions_part6() + _getAllToolDefinitions_part7() + _getAllToolDefinitions_part8() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules()
 }
 
 // Lightweight memoized name -> inputSchema.required map for the gateway
@@ -2240,11 +2258,11 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
             description: """*** LEGACY: the custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. For default rule creation requests ("create a Rule Machine rule," "Hubitat rule," anything the user wants visible in Hubitat's RM app list / web UI), use hub_manage_rule_machine hub_set_rule instead. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. ***
 
 Create a new automation rule (MCP sandbox engine). Call `hub_get_tool_guide(section='rules')` for structure, syntax, and examples.
-
+[[FLAT_TRIM]]
 Trigger types: device_event (supports duration, multi-device), button_event, time (HH:mm/sunrise/sunset+offset), periodic, mode_change, hsm_change
 Condition types: device_state, device_was, time_range, mode, variable, days_of_week, sun_position, hsm_status
 Action types: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay, if_then_else, cancel_delayed, repeat, stop, log, set_thermostat, http_request, speak, comment, set_valve, set_fan_speed, set_shade, variable_math
-
+[[/FLAT_TRIM]]
 Verify rule after creation.""",
             inputSchema: [
                 type: "object",
@@ -3258,11 +3276,11 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                     deviceId: [type: "string", description: "Scope to a single device's log entries (server-side filter, mutually exclusive with appId)"],
                     appId: [type: "string", description: "Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
                     limit: [type: "integer", description: "Max entries to return. Default: 100, max: 500.", default: 100],
-                    pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only -- use source for app/device-name substring matching. Entry is kept when it matches. Compiled once before the loop. Throws on invalid regex syntax. Note: pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes."],
+                    pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only -- use source for app/device-name substring matching. Entry is kept when it matches.[[FLAT_TRIM]] Compiled once before the loop. Throws on invalid regex syntax. Note: pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes.[[/FLAT_TRIM]]"],
                     patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns, same matching rules and caveats as `pattern` (message-field only; throws on invalid regex). Combine via patternMode ('any'=OR, default / 'all'=AND). Compatible with `pattern` (both apply)."],
                     patternMode: [type: "string", description: "How patterns array is combined: 'any' (default) = OR -- entry kept if any pattern matches; 'all' = AND -- entry kept only if every pattern matches. Case-insensitive ('ANY' and 'any' both work).", enum: ["any", "all"]],
-                    since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d'). Relative offset is subtracted from now. Max relative offset: 30d (throws if exceeded -- use ISO-8601 for longer ranges). Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise."],
-                    until: [type: "string", description: "Return only entries at or before this time. Same format as since (relative offsets are subtracted from now, same as since; max 30d). Default: now (no upper bound). Use since='2h', until='1h' to mean '1 to 2 hours ago'."],
+                    since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d'). Relative offset is subtracted from now. Max relative offset: 30d (throws if exceeded -- use ISO-8601 for longer ranges).[[FLAT_TRIM]] Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise.[[/FLAT_TRIM]]"],
+                    until: [type: "string", description: "Return only entries at or before this time. Same format as since (relative offsets are subtracted from now, same as since; max 30d). Default: now (no upper bound).[[FLAT_TRIM]] Use since='2h', until='1h' to mean '1 to 2 hours ago'.[[/FLAT_TRIM]]"],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Filters + limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
             ],
@@ -4314,9 +4332,9 @@ Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, l
 
 Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value), and `embeddedActions` — clickable button affordances embedded in paragraph HTML (RM 5.1 wizards expose "Create New Trigger", "Edit Trigger", "Delete Trigger" etc. as `<div class='submitOnChange'>` elements rather than schema inputs; this field surfaces them with their button name + stateAttribute so hub_set_rule can drive them). Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything.
 
-Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after hub_list_apps (scope='instances') / hub_list_device_dependents narrows the field.
+[[FLAT_TRIM]]Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after hub_list_apps (scope='instances') / hub_list_device_dependents narrows the field.
 
-Workflow: (1) Get the appId from hub_list_apps (scope='instances', all apps), hub_list_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not hub_get_custom_rule, which only handles MCP-native rules), or hub_list_apps (scope='instances') with filter=parents to explore app hierarchy. (2) Call hub_get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call hub_list_app_pages first to discover available page names (the pageName param lists the common HPM / RM / Room Lighting pages).
+Workflow: (1) Get the appId from hub_list_apps (scope='instances', all apps), hub_list_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not hub_get_custom_rule, which only handles MCP-native rules), or hub_list_apps (scope='instances') with filter=parents to explore app hierarchy. (2) Call hub_get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call hub_list_app_pages first to discover available page names (the pageName param lists the common HPM / RM / Room Lighting pages).[[/FLAT_TRIM]]
 
 Requires Read master.""",
             inputSchema: [
@@ -4426,9 +4444,9 @@ Requires Read master.""",
 
 App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). File components include only id and name (File Manager assets are tracked by name only). [[FLAT_TRIM]]If a component's heID is an empty/whitespace-only string, heID is cleared to null and a _warning field is added to that entry (e.g. "empty heID string '' normalized to null"). A whitespace-padded heID (e.g. ' 142 ') is trimmed, heID stays non-null, and _warning records the normalization. A non-scalar heID (not Number or String) is cleared to null with a _warning.[[/FLAT_TRIM]]
 
-Response also includes: count (packages returned); hpmAppId (HPM's installed-app ID, echoed so callers can cache it and skip discovery); skippedMalformed (manifest URLs whose top-level value was not a Map -- package skipped); per-package skippedAppCount/skippedDriverCount/skippedFileCount (non-Map entries skipped, each omitted when 0).
+[[FLAT_TRIM]]Response also includes: count (packages returned); hpmAppId (HPM's installed-app ID, echoed so callers can cache it and skip discovery); skippedMalformed (manifest URLs whose top-level value was not a Map -- package skipped); per-package skippedAppCount/skippedDriverCount/skippedFileCount (non-Map entries skipped, each omitted when 0).
 
-If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app tree for type='Hubitat Package Manager'; pass hpmAppId explicitly to skip that call. Multiple HPM instances throw IllegalArgumentException listing up to 10 instance IDs with "and N more (total M)"; an hpmAppId pointing at a non-HPM app throws disclosing the actual type (all such IllegalArgumentExceptions surface as JSON-RPC error -32602).
+If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app tree for type='Hubitat Package Manager'; pass hpmAppId explicitly to skip that call. Multiple HPM instances throw IllegalArgumentException listing up to 10 instance IDs with "and N more (total M)"; an hpmAppId pointing at a non-HPM app throws disclosing the actual type (all such IllegalArgumentExceptions surface as JSON-RPC error -32602).[[/FLAT_TRIM]]
 
 Set includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan-app / orphan-driver signals; optional packageFilter narrows which packages are analyzed). Off by default (adds 1-2 hub calls). Drift is heID-presence-only -- post-install source edits are NOT surfaced. Call `hub_get_tool_guide(section='builtin_app_tools')` for the full drift-signal taxonomy, response-field reference, and under-count caveats.
 
@@ -4618,7 +4636,7 @@ Requires the Write master + confirm=true + recent hub backup.""",
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "Installed-app id of an existing classic app (from hub_list_apps with scope='instances'). OMIT to CREATE a new app of `appType` (then `name` is required); PROVIDE to EDIT an existing app's settings/button."],
-                    appType: [type: "string", enum: ["rule_machine", "button_controller", "groups_scenes", "notifier", "visual_rule", "basic_rule"], description: "Native app class to CREATE (appId omitted). Default: rule_machine.[[FLAT_TRIM]] Enum is driven by _appTypeRegistry(); add types there. For full RM rule authoring use hub_set_rule. Button Rules are NOT an appType -- use the buttonRule param.[[/FLAT_TRIM]]"],
+                    appType: [type: "string", enum: ["rule_machine", "button_controller", "groups_scenes", "notifier", "basic_rule"], description: "Native app class to CREATE (appId omitted). Default: rule_machine. Visual Rules are NOT created here -- use hub_set_visual_rule.[[FLAT_TRIM]] Enum is driven by _appTypeRegistry(); add types there. For full RM rule authoring use hub_set_rule. Button Rules are NOT an appType -- use the buttonRule param.[[/FLAT_TRIM]]"],
                     name: [type: "string", description: "Label for the new app (shown in the hub's app list). Required on CREATE (when appId is omitted); ignored when appId is provided."],
                     settings: [type: "object", description: "Map {inputName: value} to write to the app's current config page: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs. The multiple=true 3-field contract (settings[name]=csv + name.type=capability.X + name.multiple=true) is emitted automatically and post-write verified with one auto-retry. Discover input names via hub_get_app_config."],
                     button: [type: "string", description: "Page-transition button name to click (discover via hub_get_app_config)."],
@@ -5330,6 +5348,11 @@ def executeTool(toolName, args) {
         case "hub_export_native_app": return toolExportNativeApp(args)
         case "hub_import_native_app": return toolImportNativeApp(args)
         case "hub_get_rule_health": return toolCheckRuleHealth(args)
+
+        // Visual Rules Builder (Vue-JSON apps; impl in McpVisualRulesLib)
+        case "hub_get_visual_rule": return toolGetVisualRule(args)
+        case "hub_set_visual_rule": return toolSetVisualRule(args)
+        case "hub_delete_visual_rule": return toolDeleteVisualRule(args)
 
         // Tool Guide
         case "hub_get_tool_guide": return toolGetToolGuide(args.section)
@@ -16359,8 +16382,10 @@ private Map _appTypeRegistry() {
         button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers", commitButton: null],
         groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes"],
         notifier: [namespace: "hubitat", appName: "Notifier", parentTypeName: "Notifications"],
-        // visual_rule is registered for completeness; not probe-validated against a
-        // live hub yet -- file an issue if firmware behavior differs from rule_machine.
+        // visual_rule stays registered so type-name lookups (_resolveCommitButton, parent
+        // discovery) keep working, but CREATION through this registry is blocked in
+        // _createNativeAppShell: VRB children are Vue-JSON apps (live-probed: /installedapp/
+        // configure renders no classic configPage), served by hub_set_visual_rule instead.
         visual_rule: [namespace: "hubitat", appName: "Visual Rule Builder", parentTypeName: "Visual Rules Builder"],
         // Basic Rule is a classic dynamicPage app (configure/json renders a real
         // configPage and generic createchild works), NOT a Vue SPA like Visual
@@ -23440,6 +23465,12 @@ def _createButtonRuleViaController(args) {
 def _createNativeAppShell(args) {
     requireDestructiveConfirm(args?.confirm as Boolean)
     def appType = args?.appType?.toString()?.trim() ?: "rule_machine"
+    if (appType == "visual_rule") {
+        // Visual Rule children are Vue-JSON apps (/app/ruleBuilderJson family), not classic
+        // dynamicPage apps -- the wizard's configure/json + update/json flow can't configure
+        // them. The dedicated tool drives the real create + save endpoints.
+        throw new IllegalArgumentException("Visual Rules Builder rules are Vue-JSON apps, not classic dynamicPage apps -- use hub_set_visual_rule (hub_manage_rule_machine gateway) instead.")
+    }
     def reg = _appTypeRegistry()[appType]
     if (!reg) {
         throw new IllegalArgumentException("Unknown appType '${appType}'. Supported: ${_appTypeRegistry().keySet().join(', ')}")
@@ -28472,8 +28503,9 @@ The action-clear path commits synchronously, but a thin verify-retry guards agai
 
 `appType` selects which class of native app to create. NOTE: this selector belongs to `hub_set_native_app` -- `hub_set_rule` always creates `rule_machine` rules. Default: `rule_machine`.
 
-- `rule_machine` — Rule Machine 5.1 (the only registered type today; verified live).
-- Other classic SmartApps (Room Lighting, Button Controllers, Basic Rules, Notifier, Groups+Scenes, Visual Rules) use the same endpoint family — register them in `_appTypeRegistry` to enable creation. `hub_set_native_app` / `hub_delete_native_app` already work on them today via their `appId`.
+- `rule_machine` — Rule Machine 5.1 (verified live; the only FULLY-supported type — the others have partial label/config handling).
+- `button_controller`, `groups_scenes`, `notifier`, `basic_rule` — registered classic types using the same endpoint family. Other classic SmartApps (e.g. Room Lighting) can be registered in `_appTypeRegistry` to enable creation. `hub_set_native_app` / `hub_delete_native_app` already work on them today via their `appId`.
+- Visual Rules are NOT created here — they are Vue-JSON apps; use `hub_set_visual_rule` (see `hub_get_tool_guide(section='visual_rule_reference')`).
 
 ### Partial-success protocol
 
@@ -28483,6 +28515,57 @@ The tool ALWAYS creates the rule shell (you get an `appId` back) even if some tr
 - `repairHints: [...]` → concrete next-step instructions.
 - Each per-trigger / per-action result has its own `success`, `partial`, `settingsSkipped`, `repairHints`, and `health` block. `success: true, partial: true` on an inner result means the row was written but needs repair.
 
-The right move when `partial: true` is to follow the `repairHints`, NOT to delete the rule and retry from scratch. Tool-only repair via `hub_set_rule(walkStep={...})` / `replaceActions` / `removeAction` can usually finish the job. Only declare failure after exhausting those repair attempts.'''
+The right move when `partial: true` is to follow the `repairHints`, NOT to delete the rule and retry from scratch. Tool-only repair via `hub_set_rule(walkStep={...})` / `replaceActions` / `removeAction` can usually finish the job. Only declare failure after exhausting those repair attempts.''',
+
+        visual_rule_reference: '''## Visual Rules Builder reference (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`)
+
+Visual Rules Builder (VRB) is Hubitat's simplest rule engine — capability tier similar to Basic Rules, but stored as ONE clean JSON definition (no wizard, no settings[] protocol). PREFER it for simple device automations; use `hub_set_rule` (Rule Machine) when you need: nested IF/THEN/ELSE in actions, loops, local variables, boolean expressions, capture/restore, custom device commands, or running another rule's actions.
+
+### Two serializations (`format` in every response)
+
+A VRB rule speaks exactly one of two wire formats, decided by the hub firmware at creation. `hub_get_visual_rule` reports which; an edit's `definition` must match it.
+
+**classic** — `{whenNodes: [...], thenNodes: [...], elseNodes: [...]}` (the when/then/else editor; what current firmware creates):
+- Every node: `triggerType` (or `actionType`), `deviceIds` (ALWAYS present; mirrors the per-type device array), `index` (int, 0-based per list), `type` ("when"/"then"/"else"), optional `description` (HTML label).
+- whenNode example (switch trigger): `{"triggerType": "switch", "switches": [59], "deviceIds": [59], "switchEvent": "Turns off", "index": 0, "type": "when"}`
+- thenNode example (turn off): `{"actionType": "turnOff", "switches": [122], "deviceIds": [122], "index": 0, "type": "then"}`
+- At least one whenNode must be a REAL trigger (the builder refuses rules whose only triggers are `timeIsBetween`/`daysOfWeek`).
+
+**graph** — `{version: 1, nodes: [...], edges: [...]}` (the dormant 2.0 graph editor):
+- Node: `{id, type: "trigger"|"condition"|"action", deviceIds: [...]}` + `triggerType`/`actionType` + per-type fields. Stored graph nodes put the node KIND in `triggerCondition` and the sub-condition in `condition`.
+- Edge: `{from, to, port}`. Ports: `next` (trigger/action source), `true`/`false` (condition source). Triggers have no incoming edges; conditions/actions exactly one. No cycles.
+- On the wire the graph travels as a JSON STRING inside `{name, ruleJson}` — the tool handles the double-encoding for you; always pass `definition` as a normal JSON object.
+
+### Field catalog (classic + graph dialogs share these)
+
+Triggers (`triggerType` → device array + event field):
+- `switch` → `switches`, `switchEvent`: "Turns on" | "Turns off" | "Turns on and stays on for..." | "Turns off and stays off for..." (+ `switchStaysMinutes`/`switchStaysSeconds` on the stays variants)
+- `motion` → `motionSensors`, `motionSensorEvent`: "Motion starts" | "Motion stops" | "Motion stops and stays inactive for..." (+ `motionStaysMinutes`/`motionStaysSeconds`)
+- `contact` → `contactSensors`, `contactSensorEvent`: "Contact opens" | "Contact closes" | "...and stays open/closed for..." (+ `contactStaysMinutes`/`contactStaysSeconds`)
+- `presence` → `presenceSensors`, `presenceSensorEvent`: "Everyone leaves" | "Someone arrives"
+- `lock` → `locks`, `lockEvent`: "Locked" | "Unlocked"
+- `button` → `buttons`, `buttonEvent`: "Pushed" | "Held" | "Released" | "Double tapped", `buttonIndex` (int)
+- `temperature`/`humidity`/`illuminance` → `temperatureSensors`/`humiditySensors`/`illuminanceSensors`, `<type>SensorEvent`: "<Type> has risen above..." | "<Type> has fallen below...", value in `temperature`/`humidity`/`illuminance`
+- `power` → `powerMeters`, `powerMeterEvent` (risen above / fallen below / become and stayed above|below + `power`, `powerStaysMinutes`/`Seconds`)
+- `water`/`smoke`/`co`/`acceleration`/`shock` → `<type>Sensors` + `<type>SensorEvent` (exact English sentences from the builder UI)
+- `timeOfDay` → `timeOfDay`: "HHMM" colon-less string (e.g. "0730")
+- `sunriseSunset` → sub-condition beforeSunrise/sunrise/afterSunrise/beforeSunset/sunset/afterSunset + `minutesBefore/AfterSunrise|Sunset`
+- `systemMode` → `modes`: [mode ids from /modes/list]
+
+Conditions (classic: appear as whenNodes with condition `triggerType`s; graph: `type:"condition"` nodes): `switchCondition` (`switchState`: "Turned on"|"Turned off"), `motionCondition` (`motionSensorState`: "Motion is active"|"Motion is inactive"), `contactCondition`, `presenceCondition`, `lockCondition` (`lockState`), `temperatureCondition`/`humidityCondition`/`illuminanceCondition`/`powerCondition` ("... is above..."|"... is below..." + value), `systemModeCondition` (`modes`), `timeIsBetween` (specificTimes + `startTime`/`endTime` "HHMM", or sunriseToSunset/sunsetToSunrise), `daysOfWeek` (`daysOfWeek`: [0-6], 0=Sunday).
+
+Actions (`actionType`): `turnOn`/`turnOff`/`toggle` (`switches`), `setBrightness` (`dimmers`, `brightness` 0-100), `setColorTemp` (`colorTempBulbs`, `colorTemp` Kelvin), `setColor` (`colorBulbs`, `color` {h,s,b}), `lock`/`unlock` (`locks`), `openValve`/`closeValve`, `openGarageDoor`/`closeGarageDoor`, `openWindowShade`/`closeWindowShade`, `pushButton` (`button` single id, `buttonIndex`), `sendNotification` (`notificationDevices`, `notificationMessage`), `speakNotification` (`speechDevices`, `speakMessage`), `controlPlayer` (`musicPlayers`, `musicPlayerAction`), `controlThermostat` (`thermostats`, setMode/mode, setFanMode/fanMode, setHeatingSetpoint/heatingSetpoint, setCoolingSetpoint/coolingSetpoint), `setMode`/`setModeUnlessAway` (`mode` single id), `exitAwayMode`, `wait` (`minutes`, `seconds` — cancelable), `cancelWait`.
+
+Gotchas: event/state strings are EXACT English sentences including the trailing "..."; `deviceIds` must mirror the per-type device array; device ids are integers from hub_list_devices; times are colon-less "HHMM" strings.
+
+### Worked example (classic create)
+
+hub_set_visual_rule(name="Hallway motion light", confirm=true, definition={
+  "whenNodes": [{"triggerType": "motion", "motionSensors": [42], "deviceIds": [42], "motionSensorEvent": "Motion starts", "index": 0, "type": "when"}],
+  "thenNodes": [{"actionType": "turnOn", "switches": [17], "deviceIds": [17], "index": 0, "type": "then"}],
+  "elseNodes": []
+})
+
+Then verify with hub_get_visual_rule(appId=<returned appId>) — the response echoes the persisted definition. Pause/resume with hub_set_visual_rule(appId=N, paused=true|false, confirm=true).'''
     ]
 }
