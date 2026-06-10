@@ -1537,12 +1537,17 @@ def getGatewayConfig() {
 //     this matches the MCP spec default (destructiveHint defaults to true
 //     when readOnlyHint=false) and gets every write the more cautious
 //     permission prompt in clients that surface destructiveHint.
-//   * Both hint keys are emitted explicitly (never omitted on writes)
-//     so clients do not need to rely on spec defaults.
-//   * The read-only set is POSITIVE: a tool that nobody lists here falls
-//     to write+destructive. New tools default to the safer prompt; the
-//     "every leaf classified" spec test forces the decision to be made
-//     in code review rather than left implicit.
+//   * All four hint keys ship explicitly (AGENTS.md: all four hints, every
+//     tool) -- readOnlyHint + idempotentHint + openWorldHint always,
+//     destructiveHint on every write -- so clients do not need to rely on
+//     spec defaults. idempotentHint = read-only OR classified retry-safe in
+//     getIdempotentWriteToolNames(); openWorldHint = reaches the open
+//     internet per getOpenWorldToolNames() (the hub itself is closed-world).
+//   * Every classification set is POSITIVE: a tool that nobody lists falls
+//     to the cautious side (write+destructive, non-idempotent, closed-world).
+//     New tools default to the safer prompt; the "every leaf classified"
+//     spec tests force the decision to be made in code review rather than
+//     left implicit.
 
 // Single source of truth for the legacy custom-rule engine's visibility mode.
 // "full"     -- engine ON; all custom_* tools shown.
@@ -1653,6 +1658,68 @@ def getReadOnlyToolNames() {
         "hub_list_rules", "hub_get_rule_health",
         // Meta
         "hub_get_tool_guide", "hub_search_tools"
+    ] as Set
+}
+
+// Write tools that are SAFE TO RETRY with identical args (MCP `idempotentHint`):
+// a repeat call converges to the same hub state with no additional side effects.
+// Read-only tools are implicitly idempotent and are NOT listed here. POSITIVE
+// set: an unlisted write defaults to non-idempotent (the cautious default).
+// Classification rules applied:
+//   * set/update-style writes (assign a value, PATCH fields, replace source)
+//     are idempotent -- same args, same end state. Code saves bump the hub's
+//     internal version counter, but the retry-safety signal is what matters:
+//     a client that lost the response (the #237 recompile drop) SHOULD retry
+//     these, and the code/content lands identical.
+//   * delete-style writes are idempotent (second call finds nothing to do).
+//   * create/clone/import-style writes are NOT (each call makes another one).
+//   * invoke-style writes (device commands, rule runs, GC, repair, reboot)
+//     are NOT -- a retry re-fires the action.
+//   * hub_set_rule / hub_set_native_app are upserts whose no-appId mode
+//     CREATES -- classified non-idempotent for that mode.
+def getIdempotentWriteToolNames() {
+    return [
+        // Custom rules (legacy engine)
+        "hub_update_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule",
+        // Hub state
+        "hub_set_mode", "hub_set_hsm",
+        // Variables + connectors
+        "hub_set_variable", "hub_delete_variable", "hub_delete_connector",
+        // MCP self-admin + logging
+        "hub_update_mcp_settings", "hub_set_log_level", "hub_delete_debug_logs",
+        // Diagnostics
+        "hub_delete_captured_state",
+        // Devices
+        "hub_update_device", "hub_delete_device",
+        // Rooms
+        "hub_update_room", "hub_delete_room",
+        // Code (apps/drivers/libraries/bundles/backups)
+        "hub_update_app", "hub_update_driver", "hub_update_library",
+        "hub_delete_item", "hub_restore_backup",
+        "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle",
+        // Files
+        "hub_write_file", "hub_delete_file",
+        // Native rules / classic apps
+        "hub_set_rule_paused", "hub_set_rule_private_boolean",
+        "hub_delete_native_app", "hub_export_native_app",
+        // Developer Mode self-deploy (full repair to a ref converges; retrying
+        // after a dropped response is its designed recovery path)
+        "hub_update_package"
+    ] as Set
+}
+
+// Tools that reach BEYOND the hub to the open internet (MCP `openWorldHint`):
+// GitHub raw fetches, HPM-style bundle downloads, and the importUrl source
+// modes where the HUB fetches an arbitrary URL. Everything else is
+// closed-world -- the hub, its devices, and its radios ARE the system, and
+// hub-local HTTP endpoints (/hub2/*, File Manager) do not leave it.
+def getOpenWorldToolNames() {
+    return [
+        "hub_get_update_status",                                   // GitHub version check
+        "hub_update_package",                                      // GitHub raw manifest + sources
+        "hub_install_bundle",                                      // fetches the bundle .zip URL
+        "hub_create_app", "hub_create_driver", "hub_create_library",   // importUrl mode
+        "hub_update_app", "hub_update_driver", "hub_update_library"   // importUrl mode
     ] as Set
 }
 
@@ -1798,15 +1865,16 @@ def getToolDisplayMeta() {
     ]
 }
 
-// Returns the MCP `annotations` map for a leaf tool name. readOnlyHint is
-// always emitted explicitly, destructiveHint on every write, so the wire
-// payload is unambiguous regardless of which spec-default a given client
-// honours. displayMeta is REQUIRED (pass null only to deliberately skip the
-// title, e.g. in unit tests) so a new wire surface cannot silently ship
-// title-less annotations by forgetting the argument; when provided, the
-// friendly name rides along as `annotations.title` (the field claude.ai and
-// other MCP clients render in place of the bare tool name).
-def annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta) {
+// Returns the MCP `annotations` map for a leaf tool name. readOnlyHint,
+// idempotentHint, and openWorldHint are always emitted explicitly,
+// destructiveHint on every write, so the wire payload is unambiguous
+// regardless of which spec-default a given client honours (AGENTS.md: all
+// four hints, every tool). The classification params are REQUIRED (pass null
+// displayMeta only to deliberately skip the title, e.g. in unit tests) so a
+// new wire surface cannot silently ship incomplete annotations by forgetting
+// an argument; the friendly name rides along as `annotations.title` (the
+// field claude.ai and other MCP clients render in place of the bare name).
+def annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta, Set idempotentWrites, Set openWorldNames) {
     def isReadOnly = readOnlyNames.contains(toolName)
     def ann = [:]
     def title = displayMeta?.get(toolName)?.title
@@ -1820,15 +1888,20 @@ def annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta) {
         // gets clients the cautious permission prompt.
         ann.destructiveHint = true
     }
+    // Reads are idempotent by definition; writes only when classified so.
+    ann.idempotentHint = isReadOnly || idempotentWrites.contains(toolName)
+    ann.openWorldHint = openWorldNames.contains(toolName)
     return ann
 }
 
 // Aggregates annotations for a gateway entry from its currently-visible
 // sub-tools. Read-only iff every visible sub-tool is read-only; otherwise
-// write+destructive. Callers pass `visibleSubTools` so feature-toggle hiding
-// (a Read/Write master OFF, custom engine readonly, or an Advanced override) propagates into the
-// gateway label.
-def annotationsForGateway(List visibleSubTools, Set readOnlyNames) {
+// write+destructive. Idempotent iff EVERY visible sub-tool is idempotent;
+// open-world if ANY visible sub-tool reaches the open internet (the cautious
+// roll-up direction for each hint). Callers pass `visibleSubTools` so
+// feature-toggle hiding (a Read/Write master OFF, custom engine readonly, or
+// an Advanced override) propagates into the gateway label.
+def annotationsForGateway(List visibleSubTools, Set readOnlyNames, Set idempotentWrites, Set openWorldNames) {
     if (!visibleSubTools) {
         throw new IllegalArgumentException(
             "annotationsForGateway requires at least one visible sub-tool"
@@ -1839,6 +1912,8 @@ def annotationsForGateway(List visibleSubTools, Set readOnlyNames) {
     if (anyWrite) {
         ann.destructiveHint = true
     }
+    ann.idempotentHint = visibleSubTools.every { readOnlyNames.contains(it) || idempotentWrites.contains(it) }
+    ann.openWorldHint = visibleSubTools.any { openWorldNames.contains(it) }
     return ann
 }
 
@@ -2054,6 +2129,8 @@ def getToolDefinitions() {
     // Hoist annotation source-of-truth once per call.
     def readOnlyNames = getReadOnlyToolNames()
     def displayMeta = getToolDisplayMeta()
+    def idempotentWrites = getIdempotentWriteToolNames()
+    def openWorldNames = getOpenWorldToolNames()
 
     // Flat mode: every tool advertised individually under its real name; hub_search_tools
     // is dropped because it only helps navigate gateway-hidden tools.
@@ -2076,7 +2153,7 @@ def getToolDefinitions() {
             // (this is the all-tools-individually surface). outputSchema is still
             // published in gateway mode (base tools) and the gateway catalog disclosure,
             // where the per-response budget has headroom.
-            tool.findAll { it.key != 'outputSchema' } + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta)]
+            tool.findAll { it.key != 'outputSchema' } + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentWrites, openWorldNames)]
         }
     }
 
@@ -2112,7 +2189,7 @@ def getToolDefinitions() {
             // Gateway entries get their friendly name from the same display-meta
             // map as the leaves; map-add keeps title first in the wire payload.
             annotations: (displayMeta[gwName]?.title ? [title: displayMeta[gwName].title as String] : [:]) +
-                annotationsForGateway(visibleSubTools, readOnlyNames)
+                annotationsForGateway(visibleSubTools, readOnlyNames, idempotentWrites, openWorldNames)
         ]]
     }
 
@@ -2127,7 +2204,7 @@ def getToolDefinitions() {
         // readOnlyHint (not just the annotations map) is the load-bearing
         // signal -- a partial pre-populated map without readOnlyHint still
         // needs the leaf classifier to merge in the missing key.
-        tool.annotations?.containsKey('readOnlyHint') ? tool : tool + [annotations: (tool.annotations ?: [:]) + annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta)]
+        tool.annotations?.containsKey('readOnlyHint') ? tool : tool + [annotations: (tool.annotations ?: [:]) + annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentWrites, openWorldNames)]
     }
 }
 
@@ -2835,7 +2912,7 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_delete_variable",
-            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (drives Settings → Hub Variables wizard; also deletes the connector device if one exists) or a rule_engine variable (rewrites state). Throws if the name resolves to neither.\n\nGated on the Write master + confirm=true + a recent backup. Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found — deletion would silently break those rules (null lookups → false conditions, literal `%varname%` left in substitutions). To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.",
+            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (drives Settings → Hub Variables wizard; also deletes the connector device if one exists) or a rule_engine variable (rewrites state). Throws if the name resolves to neither.\n\nGated on the Write master + confirm=true + a recent backup. [[FLAT_TRIM]]Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.[[/FLAT_TRIM]]\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found — [[FLAT_TRIM]]deletion would silently break those rules (null lookups → false conditions, literal `%varname%` left in substitutions)[[/FLAT_TRIM]]. To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2865,7 +2942,7 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters) in place. Use this to self-administer the MCP app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit. Allowlisted keys only: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways — any other key is rejected. After changing any enable* toggle or useGateways, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema. Deliberately NOT allowlisted: enableWrite (would disable the tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), selectedDevices (different wire format, has its own tool), and disabled_tools/disabled_gateways (could self-disable this tool).",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters) in place. Use this to self-administer the MCP app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit. Allowlisted keys only: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways — any other key is rejected. After changing any enable* toggle or useGateways, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema. [[FLAT_TRIM]]Deliberately NOT allowlisted: enableWrite (would disable the tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), selectedDevices (different wire format, has its own tool), and disabled_tools/disabled_gateways (could self-disable this tool).[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3788,7 +3865,7 @@ Device + history lost, automations break. Requires Write master.""",
             name: "hub_manage_virtual_device",
             description: """Create or delete MCP-managed virtual devices. Requires Write master + confirm.
 
-action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId. The two are mutually exclusive -- supplying both (including a blank/whitespace deviceType alongside customDriver) is an error. Create response shape: {success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, attributes}}. Built-in deviceType not-found surfaces as a platform error (isError); customDriver not-found surfaces as an input error (-32602) with a hub_list_drivers hint.
+action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId. The two are mutually exclusive -- supplying both (including a blank/whitespace deviceType alongside customDriver) is an error. [[FLAT_TRIM]]Create response shape: {success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, attributes}}. Built-in deviceType not-found surfaces as a platform error (isError); customDriver not-found surfaces as an input error (-32602) with a hub_list_drivers hint.[[/FLAT_TRIM]]
 action="delete": Provide deviceNetworkId of device to delete. Use hub_list_devices(filter='virtual') to find DNIs. Delete response: {success, deviceId, deviceNetworkId, deviceLabel, message}.""",
             inputSchema: [
                 type: "object",
@@ -4521,7 +4598,9 @@ Returns the app's identity (label, type, parent, disabled state) and its current
 Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after hub_list_apps (scope='instances') / hub_list_device_dependents narrows the field.
 [[/FLAT_TRIM]]
 
+[[FLAT_TRIM]]
 Workflow: (1) Get the appId from hub_list_apps (scope='instances', all apps), hub_list_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not hub_get_custom_rule, which only handles MCP-native rules), or hub_list_apps (scope='instances') with filter=parents to explore app hierarchy. (2) Call hub_get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call hub_list_app_pages first to discover available page names (the pageName param lists the common HPM / RM / Room Lighting pages).
+[[/FLAT_TRIM]]
 
 Requires Read master.""",
             inputSchema: [
@@ -4585,7 +4664,9 @@ Requires Read master.""",
             name: "hub_list_app_pages",
             description: """List known page names for a multi-page installed app. Returns the primary page (introspected live from the hub) plus a curated directory of known sub-pages for well-known app types.
 
+[[FLAT_TRIM]]
 Curated directories: HPM (prefOptions main menu, prefPkgUninstall full installed-package list, prefPkgModify modifiable subset, prefPkgInstall install flow, prefPkgMatchUp match-up flow); Rule Machine rules (mainPage only -- rules are single-page); Room Lighting (mainPage); Mode Manager (mainPage).
+[[/FLAT_TRIM]]
 
 Unknown app types return the primary page only, plus a note directing you to consult the app's source or Web UI navigation for additional page names.
 
@@ -4631,9 +4712,11 @@ Requires Read master.""",
 
 App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). File components include only id and name (File Manager assets are tracked by name only). [[FLAT_TRIM]]If a component's heID is an empty/whitespace-only string, heID is cleared to null and a _warning field is added to that entry (e.g. "empty heID string '' normalized to null"). A whitespace-padded heID (e.g. ' 142 ') is trimmed, heID stays non-null, and _warning records the normalization. A non-scalar heID (not Number or String) is cleared to null with a _warning.[[/FLAT_TRIM]]
 
+[[FLAT_TRIM]]
 Response also includes: count (packages returned); hpmAppId (HPM's installed-app ID, echoed so callers can cache it and skip discovery); skippedMalformed (manifest URLs whose top-level value was not a Map -- package skipped); per-package skippedAppCount/skippedDriverCount/skippedFileCount (non-Map entries skipped, each omitted when 0).
+[[/FLAT_TRIM]]
 
-If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app tree for type='Hubitat Package Manager'; pass hpmAppId explicitly to skip that call. Multiple HPM instances throw IllegalArgumentException listing up to 10 instance IDs with "and N more (total M)"; an hpmAppId pointing at a non-HPM app throws disclosing the actual type (all such IllegalArgumentExceptions surface as JSON-RPC error -32602).
+If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app tree for type='Hubitat Package Manager'; pass hpmAppId explicitly to skip that call. [[FLAT_TRIM]]Multiple HPM instances throw IllegalArgumentException listing up to 10 instance IDs with "and N more (total M)"; an hpmAppId pointing at a non-HPM app throws disclosing the actual type (all such IllegalArgumentExceptions surface as JSON-RPC error -32602).[[/FLAT_TRIM]]
 
 Set includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan-app / orphan-driver signals; optional packageFilter narrows which packages are analyzed). Off by default (adds 1-2 hub calls). Drift is heID-presence-only -- post-install source edits are NOT surfaced. Call `hub_get_tool_guide(section='builtin_app_tools')` for the full drift-signal taxonomy, response-field reference, and under-count caveats.
 
@@ -4901,7 +4984,7 @@ Optional fields on every spec:
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
 
-PARTIAL-SUCCESS HANDLING: success:true = the call completed and the trigger skeleton was written; partial:true (orthogonal) = some fields didn't land or the row carries a *BROKEN* marker — the trigger exists but needs repair via repairHints. Common repair: pass missing fields via rawSettings and re-add, or walkStep introspect on selectTriggers to see the live fields. Don't treat partial as failure — exhaust tool-only repair first. On a rejected trailing updateRule the trigger is written but not subscribed (subscriptionsNotLive:true) — retry hub_set_rule(button='updateRule', confirm=true). Full slot reference: guide:true."""
+[[FLAT_TRIM]]PARTIAL-SUCCESS HANDLING: success:true = the call completed and the trigger skeleton was written; partial:true (orthogonal) = some fields didn't land or the row carries a *BROKEN* marker — the trigger exists but needs repair via repairHints. Common repair: pass missing fields via rawSettings and re-add, or walkStep introspect on selectTriggers to see the live fields. Don't treat partial as failure — exhaust tool-only repair first. On a rejected trailing updateRule the trigger is written but not subscribed (subscriptionsNotLive:true) — retry hub_set_rule(button='updateRule', confirm=true). Full slot reference: guide:true.[[/FLAT_TRIM]]"""
                     ],
                     addTriggers: [
                         type: "array",
@@ -4922,8 +5005,10 @@ Spec shape:
     OR
     operators: ['AND', 'OR', 'XOR', ...]  // one per gap; length = conditions.size()-1
   }
+[[FLAT_TRIM]]
 RM 5.1 spec: AND/OR/XOR have equal precedence, evaluated left-to-right.
 Use `operators` (list) for mixed-operator expressions like 'P1 AND P2 OR P3 XOR P4'.
+[[/FLAT_TRIM]]
 
 Per-condition spec fields:
   - capability — required (full STPage capability list: guide:true).
@@ -4937,9 +5022,9 @@ Per-condition spec fields:
 
 Extended per-capability spec shapes — Mode, Between two times, Variable comparison (incl. compareToVariable for a variable-vs-variable RHS), device-relative compareToDevice, and nested subExpression (parens, arbitrary depth) — and the full STPage capability list: pass guide:true or hub_get_tool_guide(section='set_rule_reference').
 
-The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately. The cond counter is shared at the Rule Machine parent app's atomicState level (the parent app's id varies per hub) — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
+[[FLAT_TRIM]]The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately.[[/FLAT_TRIM]] The cond counter is shared at the Rule Machine parent app's atomicState level (the parent app's id varies per hub) — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
 
-PARTIAL-SUCCESS HANDLING: partial:true means some condition fields didn't land (settingsSkipped names them); repairHints names the next step — pass missing fields via rawSettings on the affected condition. On a rejected trailing updateRule the expression is committed but not live (expressionNotLive:true) — retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true the wizard couldn't auto-cancel — call hub_set_rule(button='cancelCapab', pageName='STPage', confirm=true) first (restoreHint has the exact command). Discrete-event sensor state names (wet/dry, detected/clear, etc.) and the full settingsSkipped-sentinel reference: guide:true."""
+[[FLAT_TRIM]]PARTIAL-SUCCESS HANDLING: partial:true means some condition fields didn't land (settingsSkipped names them); repairHints names the next step — pass missing fields via rawSettings on the affected condition. On a rejected trailing updateRule the expression is committed but not live (expressionNotLive:true) — retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true the wizard couldn't auto-cancel — call hub_set_rule(button='cancelCapab', pageName='STPage', confirm=true) first (restoreHint has the exact command). Discrete-event sensor state names (wet/dry, detected/clear, etc.) and the full settingsSkipped-sentinel reference: guide:true.[[/FLAT_TRIM]]"""
                     ],
 
                     addActions: [
@@ -5002,10 +5087,12 @@ Spec shape:
   }
 
 Operations:
+[[FLAT_TRIM]]
   - introspect: fetch schema; no mutation
   - write: write one field's value (with hrefContext for sub-pages)
   - click: click a regular button (cancelCapab, hasAll, moreCond, etc.)
   - navigate: forward into a sub-page via its href
+[[/FLAT_TRIM]]
   - done: BACK-NAVIGATE from a sub-page to its parent via _action_previous=Done. Carries ALL the sub-page's current settings in the form. REQUIRED for sub-pages (Periodic Schedule, etc.) whose parent's row description otherwise renders as "?". Pass hrefContext={fromPage: <parent>, hrefParams: {n: <idx>}} so RM routes correctly.
 
 Recommended driving loop (introspect to see fields -> navigate into a sub-page if exposed -> write each required field -> inspect diff.appeared/valueEcho.match/silentRejection -> done to bake the row -> click hasAll/actionDone to finalize): full walkthrough via guide:true or hub_get_tool_guide(section='set_rule_reference').

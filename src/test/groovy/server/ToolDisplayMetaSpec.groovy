@@ -100,8 +100,8 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         when:
         def readOnly = ['hub_list_rooms'] as Set
         def withMeta = script.annotationsForLeaf('hub_list_rooms', readOnly,
-            [hub_list_rooms: [title: 'List Rooms', summary: 'List all rooms.']])
-        def withoutMeta = script.annotationsForLeaf('hub_list_rooms', readOnly, null)
+            [hub_list_rooms: [title: 'List Rooms', summary: 'List all rooms.']], [] as Set, [] as Set)
+        def withoutMeta = script.annotationsForLeaf('hub_list_rooms', readOnly, null, [] as Set, [] as Set)
 
         then: 'title rides along with the unchanged hint contract'
         withMeta.title == 'List Rooms'

@@ -470,7 +470,7 @@ class TestRunner:
             self.created_variable_names.remove(name)
 
     # -----------------------------------------------------------------------
-    # GROUP 1: infrastructure (6 tests)
+    # GROUP 1: infrastructure (7 tests)
     # -----------------------------------------------------------------------
 
     @test("infrastructure")
@@ -514,6 +514,30 @@ class TestRunner:
         assert info_title == "Get Hub Info", f"hub_get_info title unexpected: {info_title!r}"
         gw_title = by_name["hub_read_devices"]["annotations"]["title"]
         assert gw_title == "Read Devices", f"hub_read_devices title unexpected: {gw_title!r}"
+
+    @test("infrastructure")
+    def test_tools_list_annotation_hints(self) -> None:
+        # Issue #238: every tools/list entry ships the boolean annotation hints --
+        # readOnlyHint/idempotentHint/openWorldHint always, destructiveHint on writes.
+        result = self.client.list_tools()
+        tools = result.get("tools", [])
+        assert tools, "tools/list returned no tools"
+        bad = []
+        for t in tools:
+            ann = t.get("annotations") or {}
+            for key in ("readOnlyHint", "idempotentHint", "openWorldHint"):
+                if not isinstance(ann.get(key), bool):
+                    bad.append(f"{t.get('name')}.{key}")
+            if ann.get("readOnlyHint") is False and ann.get("destructiveHint") is not True:
+                bad.append(f"{t.get('name')}.destructiveHint")
+        assert not bad, f"entries with missing or mistyped annotation hints: {bad}"
+        by_name = {t["name"]: (t.get("annotations") or {}) for t in tools}
+        assert by_name["hub_update_package"]["openWorldHint"] is True, \
+            "hub_update_package must be open-world (GitHub fetches)"
+        assert by_name["hub_read_devices"]["idempotentHint"] is True, \
+            "pure-read gateway must roll up idempotent"
+        assert by_name["hub_read_devices"]["openWorldHint"] is False, \
+            "pure-read gateway must be closed-world"
 
     @test("infrastructure")
     def test_gateway_catalog_titles(self) -> None:

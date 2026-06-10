@@ -88,9 +88,9 @@ Every new MCP tool MUST set all four annotation hints explicitly:
 - `readOnlyHint` — true if no environment modification.
 - `destructiveHint` — true if the change is destructive / irreversible.
 - `idempotentHint` — true if safe to retry with identical args.
-- `openWorldHint` — true if the tool interacts with external entities.
+- `openWorldHint` — true if the tool reaches beyond the hub to the open internet (GitHub fetches, bundle-URL downloads, importUrl source modes). The hub, its devices, and its radios are the closed-world system.
 
-Defaults for unannotated tools are deliberately cautious (non-read-only, potentially destructive, non-idempotent, open-world). Explicit annotations are safer than implicit defaults. Source: MCP blog *Tool Annotations as Risk Vocabulary* (2026-03-16); baseline already shipped via PR #202 (merged 2026-05-19).
+All four are emitted centrally: `annotationsForLeaf`/`annotationsForGateway` derive them from `getReadOnlyToolNames()` plus two positive classification sets, `getIdempotentWriteToolNames()` (reads are implicitly idempotent; set/update/delete writes converge on retry; create/clone/import and invoke-style writes do not) and `getOpenWorldToolNames()`. An unlisted tool falls to the cautious side (non-idempotent, closed-world... and write+destructive via the read/write partition); symmetric snapshot specs in `McpToolAnnotationsSpec` force every classification through code review. Source: MCP blog *Tool Annotations as Risk Vocabulary* (2026-03-16). PR #202 (merged 2026-05-19) shipped the readOnlyHint/destructiveHint pair; idempotentHint + openWorldHint completed the set via issue #238.
 
 **Annotations are UX/risk hints, NOT a security boundary.** The MCP blog is explicit: *"They don't make the model resist prompt injection… annotations alone are not a control."* Safety in this project still requires the universal Read / Write master gates and `confirm` parameter checks. Annotations are advisory metadata to the client, nothing more. The annotation is the *declaration* of a tool's read/write nature; the masters are the *enforcement* of it (see Permission model below).
 
@@ -187,7 +187,7 @@ All rules above cite verified sources, re-checked on 2026-05-26.
 - FastMCP — gofastmcp.com/servers/tools (v3 docs). **Peer reference only — ideas worth considering, not enforced rules. The project is Groovy on the Hubitat sandbox; FastMCP is Python. Not every pattern transfers.**
 - MCP next-revision Release Candidate (RC locked 2026-05-21, targets 2026-07-28 publication) — blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/. Forward-looking direction; not adopted yet.
 
-PR #202 (merged 2026-05-19) established the annotation-hints baseline on every shipped tool.
+PR #202 (merged 2026-05-19) established the readOnlyHint/destructiveHint baseline on every shipped tool; issue #238 completed the four-hint surface (idempotentHint + openWorldHint).
 
 ## The custom MCP rule engine is legacy
 
