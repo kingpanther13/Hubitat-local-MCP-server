@@ -9213,8 +9213,8 @@ def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetr
 }
 
 /**
- * POST to the hub's internal API with a JSON body. Used by library management endpoints
- * which accept Content-Type: application/json (unlike app/driver endpoints that use form-encoded).
+ * POST to the hub's internal API with a JSON body. Used by the saveOrUpdateJson family
+ * (app/driver/library create and update) and other Content-Type: application/json endpoints.
  * Returns a parsed Map/List from the JSON response body, or null on empty response.
  */
 def hubInternalPostJson(String path, String jsonBody, int timeout = 420, boolean isRetry = false) {
@@ -9475,7 +9475,7 @@ def toolRestoreItemBackup(args) {
         ]
     }
 
-    // Library backups cannot be restored via the app/driver ajax/update endpoint.
+    // Library restores don't ride this path (libraries have their own save contract).
     // Direct the caller to use hub_create_library or hub_update_library with the backup source.
     if (entry.type == "library") {
         return [
@@ -9569,27 +9569,24 @@ def toolRestoreItemBackup(args) {
             } catch (Exception vErr) { /* proceed without version */ }
         }
 
-        def updatePath = (entryCopy.type == "app") ? "/app/ajax/update" : "/driver/ajax/update"
-        def result = hubInternalPostForm(updatePath, [
-            id: entryCopy.id,
-            version: currentVersion ?: entryCopy.version,
-            source: source
-        ])
+        // Same JSON save endpoint the update path uses; id present => in-place update.
+        def savePath = (entryCopy.type == "app") ? "/app/saveOrUpdateJson" : "/driver/saveOrUpdateJson"
+        def parsed = hubInternalPostJson(savePath, groovy.json.JsonOutput.toJson([
+            id: entryCopy.id as Integer,
+            source: source,
+            version: currentVersion ?: entryCopy.version
+        ]))
 
-        def responseData = result?.data
         def success = false
         def errorMsg = null
-        if (responseData) {
-            try {
-                def parsed = (responseData instanceof String) ? new groovy.json.JsonSlurper().parseText(responseData) : responseData
-                success = parsed.status == "success"
-                errorMsg = parsed.errorMessage
-            } catch (Exception parseErr) {
-                mcpLog("warn", "hub-admin", "Restore update response was not JSON: ${responseData?.toString()?.take(200)}")
-                errorMsg = "Unexpected response format — restore may have succeeded but could not be confirmed."
-            }
+        if (parsed instanceof Map) {
+            success = parsed.success == true
+            if (!success) errorMsg = parsed.message ?: parsed.errorMessage
+        } else if (parsed == null) {
+            // Fail closed on an empty/unparseable body: the write may or may not have landed.
+            errorMsg = "Empty or unparseable response from ${savePath} — restore may or may not have applied. Verify the ${entryCopy.type} source before retrying."
         } else {
-            success = true
+            errorMsg = "Unexpected response shape from ${savePath}: ${parsed.toString().take(200)}"
         }
 
         if (success) {
@@ -12932,7 +12929,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
     }
 
     def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
-    def updatePath = (type == "app") ? "/app/ajax/update" : "/driver/ajax/update"
+    def savePath = (type == "app") ? "/app/saveOrUpdateJson" : "/driver/saveOrUpdateJson"
 
     // Resolve source from one of three modes: source, sourceFile, or resave
     def sourceCode = null
@@ -13056,28 +13053,31 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
     }
     mcpLog("info", "hub-admin", "Updating ${type} ID: ${itemId} (version: ${currentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
     try {
-        def result = hubInternalPostForm(updatePath, [
-            id: itemId,
-            version: currentVersion,
-            source: sourceCode
-        ])
+        // Update rides POST /app|driver/saveOrUpdateJson (JSON) -- the same endpoint the Vue
+        // editor and the create path use; a non-null id means in-place update of the existing
+        // code class. Response is {success, id, message[, version]}; a compile failure rides
+        // verbatim in `message`. (Replaces the legacy form POST /app|driver/ajax/update.)
+        def parsed = hubInternalPostJson(savePath, groovy.json.JsonOutput.toJson([
+            id: itemId as Integer,
+            source: sourceCode,
+            version: currentVersion
+        ]))
 
-        def responseData = result?.data
         def success = false
         def errorMsg = null
 
-        if (responseData) {
-            try {
-                def responseStr = responseData?.toString()
-                def parsed = new groovy.json.JsonSlurper().parseText(responseStr)
-                success = parsed.status == "success"
-                errorMsg = parsed.errorMessage
-            } catch (Exception parseErr) {
-                mcpLog("warn", "hub-admin", "${type} update response was not JSON: ${responseData?.toString()?.take(200)}")
-                errorMsg = "Unexpected response format — update may have succeeded but could not be confirmed. Check the ${type} in the Hubitat web UI."
-            }
+        if (parsed instanceof Map) {
+            success = parsed.success == true
+            if (!success) errorMsg = parsed.message ?: parsed.errorMessage
+        } else if (parsed == null) {
+            // hubInternalPostJson returns null on an empty or unparseable body. A SELF-update can
+            // legitimately drop the response (the recompile kills the in-flight request -- the
+            // #237 lastSelfDeploy stash below covers that case); for anything else, fail closed
+            // rather than assume the write landed.
+            success = isSelfUpdate
+            if (!success) errorMsg = "Empty or unparseable response from ${savePath} -- the update may or may not have applied. Re-read the ${type} source to verify before retrying."
         } else {
-            success = true
+            errorMsg = "Unexpected response shape from ${savePath}: ${parsed.toString().take(200)}"
         }
 
         // Persist the self-deploy outcome (incl. the hub's verbatim errorMessage) so it survives the

@@ -579,10 +579,8 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub/reboot` | none | Reboot hub |
 | `/hub/shutdown` | none | Shutdown hub |
 | `/hub/zwaveRepair` | none | Start Z-Wave network repair |
-| `/app/save` | `id="", version="", create="", source=<code>` | Install new app |
-| `/driver/save` | `id="", version="", create="", source=<code>` | Install new driver |
-| `/app/ajax/update` | `id=<id>, version=<ver>, source=<code>` | Update app code |
-| `/driver/ajax/update` | `id=<id>, version=<ver>, source=<code>` | Update driver code |
+| `/app/saveOrUpdateJson` | JSON: `{"id": <id\|null>, "source": "<code>", "version": <ver\|1>}` | Install (id=null) or update (id=N, version for optimistic lock) app code. Returns `{success, id, message}`; compile errors ride verbatim in `message`. MUST use `Content-Type: application/json`. (Legacy `/app/save` and `/app/ajax/update` are no longer used.) |
+| `/driver/saveOrUpdateJson` | JSON: `{"id": <id\|null>, "source": "<code>", "version": <ver\|1>}` | Install (id=null) or update (id=N) driver code — same contract as the app endpoint. |
 | `/library/saveOrUpdateJson` | JSON: `{"id": null, "source": "<code>", "version": null}` | Install new library (id=null creates; id=N updates with version=N for optimistic lock). Returns `{success, message, id, version}`. MUST use `Content-Type: application/json`. |
 | `/login` | `username=<u>, password=<p>, submit=Login` | Hub Security login |
 | `/device/save` | `id=<deviceId>, label=<label>, name=<name>, deviceNetworkId=<dni>, type.id=<typeId>` | Update device properties (flat field names, Grails convention). NOTE: silently ignores `roomId` — use `/room/save` instead |

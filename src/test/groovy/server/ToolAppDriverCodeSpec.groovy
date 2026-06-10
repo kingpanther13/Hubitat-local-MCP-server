@@ -23,11 +23,10 @@ import support.ToolSpecBase
  *
  * Mocking strategy (see docs/testing.md):
  *   - hubInternalGet       -- routed by HarnessSpec via hubGet.register(path) closures.
- *   - hubInternalPostJson  -- create POST helper (POST /app|driver/saveOrUpdateJson),
+ *   - hubInternalPostJson  -- create/update/restore POST helper (POST /app|driver/saveOrUpdateJson),
  *                            stubbed per-test on script.metaClass; takes (String path,
- *                            String body) and returns the PARSED response Map ({success, id, ...}).
- *   - hubInternalPostForm  -- update/restore POST helper, stubbed per-test on script.metaClass
- *                            (takes (String path, Map body); returns [status, location, data]).
+ *                            String body) and returns the PARSED response Map ({success, id, ...})
+ *                            or null for an empty/unparseable body.
  *   - uploadHubFile / downloadHubFile -- purely dynamic, stubbed per-test on script.metaClass.
  *
  * Each direct-call feature has a parallel "via dispatch" feature that fires
@@ -1859,7 +1858,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_update_app (source mode) backs up, fetches version, POSTs to /app/ajax/update"() {
+    def "hub_update_app (source mode) backs up, fetches version, POSTs to /app/saveOrUpdateJson"() {
         given:
         enableWrite()
 
@@ -1872,22 +1871,23 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             uploads << name
         }
 
-        and: 'hubInternalPostForm returns a success response'
+        and: 'hubInternalPostJson returns a success response'
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
             captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true, id: 50]
         }
 
         when:
         def result = script.toolUpdateAppCode([appId: '50', source: 'new source', confirm: true])
 
         then: 'update path and body match the hub contract'
-        captured.path == '/app/ajax/update'
-        captured.body.id == '50'
-        captured.body.version == 12
-        captured.body.source == 'new source'
+        captured.path == '/app/saveOrUpdateJson'
+        def sent = new groovy.json.JsonSlurper().parseText(captured.body)
+        sent.id == 50
+        sent.version == 12
+        sent.source == 'new source'
 
         and: 'pre-edit backup written to File Manager'
         uploads.size() == 1
@@ -1905,7 +1905,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_app via dispatch (source mode) backs up and POSTs to /app/ajax/update (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch (source mode) backs up and POSTs to /app/saveOrUpdateJson (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -1915,20 +1915,21 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
             captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true, id: 50]
         }
 
         when:
         def response = mcpDriver.callTool('hub_update_app', [appId: '50', source: 'new source', confirm: true])
 
         then:
-        captured.path == '/app/ajax/update'
-        captured.body.id == '50'
-        captured.body.version == 12
-        captured.body.source == 'new source'
+        captured.path == '/app/saveOrUpdateJson'
+        def sent = new groovy.json.JsonSlurper().parseText(captured.body)
+        sent.id == 50
+        sent.version == 12
+        sent.source == 'new source'
         uploads.size() == 1
         uploads[0] == 'mcp-backup-app-50.groovy'
         response.error == null
@@ -1945,6 +1946,31 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "hub_update_app sends a JSON body whose id is an Integer (string appId arg is coerced for the endpoint)"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 12, "source": "old source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        def captured = [:]
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            captured.json = body
+            [success: true, id: 123]
+        }
+
+        when: 'appId arrives as a String, the way MCP args always do'
+        def result = script.toolUpdateAppCode([appId: '123', source: 'new source', confirm: true])
+
+        then: 'the wire body carries id as a JSON number, with version and source forwarded'
+        def sent = new groovy.json.JsonSlurper().parseText(captured.json)
+        sent.id == 123
+        sent.id instanceof Integer
+        sent.version == 12
+        sent.source == 'new source'
+        result.success == true
+    }
+
     def "hub_update_app (sourceFile mode) reads source from File Manager"() {
         given:
         enableWrite()
@@ -1956,16 +1982,16 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             fileName == 'my-app.groovy' ? 'source from file'.getBytes('UTF-8') : null
         }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true, id: 60]
         }
 
         when:
         def result = script.toolUpdateAppCode([appId: '60', sourceFile: 'my-app.groovy', confirm: true])
 
         then:
-        captured.body.source == 'source from file'
+        new groovy.json.JsonSlurper().parseText(captured.body).source == 'source from file'
         result.success == true
         result.sourceMode == 'sourceFile'
         result.note.contains('File Manager')
@@ -1984,16 +2010,16 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             fileName == 'my-app.groovy' ? 'source from file'.getBytes('UTF-8') : null
         }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true, id: 60]
         }
 
         when:
         def response = mcpDriver.callTool('hub_update_app', [appId: '60', sourceFile: 'my-app.groovy', confirm: true])
 
         then:
-        captured.body.source == 'source from file'
+        new groovy.json.JsonSlurper().parseText(captured.body).source == 'source from file'
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
@@ -2044,17 +2070,18 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true, id: 70]
         }
 
         when:
         def result = script.toolUpdateAppCode([appId: '70', resave: true, confirm: true])
 
         then: 'submitted source matches fetched source; version captured from the fresh fetch'
-        captured.body.source == 'current source'
-        captured.body.version == 7
+        def sent = new groovy.json.JsonSlurper().parseText(captured.body)
+        sent.source == 'current source'
+        sent.version == 7
         result.success == true
         result.sourceMode == 'resave'
         result.note.contains('no cloud round-trip')
@@ -2070,17 +2097,18 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true, id: 70]
         }
 
         when:
         def response = mcpDriver.callTool('hub_update_app', [appId: '70', resave: true, confirm: true])
 
         then:
-        captured.body.source == 'current source'
-        captured.body.version == 7
+        def sent = new groovy.json.JsonSlurper().parseText(captured.body)
+        sent.source == 'current source'
+        sent.version == 7
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
@@ -2092,15 +2120,15 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_update_app reports failure when the hub response parses to status=error"() {
+    def "hub_update_app reports failure when the hub response carries success=false"() {
         given:
         enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 1, "source": "old"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: '{"status": "error", "errorMessage": "Compilation failed"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, message: 'Compilation failed']
         }
 
         when:
@@ -2113,7 +2141,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_update_app via dispatch reports failure envelope when hub response status=error (useGateways=#useGateways)"() {
+    def "hub_update_app via dispatch reports failure envelope when hub response carries success=false (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -2121,8 +2149,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "old"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: '{"status": "error", "errorMessage": "Compilation failed"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, message: 'Compilation failed']
         }
 
         when:
@@ -2138,6 +2166,64 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "hub_update_app failure surfaces the hub's verbatim compile error from the '#errKey' field"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 1, "source": "old"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, (errKey): 'unable to resolve class Foo']
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '80', source: 'broken', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('unable to resolve class Foo')
+
+        where:
+        errKey << ['message', 'errorMessage']
+    }
+
+    def "hub_update_app fails closed on an empty/unparseable hub response (non-self update)"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 1, "source": "old"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '80', source: 'new', confirm: true])
+
+        then: 'a dropped response on a foreign app is NOT assumed to have landed'
+        result.success == false
+        result.error.contains('Empty or unparseable response')
+        result.error.contains('verify')
+    }
+
+    def "hub_update_app reports failure on an unexpected response shape (hub returned a list)"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 1, "source": "old"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> [[odd: 'list']] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '80', source: 'new', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('Unexpected response shape')
     }
 
     def "hub_update_app rejects bulk-mode args (updates[] not supported on apps)"() {
@@ -2185,16 +2271,16 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true, id: 55]
         }
 
         when:
         def result = script.toolUpdateDriverCode([driverId: '55', source: 'metadata { v2 }', confirm: true])
 
         then:
-        captured.path == '/driver/ajax/update'
+        captured.path == '/driver/saveOrUpdateJson'
         result.success == true
         result.driverId == '55'
         result.sourceMode == 'source'
@@ -2210,16 +2296,16 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true, id: 55]
         }
 
         when:
         def response = mcpDriver.callTool('hub_update_driver', [driverId: '55', source: 'metadata { v2 }', confirm: true])
 
         then:
-        captured.path == '/driver/ajax/update'
+        captured.path == '/driver/saveOrUpdateJson'
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
@@ -2332,10 +2418,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName -> 'metadata { }'.getBytes('UTF-8') }
         def updatePaths = []
         def updateIds = []
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             updatePaths << path
-            updateIds << body.id?.toString()
-            [status: 200, location: null, data: '{"status": "success"}']
+            updateIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
+            [success: true]
         }
 
         when:
@@ -2356,7 +2442,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.updates*.driverId == ['101', '102', '103']
 
         and: 'each driver was independently posted to the update path'
-        updatePaths.every { it == '/driver/ajax/update' }
+        updatePaths.every { it == '/driver/saveOrUpdateJson' }
         updateIds as Set == ['101', '102', '103'] as Set
     }
 
@@ -2372,10 +2458,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName -> 'metadata { }'.getBytes('UTF-8') }
         def updatePaths = []
         def updateIds = []
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             updatePaths << path
-            updateIds << body.id?.toString()
-            [status: 200, location: null, data: '{"status": "success"}']
+            updateIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
+            [success: true]
         }
 
         when:
@@ -2397,7 +2483,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.updates.size() == 3
         inner.updates.every { it.success == true }
         inner.updates*.driverId == ['101', '102', '103']
-        updatePaths.every { it == '/driver/ajax/update' }
+        updatePaths.every { it == '/driver/saveOrUpdateJson' }
         updateIds as Set == ['101', '102', '103'] as Set
 
         where:
@@ -2418,9 +2504,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             fileName == 'driver-202.groovy' ? null : 'metadata { }'.getBytes('UTF-8')
         }
         def postedIds = []
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            postedIds << body.id?.toString()
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            postedIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
+            [success: true]
         }
 
         when:
@@ -2463,9 +2549,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             fileName == 'driver-202.groovy' ? null : 'metadata { }'.getBytes('UTF-8')
         }
         def postedIds = []
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            postedIds << body.id?.toString()
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            postedIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
+            [success: true]
         }
 
         when:
@@ -2508,9 +2594,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "metadata { name \\"existing\\" }"}'
         }
         def postedSources = []
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            postedSources << body.source
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            postedSources << new groovy.json.JsonSlurper().parseText(body).source
+            [success: true]
         }
 
         when:
@@ -2550,9 +2636,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "metadata { name \\"existing\\" }"}'
         }
         def postedSources = []
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            postedSources << body.source
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            postedSources << new groovy.json.JsonSlurper().parseText(body).source
+            [success: true]
         }
 
         when:
@@ -2590,13 +2676,13 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "metadata { }"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        // Middle item's hub POST returns status=failure body — reaches toolUpdateItemCodeInner's
-        // else branch (now carrying note + lastBackup after this PR's symmetry fix).
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            if (body.id == '402') {
-                [status: 200, location: null, data: '{"status": "failure", "errorMessage": "version conflict"}']
+        // Middle item's hub POST returns success:false — reaches toolUpdateItemCodeInner's
+        // failure branch (which carries note + lastBackup).
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            if (new groovy.json.JsonSlurper().parseText(body).id == 402) {
+                [success: false, message: 'version conflict']
             } else {
-                [status: 200, location: null, data: '{"status": "success"}']
+                [success: true]
             }
         }
 
@@ -2634,11 +2720,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "metadata { }"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            if (body.id == '402') {
-                [status: 200, location: null, data: '{"status": "failure", "errorMessage": "version conflict"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            if (new groovy.json.JsonSlurper().parseText(body).id == 402) {
+                [success: false, message: 'version conflict']
             } else {
-                [status: 200, location: null, data: '{"status": "success"}']
+                [success: true]
             }
         }
 
@@ -3142,12 +3228,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             uploads << name
         }
 
-        and: 'hubInternalPostForm captures the update call and returns success'
+        and: 'hubInternalPostJson captures the save call and returns success'
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
             captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true, id: 99]
         }
 
         when:
@@ -3156,11 +3242,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then: 'pre-restore backup file was created with the current-source contents'
         uploads == ['mcp-prerestore-app-99.groovy']
 
-        and: 'update hits /app/ajax/update with the backup source and the fresh version'
-        captured.path == '/app/ajax/update'
-        captured.body.id == '99'
-        captured.body.version == 9
-        captured.body.source == 'old source v4'
+        and: 'restore hits /app/saveOrUpdateJson with the backup source and the fresh version'
+        captured.path == '/app/saveOrUpdateJson'
+        def sent = new groovy.json.JsonSlurper().parseText(captured.body)
+        sent.id == 99
+        sent.version == 9
+        sent.source == 'old source v4'
 
         and: 'result carries undo info and reports success'
         result.success == true
@@ -3193,10 +3280,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
             captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true, id: 99]
         }
 
         when:
@@ -3204,10 +3291,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         uploads == ['mcp-prerestore-app-99.groovy']
-        captured.path == '/app/ajax/update'
-        captured.body.id == '99'
-        captured.body.version == 9
-        captured.body.source == 'old source v4'
+        captured.path == '/app/saveOrUpdateJson'
+        def sent = new groovy.json.JsonSlurper().parseText(captured.body)
+        sent.id == 99
+        sent.version == 9
+        sent.source == 'old source v4'
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
@@ -3236,8 +3324,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 3, "source": "current"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: '{"status": "error", "errorMessage": "bad code"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, message: 'bad code']
         }
 
         when:
@@ -3264,8 +3352,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 3, "source": "current"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: '{"status": "error", "errorMessage": "bad code"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, message: 'bad code']
         }
 
         when:
@@ -3282,6 +3370,30 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
+    }
+
+    def "hub_restore_backup fails closed on an empty/unparseable hub response (restore has no self-update leniency)"() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [
+            'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
+                       version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
+        ]
+        script.metaClass.downloadHubFile = { String fileName -> 'old source v4'.getBytes('UTF-8') }
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 9, "source": "current source on hub"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'app_99', confirm: true])
+
+        then: 'failure is reported and the backup entry is preserved for retry'
+        result.success == false
+        result.error.contains('Empty or unparseable response')
+        result.message.contains('preserved')
+        atomicStateMap.itemBackupManifest.containsKey('app_99')
     }
 
     def "hub_restore_backup returns clear error for library type and directs user to hub_update_library"() {
@@ -3304,7 +3416,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
     // -------- hub_update_app: expectedVersion optimistic-lock --------
 
-    def "hub_update_app with matching expectedVersion proceeds and POSTs to /app/ajax/update"() {
+    def "hub_update_app with matching expectedVersion proceeds and POSTs to /app/saveOrUpdateJson"() {
         given:
         enableWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -3312,18 +3424,18 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
             captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true, id: 50]
         }
 
         when:
         def result = script.toolUpdateAppCode([appId: '50', source: 'new source', expectedVersion: 42, confirm: true])
 
         then:
-        captured.path == '/app/ajax/update'
-        captured.body.version == 42
+        captured.path == '/app/saveOrUpdateJson'
+        new groovy.json.JsonSlurper().parseText(captured.body).version == 42
         result.success == true
         result.previousVersion == 42
     }
@@ -3337,9 +3449,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         def postCount = 0
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             postCount++
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true]
         }
 
         when:
@@ -3370,9 +3482,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def postCount = 0
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             postCount++
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true]
         }
 
         when:
@@ -3402,9 +3514,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def postCount = 0
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             postCount++
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true]
         }
 
         when: 'caller sends "8" (string) and hub is at 7'
@@ -3457,9 +3569,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            captured.body = new groovy.json.JsonSlurper().parseText(body)
+            [success: true]
         }
 
         when:
@@ -3478,9 +3590,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def postCount = 0
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             postCount++
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true]
         }
 
         when:
@@ -3503,9 +3615,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            captured.body = new groovy.json.JsonSlurper().parseText(body)
+            [success: true]
         }
 
         when:
@@ -3536,9 +3648,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def postCount = 0
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             postCount++
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true]
         }
 
         when:
@@ -3557,8 +3669,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "old"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: '{"status": "error", "errorMessage": "compile failed"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, message: 'compile failed']
         }
 
         when:
@@ -3582,9 +3694,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def postCount = 0
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
+        script.metaClass.hubInternalPostJson = { String path, String body ->
             postCount++
-            [status: 200, location: null, data: '{"status": "success"}']
+            [success: true]
         }
 
         when:
@@ -3613,9 +3725,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         and: 'every update POST that does happen returns success'
         def postedIds = []
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            postedIds << body.id
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            postedIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
+            [success: true]
         }
 
         when: 'caller asserts wrong version on the middle entry only'
@@ -3669,9 +3781,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             null
         }
         def postedIds = []
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            postedIds << body.id
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            postedIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
+            [success: true]
         }
 
         when:
@@ -3701,8 +3813,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             if (id == '203') return '{"status": "ok", "version": 8, "source": "c"}'   // success
             null
         }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true]
         }
 
         when: 'item 0 conflicts, item 1 has no driverId (throws), item 2 succeeds'
@@ -3735,9 +3847,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            captured.body = new groovy.json.JsonSlurper().parseText(body)
+            [success: true]
         }
 
         when: 'caller passes a Long (e.g. parser produced Long for an integer JSON literal)'
@@ -3817,9 +3929,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            captured.body = new groovy.json.JsonSlurper().parseText(body)
+            [success: true]
         }
         def warnLogs = []
         script.metaClass.mcpLog = { String level, String component, String msg ->
@@ -3835,6 +3947,28 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         and: 'security-relevant ALLOWED audit log fires'
         warnLogs.any { it.contains('ALLOWED') && it.contains('id=1') }
+    }
+
+    def "hub_update_app self-update treats an empty/unparseable response as success and records lastSelfDeploy"() {
+        // A self-update legitimately drops the response -- the recompile kills the in-flight
+        // request -- so a null parse is success here; the outcome is recovered later from
+        // atomicState.lastSelfDeploy via hub_get_info.
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 5, "source": "self source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '1', source: 'self-update v3', confirm: true])
+
+        then:
+        result.success == true
+        atomicStateMap.lastSelfDeploy?.success == true
+        atomicStateMap.lastSelfDeploy.error == null
     }
 
     def "hub_update_app self-update guard blocks resave mode (most-likely real-world brick scenario)"() {
@@ -3885,9 +4019,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            captured.body = body
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            captured.body = new groovy.json.JsonSlurper().parseText(body)
+            [success: true]
         }
 
         when:
@@ -3906,8 +4040,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "other app"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true]
         }
 
         when:
@@ -3925,8 +4059,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "driver src"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true]
         }
 
         when:
@@ -3968,9 +4102,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "drv"}'
         }
         def postedIds = []
-        script.metaClass.hubInternalPostForm = { String path, Map body ->
-            postedIds << body.id
-            [status: 200, location: null, data: '{"status": "success"}']
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            postedIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
+            [success: true]
         }
 
         when: 'bulk update of two drivers, one of which has id==app.id'
