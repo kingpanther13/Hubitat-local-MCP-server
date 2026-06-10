@@ -1958,9 +1958,10 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 f"mutual-exclusivity refusal does not name the conflicting params: {exc}"
 
     # -----------------------------------------------------------------------
-    # GROUP 4g: device_swap (1 test) -- hub_call_device_swap full round-trip:
-    # a rule referencing switch A must reference switch B after the swap,
-    # verified through hub_list_device_dependents on both sides.
+    # GROUP 4g: device_swap (1 test) -- hub_call_device_swap child-device
+    # ineligibility: an MCP-created virtual switch must be refused by the
+    # hub's Swap Device tool with the structured eligibility error, and the
+    # transient Swap Device instance must not leak.
     # -----------------------------------------------------------------------
 
     def _create_swap_switch(self, label: str) -> tuple[str, str]:
@@ -1988,67 +1989,63 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         self.created_device_dnis.append(dni)
         return dev_id, dni
 
-    def _dependent_app_ids(self, device_id: str) -> set[str]:
-        """App ids referencing a device, per hub_list_device_dependents."""
-        deps = self.client.call_tool("hub_read_apps_code", {
-            "tool": "hub_list_device_dependents", "args": {"deviceId": str(device_id)},
+    def _swap_device_instance_ids(self) -> set[str]:
+        """Ids of installed 'Swap Device' app instances (the transient instances the
+        direct/swapDevice alias creates on every resolve). A single un-cursored
+        hub_list_apps call returns the FULL flattened instance list (pagination only
+        kicks in once a cursor is passed); includeHidden covers a pending
+        (installed:false) transient instance, should the hub list it as hidden."""
+        listing = self.client.call_tool("hub_read_apps_code", {
+            "tool": "hub_list_apps", "args": {"filter": "builtin", "includeHidden": True},
         })
-        return {str(a.get("id")) for a in (deps.get("appsUsing") or []) if isinstance(a, dict)}
+        return {
+            str(a.get("id"))
+            for a in (listing.get("apps") or [])
+            if isinstance(a, dict)
+            and "swap device" in f"{a.get('type') or ''} {a.get('name') or ''}".lower()
+        }
 
     @test("device_swap")
-    def test_call_device_swap_round_trip(self) -> None:
-        # Teardown order matters: the rule is deleted BEFORE the devices (inline, not
-        # via the deferral helper) -- deleting a referenced device first can be refused
-        # by the hub, and deferring the rule delete would strand a rule pointing at
-        # deleted devices until the disarm sweep.
+    def test_call_device_swap_child_device_ineligibility(self) -> None:
+        # WHY there is no happy-path swap scenario here: the hub's built-in Swap
+        # Device app offers only FREE-STANDING devices in its pickers (and oldDev
+        # additionally lists only devices referenced by at least one app) -- devices
+        # owned as another app's child/component device appear in NEITHER list
+        # (verified live on fw 2.5.0.143). Every device this suite can create goes
+        # through hub_manage_virtual_device -> addChildDevice, i.e. is an MCP child
+        # device and therefore permanently ineligible; free-standing fixtures cannot
+        # be created through the MCP tool surface, and the suite must not touch
+        # non-BAT devices. The full swap round-trip is therefore BAT/manual-only
+        # (tests/BAT-v2.md T642, with hub-UI-created free-standing switches). This
+        # scenario still exercises the whole chain end-to-end: the direct-alias
+        # resolver (transient Swap Device instance creation), the wizard
+        # configure/json fetch, the oldDev eligibility pre-check, the structured
+        # error envelope, and the transient-instance cleanup.
         id_a, dni_a = self._create_swap_switch(f"{PREFIX}Swap_A")
         id_b, dni_b = self._create_swap_switch(f"{PREFIX}Swap_B")
-        rule_id = None
         try:
-            rule_id = self._create_native_rule("Swap_Rule")
-            self._set_rule(rule_id, {"addTrigger": {"capability": "Switch", "deviceIds": [int(id_a)], "state": "on"}})
-
-            # The dependents view derives from the rule's committed settings, which can
-            # land a beat after the wizard returns -- poll briefly before asserting.
-            before: set[str] = set()
-            for _ in range(3):
-                before = self._dependent_app_ids(id_a)
-                if str(rule_id) in before:
-                    break
-                time.sleep(1.0)
-            assert str(rule_id) in before, \
-                f"precondition failed: rule {rule_id} not listed as a dependent of switch A ({sorted(before)})"
+            swap_instances_before = self._swap_device_instance_ids()
 
             result = self.client.call_tool("hub_manage_devices", {
                 "tool": "hub_call_device_swap",
                 "args": {"from_device_id": id_a, "to_device_id": id_b, "confirm": True},
             })
-            assert result.get("success") is True, f"hub_call_device_swap failed: {result}"
+            assert result.get("success") is False, \
+                f"swap of an MCP child device unexpectedly succeeded -- hub eligibility rules changed? {result}"
+            blob = f"{result.get('error') or ''} {result.get('note') or ''}".lower()
+            assert "does not offer" in blob or "child" in blob, \
+                f"ineligibility failure does not name the eligibility rule: {result}"
 
-            # The swap rewrites every referencing app's settings; allow a short commit
-            # window before declaring the reference unmoved.
-            moved: set[str] = set()
-            for _ in range(3):
-                moved = self._dependent_app_ids(id_b)
-                if str(rule_id) in moved:
-                    break
-                time.sleep(1.0)
-            assert str(rule_id) in moved, \
-                f"rule {rule_id} did not move to switch B's dependents after the swap ({sorted(moved)})"
-            assert str(rule_id) not in self._dependent_app_ids(id_a), \
-                f"rule {rule_id} is still listed as a dependent of switch A after the swap"
+            # Cleanup contract: the failed call must not leak its transient Swap
+            # Device instance into the hub's Apps list. Compared as a before/after
+            # id-set delta so pre-existing leaked instances (prior runs, manual UI
+            # visits) cannot false-fail the run.
+            leaked = self._swap_device_instance_ids() - swap_instances_before
+            assert not leaked, \
+                f"hub_call_device_swap leaked transient Swap Device instance(s): {sorted(leaked)}"
 
-            print(f"    DEVICE_SWAP ok -- rule {rule_id} moved {id_a} -> {id_b}")
+            print(f"    DEVICE_SWAP ok -- child-device fixture {id_a} refused as ineligible, no instance leak")
         finally:
-            if rule_id is not None:
-                try:
-                    self.client.call_tool("hub_manage_rule_machine", {
-                        "tool": "hub_delete_native_app",
-                        "args": {"appId": rule_id, "force": True, "confirm": True},
-                    })
-                    self._untrack_native_app(rule_id)
-                except Exception as exc:
-                    print(f"  [WARN] device-swap cleanup: delete rule {rule_id} failed: {exc}")
             for dni in (dni_a, dni_b):
                 try:
                     self.client.call_tool("hub_manage_virtual_device", {

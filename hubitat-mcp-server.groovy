@@ -15833,8 +15833,8 @@ def toolGetDeviceInUseBy(args) {
 /**
  * Replace one device with another across every app/rule that references it,
  * by driving the hub's built-in Swap Device tool through the classic-wizard
- * machinery (write oldDev -> compatibility check -> write newDev -> click the
- * revealed swap-action button).
+ * machinery (oldDev eligibility pre-check -> write oldDev -> compatibility
+ * check -> write newDev -> click the revealed swap-action button).
  *
  * The direct/swapDevice alias creates a FRESH TRANSIENT app instance on every
  * resolve, so every exit path after the resolve must close that instance
@@ -15866,6 +15866,20 @@ def toolCallDeviceSwap(args) {
     mcpLog("info", "device-swap", "Swap Device transient instance ${appId} opened")
 
     try {
+        // Eligibility pre-check: the Swap Device page only offers oldDev candidates
+        // that are referenced by at least one app AND not owned as another app's
+        // child/component device (verified live on fw 2.5.0.143). Every MCP-created
+        // virtual device is a child device of this app, so it never appears.
+        def oldDevOptions = _deviceSwapEnumOptions(_deviceSwapFindInput(_rmFetchConfigJson(appId, "mainPage"), "oldDev"))
+        if (!oldDevOptions.any { it.id == fromId }) {
+            mcpLog("warn", "device-swap", "from_device_id ${fromId} not among ${oldDevOptions.size()} swappable oldDev option(s) -- closing instance ${appId}")
+            _deviceSwapCleanup(appId)
+            return [success: false,
+                    error: "The hub's Swap Device tool does not offer device ${fromId} as swappable.",
+                    oldDevOptionCount: oldDevOptions.size(),
+                    note: "Swap Device only offers devices that are referenced by at least one app AND not owned as another app's child/component device. MCP-created virtual devices (hub_manage_virtual_device) are child devices and are always ineligible. Pick a free-standing from_device_id, or use hub_list_device_dependents(deviceId=${fromId}) to confirm it is referenced by an app. Nothing was swapped; the transient instance was closed."]
+        }
+
         def applied = []
         def skipped = []
         _rmWriteSettingOnPage(appId, "mainPage", "oldDev", fromId, applied, null, skipped)
@@ -15891,7 +15905,7 @@ def toolCallDeviceSwap(args) {
                         : "Device ${toId} is not a compatible replacement for ${fromId} -- the hub did not offer it.",
                     compatibleOptions: options.take(30),
                     compatibleOptionCount: options.size(),
-                    note: "The Swap Device tool only offers devices with compatible capabilities. Pick a to_device_id from compatibleOptions${options.size() > 30 ? " (showing first 30 of ${options.size()})" : ""}, or choose replacement hardware of the same device class. Nothing was swapped."]
+                    note: "The Swap Device tool only offers devices with compatible capabilities, and excludes devices owned as another app's child/component device -- to_device_id may be an app child device (every MCP-created virtual device is one). Pick a to_device_id from compatibleOptions${options.size() > 30 ? " (showing first 30 of ${options.size()})" : ""}, or choose free-standing replacement hardware of the same device class. Nothing was swapped."]
         }
 
         _rmWriteSettingOnPage(appId, "mainPage", "newDev", toId, applied, null, skipped)

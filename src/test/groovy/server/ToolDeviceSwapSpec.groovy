@@ -38,15 +38,19 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
     }
 
     /**
-     * configure/json body for the Swap Device mainPage. newDev options are
-     * the hub's compatible-replacement list ([{id: label}, ...] shape);
-     * `buttons` adds the firmware-named swap-action button(s). closeApp
-     * (Cancel) is always present, mirroring the live page.
+     * configure/json body for the Swap Device mainPage. oldDev options are
+     * the hub's swappable-device list — only free-standing devices referenced
+     * by at least one app appear there (app-owned child/component devices are
+     * excluded); the default seeds BOTH fixture devices so every flow passes
+     * the eligibility pre-check unless a test overrides `oldDevOptions`.
+     * newDev options are the hub's compatible-replacement list ([{id: label},
+     * ...] shape); `buttons` adds the firmware-named swap-action button(s).
+     * closeApp (Cancel) is always present, mirroring the live page.
      */
     private static String pageJson(Map opts = [:]) {
         def inputs = [
             [name: 'oldDev', type: 'enum', multiple: false, submitOnChange: true,
-             options: [['101': 'BAT Swap Source'], ['202': 'BAT Swap Target']]],
+             options: opts.oldDevOptions ?: [['101': 'BAT Swap Source'], ['202': 'BAT Swap Target']]],
             [name: 'newDev', type: 'enum', multiple: false, submitOnChange: true,
              options: opts.newDevOptions ?: []]
         ]
@@ -60,11 +64,14 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     /**
      * Wires the wizard stubs and the two hub endpoints the tool reads.
-     * fixture.fetches: configure/json bodies returned in call order (the
-     * last entry repeats; '' makes _rmFetchConfigJson throw = instance gone).
-     * fixture.beforeCount / afterCount: /device/fullJson/101 appsUsingCount
-     * on the 1st / subsequent reads. Returns the recorded call sequence
-     * (resolve / write / fetch / click / count / delete steps, in order).
+     * fixture.fetches: configure/json bodies returned in call order — fetch 1
+     * is the oldDev eligibility pre-check (before any setting write), fetch 2
+     * the newDev compatibility check, fetch 3 the button discovery, fetch 4
+     * the post-click gone-check (the last entry repeats; '' makes
+     * _rmFetchConfigJson throw = instance gone). fixture.beforeCount /
+     * afterCount: /device/fullJson/101 appsUsingCount on the 1st / subsequent
+     * reads. Returns the recorded call sequence (resolve / write / fetch /
+     * click / count / delete steps, in order).
      */
     private List wireSwapStubs(Map fixture) {
         def calls = []
@@ -114,7 +121,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
     // -------- happy paths --------
 
-    def "happy path: count, resolve, write oldDev, options check, write newDev, button discovery, swap click, gone-check — instance self-removes"() {
+    def "happy path: count, resolve, eligibility check, write oldDev, options check, write newDev, button discovery, swap click, gone-check — instance self-removes"() {
         given:
         enableWriteWithBackup()
         registerDevices()
@@ -123,6 +130,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
             beforeCount: 3,
             afterCount: 0,
             fetches: [
+                pageJson(),                                               // before any write: oldDev eligibility check
                 pageJson(newDevOptions: compat),                          // after oldDev: compatibility check
                 pageJson(newDevOptions: compat, buttons: ['swapDev']),    // after newDev: button discovery
                 ''                                                        // after click: instance gone
@@ -139,16 +147,16 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         result.remainingDependents == 0
         result.note.contains('hub_list_device_dependents')
 
-        and: 'the wizard ran in exactly the contract order'
-        calls.collect { it.step } == ['count', 'resolve', 'write', 'fetch', 'write', 'fetch', 'click', 'fetch', 'count']
+        and: 'the wizard ran in exactly the contract order — eligibility fetch BEFORE the first write'
+        calls.collect { it.step } == ['count', 'resolve', 'fetch', 'write', 'fetch', 'write', 'fetch', 'click', 'fetch', 'count']
         calls[1].path == '/installedapp/direct/swapDevice'
-        calls[2].key == 'oldDev'
-        calls[2].value == '101'
-        calls[2].page == 'mainPage'
-        calls[4].key == 'newDev'
-        calls[4].value == '202'
-        calls[6].btn == 'swapDev'
-        calls[6].appId == SWAP_APP_ID
+        calls[3].key == 'oldDev'
+        calls[3].value == '101'
+        calls[3].page == 'mainPage'
+        calls[5].key == 'newDev'
+        calls[5].value == '202'
+        calls[7].btn == 'swapDev'
+        calls[7].appId == SWAP_APP_ID
 
         and: 'no delete call — the swap action removed the transient instance itself'
         !calls.any { it.step == 'delete' }
@@ -164,6 +172,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
             beforeCount: 2,
             afterCount: 0,
             fetches: [
+                pageJson(),                                               // eligibility check
                 pageJson(newDevOptions: compat),
                 withButton,
                 withButton                                                // after click: instance still present
@@ -194,7 +203,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         wireSwapStubs(
             beforeCount: 1,
             afterCount: 0,
-            fetches: [pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), '']
+            fetches: [pageJson(), pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), '']
         )
 
         when:
@@ -210,6 +219,38 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         inner.appsRewired == 1
     }
 
+    // -------- ineligible source (oldDev eligibility pre-check) --------
+
+    def "from_device_id not offered as swappable: eligibility error before any setting write, instance closed"() {
+        given: 'the hub offers other devices as oldDev candidates but NOT 101 (e.g. 101 is an app child device)'
+        enableWriteWithBackup()
+        registerDevices()
+        def calls = wireSwapStubs(
+            beforeCount: 0,
+            afterCount: 0,
+            fetches: [pageJson(oldDevOptions: [['202': 'BAT Swap Target'], ['303': 'Other Referenced']])]
+        )
+
+        when:
+        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+
+        then: 'structured failure naming the device and the eligibility rule'
+        result.success == false
+        result.error == "The hub's Swap Device tool does not offer device 101 as swappable."
+        result.oldDevOptionCount == 2
+        result.note.contains('referenced by at least one app')
+        result.note.contains('child')
+        result.note.contains('hub_manage_virtual_device')
+        result.note.contains('free-standing')
+        result.note.contains('hub_list_device_dependents')
+
+        and: 'cleanup deleted the transient instance and NO oldDev write (or any wizard step) was attempted'
+        calls.findAll { it.step == 'delete' }*.path == ["/installedapp/delete/${SWAP_APP_ID}".toString()]
+        !calls.any { it.step == 'write' }
+        !calls.any { it.step == 'click' }
+        calls.count { it.step == 'fetch' } == 1
+    }
+
     // -------- incompatible target --------
 
     def "incompatible to_device_id: structured error lists the offered options and the transient instance is closed"() {
@@ -219,7 +260,10 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def calls = wireSwapStubs(
             beforeCount: 3,
             afterCount: 3,
-            fetches: [pageJson(newDevOptions: [['303': 'Other Compatible'], ['404': 'Another Option']])]
+            fetches: [
+                pageJson(),                                               // eligibility check passes (101 offered)
+                pageJson(newDevOptions: [['303': 'Other Compatible'], ['404': 'Another Option']])
+            ]
         )
 
         when:
@@ -250,6 +294,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
             beforeCount: 3,
             afterCount: 3,
             fetches: [
+                pageJson(),                                               // eligibility check
                 pageJson(newDevOptions: compat),
                 pageJson(newDevOptions: compat, buttons: ['swapDev', 'swapAll'])
             ]
@@ -278,6 +323,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
             beforeCount: 3,
             afterCount: 3,
             fetches: [
+                pageJson(),                                               // eligibility check
                 pageJson(newDevOptions: compat),
                 pageJson(newDevOptions: compat)                           // both pickers set, no button revealed
             ]
@@ -404,6 +450,8 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
             [status: 200]
         }
         hubGet.register('/device/fullJson/101') { params -> JsonOutput.toJson([appsUsing: [], appsUsingCount: 1]) }
+        // Eligibility pre-check passes (101 offered); the oldDev write then throws.
+        hubGet.register(CONFIGURE_PATH) { params -> pageJson() }
 
         when:
         def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
