@@ -158,7 +158,10 @@ private Map _vrbSetPaused(Integer appId, boolean paused) {
     def text = hubInternalGet("/app/ruleBuilderPause/${appId}/${paused}")
     try {
         def parsed = text ? new groovy.json.JsonSlurper().parseText(text) : null
-        return [success: !(parsed instanceof Map) || parsed.success != false]
+        if (parsed instanceof Map && parsed.success == false) {
+            return [success: false, error: parsed.message ? "pause endpoint reported: ${parsed.message}" : "pause endpoint returned success=false"]
+        }
+        return [success: true]
     } catch (Exception e) {
         return [success: false, error: "pause endpoint returned a non-JSON response: ${text?.take(200)}"]
     }
@@ -498,6 +501,94 @@ def toolDeleteVisualRule(args) {
     mcpLog("info", "vrb", "Deleted Visual Rule ${appId} ('${detected.data.name}') verified=${verified}")
     return [success: verified, appId: appId, name: detected.data.name, format: detected.format,
             verified: verified, predeleteDefinition: predelete, note: note]
+}
+
+private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
+    // Restore arm for visual_rule-type backup snapshots (routed here by
+    // _rmRestoreFromBackup). VRB rules don't speak the classic settings-replay protocol --
+    // their definition lives in app state behind the ruleBuilder endpoints -- so the restore
+    // re-saves the snapshot's captured definition (vrbFormat + vrbDefinition/vrbRuleJson,
+    // written by _rmBackupRuleSnapshot) through the same save+verify tail the set tool uses.
+    def savedId = (snapshot.appId ?: snapshot.ruleId) as Integer
+    def vrbFormat = snapshot.vrbFormat?.toString()
+    def definition
+    if (vrbFormat == "classic" && snapshot.vrbDefinition instanceof Map) {
+        definition = [whenNodes: snapshot.vrbDefinition.whenNodes ?: [],
+                      thenNodes: snapshot.vrbDefinition.thenNodes ?: [],
+                      elseNodes: snapshot.vrbDefinition.elseNodes ?: []]
+    } else if (vrbFormat == "graph" && snapshot.vrbRuleJson) {
+        try {
+            def parsed = new groovy.json.JsonSlurper().parseText(snapshot.vrbRuleJson.toString())
+            if (parsed instanceof Map) {
+                definition = parsed
+            } else {
+                return [success: false, type: "visual-rule", originalRuleId: savedId, backupFile: fileName,
+                        error: "This Visual Rule snapshot's captured graph definition is not a JSON object (got ${parsed instanceof List ? 'an array' : 'a scalar'}).",
+                        note: "Recreate the rule manually with hub_set_visual_rule."]
+            }
+        } catch (Exception e) {
+            return [success: false, type: "visual-rule", originalRuleId: savedId, backupFile: fileName,
+                    error: "This Visual Rule snapshot's captured graph definition is not parseable JSON: ${e.message}",
+                    note: "Recreate the rule manually with hub_set_visual_rule."]
+        }
+    }
+    if (definition == null) {
+        return [success: false, type: "visual-rule", originalRuleId: savedId, backupFile: fileName,
+                error: "This Visual Rule snapshot carries no captured rule definition (the rule was unreadable when the backup was taken, or the backup predates VRB-aware snapshots).",
+                note: "Recreate the rule manually with hub_set_visual_rule -- see hub_get_tool_guide(section='visual_rule_reference')."]
+    }
+    def name = snapshot.appLabel?.toString()?.trim() ?: "restored-visual-rule-${savedId}"
+    // Always restore the SNAPSHOT's pause state (a Boolean, never null) -- an in-place
+    // restore must not inherit whatever pause state the live rule drifted to.
+    Boolean pausedRequested = snapshot.vrbRulePaused == true
+
+    // Escaped exceptions from here on (create route failure, save network error) must come
+    // back as a visual-rule envelope -- the caller's generic catch is rm-rule-flavored.
+    try {
+        // In-place when the original app still exists and speaks VRB; otherwise recreate.
+        def existing = null
+        try { existing = _vrbDetect(savedId) } catch (Exception ignored) { }
+        Integer targetId
+        boolean recreated
+        if (existing != null) {
+            if (existing.format != vrbFormat) {
+                return [success: false, type: "visual-rule", originalRuleId: savedId, backupFile: fileName,
+                        error: "App ${savedId} still exists but is ${existing.format}-format; the snapshot is ${vrbFormat}-format.",
+                        note: "Delete the rule first (hub_delete_visual_rule) and re-run the restore, or recreate manually with hub_set_visual_rule."]
+            }
+            targetId = savedId
+            recreated = false
+        } else {
+            def created = _vrbCreateChild()
+            if (created.format != vrbFormat) {
+                def cleanupNote = _vrbTryCleanupShell(created.appId)
+                return [success: false, type: "visual-rule", originalRuleId: savedId, backupFile: fileName, hubNativeFormat: created.format,
+                        error: "This hub's Visual Rules Builder now creates ${created.format}-format rules; the snapshot is ${vrbFormat}-format and cannot be replayed.",
+                        note: "Recreate the rule manually with hub_set_visual_rule using a ${created.format} definition. ${cleanupNote}"]
+            }
+            targetId = created.appId
+            recreated = true
+        }
+
+        def saved = _vrbApplySave(targetId, vrbFormat, name, definition,
+                pausedRequested, existing?.data?.rulePaused == true, recreated)
+        def out = [success: saved.success, type: "visual-rule", ruleId: targetId, originalRuleId: savedId,
+                   recreated: recreated, backupFile: fileName, format: vrbFormat,
+                   name: saved.name, rulePaused: saved.rulePaused, verified: saved.verified]
+        if (saved.error) out.error = saved.error
+        if (saved.validationErrors) out.validationErrors = saved.validationErrors
+        out.note = saved.success ?
+                (recreated ? "Visual Rule was deleted; recreated with new id ${targetId} and its definition replayed." :
+                             "Visual Rule definition restored in place.") :
+                (saved.note ?: "Restore did not verify -- inspect with hub_get_visual_rule(appId=${targetId}).")
+        mcpLog("info", "vrb", "Restored Visual Rule snapshot for ${savedId} -> ${targetId} (recreated=${recreated}, verified=${saved.verified})")
+        return out
+    } catch (Exception e) {
+        mcpLog("error", "vrb", "Visual Rule restore failed for snapshot of ${savedId}: ${e.message}")
+        return [success: false, type: "visual-rule", originalRuleId: savedId, backupFile: fileName,
+                error: "Visual Rule restore failed: ${e.message}",
+                note: "Likely a transient hub error -- retry, or recreate manually with hub_set_visual_rule."]
+    }
 }
 
 // Tool DEFINITIONS for the Visual Rules Builder tools (issue #209 pattern: schema lives with

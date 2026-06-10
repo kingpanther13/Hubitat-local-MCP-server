@@ -4154,7 +4154,7 @@ def _getAllToolDefinitions_part7() {
     return [
         [
             name: "hub_restore_backup",
-            description: "⚠️ Restore app/driver to backed-up version. Tell user first. If item was DELETED, use hub_create_app/hub_create_driver/hub_create_library instead. Library backups return a clear error directing you to hub_update_library. Requires Write master + confirm.",
+            description: "⚠️ Restore app/driver to backed-up version. Tell user first. If a CODE item was DELETED, use hub_create_app/hub_create_driver/hub_create_library instead; rule snapshots (rm-rule backups, incl. Visual Rules) DO recreate a deleted rule. Library backups return a clear error directing you to hub_update_library. Requires Write master + confirm.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4168,14 +4168,22 @@ def _getAllToolDefinitions_part7() {
                 properties: [
                     success: [type: "boolean", description: "Whether the restore succeeded"],
                     message: [type: "string", description: "Human-readable result"],
-                    type: [type: "string", description: "Item type restored"],
-                    id: [description: "Item ID restored"],
-                    restoredVersion: [description: "Version restored to"],
+                    type: [type: "string", description: "Item type restored (app/driver/rm-rule/visual-rule)"],
+                    id: [description: "Item ID restored (code items)"],
+                    restoredVersion: [description: "Version restored to (code items)"],
                     preRestoreBackup: [type: "string", description: "Backup key of the pre-restore snapshot (undo path)"],
                     preRestoreFile: [type: "string", description: "Pre-restore snapshot filename"],
                     undoHint: [type: "string", description: "How to undo this restore"],
                     backupKey: [type: "string", description: "Backup key (echoed on failure)"],
-                    directDownload: [type: "string", description: "Local download URL (present on failure paths)"]
+                    directDownload: [type: "string", description: "Local download URL (present on failure paths)"],
+                    ruleId: [description: "Rule restores: the restored rule's app id (differs from the original when recreated)"],
+                    originalRuleId: [description: "Rule restores: the rule id the snapshot was taken from"],
+                    recreated: [type: "boolean", description: "Rule restores: true when the rule no longer existed and was recreated"],
+                    verified: [type: "boolean", description: "visual-rule restores: whether a read-back confirmed the replayed definition"],
+                    format: [type: "string", description: "visual-rule restores: 'classic' or 'graph'"],
+                    settingsApplied: [type: "array", description: "rm-rule restores: settings replayed"],
+                    error: [type: "string", description: "Failure detail"],
+                    note: [type: "string", description: "Actionable guidance"]
                 ],
                 required: ["success"]
             ]
@@ -16382,11 +16390,12 @@ private Map _appTypeRegistry() {
         button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers", commitButton: null],
         groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes"],
         notifier: [namespace: "hubitat", appName: "Notifier", parentTypeName: "Notifications"],
-        // visual_rule stays registered so parentTypeName lookups (_discoverParentAppId, the
-        // backup-restore recreate path) keep working, but the WIZARD create path rejects it
-        // in _createNativeAppShell: VRB children are Vue-JSON apps (live-probed: /installedapp/
-        // configure renders no classic configPage), served by hub_set_visual_rule instead.
-        // The restore path can still attempt a registry recreate from an old snapshot.
+        // visual_rule stays registered so appType detection (_rmBackupRuleSnapshot's
+        // reverse-map) and parentTypeName lookups keep working, but neither classic creation
+        // path uses it: the wizard create rejects it in _createNativeAppShell, and
+        // _rmRestoreFromBackup routes visual_rule snapshots to _vrbRestoreFromSnapshot --
+        // VRB children are Vue-JSON apps (live-probed: /installedapp/configure renders no
+        // classic configPage), served by the hub_*_visual_rule tools instead.
         visual_rule: [namespace: "hubitat", appName: "Visual Rule Builder", parentTypeName: "Visual Rules Builder"],
         // Basic Rule is a classic dynamicPage app (configure/json renders a real
         // configPage and generic createchild works), NOT a Vue SPA like Visual
@@ -23064,7 +23073,15 @@ private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     try {
         config = _rmFetchConfigJson(ruleId)
     } catch (Exception e) {
-        throw new IllegalArgumentException("Cannot back up rule ${ruleId}: configure/json failed -- ${e.message}")
+        // Vue-JSON children (Visual Rules) may not serve configure/json. If the id speaks a
+        // VRB serialization, the VRB-flavored snapshot below is still a full backup --
+        // restore replays the captured definition, not classic settings.
+        def vrbFallback = null
+        try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
+        if (vrbFallback == null) {
+            throw new IllegalArgumentException("Cannot back up rule ${ruleId}: configure/json failed -- ${e.message}")
+        }
+        config = null
     }
     try {
         status = _rmFetchStatusJson(ruleId)
@@ -23079,7 +23096,7 @@ private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     // Detect appType from the config's appType.name so the restore path
     // can route to the right registry entry. RM 5.1 = "rule_machine";
     // future appTypes get reverse-mapped from the registry.
-    def detectedAppType = "rule_machine"
+    def detectedAppType = config == null ? "visual_rule" : "rule_machine"
     def configAppName = config?.app?.appType?.name
     if (configAppName) {
         _appTypeRegistry().each { typeKey, reg ->
@@ -23099,6 +23116,34 @@ private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         configJson: config,
         statusJson: status
     ]
+
+    // Visual Rules keep their definition in app state behind the ruleBuilder endpoints, not
+    // in classic settings -- capture it so _vrbRestoreFromSnapshot can replay it. A null
+    // detect (unreadable / never-saved shell) is recorded as a husk; restore then fails
+    // with an actionable error instead of silently recreating an empty rule.
+    if (detectedAppType == "visual_rule") {
+        def vrb = null
+        try {
+            vrb = _vrbDetect(ruleId)
+            if (vrb == null) {
+                mcpLog("warn", "vrb", "Backup for Visual Rule ${ruleId}: no readable definition (never-saved shell?) -- snapshot is a husk; restore will refuse it")
+            }
+        } catch (Exception e) {
+            mcpLog("warn", "vrb", "Backup for Visual Rule ${ruleId}: definition capture failed -- ${e.message}")
+        }
+        if (vrb != null) {
+            snapshot.vrbFormat = vrb.format
+            snapshot.vrbRulePaused = vrb.data.rulePaused == true
+            if (snapshot.appLabel == null) snapshot.appLabel = vrb.data.name
+            if (vrb.format == "classic") {
+                snapshot.vrbDefinition = [whenNodes: vrb.data.whenNodes ?: [],
+                                          thenNodes: vrb.data.thenNodes ?: [],
+                                          elseNodes: vrb.data.elseNodes ?: []]
+            } else {
+                snapshot.vrbRuleJson = vrb.data.ruleJson?.toString()
+            }
+        }
+    }
 
     def ts = new Date(now()).format("yyyyMMdd-HHmmss")
     def fileName = "mcp-rm-backup-${ruleId}-${ts}.json"
@@ -27586,14 +27631,21 @@ private Map _rmRestoreFromBackup(Map entry) {
     def savedSettings = (snapshot?.configJson?.settings ?: [:]) as Map
     def savedLabel = snapshot?.appLabel
 
-    def exists = true
-    try { _rmFetchConfigJson(savedId) } catch (Exception e) { exists = false }
-
     // Backup snapshots from before the appType-aware code path stored
     // type="rm-rule" without an appType field. Treat those as RM (the
     // only app type the original snapshots covered) for the recreate
     // path. Future snapshots can carry an explicit savedAppType field.
     def savedAppType = snapshot?.appType ?: "rule_machine"
+    if (savedAppType == "visual_rule") {
+        // Visual Rules don't speak the classic createchild + settings-replay protocol below
+        // (incl. the configure/json exists-probe, which Vue children may not serve); their
+        // snapshots carry the captured VRB definition and replay through the ruleBuilder
+        // endpoints (impl in McpVisualRulesLib).
+        return _vrbRestoreFromSnapshot(snapshot, fileName?.toString())
+    }
+
+    def exists = true
+    try { _rmFetchConfigJson(savedId) } catch (Exception e) { exists = false }
     def reg = _appTypeRegistry()[savedAppType]
     if (!reg) {
         throw new IllegalArgumentException("Backup references unknown appType '${savedAppType}'. Supported: ${_appTypeRegistry().keySet().join(', ')}")

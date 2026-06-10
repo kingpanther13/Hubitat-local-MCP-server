@@ -685,6 +685,29 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.note.contains('hub_get_visual_rule')
     }
 
+    @Unroll
+    def "pause-only surfaces the pause endpoint's clean-JSON failure detail: #label"() {
+        given: 'the pause endpoint answers a clean JSON failure'
+        enableWrite()
+        def state904 = [name: 'Hall light', rulePaused: false, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/904') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/904') { params -> json(state904) }
+        hubGet.register('/app/ruleBuilderPause/904/true') { params -> pauseResponse }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 904, paused: true, confirm: true])
+
+        then: 'the hub-reported detail rides the note instead of being swallowed'
+        result.success == false
+        result.error.contains('Pause/resume failed')
+        result.note.contains(noteFragment)
+
+        where:
+        label                    | pauseResponse                          | noteFragment
+        'message carried'        | '{"success":false,"message":"nope"}'   | 'pause endpoint reported: nope'
+        'bare success=false'     | '{"success":false}'                    | 'pause endpoint returned success=false'
+    }
+
     def "pause-only surfaces a non-JSON pause-endpoint response as a structured failure"() {
         given: 'hub answers the pause GET with a login page instead of {success}'
         enableWrite()

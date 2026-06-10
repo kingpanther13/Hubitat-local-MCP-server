@@ -1514,6 +1514,109 @@ class TestRunner:
             self._untrack_native_app(app_id)
 
     @test("visual_rules")
+    def test_visual_rule_backup_restore(self) -> None:
+        # VRB-aware backup/restore round-trip: hub_delete_native_app's pre-delete
+        # snapshot must capture the rule's VRB definition (Vue children may not
+        # serve configure/json), and hub_restore_backup must RECREATE the deleted
+        # rule from it under a NEW appId -- proven by reading the recreated rule
+        # back, not by trusting the restore response flags alone.
+        switch_id = int(self.get_test_switch_id())
+        name = f"{PREFIX}VrbRestore"
+        created = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_visual_rule",
+            "args": {"name": name, "confirm": True,
+                     "definition": self._vrb_definition("classic", switch_id, "Turns off")},
+        })
+        if created.get("success") is False and created.get("hubNativeFormat") == "graph":
+            # Same firmware-decides-the-format adaptation as the lifecycle test
+            # (the tool already force-deleted the orphan classic shell).
+            created = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_visual_rule",
+                "args": {"name": name, "confirm": True,
+                         "definition": self._vrb_definition("graph", switch_id, "Turns off")},
+            })
+        app_id = created.get("appId")
+        assert app_id, f"hub_set_visual_rule create did not return an appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+        assert created.get("success") is True, f"hub_set_visual_rule create did not verify: {created}"
+        fmt = created.get("format")
+        assert fmt in ("classic", "graph"), f"create returned an unknown format {fmt!r}: {created}"
+
+        # DELETE through hub_delete_native_app -- THIS path takes the VRB-aware
+        # snapshot (the feature's entry point); hub_delete_visual_rule does not.
+        # If any of its asserts fire, the original id stays tracked for the sweep.
+        deleted = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_delete_native_app",
+            "args": {"appId": app_id, "force": True, "confirm": True},
+        })
+        assert deleted.get("success") is True, f"hub_delete_native_app reported failure: {deleted}"
+        backup_key = (deleted.get("backup") or {}).get("backupKey")
+        assert backup_key, f"delete response carries no backup.backupKey to restore from: {deleted}"
+        gone = self._get_visual_rule(app_id)
+        assert gone.get("success") is False, f"rule {app_id} still readable after delete: {gone}"
+        # Untrack only after the independent gone-read (lifecycle-test discipline).
+        self._untrack_native_app(app_id)
+
+        # RESTORE from the snapshot. Nested try: the finally below also runs when a
+        # restore assert fires mid-flight, reaping a recreated-but-unverified rule
+        # (when the restore failed before minting one, only the original tracked id
+        # mattered -- it is already deleted; the sweep handles strays).
+        new_id = None
+        try:
+            restored = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_restore_backup",
+                "args": {"backupKey": backup_key, "confirm": True},
+            })
+            # Track the recreated id IMMEDIATELY -- even a failed-verification
+            # restore leaves a live recreated app behind to clean up.
+            new_id = restored.get("ruleId")
+            if new_id:
+                self.created_native_app_ids.append(str(new_id))
+            assert restored.get("success") is True, f"hub_restore_backup reported failure: {restored}"
+            assert restored.get("type") == "visual-rule", \
+                f"restore should route through the visual-rule arm: {restored}"
+            assert restored.get("recreated") is True, \
+                f"restoring a DELETED rule must recreate, not patch in place: {restored}"
+            assert restored.get("verified") is True, f"restore read-back did not verify: {restored}"
+            assert restored.get("format") == fmt, \
+                f"restored format {restored.get('format')!r} != created format {fmt!r}: {restored}"
+            assert new_id and str(new_id) != str(app_id), \
+                f"recreate must mint a NEW appId (original {app_id} is gone): {restored}"
+
+            # Round-trip read-back: the restored rule speaks the original name,
+            # format, and trigger device (same node extraction as the lifecycle
+            # test -- a blob substring match would false-pass).
+            got = self._get_visual_rule(new_id)
+            assert got.get("success") is True, f"read-back of restored rule {new_id} failed: {got}"
+            assert got.get("name") == name, \
+                f"restored name mismatch: {got.get('name')!r} != {name!r}"
+            assert got.get("format") == fmt, \
+                f"restored rule format {got.get('format')!r} != {fmt!r}"
+            if fmt == "classic":
+                trigger_node = (got.get("whenNodes") or [None])[0]
+            else:
+                trigger_node = next(
+                    (n for n in (got.get("definition") or {}).get("nodes", [])
+                     if n.get("type") == "trigger"), None)
+            assert isinstance(trigger_node, dict), \
+                f"no trigger node in the restored {fmt} read-back: {got}"
+            assert int(switch_id) in (trigger_node.get("deviceIds") or []), \
+                f"trigger device {switch_id} not in the restored trigger node's deviceIds: {trigger_node}"
+        finally:
+            # Cleanup the RESTORED rule (the original is already gone). Same delete
+            # contract + untrack-after-gone-assert discipline as the lifecycle test.
+            if new_id:
+                deleted = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_delete_visual_rule", "args": {"appId": new_id, "confirm": True},
+                })
+                assert deleted.get("success") is True, \
+                    f"cleanup delete of restored rule {new_id} failed: {deleted}"
+                gone = self._get_visual_rule(new_id)
+                assert gone.get("success") is False, \
+                    f"restored rule {new_id} still readable after cleanup delete: {gone}"
+                self._untrack_native_app(new_id)
+
+    @test("visual_rules")
     def test_visual_rule_error_contracts(self) -> None:
         # (a) Nonexistent appId -> structured runtime error (success:false envelope,
         # NOT a throw), enriched via /installedapp/json so the model can re-route.

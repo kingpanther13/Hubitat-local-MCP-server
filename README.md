@@ -285,13 +285,15 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 ##### Read-only gateways (7)
 
 <details>
-<summary><b>hub_read_apps_code</b> (9) — App/driver/library listing, source, backups, and HPM (read-only)</summary>
+<summary><b>hub_read_apps_code</b> (11) — App/driver/library listing, source, backups, and HPM (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
 | `hub_list_apps` | List apps on the hub. `scope='types'` lists installed app types (code); `scope='instances'` enumerates all app instances (built-in + user) with parent/child tree, filterable by builtin/user/disabled/parents/children. |
 | `hub_list_drivers` | List all installed drivers on the hub |
 | `hub_get_source` | Get Groovy source code for an app, driver, or library (`type`: "app", "driver", "library"; `id`). Supports chunked reading via `offset`/`length`. |
+| `hub_list_libraries` | List all installed Groovy libraries (id, name, namespace) |
+| `hub_list_bundles` | List installed code bundles — the Bundles page, distinct from Libraries Code (id, name, namespace, contents) |
 | `hub_list_backups` | List auto-created source code backups |
 | `hub_get_backup` | Get source from a backup |
 | `hub_list_device_dependents` | Find all apps that reference a specific device (Room Lighting, Rule Machine, Groups, Mode Manager, dashboards, Maker API, etc.) |
@@ -453,7 +455,7 @@ All operations are disruptive. These tools are gated by the Write master (ON by 
 </details>
 
 <details>
-<summary><b>hub_manage_code</b> (8) — Install, update, delete apps/drivers/libraries and restore backups</summary>
+<summary><b>hub_manage_code</b> (11) — Install, update, delete apps/drivers/libraries/bundles and restore backups</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -462,9 +464,12 @@ All operations are disruptive. These tools are gated by the Write master (ON by 
 | `hub_update_app` | Modify existing app code (source, sourceFile, or resave) |
 | `hub_update_driver` | Modify existing driver code (single-driver or bulk `updates` array) |
 | `hub_delete_item` | Permanently delete an app, driver, or library (`type`: "app", "driver", "library"; auto-backs up first) |
-| `hub_restore_backup` | Restore app/driver to backed-up version (libraries: see `hub_update_library`) |
+| `hub_restore_backup` | Restore app/driver to backed-up version (libraries: see `hub_update_library`). Rule snapshots (incl. Visual Rules) recreate a deleted rule. |
 | `hub_create_library` | Install new Groovy library (#include namespace.Name) |
 | `hub_update_library` | Modify existing library code |
+| `hub_install_bundle` | Install a code bundle (.zip) from a URL the HPM way — unpacks into Libraries/Apps/Drivers Code |
+| `hub_delete_bundle` | Delete an installed code bundle by id (the container; delivered code may remain in Code) |
+| `hub_export_bundle` | Export an installed bundle's .zip to the hub File Manager (downloadable at `/local/<fileName>`) |
 
 Source code is automatically backed up before any modify/delete operation.
 
