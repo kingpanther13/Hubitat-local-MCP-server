@@ -10213,9 +10213,11 @@ def toolWriteFile(args) {
     // If file already exists, back it up first
     def backedUp = false
     def backupFileName = null
+    def identicalContent = false
     try {
         def existingBytes = downloadHubFile(args.fileName)
         if (existingBytes != null && new String(existingBytes, "UTF-8") == args.content.toString()) {
+            identicalContent = true
             // Identical-content write (e.g. a retry after a dropped response): a
             // backup would duplicate the very bytes being written, and a fresh
             // timestamped file per retry is unbounded growth -- the exact
@@ -10247,7 +10249,9 @@ def toolWriteFile(args) {
             success: true,
             message: backedUp
                 ? "File '${args.fileName}' updated. Previous version backed up as '${backupFileName}'."
-                : "File '${args.fileName}' created.",
+                : (identicalContent
+                    ? "File '${args.fileName}' already contained this exact content (no backup needed)."
+                    : "File '${args.fileName}' created."),
             fileName: args.fileName,
             contentLength: args.content.length(),
             directDownload: "http://<HUB_IP>/local/${args.fileName}"

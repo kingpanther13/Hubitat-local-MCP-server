@@ -1130,7 +1130,9 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         script.metaClass.hubInternalGet = { String path, Map params = null -> '{"source":"BACKUPSRC","version":7}' }
-        script.metaClass.hubInternalPostForm = { String path, Map form -> [data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
+            [success: true, id: 228]
+        }
 
         when:
         def result = script.toolRestoreItemBackup([backupKey: 'app_228', confirm: true])
