@@ -51,7 +51,7 @@ definition(
 // and impl methods live in the library.
 #include mcp.McpBundlesLib
 
-// issue #215: Visual Rules Builder tool implementations (hub_get_visual_rule /
+// issue #209 modularization: Visual Rules Builder tool implementations (hub_get_visual_rule /
 // hub_set_visual_rule / hub_delete_visual_rule) live in the McpVisualRulesLib library
 // (libraries/mcp-visual-rules-lib.groovy), authored library-first. The gateway entries
 // and dispatch cases stay in this file; the tool definitions
@@ -16382,10 +16382,11 @@ private Map _appTypeRegistry() {
         button_controller: [namespace: "hubitat", appName: "Button Controller-5.1", parentTypeName: "Button Controllers", commitButton: null],
         groups_scenes: [namespace: "hubitat", appName: "Group-2.1", parentTypeName: "Groups and Scenes"],
         notifier: [namespace: "hubitat", appName: "Notifier", parentTypeName: "Notifications"],
-        // visual_rule stays registered so type-name lookups (_resolveCommitButton, parent
-        // discovery) keep working, but CREATION through this registry is blocked in
-        // _createNativeAppShell: VRB children are Vue-JSON apps (live-probed: /installedapp/
+        // visual_rule stays registered so parentTypeName lookups (_discoverParentAppId, the
+        // backup-restore recreate path) keep working, but the WIZARD create path rejects it
+        // in _createNativeAppShell: VRB children are Vue-JSON apps (live-probed: /installedapp/
         // configure renders no classic configPage), served by hub_set_visual_rule instead.
+        // The restore path can still attempt a registry recreate from an old snapshot.
         visual_rule: [namespace: "hubitat", appName: "Visual Rule Builder", parentTypeName: "Visual Rules Builder"],
         // Basic Rule is a classic dynamicPage app (configure/json renders a real
         // configPage and generic createchild works), NOT a Vue SPA like Visual
@@ -28521,7 +28522,7 @@ The right move when `partial: true` is to follow the `repairHints`, NOT to delet
 
 Visual Rules Builder (VRB) is Hubitat's simplest rule engine — capability tier similar to Basic Rules, but stored as ONE clean JSON definition (no wizard, no settings[] protocol). PREFER it for simple device automations; use `hub_set_rule` (Rule Machine) when you need: nested IF/THEN/ELSE in actions, loops, local variables, boolean expressions, capture/restore, custom device commands, or running another rule's actions.
 
-### Two serializations (`format` in every response)
+### Two serializations (`format` in every single-rule success response)
 
 A VRB rule speaks exactly one of two wire formats, decided by the hub firmware at creation. `hub_get_visual_rule` reports which; an edit's `definition` must match it.
 
@@ -28550,7 +28551,7 @@ Triggers (`triggerType` → device array + event field):
 - `water`/`smoke`/`co`/`acceleration`/`shock` → `<type>Sensors` + `<type>SensorEvent` (exact English sentences from the builder UI)
 - `timeOfDay` → `timeOfDay`: "HHMM" colon-less string (e.g. "0730")
 - `sunriseSunset` → sub-condition beforeSunrise/sunrise/afterSunrise/beforeSunset/sunset/afterSunset + `minutesBefore/AfterSunrise|Sunset`
-- `systemMode` → `modes`: [mode ids from /modes/list]
+- `systemMode` → `modes`: [mode ids from hub_list_modes]
 
 Conditions (classic: appear as whenNodes with condition `triggerType`s; graph: `type:"condition"` nodes): `switchCondition` (`switchState`: "Turned on"|"Turned off"), `motionCondition` (`motionSensorState`: "Motion is active"|"Motion is inactive"), `contactCondition`, `presenceCondition`, `lockCondition` (`lockState`), `temperatureCondition`/`humidityCondition`/`illuminanceCondition`/`powerCondition` ("... is above..."|"... is below..." + value), `systemModeCondition` (`modes`), `timeIsBetween` (specificTimes + `startTime`/`endTime` "HHMM", or sunriseToSunset/sunsetToSunrise), `daysOfWeek` (`daysOfWeek`: [0-6], 0=Sunday).
 

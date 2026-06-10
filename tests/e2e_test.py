@@ -1372,7 +1372,7 @@ class TestRunner:
         self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
 
     # -----------------------------------------------------------------------
-    # GROUP 4b2: visual_rules (issue #215) -- the Visual Rules Builder tools
+    # GROUP 4b2: visual_rules -- the Visual Rules Builder tools
     # (hub_get_visual_rule / hub_set_visual_rule / hub_delete_visual_rule).
     # VRB rules are Vue-JSON apps (NOT classic dynamicPage apps), saved over the
     # /app/ruleBuilderJson endpoint family in one of two wire formats the hub
@@ -1444,9 +1444,19 @@ class TestRunner:
             assert got.get("success") is True, f"read-back of new VRB rule {app_id} failed: {got}"
             assert got.get("name") == name, f"read-back name mismatch: {got.get('name')!r} != {name!r}"
             assert got.get("format") == fmt, f"read-back format {got.get('format')!r} != create format {fmt!r}"
-            nodes_blob = json.dumps(got.get("whenNodes") if fmt == "classic" else got.get("definition"))
-            assert str(switch_id) in nodes_blob, \
-                f"trigger device {switch_id} did not round-trip in the {fmt} definition: {nodes_blob[:300]}"
+            # Pull the trigger node in whichever shape the rule speaks and assert
+            # the test switch's id is in its deviceIds array -- a blob substring
+            # match would false-pass on any field that happens to contain the digits.
+            if fmt == "classic":
+                trigger_node = (got.get("whenNodes") or [None])[0]
+            else:
+                trigger_node = next(
+                    (n for n in (got.get("definition") or {}).get("nodes", [])
+                     if n.get("type") == "trigger"), None)
+            assert isinstance(trigger_node, dict), \
+                f"no trigger node in the {fmt} read-back: {got}"
+            assert int(switch_id) in (trigger_node.get("deviceIds") or []), \
+                f"trigger device {switch_id} not in the trigger node's deviceIds: {trigger_node}"
 
             # LIST: no-args mode must include the new rule.
             listed = self._get_visual_rule()
@@ -1497,9 +1507,11 @@ class TestRunner:
             assert deleted.get("verified") is True, f"delete not verified gone: {deleted}"
             assert deleted.get("predeleteDefinition"), \
                 f"delete response missing the predeleteDefinition recovery aid: {deleted}"
-            self._untrack_native_app(app_id)
             gone = self._get_visual_rule(app_id)
             assert gone.get("success") is False, f"rule {app_id} still readable after delete: {gone}"
+            # Untrack only after the independent gone-read: a false-verified delete
+            # leaves the id tracked so the cleanup sweep reaps it.
+            self._untrack_native_app(app_id)
 
     @test("visual_rules")
     def test_visual_rule_error_contracts(self) -> None:
@@ -2859,7 +2871,7 @@ class TestRunner:
         1. Tracked artifacts (device DNIs, rule IDs, variables)
         2. Virtual devices (prefix sweep)
         3. Custom rules (prefix sweep)
-        4. Native RM apps (tracked + prefix sweep)
+        4. Native RM apps + Visual Rules (tracked + prefix sweeps)
         5. Deadman install-fix throwaway (namespace+name)
         6. Rooms (prefix sweep)
         """
@@ -2960,6 +2972,18 @@ class TestRunner:
                             deferred_ids.add(rid)
             except Exception as exc:
                 print(f"  [WARN] could not list native rules for the deferred union (tracked ids still deferred): {exc}")
+            # hub_list_rules lists RM rules only, so fold in PREFIX-matched Visual
+            # Rules Builder children via the VRB list (one call) the same way --
+            # force-delete in the disarm sweep works on VRB children too.
+            try:
+                vlisted = self._get_visual_rule()
+                for r in (vlisted.get("rules", []) if isinstance(vlisted, dict) else []):
+                    if str(r.get("name") or "").startswith(PREFIX):
+                        vid = str(r.get("appId") or "")
+                        if vid:
+                            deferred_ids.add(vid)
+            except Exception as exc:
+                print(f"  [WARN] could not list Visual Rules for the deferred union (tracked ids still deferred): {exc}")
             deferred_ids = sorted(deferred_ids)
             print(f"  Layer 4: deferring {len(deferred_ids)} native-rule delete(s) to the disarm sweep")
             # Hand the EXACT instance ids to the disarm sweep via File Manager so it force-deletes ONLY
@@ -2980,10 +3004,9 @@ class TestRunner:
                     # force: tracked artifacts can carry children (a Button
                     # Controller's grandchild button rules); the soft delete
                     # refuses those and would strand the whole subtree.
-                    # Tracked ids may also be Visual Rules Builder children
-                    # (issue #215) -- force-delete works on those too, and this
-                    # loop is their ONLY sweep (the hub_list_rules prefix sweep
-                    # below lists RM rules, not VRB rules).
+                    # Tracked ids may also be Visual Rules Builder children --
+                    # force-delete works on those too; the VRB prefix sweep
+                    # below backstops the untracked ones.
                     self.client.call_tool("hub_manage_rule_machine", {
                         "tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True},
                     })
@@ -3007,6 +3030,26 @@ class TestRunner:
                                 print(f"  [WARN] Native rule sweep delete failed for '{rname}': {exc}")
             except Exception as exc:
                 print(f"  [WARN] Native rule sweep failed: {exc}")
+            # VRB backstop: hub_list_rules above lists RM rules only, so untracked
+            # Visual Rules Builder leftovers need their own prefix sweep (one VRB
+            # list call; the generic force-delete works on VRB children).
+            try:
+                vlisted = self._get_visual_rule()
+                for r in (vlisted.get("rules", []) if isinstance(vlisted, dict) else []):
+                    vname = str(r.get("name") or "")
+                    if vname.startswith(PREFIX):
+                        vid = str(r.get("appId") or "")
+                        if vid:
+                            try:
+                                print(f"  Sweep: deleting Visual Rule '{vname}' (id={vid})")
+                                self.client.call_tool("hub_manage_rule_machine", {
+                                    "tool": "hub_delete_native_app",
+                                    "args": {"appId": vid, "force": True, "confirm": True},
+                                })
+                            except Exception as exc:
+                                print(f"  [WARN] Visual Rule sweep delete failed for '{vname}': {exc}")
+            except Exception as exc:
+                print(f"  [WARN] Visual Rule sweep failed: {exc}")
 
         # Layer 5: stranded deadman install-fix throwaway. The @test("deadman") test installs
         # 'Deadman Test Target' (namespace mcptest) + its code class; neither carries the BAT_E2E_

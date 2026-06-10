@@ -1,16 +1,27 @@
 library(name: "McpVisualRulesLib", namespace: "mcp", author: "kingpanther13", description: "Visual Rules Builder tool implementations for the MCP Rule Server (hub_get_visual_rule/hub_set_visual_rule/hub_delete_visual_rule); included by the main app. Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.")
 
-private Map _vrbAppInfo(Integer appId) {
+private Map _vrbAppExistence(Integer appId) {
     // GET /installedapp/json/<id> -> {id, name, type, disabled, user} for any installed app.
-    // Returns null when the app doesn't exist or the response isn't the expected shape, so
-    // callers can use it both as an existence check and a type check.
+    // Returns [state: "found", info: <map>] | [state: "absent"] | [state: "unknown", error: <msg>].
+    // The three-way split matters: "absent" backs definitive claims ("no such app" errors,
+    // delete verification), while a network error or an unparseable 200 (e.g. a login page)
+    // must surface as "unknown" -- never fabricated certainty either way.
+    def text
     try {
-        def text = hubInternalGet("/installedapp/json/${appId}")
-        if (!text) return null
-        def parsed = new groovy.json.JsonSlurper().parseText(text)
-        return (parsed instanceof Map && parsed.id != null) ? parsed : null
+        text = hubInternalGet("/installedapp/json/${appId}")
     } catch (Exception e) {
-        return null
+        def status = null
+        try { status = e.response?.status } catch (Exception ignored) { }
+        if (status == 404) return [state: "absent"]
+        return [state: "unknown", error: e.message]
+    }
+    if (!text) return [state: "absent"]
+    try {
+        def parsed = new groovy.json.JsonSlurper().parseText(text)
+        if (parsed instanceof Map && parsed.id != null) return [state: "found", info: parsed]
+        return [state: "absent"]
+    } catch (Exception e) {
+        return [state: "unknown", error: "unparseable response from /installedapp/json: ${text?.take(120)}"]
     }
 }
 
@@ -122,6 +133,9 @@ private Map _vrbSaveGraph(Integer appId, String name, String definitionJson) {
         return [success: false, errorMessage: resp.errorMessage ?: "hub rejected the save",
                 validationErrors: resp.validationErrors ?: []]
     }
+    // A null resp (empty / non-JSON 200 body) is treated as accepted, mirroring the UI's
+    // success-unless-false check -- every caller confirms via a read-back comparison, which
+    // is the real write verification for both save endpoints.
     return [success: true, validationErrors: (resp instanceof Map ? (resp.validationErrors ?: []) : [])]
 }
 
@@ -153,6 +167,25 @@ private Map _vrbSetPaused(Integer appId, boolean paused) {
 private void _vrbForceDelete(Integer appId) {
     // Standard force-delete path -- the same one the builder UIs use.
     hubInternalGetRaw("/installedapp/forcedelete/${appId}/quiet")
+}
+
+private String _vrbTryCleanupShell(Integer appId) {
+    // Best-effort removal of a just-created empty shell after a failed create. Never throws --
+    // a cleanup failure must not mask the original error -- and always names the appId so a
+    // surviving orphan can be deleted manually.
+    try {
+        _vrbForceDelete(appId)
+        def existence = _vrbAppExistence(appId)
+        if (existence.state == "absent") {
+            return "The empty child app created during this attempt (appId ${appId}) was cleaned up."
+        }
+        if (existence.state == "found") {
+            return "The empty child app created during this attempt (appId ${appId}) may still exist -- delete it with hub_delete_visual_rule(appId=${appId}, confirm=true)."
+        }
+        return "The empty child app created during this attempt (appId ${appId}) was delete-requested but could not be verified gone (${existence.error}) -- check with hub_get_visual_rule(appId=${appId})."
+    } catch (Exception e) {
+        return "The empty child app created during this attempt (appId ${appId}) could NOT be cleaned up (${e.message}) -- delete it with hub_delete_visual_rule(appId=${appId}, confirm=true)."
+    }
 }
 
 private String _vrbDetectDefinitionFormat(Map definition) {
@@ -191,12 +224,18 @@ private Map _vrbNormalizeDefinition(def rawDefinition) {
 private Map _vrbNotVisualRuleError(Integer appId) {
     // Shared error envelope for "this appId isn't a Visual Rules Builder rule", enriched with
     // the app's real type when it exists so the model can route to the right tool.
-    def info = _vrbAppInfo(appId)
-    if (info == null) {
+    def existence = _vrbAppExistence(appId)
+    if (existence.state == "unknown") {
+        return [success: false, appId: appId,
+                error: "App ${appId} did not answer as a Visual Rule, and whether it exists at all could not be determined (${existence.error}).",
+                note: "Likely a transient hub error -- retry, or list rules with hub_get_visual_rule (no appId)."]
+    }
+    if (existence.state == "absent") {
         return [success: false, appId: appId,
                 error: "No installed app with appId ${appId} was found.",
                 note: "Call hub_get_visual_rule with no appId to list Visual Rules Builder rules, or hub_list_rules for Rule Machine rules."]
     }
+    def info = existence.info
     return [success: false, appId: appId, appName: info.name, appType: info.type,
             error: "App ${appId} ('${info.name}') is type '${info.type}', not a Visual Rules Builder rule.",
             note: info.type?.toString()?.startsWith("Rule") ?
@@ -260,18 +299,19 @@ def toolSetVisualRule(args) {
         if (normalized.format != created.format) {
             // The supplied definition doesn't match the serialization this firmware's builder
             // creates. Delete the orphan shell rather than stranding an empty unnamed rule.
-            _vrbForceDelete(created.appId)
+            def cleanupNote = _vrbTryCleanupShell(created.appId)
             return [success: false, hubNativeFormat: created.format,
                     error: "This hub's Visual Rules Builder creates ${created.format}-format rules, but the definition is ${normalized.format}-format.",
-                    note: "Re-call hub_set_visual_rule with a ${created.format} definition -- see hub_get_tool_guide(section='visual_rule_reference'). The empty child app created during this attempt was cleaned up."]
+                    note: "Re-call hub_set_visual_rule with a ${created.format} definition -- see hub_get_tool_guide(section='visual_rule_reference'). ${cleanupNote}"]
         }
         try {
             return _vrbApplySave(created.appId, created.format, name, normalized.map, hasPaused ? paused : null, false, true)
         } catch (Exception e) {
-            _vrbForceDelete(created.appId)
-            mcpLog("error", "vrb", "hub_set_visual_rule save-after-create failed: ${e.message}")
+            // Log the ORIGINAL failure before attempting cleanup -- the cleanup helper never
+            // throws, so the save error can't be masked by a second failure.
+            mcpLog("error", "vrb", "hub_set_visual_rule save-after-create failed for new appId ${created.appId}: ${e.message}")
             return [success: false, error: "Saving the new Visual Rule failed: ${e.message}",
-                    note: "The empty child app created during this attempt was cleaned up."]
+                    note: _vrbTryCleanupShell(created.appId)]
         }
     }
 
@@ -280,7 +320,14 @@ def toolSetVisualRule(args) {
         throw new IllegalArgumentException("Nothing to change: provide definition (full replacement), name (rename), and/or paused (pause/resume) alongside appId.")
     }
     def appId = normalizeRuleId(args.appId)
-    def detected = _vrbDetect(appId)
+    def detected
+    try {
+        detected = _vrbDetect(appId)
+    } catch (Exception e) {
+        mcpLog("warn", "vrb", "hub_set_visual_rule could not read rule ${appId}: ${e.message}")
+        return [success: false, appId: appId, error: "Could not read Visual Rule ${appId}: ${e.message}",
+                note: "Likely a transient hub error -- retry, or list rules with hub_get_visual_rule (no appId)."]
+    }
     if (detected == null) return _vrbNotVisualRuleError(appId)
 
     if (hasDefinition) {
@@ -304,29 +351,44 @@ def toolSetVisualRule(args) {
     // Rename and/or pause without replacing the definition: re-save the EXISTING nodes under
     // the new name (the save endpoints have no rename-only verb), then apply the pause flag.
     try {
+        def requestedName = (name ?: detected.data.name)?.toString()
+        def classicBodyCarriedPause = false
         if (name && name != detected.data.name?.toString()) {
             // A never-saved graph rule reads back a blank ruleJson; the builder UI would save
             // the default empty template in that case, so mirror it rather than POSTing "".
             def emptyTemplate = '{"version":1,"nodes":[{"id":"trigger-1","type":"trigger","triggerCondition":"trigger","triggerType":"sampleTrigger","deviceIds":[]},{"id":"action-1","type":"action","actionType":"sample","deviceIds":[]}],"edges":[{"from":"trigger-1","to":"action-1","port":"next"}]}'
-            def existing = detected.format == "graph" ?
-                    (detected.data.ruleJson?.toString()?.trim() ?: emptyTemplate) :
-                    [whenNodes: detected.data.whenNodes, thenNodes: detected.data.thenNodes, elseNodes: detected.data.elseNodes]
             if (detected.format == "graph") {
+                def existing = detected.data.ruleJson?.toString()?.trim() ?: emptyTemplate
                 def saved = _vrbSaveGraph(appId, name, existing)
                 if (saved.success == false) return [success: false, appId: appId, error: "Rename failed: ${saved.errorMessage}", validationErrors: saved.validationErrors]
             } else {
+                // The classic save body always carries rulePaused, so a combined rename+pause
+                // commits the pause here -- calling the pause endpoint again would be redundant.
+                def existing = [whenNodes: detected.data.whenNodes, thenNodes: detected.data.thenNodes, elseNodes: detected.data.elseNodes]
                 _vrbSaveClassic(appId, name, hasPaused ? paused : detected.data.rulePaused == true, existing)
+                classicBodyCarriedPause = hasPaused
             }
         }
-        if (hasPaused) {
+        if (hasPaused && !classicBodyCarriedPause) {
             def pauseResult = _vrbSetPaused(appId, paused)
             if (pauseResult.success == false) {
                 return [success: false, appId: appId, error: "Pause/resume failed", note: pauseResult.error]
             }
         }
+        // Neither save endpoint returns a usable body, so the read-back comparison is the
+        // only write confirmation -- success must not be claimed without it.
         def after = _vrbDetect(appId)
-        return [success: true, appId: appId, format: detected.format,
-                name: after?.data?.name, rulePaused: after?.data?.rulePaused == true]
+        def nameOk = after != null && after.data.name?.toString() == requestedName
+        def pauseOk = !hasPaused || ((after?.data?.rulePaused == true) == paused)
+        def verified = nameOk && pauseOk
+        def out = [success: verified, appId: appId, format: detected.format, verified: verified,
+                   name: after?.data?.name, rulePaused: after?.data?.rulePaused == true]
+        if (!verified) {
+            out.error = "The ${name ? 'rename' : 'pause'} request was sent but the read-back did not confirm it (read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
+            out.note = "Re-read with hub_get_visual_rule(appId=${appId}) to inspect what the hub persisted."
+            mcpLog("warn", "vrb", "Rename/pause read-back verification failed for ${appId} (nameOk=${nameOk}, pauseOk=${pauseOk})")
+        }
+        return out
     } catch (Exception e) {
         mcpLog("error", "vrb", "hub_set_visual_rule rename/pause failed for ${appId}: ${e.message}")
         return [success: false, appId: appId, error: "Updating Visual Rule ${appId} failed: ${e.message}"]
@@ -338,29 +400,34 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
     // pausedRequested is null when the caller didn't ask for a pause change; the classic POST
     // must then carry the rule's CURRENT paused state (the body always includes rulePaused).
     def validationErrors = []
+    def pauseResult = null
     if (format == "graph") {
         def definitionJson = groovy.json.JsonOutput.toJson(definition)
         def saved = _vrbSaveGraph(appId, name, definitionJson)
         if (saved.success == false) {
-            if (created) _vrbForceDelete(appId)
+            mcpLog("warn", "vrb", "Graph save rejected for ${appId}: ${saved.errorMessage} ${saved.validationErrors ?: ''}")
             return [success: false, error: "Hub rejected the graph save: ${saved.errorMessage}",
                     validationErrors: saved.validationErrors,
-                    note: created ? "The empty child app created during this attempt was cleaned up." :
-                                    "The rule's previous definition is untouched."]
+                    note: created ? _vrbTryCleanupShell(appId) : "The rule's previous definition is untouched."]
         }
         validationErrors = saved.validationErrors ?: []
         if (pausedRequested != null) {
             // The graph POST carries no rulePaused field; pause state has its own endpoint.
             // A pause failure is surfaced through the read-back check below (verified covers
             // the requested pause state, not just the name).
-            _vrbSetPaused(appId, pausedRequested)
+            pauseResult = _vrbSetPaused(appId, pausedRequested)
         }
     } else {
         _vrbSaveClassic(appId, name, pausedRequested != null ? pausedRequested : (currentPaused == true), definition)
     }
+    // Neither save endpoint returns a trustworthy body, so the read-back comparison is the
+    // real write verification: name, requested pause state, and node-list sizes (the hub may
+    // normalize node CONTENTS on save, so deep equality would false-negative).
     def after = _vrbDetect(appId)
-    def verified = after != null && after.data.name?.toString() == name &&
-            (pausedRequested == null || (after.data.rulePaused == true) == pausedRequested)
+    def nameOk = after != null && after.data.name?.toString() == name
+    def pauseOk = pausedRequested == null || ((after?.data?.rulePaused == true) == pausedRequested)
+    def countsOk = after != null && _vrbDefinitionCountsMatch(format, definition, after.data)
+    def verified = nameOk && pauseOk && countsOk
     def out = [success: verified, appId: appId, format: format, created: created,
                name: after?.data?.name, rulePaused: after?.data?.rulePaused == true, verified: verified]
     if (validationErrors) {
@@ -368,13 +435,29 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
         out.note = "Saved, but the hub reported validation errors -- the rule may not run until they are fixed."
     }
     if (!verified) {
-        out.error = "Save POST was sent but the read-back did not confirm the new state (read back name: ${after?.data?.name})."
-        out.note = "Re-read with hub_get_visual_rule(appId=${appId}) to inspect what the hub persisted."
+        out.error = "Save POST was sent but the read-back did not confirm the new state (name ok: ${nameOk}, pause ok: ${pauseOk}, definition counts ok: ${countsOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
+        def hints = []
+        if (pauseResult?.success == false) hints << "The pause endpoint reported failure${pauseResult.error ? " (${pauseResult.error})" : ""}."
+        hints << "Re-read with hub_get_visual_rule(appId=${appId}) to inspect what the hub persisted."
+        out.note = hints.join(" ")
+        mcpLog("warn", "vrb", "Read-back verification failed for ${appId} (nameOk=${nameOk}, pauseOk=${pauseOk}, countsOk=${countsOk})")
     } else if (after != null) {
         out.definition = format == "graph" ? after.data.definition :
                 [whenNodes: after.data.whenNodes, thenNodes: after.data.thenNodes, elseNodes: after.data.elseNodes]
     }
     return out
+}
+
+private boolean _vrbDefinitionCountsMatch(String format, Map submitted, Map readBack) {
+    if (format == "graph") {
+        def persisted = readBack.definition
+        if (!(persisted instanceof Map)) return false
+        return (submitted.nodes ?: []).size() == (persisted.nodes ?: []).size() &&
+               (submitted.edges ?: []).size() == (persisted.edges ?: []).size()
+    }
+    return (submitted.whenNodes ?: []).size() == (readBack.whenNodes ?: []).size() &&
+           (submitted.thenNodes ?: []).size() == (readBack.thenNodes ?: []).size() &&
+           (submitted.elseNodes ?: []).size() == (readBack.elseNodes ?: []).size()
 }
 
 def toolDeleteVisualRule(args) {
@@ -383,7 +466,14 @@ def toolDeleteVisualRule(args) {
     def appId = normalizeRuleId(args.appId)
     // Type-gate before deleting: forcedelete removes ANY installed app, so only proceed once
     // the id provably speaks a VRB serialization.
-    def detected = _vrbDetect(appId)
+    def detected
+    try {
+        detected = _vrbDetect(appId)
+    } catch (Exception e) {
+        mcpLog("warn", "vrb", "hub_delete_visual_rule could not read rule ${appId}: ${e.message}")
+        return [success: false, appId: appId, error: "Could not read Visual Rule ${appId}: ${e.message}",
+                note: "Likely a transient hub error -- nothing was deleted. Retry, or list rules with hub_get_visual_rule (no appId)."]
+    }
     if (detected == null) return _vrbNotVisualRuleError(appId)
     def predelete = detected.format == "graph" ? detected.data.definition :
             [whenNodes: detected.data.whenNodes, thenNodes: detected.data.thenNodes, elseNodes: detected.data.elseNodes]
@@ -392,12 +482,22 @@ def toolDeleteVisualRule(args) {
     } catch (Exception e) {
         return [success: false, appId: appId, error: "Delete request failed: ${e.message}"]
     }
-    def stillThere = _vrbAppInfo(appId) != null
-    mcpLog("info", "vrb", "Deleted Visual Rule ${appId} ('${detected.data.name}') verified=${!stillThere}")
-    return [success: !stillThere, appId: appId, name: detected.data.name, format: detected.format,
-            verified: !stillThere, predeleteDefinition: predelete,
-            note: stillThere ? "The hub still reports app ${appId} after the delete request -- re-check with hub_get_visual_rule." :
-                               "To recreate this rule, call hub_set_visual_rule with the predeleteDefinition."]
+    // verified must come from a definitive absence read-back -- a failed verification read
+    // (state "unknown") must not be reported as a confirmed delete.
+    def existence = _vrbAppExistence(appId)
+    def verified = existence.state == "absent"
+    def note
+    if (existence.state == "found") {
+        note = "The hub still reports app ${appId} after the delete request -- re-check with hub_get_visual_rule."
+    } else if (existence.state == "unknown") {
+        note = "The delete request was accepted but the verification read-back failed (${existence.error}) -- re-check with hub_get_visual_rule(appId=${appId})."
+    } else {
+        note = predelete != null ? "To recreate this rule, call hub_set_visual_rule with the predeleteDefinition." :
+                                   "This rule had no readable definition (never saved), so there is nothing to recreate."
+    }
+    mcpLog("info", "vrb", "Deleted Visual Rule ${appId} ('${detected.data.name}') verified=${verified}")
+    return [success: verified, appId: appId, name: detected.data.name, format: detected.format,
+            verified: verified, predeleteDefinition: predelete, note: note]
 }
 
 // Tool DEFINITIONS for the Visual Rules Builder tools (issue #209 pattern: schema lives with
@@ -427,7 +527,10 @@ def _getAllToolDefinitions_partVisualRules() {
                     whenNodes: [type: "array", description: "classic format: trigger nodes"],
                     thenNodes: [type: "array", description: "classic format: action nodes"],
                     elseNodes: [type: "array", description: "classic format: else-branch action nodes"],
+                    promptHistory: [type: "array", description: "classic format: AI-builder prompts recorded by the hub"],
                     definition: [type: "object", description: "graph format: parsed {version, nodes, edges}"],
+                    ruleJson: [type: "string", description: "graph format: the raw double-encoded definition string as stored"],
+                    definitionParseError: [type: "string", description: "graph format: present when the stored ruleJson is not parseable JSON"],
                     validationErrors: [type: "array"],
                     error: [type: "string"],
                     note: [type: "string"]
@@ -458,7 +561,7 @@ def _getAllToolDefinitions_partVisualRules() {
                     created: [type: "boolean"],
                     name: [type: "string"],
                     rulePaused: [type: "boolean"],
-                    verified: [type: "boolean", description: "Whether a read-back confirmed the saved state"],
+                    verified: [type: "boolean", description: "Whether a read-back confirmed the name, requested pause state, and definition node counts"],
                     definition: [type: "object", description: "Read-back of what the hub persisted"],
                     previousDefinition: [type: "object", description: "The definition before a full replacement (recovery aid)"],
                     validationErrors: [type: "array", description: "Hub-side validation problems; the rule saved but may not run"],

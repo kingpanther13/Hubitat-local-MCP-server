@@ -154,7 +154,7 @@ class IncludeResolverSpec extends Specification {
     }
 
     def "resolving against the REAL repo libraries dir inlines the live McpVisualRulesLib impls + defs"() {
-        given: 'the actual checked-in Visual Rules library -- impl AND tool definitions live with it (issue #215)'
+        given: 'the actual checked-in Visual Rules library -- impl AND tool definitions live with it'
         def realLibs = new File('libraries')
         assert realLibs.isDirectory(), "expected the repo 'libraries' dir relative to cwd ${new File('.').absolutePath} -- run from the repo root"
         def src = "#include mcp.McpVisualRulesLib\n"

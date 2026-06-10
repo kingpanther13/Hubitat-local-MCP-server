@@ -817,7 +817,7 @@ The right move when `partial: true` is to follow the `repairHints`, NOT to delet
 
 ### Visual Rules Builder tools (in `hub_manage_rule_machine`; read also in `hub_read_rules`)
 
-- **`hub_get_visual_rule(appId?)`** — list every Visual Rules Builder rule (omit `appId`: `{appId, name, disabled}` entries) or read one rule's full definition. Every single-rule response carries `format`: `'classic'` (`{whenNodes, thenNodes, elseNodes}`) or `'graph'` (`{version, nodes, edges}`). Read master.
+- **`hub_get_visual_rule(appId?)`** — list every Visual Rules Builder rule (omit `appId`: `{appId, name, disabled}` entries) or read one rule's full definition. Every single-rule success response carries `format`: `'classic'` (`{whenNodes, thenNodes, elseNodes}`) or `'graph'` (`{version, nodes, edges}`). Read master.
 - **`hub_set_visual_rule(appId?, name, definition, paused?, confirm)`** — create (omit `appId`; `name` + `definition` required) or edit (the `definition` replaces wholesale, `name` renames, `paused` pauses/resumes). The definition's format must match the rule's existing format; responses include a read-back `verified` flag. Write master + `confirm=true` + a backup within 24h.
 - **`hub_delete_visual_rule(appId, confirm)`** — type-gated delete (refuses ids that are not VRB rules); returns the rule's `predeleteDefinition` so it can be recreated. Write master + `confirm=true` + a backup within 24h.
 
@@ -829,7 +829,7 @@ Full node schemas, field catalog, and a worked example: the "Visual Rules Builde
 
 Visual Rules Builder (VRB) is Hubitat's simplest rule engine — capability tier similar to Basic Rules, but stored as ONE clean JSON definition (no wizard, no settings[] protocol). PREFER it for simple device automations; use `hub_set_rule` (Rule Machine) when you need: nested IF/THEN/ELSE in actions, loops, local variables, boolean expressions, capture/restore, custom device commands, or running another rule's actions.
 
-### Two serializations (`format` in every response)
+### Two serializations (`format` in every single-rule success response)
 
 A VRB rule speaks exactly one of two wire formats, decided by the hub firmware at creation. `hub_get_visual_rule` reports which; an edit's `definition` must match it.
 
@@ -858,7 +858,7 @@ Triggers (`triggerType` → device array + event field):
 - `water`/`smoke`/`co`/`acceleration`/`shock` → `<type>Sensors` + `<type>SensorEvent` (exact English sentences from the builder UI)
 - `timeOfDay` → `timeOfDay`: "HHMM" colon-less string (e.g. "0730")
 - `sunriseSunset` → sub-condition beforeSunrise/sunrise/afterSunrise/beforeSunset/sunset/afterSunset + `minutesBefore/AfterSunrise|Sunset`
-- `systemMode` → `modes`: [mode ids from /modes/list]
+- `systemMode` → `modes`: [mode ids from hub_list_modes]
 
 Conditions (classic: appear as whenNodes with condition `triggerType`s; graph: `type:"condition"` nodes): `switchCondition` (`switchState`: "Turned on"|"Turned off"), `motionCondition` (`motionSensorState`: "Motion is active"|"Motion is inactive"), `contactCondition`, `presenceCondition`, `lockCondition` (`lockState`), `temperatureCondition`/`humidityCondition`/`illuminanceCondition`/`powerCondition` ("... is above..."|"... is below..." + value), `systemModeCondition` (`modes`), `timeIsBetween` (specificTimes + `startTime`/`endTime` "HHMM", or sunriseToSunset/sunsetToSunrise), `daysOfWeek` (`daysOfWeek`: [0-6], 0=Sunday).
 

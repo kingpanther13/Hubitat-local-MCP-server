@@ -225,6 +225,23 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.note.contains('hub_get_visual_rule')
     }
 
+    def "get by id reports could-not-be-determined (not No-installed-app) when the existence probe throws"() {
+        given: 'neither rule endpoint matches, and the /installedapp/json existence read dies mid-flight'
+        hubGet.register('/app/ruleBuilder20Json/910') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/910') { params -> '{}' }
+        hubGet.register('/installedapp/json/910') { params -> throw new RuntimeException('connection reset') }
+
+        when:
+        def result = script.toolGetVisualRule([appId: 910])
+
+        then: 'no fabricated certainty: a failed probe must not be reported as a confirmed absence'
+        result.success == false
+        result.error.contains('could not be determined')
+        result.error.contains('connection reset')
+        !result.error.contains('No installed app')
+        result.note.contains('retry')
+    }
+
     // ==================== hub_set_visual_rule: create ====================
 
     def "create golden path (classic hub): saves nodes, defaults rulePaused=false, verifies via read-back"() {
@@ -351,6 +368,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         given: 'hub creates classic-format children, but the caller supplies a graph definition'
         enableWrite()
         stubRawPage('<html>window.HubitatRuleBuilderAppId = 555</html>')
+        hubGet.register('/installedapp/json/555') { params -> '' }  // post-cleanup existence probe: gone
 
         when:
         def result = script.toolSetVisualRule([name: 'Mismatch', definition: graphDefinition(), confirm: true])
@@ -360,10 +378,131 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.hubNativeFormat == 'classic'
         result.error.contains('classic-format rules')
         result.error.contains('graph-format')
+        result.note.contains('appId 555')
         result.note.contains('cleaned up')
 
         and: 'the empty child created during the attempt was force-deleted'
         rawPaths == ['/app/createVisualRuleBuilderRule', '/installedapp/forcedelete/555/quiet']
+    }
+
+    def "create (graph) with paused=true pauses via the dedicated endpoint and verifies the pause state"() {
+        given: 'graph hub; the pause endpoint succeeds and the read-back reflects the pause'
+        enableWrite()
+        stubRawPage('<html>window.HubitatRuleBuilder20AppId = 800</html>')
+        def state800 = [name: null, rulePaused: false, ruleJson: null]
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            state800.name = b.name
+            state800.ruleJson = b.ruleJson
+            [name: b.name, ruleJson: b.ruleJson, validationErrors: []]
+        }
+        hubGet.register('/app/ruleBuilderPause/800/true') { params -> state800.rulePaused = true; '{"success":true}' }
+        hubGet.register('/app/ruleBuilder20Json/800') { params ->
+            json([name: state800.name, rulePaused: state800.rulePaused, ruleJson: state800.ruleJson, validationErrors: []])
+        }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Paused from birth', definition: graphDefinition(), paused: true, confirm: true])
+
+        then: 'the graph save body carries no rulePaused -- the pause rides its own endpoint'
+        !new JsonSlurper().parseText(posts[0].body as String).containsKey('rulePaused')
+        hubGet.calls*.path.contains('/app/ruleBuilderPause/800/true')
+
+        and:
+        result.success == true
+        result.verified == true
+        result.rulePaused == true
+    }
+
+    def "create (graph) with paused=true surfaces a pause-endpoint failure through the verification"() {
+        given: 'the save succeeds but the pause endpoint reports failure and the rule reads back unpaused'
+        enableWrite()
+        stubRawPage('<html>window.HubitatRuleBuilder20AppId = 802</html>')
+        def state802 = [name: null, rulePaused: false, ruleJson: null]
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            state802.name = b.name
+            state802.ruleJson = b.ruleJson
+            [name: b.name, ruleJson: b.ruleJson, validationErrors: []]
+        }
+        hubGet.register('/app/ruleBuilderPause/802/true') { params -> '{"success":false}' }
+        hubGet.register('/app/ruleBuilder20Json/802') { params ->
+            json([name: state802.name, rulePaused: state802.rulePaused, ruleJson: state802.ruleJson, validationErrors: []])
+        }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Stuck running', definition: graphDefinition(), paused: true, confirm: true])
+
+        then: 'verified covers the requested pause state, and the note names the failing endpoint'
+        result.success == false
+        result.verified == false
+        result.error.contains('pause ok: false')
+        result.note.contains('pause endpoint reported failure')
+    }
+
+    def "create (graph) whose save the hub rejects cleans up the shell and names the orphan appId"() {
+        given:
+        enableWrite()
+        stubRawPage('<html>window.HubitatRuleBuilder20AppId = 801</html>')
+        stubPostJson { path, body -> [success: false, errorMessage: 'bad graph'] }
+        hubGet.register('/installedapp/json/801') { params -> '' }  // post-cleanup existence probe: gone
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Rejected', definition: graphDefinition(), confirm: true])
+
+        then: 'structured rejection naming the orphan, with the forcedelete actually issued'
+        result.success == false
+        result.error.contains('Hub rejected the graph save')
+        result.error.contains('bad graph')
+        result.note.contains('appId 801')
+        rawPaths == ['/app/createVisualRuleBuilderRule', '/installedapp/forcedelete/801/quiet']
+    }
+
+    def "create returns a structured error when the builder page carries no appId window global"() {
+        given: 'firmware-shape drift: the create page has neither window global'
+        enableWrite()
+        stubRawPage('<html><body>maintenance mode</body></html>')
+
+        when:
+        def result = script.toolSetVisualRule([name: 'X', definition: classicDefinition(), confirm: true])
+
+        then: 'an envelope, not an uncaught exception'
+        noExceptionThrown()
+        result.success == false
+        result.error.contains('Creating the Visual Rule child app failed')
+        result.error.contains('HubitatRuleBuilderAppId')
+    }
+
+    def "create accepts the definition as a JSON string and round-trips it end-to-end"() {
+        given:
+        enableWrite()
+        stubRawPage('<html>window.HubitatRuleBuilderAppId = 1300</html>')
+        def savedState = [:]
+        stubPostJson { path, body -> savedState.putAll(new JsonSlurper().parseText(body) as Map); null }
+        hubGet.register('/app/ruleBuilder20Json/1300') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/1300') { params -> json(savedState) }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Stringly', definition: json(classicDefinition()), confirm: true])
+
+        then:
+        posts[0].path == '/app/ruleBuilderJson/1300'
+        new JsonSlurper().parseText(posts[0].body as String).whenNodes[0].triggerType == 'switch'
+        result.success == true
+        result.verified == true
+        result.format == 'classic'
+    }
+
+    def "create rejects a definition string that encodes a JSON array"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolSetVisualRule([name: 'X', definition: '[1,2,3]', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('JSON object')
     }
 
     @Unroll
@@ -420,6 +559,149 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.previousDefinition.whenNodes[0].switchEvent == 'Turns off'
     }
 
+    def "edit full replacement (graph) re-double-encodes ruleJson and returns the previous definition"() {
+        given: 'an existing graph rule storing the old graph as its ruleJson string'
+        enableWrite()
+        def state900 = [name: 'Graph rule', rulePaused: false, ruleJson: json(graphDefinition())]
+        hubGet.register('/app/ruleBuilder20Json/900') { params ->
+            json([name: state900.name, rulePaused: state900.rulePaused, ruleJson: state900.ruleJson, validationErrors: []])
+        }
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            state900.name = b.name
+            state900.ruleJson = b.ruleJson
+            [name: b.name, ruleJson: b.ruleJson, validationErrors: []]
+        }
+        def newDefinition = [version: 1,
+                             nodes: [[id: 'n1', type: 'trigger', deviceIds: [60]],
+                                     [id: 'n2', type: 'action', command: 'on'],
+                                     [id: 'n3', type: 'action', command: 'off']],
+                             edges: [[from: 'n1', to: 'n2'], [from: 'n2', to: 'n3']]]
+
+        when:
+        def result = script.toolSetVisualRule([appId: 900, definition: newDefinition, confirm: true])
+
+        then: 'the replacement graph rides the wire double-encoded: ruleJson is a JSON STRING in the POST body'
+        posts[0].path == '/app/ruleBuilder20Json/900'
+        def body = new JsonSlurper().parseText(posts[0].body as String)
+        body.ruleJson instanceof String
+        new JsonSlurper().parseText(body.ruleJson as String).nodes*.id == ['n1', 'n2', 'n3']
+
+        and: 'verified replacement with the prior graph returned as a recovery aid'
+        result.success == true
+        result.verified == true
+        result.created == false
+        result.format == 'graph'
+        result.definition.nodes*.id == ['n1', 'n2', 'n3']
+        result.previousDefinition.nodes*.id == ['n1', 'n2']
+    }
+
+    def "edit full replacement reports success=false when the read-back does not confirm the rename"() {
+        given: 'rule 42 answers every read with its OLD state -- the save never sticks'
+        enableWrite()
+        hubGet.register('/app/ruleBuilder20Json/42') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/42') { params ->
+            json([name: 'Old name', rulePaused: false] + classicDefinition())
+        }
+        stubPostJson()  // accepts the POST, but the read-back state above never changes
+
+        when:
+        def result = script.toolSetVisualRule([appId: 42, name: 'New name', definition: classicDefinition(), confirm: true])
+
+        then:
+        posts.size() == 1
+        result.success == false
+        result.verified == false
+        result.error.contains('did not confirm')
+        result.error.contains('name ok: false')
+        result.note.contains('hub_get_visual_rule')
+    }
+
+    def "edit full replacement (classic) with paused=true commits the pause inside the save POST body"() {
+        given:
+        enableWrite()
+        def state43 = [name: 'Door alert', rulePaused: false, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/43') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/43') { params -> json(state43) }
+        stubPostJson { path, body -> state43.putAll(new JsonSlurper().parseText(body) as Map); null }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 43, definition: classicDefinition(), paused: true, confirm: true])
+
+        then: 'the classic body always carries rulePaused, so the requested pause commits with the save'
+        new JsonSlurper().parseText(posts[0].body as String).rulePaused == true
+
+        and: 'no separate pause-endpoint call was needed'
+        !hubGet.calls*.path.any { it.toString().startsWith('/app/ruleBuilderPause/') }
+        result.success == true
+        result.verified == true
+        result.rulePaused == true
+    }
+
+    def "rename-only on a never-saved graph rule POSTs the default empty template, not a blank ruleJson"() {
+        given: 'a freshly-created graph rule: stored ruleJson is blank'
+        enableWrite()
+        def state901 = [name: 'Unnamed rule', rulePaused: false, ruleJson: '']
+        hubGet.register('/app/ruleBuilder20Json/901') { params ->
+            json([name: state901.name, rulePaused: state901.rulePaused, ruleJson: state901.ruleJson, validationErrors: []])
+        }
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            state901.name = b.name
+            state901.ruleJson = b.ruleJson
+            [name: b.name, ruleJson: b.ruleJson, validationErrors: []]
+        }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 901, name: 'Now named', confirm: true])
+
+        then: 'the builder-UI default template rode the rename instead of an empty string'
+        def body = new JsonSlurper().parseText(posts[0].body as String)
+        body.ruleJson instanceof String
+        body.ruleJson.contains('sampleTrigger')
+        new JsonSlurper().parseText(body.ruleJson as String).nodes.size() == 2
+
+        and:
+        result.success == true
+        result.verified == true
+        result.name == 'Now named'
+    }
+
+    def "pause-only reports success=false verified=false when the read-back pause state does not match"() {
+        given: 'the pause endpoint claims success but the rule reads back unpaused'
+        enableWrite()
+        def state902 = [name: 'Hall light', rulePaused: false, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/902') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/902') { params -> json(state902) }
+        hubGet.register('/app/ruleBuilderPause/902/true') { params -> '{"success":true}' }  // lies: state never flips
+
+        when:
+        def result = script.toolSetVisualRule([appId: 902, paused: true, confirm: true])
+
+        then:
+        result.success == false
+        result.verified == false
+        result.error.contains('did not confirm')
+        result.note.contains('hub_get_visual_rule')
+    }
+
+    def "pause-only surfaces a non-JSON pause-endpoint response as a structured failure"() {
+        given: 'hub answers the pause GET with a login page instead of {success}'
+        enableWrite()
+        def state903 = [name: 'Hall light', rulePaused: false, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/903') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/903') { params -> json(state903) }
+        hubGet.register('/app/ruleBuilderPause/903/true') { params -> 'Please log in' }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 903, paused: true, confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('Pause/resume failed')
+        result.note.contains('non-JSON')
+    }
+
     def "edit rename-only (graph) re-POSTs the existing ruleJson string under the new name"() {
         given:
         enableWrite()
@@ -444,8 +726,9 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         body.name == 'New name'
         body.ruleJson == ruleJsonStr
 
-        and:
+        and: 'success only via the read-back confirming the new name'
         result.success == true
+        result.verified == true
         result.format == 'graph'
         result.name == 'New name'
     }
@@ -466,6 +749,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         hubGet.calls*.path.contains('/app/ruleBuilderPause/9/true')
         posts.isEmpty()  // pause-only never re-saves the nodes
         result.success == true
+        result.verified == true
         result.format == 'classic'
         result.rulePaused == true
     }
@@ -551,6 +835,28 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.success == false
         result.verified == false
         result.note.contains('still reports')
+    }
+
+    def "delete whose post-delete existence probe throws reports verified=false, not a confirmed delete"() {
+        given: 'the rule type-gates fine, the delete is accepted, but the verification read dies'
+        enableWrite()
+        hubGet.register('/app/ruleBuilder20Json/911') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/911') { params ->
+            json([name: 'Flaky', rulePaused: false] + classicDefinition())
+        }
+        hubGet.register('/installedapp/json/911') { params -> throw new RuntimeException('socket timeout') }
+        stubRawDelete()
+
+        when:
+        def result = script.toolDeleteVisualRule([appId: 911, confirm: true])
+
+        then: 'an unknown read-back must not be reported as a confirmed delete'
+        result.success == false
+        result.verified == false
+        result.note.contains('verification read-back failed')
+
+        and: 'the recovery aid still rides along'
+        result.predeleteDefinition.whenNodes[0].triggerType == 'switch'
     }
 
     def "delete refuses a non-VRB appId and names its real type"() {
@@ -666,6 +972,23 @@ class ToolVisualRulesSpec extends ToolSpecBase {
 
         when:
         def response = mcpDriver.callTool('hub_set_visual_rule', [name: 'X', definition: [whenNodes: [], thenNodes: [], elseNodes: []]])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('SAFETY CHECK FAILED')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @Unroll
+    def "hub_delete_visual_rule via dispatch returns -32602 when confirm is not provided (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+
+        when:
+        def response = mcpDriver.callTool('hub_delete_visual_rule', [appId: 31])
 
         then:
         response.error.code == -32602
