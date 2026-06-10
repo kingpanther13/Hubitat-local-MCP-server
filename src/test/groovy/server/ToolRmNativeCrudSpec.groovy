@@ -365,6 +365,56 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.any { it.path == "/installedapp/update/json" && it.body._action_update == "Done" }
     }
 
+    def "_rmSubmitMainPageDone re-submits capability device ids from statusJson #idsField (value is null for device settings)"() {
+        given:
+        // Button Controller-5.1 keeps its device picker ON mainPage (unlike RM,
+        // whose pickers live on sub-pages), and statusJson reports capability
+        // settings with value=null -- the assigned ids live in
+        // deviceIdsForDeviceList (with a deviceList id->label map alongside).
+        // Rebuilding the Done form from `value` alone posts settings[buttonDev]=""
+        // with _action_update=Done, which actively CLEARS the assignment
+        // (verified live on fw 2.5.0.143 -- the button-rule e2e buttonDev wipe).
+        hubGet.register('/installedapp/configure/json/600/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 600, name: "Button Controller-5.1", label: "BC", installed: true, version: 3,
+                      appType: [name: "Button Controller-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", install: true, error: null, sections: [
+                    [title: "", input: [[name: "buttonDev", type: "capability.pushableButton", multiple: true, required: true, submitOnChange: true]]]
+                ]],
+                settings: [buttonDev: ["479": "BtnDev"]],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/600') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 600],
+                appSettings: [[name: "buttonDev", type: "capability.pushableButton", multiple: true, value: null] + [(idsField): idsValue]],
+                eventSubscriptions: [], scheduledJobs: [], appState: [:], childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        script._rmSubmitMainPageDone(600)
+
+        then: "the Done submit carries the live device id -- NOT an empty value that wipes it"
+        def done = posts.find { it.path == "/installedapp/update/json" && it.body._action_update == "Done" }
+        done != null
+        done.body["settings[buttonDev]"] == "479"
+        done.body["buttonDev.type"] == "capability.pushableButton"
+        done.body["buttonDev.multiple"] == "true"
+        done.body.version == "3"
+
+        where:
+        idsField                 | idsValue
+        "deviceIdsForDeviceList" | [479]
+        "deviceList"             | ["479": "BtnDev"]
+    }
+
     def "create_rm_rule force-deletes orphan when setup fails after createchild succeeds"() {
         given:
         enableWrite()

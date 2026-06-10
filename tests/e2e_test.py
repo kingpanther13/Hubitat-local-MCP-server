@@ -903,10 +903,30 @@ class TestRunner:
             controller_id = ctrl.get("appId")
             assert controller_id, f"button controller create did not return an appId: {ctrl}"
             self.created_native_app_ids.append(str(controller_id))
-            self.client.call_tool("hub_manage_native_rules_and_apps", {
+            assigned = self.client.call_tool("hub_manage_native_rules_and_apps", {
                 "tool": "hub_set_native_app",
                 "args": {"appId": controller_id, "settings": {"buttonDev": [device_id]}, "confirm": True},
             })
+            assert assigned.get("success") is not False, f"buttonDev settings write reported failure: {assigned}"
+            assert "buttonDev" in (assigned.get("settingsApplied") or []), (
+                f"buttonDev fell out of the page schema "
+                f"(settingsSkipped={assigned.get('settingsSkipped')}): {assigned}"
+            )
+            # Read the assignment back BEFORE the buttonRule step. The write used
+            # to report success while the trailing mainPage Done re-submitted
+            # settings[buttonDev]="" and wiped it (statusJson reports value=null
+            # for capability settings), so the failure surfaced one call later
+            # with no diagnostics. Asserting the persisted shape here pins the
+            # _rmLiveSettingsFromStatus fix and fails AT the write on regression.
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": controller_id, "includeSettings": True},
+            })
+            persisted = (cfg.get("settings") or {}).get("buttonDev")
+            assert isinstance(persisted, dict) and persisted, (
+                f"buttonDev did not persist on controller {controller_id} "
+                f"(settings.buttonDev={persisted!r})"
+            )
 
             # Create the button rule (button 1 pushed) through the controller.
             br = self.client.call_tool("hub_manage_native_rules_and_apps", {

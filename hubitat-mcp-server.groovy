@@ -19399,6 +19399,32 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
  * etc.). Caller passes the current page name + parent page + the href
  * params (so paramsForPage routes correctly).
  */
+/**
+ * Rebuild a name->value map of an app's live settings from statusJson
+ * appSettings, for re-submitting a full page form. Capability/device
+ * settings report value=null even when devices ARE assigned -- the live
+ * ids sit in deviceIdsForDeviceList (with a deviceList id->label map
+ * alongside). Rebuilding a form from `value` alone re-submits
+ * settings[<name>]="" which, combined with _action_update=Done, actively
+ * CLEARS the device assignment (verified live on fw 2.5.0.143: the Button
+ * Controller buttonDev wipe -- RM rules never hit it on mainPage because
+ * their device pickers live on sub-pages). Device-backed null values are
+ * reconstructed as a List of id strings so _rmBuildSettingsBody
+ * serializes them as the CSV the form expects.
+ */
+private Map _rmLiveSettingsFromStatus(Map status) {
+    return (status?.appSettings ?: []).collectEntries { s ->
+        def v = s?.value
+        if (v == null) {
+            def ids = (s?.deviceIdsForDeviceList instanceof List && s.deviceIdsForDeviceList) ?
+                s.deviceIdsForDeviceList :
+                ((s?.deviceList instanceof Map && s.deviceList) ? s.deviceList.keySet().toList() : null)
+            if (ids) v = ids.collect { it.toString() }
+        }
+        [(s?.name?.toString()): v]
+    }
+}
+
 private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage, String hrefName, Map hrefParams) {
     // Sub-pages with route params (periodic.n, etc.) lose state.<paramKey>
     // on a plain GET — `_rmFetchConfigJson(appId, page)` returns the page
@@ -19410,7 +19436,7 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
     def cfg = navResp ? [configPage: navResp.configPage, app: navResp.app] : _rmFetchConfigJson(appId, page)
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def status = _rmFetchStatusJson(appId)
-    def liveSettings = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
+    def liveSettings = _rmLiveSettingsFromStatus(status)
     def settingsMap = [:]
     schema.each { name, meta ->
         def v = liveSettings[name]
@@ -19487,7 +19513,7 @@ private void _rmSubmitMainPageDone(Integer appId) {
     }
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def status = _rmFetchStatusJson(appId)
-    def liveSettings = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
+    def liveSettings = _rmLiveSettingsFromStatus(status)
     def settingsMap = [:]
     schema.each { name, meta ->
         def v = liveSettings[name]
