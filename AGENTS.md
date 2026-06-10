@@ -94,6 +94,10 @@ Defaults for unannotated tools are deliberately cautious (non-read-only, potenti
 
 **Annotations are UX/risk hints, NOT a security boundary.** The MCP blog is explicit: *"They don't make the model resist prompt injection… annotations alone are not a control."* Safety in this project still requires the universal Read / Write master gates and `confirm` parameter checks. Annotations are advisory metadata to the client, nothing more. The annotation is the *declaration* of a tool's read/write nature; the masters are the *enforcement* of it (see Permission model below).
 
+### Display metadata — friendly title + menu summary, every tool and gateway
+
+Every leaf tool AND every gateway has an entry in `getToolDisplayMeta()` (main file): a Title-Case `title` (emitted on the wire as MCP `annotations.title` — the friendly name claude.ai and other clients render instead of the bare name; also fed into the BM25 search corpus) and a one-sentence `summary` (≤140 chars, single line, ends with a period — rendered only in the Advanced per-tool overrides menu, never sent to the LLM). Completeness, title uniqueness, and shape are spec-guarded (`ToolDisplayMetaSpec`). When adding, renaming, or removing a tool or gateway, update the map in the same PR.
+
 ### Permission model
 
 Every MCP tool is gated. The layers, from broadest to narrowest:

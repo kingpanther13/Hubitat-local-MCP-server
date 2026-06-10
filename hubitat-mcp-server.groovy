@@ -295,18 +295,16 @@ def advancedOverridesPage() {
         section {
             paragraph "Deny-only fine-grained control. These selections are applied <b>below</b> the Read/Write masters: they can only turn things OFF, never re-enable something a master already hid. A disabled tool disappears from tools/list and hub_search_tools everywhere it appears (including shared tools in multiple gateways) and returns a clear error if a cached client still calls it; it remains documented in hub_get_tool_guide."
         }
+        def overrideOptions = buildOverrideOptions()
         section("Disable whole gateways") {
-            def gwNames = getGatewayConfig().keySet().sort()
             input "disabled_gateways", "enum", title: "Gateways to disable",
                   description: "Every tool inside a disabled gateway is hidden (including tools shared with other gateways).",
-                  options: gwNames, multiple: true, required: false, submitOnChange: true
+                  options: overrideOptions.gateways, multiple: true, required: false, submitOnChange: true
         }
         section("Disable individual tools") {
-            def gwConfig = getGatewayConfig()
-            def toolNames = getAllToolDefinitions()*.name.findAll { !gwConfig.containsKey(it) }.sort()
             input "disabled_tools", "enum", title: "Tools to disable",
                   description: "Each tool is listed once; disabling it removes it from every gateway it belongs to.",
-                  options: toolNames, multiple: true, required: false, submitOnChange: true
+                  options: overrideOptions.tools, multiple: true, required: false, submitOnChange: true
         }
         section {
             def dt = (settings.disabled_tools ?: []).size()
@@ -316,6 +314,36 @@ def advancedOverridesPage() {
             href name: "backToMainFromAdvanced", page: "mainPage", title: "Back"
         }
     }
+}
+
+// Builds the value->label option maps for the Advanced per-tool overrides
+// pickers. The KEYS must stay the bare gateway/tool names -- the stored
+// disabled_gateways/disabled_tools settings are matched by name in
+// getEffectiveDisabledTools(); only the labels are display sugar. A gateway
+// is tagged [read] only when EVERY member tool is read-only.
+def buildOverrideOptions() {
+    def displayMeta = getToolDisplayMeta()
+    def readOnlyNames = getReadOnlyToolNames()
+    def gwConfig = getGatewayConfig()
+    def gateways = gwConfig.keySet().sort().collectEntries { gwName ->
+        def pureRead = gwConfig[gwName].tools.every { readOnlyNames.contains(it) }
+        [(gwName): overrideOptionLabel(gwName, displayMeta[gwName], pureRead)]
+    }
+    def tools = getAllToolDefinitions()*.name.findAll { !gwConfig.containsKey(it) }.sort().collectEntries { toolName ->
+        [(toolName): overrideOptionLabel(toolName, displayMeta[toolName], readOnlyNames.contains(toolName))]
+    }
+    return [gateways: gateways, tools: tools]
+}
+
+// One option label for the Advanced per-tool overrides pickers: bare name,
+// friendly name, read/write marker, then a one-sentence summary -- scannable
+// without having to decode the bare tool names. Falls back to the bare name
+// when a display-meta entry is missing so the picker never renders blank.
+def overrideOptionLabel(String name, Map meta, boolean isReadOnly) {
+    def title = meta?.title ?: name
+    def tag = isReadOnly ? "read" : "write"
+    def summary = meta?.summary ? " — ${meta.summary}" : ""
+    return "${name} — ${title} [${tag}]${summary}"
 }
 
 def appButtonHandler(btn) {
@@ -1616,12 +1644,159 @@ def getReadOnlyToolNames() {
     ] as Set
 }
 
-// Returns the MCP `annotations` map for a leaf tool name. Both keys are
+// Human-facing display metadata for every leaf tool AND every gateway:
+// `title` is the friendly name (MCP `annotations.title` -- what claude.ai's
+// tool list renders instead of the bare name), `summary` is a one-sentence
+// plain-English description for the Advanced per-tool overrides menu.
+// Summaries are deliberately NOT the LLM-facing tool descriptions -- those
+// stay in the tool definitions; these are for humans scanning a settings UI.
+// Completeness (every tool + gateway covered, no stale entries) is spec-guarded.
+def getToolDisplayMeta() {
+    return [
+        // Devices
+        hub_list_devices: [title: "List Devices", summary: "List accessible devices with filtering, pagination, and field projection."],
+        hub_get_device: [title: "Get Device Details", summary: "Get one device's full details: attributes, commands, capabilities."],
+        hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
+        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device, or location events when no device is given."],
+        hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to a device."],
+        hub_update_device: [title: "Update Device Properties", summary: "Update a device's label, room, or preferences."],
+        hub_delete_device: [title: "Delete Device", summary: "Permanently delete a device from the hub (no undo)."],
+        hub_manage_virtual_device: [title: "Manage Virtual Device", summary: "Create or delete an MCP-managed virtual device."],
+        // Hub state + modes
+        hub_get_info: [title: "Get Hub Info", summary: "Comprehensive hub info: hardware, health, network, and MCP stats."],
+        hub_list_modes: [title: "List Modes", summary: "List the hub's location modes and which one is active."],
+        hub_set_mode: [title: "Set Mode", summary: "Change the hub's location mode (Home, Away, Night, etc.)."],
+        hub_get_hsm_status: [title: "Get HSM Status", summary: "Get the current Hubitat Safety Monitor arm status."],
+        hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
+        // Hub utilities
+        hub_create_backup: [title: "Create Hub Backup", summary: "Create a full hub backup (required before destructive writes)."],
+        hub_get_update_status: [title: "Check for Updates", summary: "Check for newer MCP server versions and any pending hub firmware update."],
+        hub_report_issue: [title: "Generate Diagnostic Report", summary: "Generate a comprehensive diagnostic report for bug reports."],
+        // Reference
+        hub_get_tool_guide: [title: "Get Tool Guide", summary: "Deep-reference guide for MCP tool topics beyond the tool descriptions."],
+        hub_search_tools: [title: "Search Tools", summary: "Search all MCP tools by natural-language query."],
+        // Custom rules (legacy MCP engine)
+        hub_get_custom_rule: [title: "Get Custom Rule", summary: "List custom-engine rules or get one rule's details and diagnostics."],
+        hub_create_custom_rule: [title: "Create Custom Rule", summary: "Create a new custom-engine automation rule."],
+        hub_update_custom_rule: [title: "Update Custom Rule", summary: "Update a custom-engine rule's triggers, conditions, actions, or enabled state."],
+        hub_delete_custom_rule: [title: "Delete Custom Rule", summary: "Permanently delete a custom-engine rule (auto-backs up first)."],
+        hub_test_custom_rule: [title: "Test Custom Rule", summary: "Dry-run a custom-engine rule without executing its actions."],
+        hub_export_custom_rule: [title: "Export Custom Rule", summary: "Export a custom-engine rule to JSON in the hub File Manager."],
+        hub_import_custom_rule: [title: "Import Custom Rule", summary: "Import a custom-engine rule from exported JSON as a new rule."],
+        hub_clone_custom_rule: [title: "Clone Custom Rule", summary: "Clone an existing custom-engine rule (the copy starts disabled)."],
+        // Variables
+        hub_list_variables: [title: "List Variables", summary: "List all hub and rule-engine variables."],
+        hub_get_variable: [title: "Get Variable", summary: "Get a variable's value and metadata."],
+        hub_set_variable: [title: "Set Variable", summary: "Set an existing variable's value."],
+        hub_create_variable: [title: "Create Variable", summary: "Create a new hub variable."],
+        hub_delete_variable: [title: "Delete Variable", summary: "Permanently delete a hub variable and any connector it has."],
+        hub_create_connector: [title: "Create Variable Connector", summary: "Create a virtual-device connector for a hub variable."],
+        hub_delete_connector: [title: "Delete Variable Connector", summary: "Remove a hub variable's connector device."],
+        hub_list_variable_changes: [title: "List Variable Changes", summary: "Recent hub-variable changes since the MCP app last started."],
+        // Rooms
+        hub_list_rooms: [title: "List Rooms", summary: "List all rooms with IDs, names, and device counts."],
+        hub_get_room: [title: "Get Room Details", summary: "Get one room's details with its assigned devices."],
+        hub_create_room: [title: "Create Room", summary: "Create a new room, optionally assigning devices."],
+        hub_delete_room: [title: "Delete Room", summary: "Permanently delete a room."],
+        hub_update_room: [title: "Rename Room", summary: "Rename an existing room."],
+        // Destructive hub ops
+        hub_reboot: [title: "Reboot Hub", summary: "Reboot the hub (1-3 minutes of downtime)."],
+        hub_shutdown: [title: "Shut Down Hub", summary: "Power the hub off; a physical restart is required afterwards."],
+        // Diagnostics + logs
+        hub_get_logs: [title: "Get Hub Logs", summary: "Hub log entries with level, source, regex, and time-window filters."],
+        hub_get_performance_stats: [title: "Get Performance Stats", summary: "Device and app performance statistics."],
+        hub_get_jobs: [title: "Get Scheduled Jobs", summary: "Scheduled jobs, running jobs, and hub actions."],
+        hub_get_debug_logs: [title: "Get MCP Debug Logs", summary: "MCP debug log entries, or logging-system status."],
+        hub_delete_debug_logs: [title: "Clear MCP Debug Logs", summary: "Clear all MCP debug log entries."],
+        hub_set_log_level: [title: "Set MCP Log Level", summary: "Set the MCP log level (debug, info, warn, error)."],
+        hub_get_metrics: [title: "Get Hub Metrics", summary: "Hub metrics with CSV trend history."],
+        hub_get_memory_history: [title: "Get Memory History", summary: "Free-memory and CPU-load history with summary stats."],
+        hub_call_gc: [title: "Force Garbage Collection", summary: "Force JVM garbage collection and report freed memory."],
+        hub_get_device_health: [title: "Get Device Health", summary: "Find stale devices, ICMP-ping LAN hosts, and optionally blink the hub identify LED."],
+        hub_get_radio_details: [title: "Get Radio Details", summary: "Z-Wave and Zigbee radio details and device tables."],
+        hub_call_zwave_repair: [title: "Run Z-Wave Repair", summary: "Start a Z-Wave network repair (5-30 minutes)."],
+        hub_list_captured_states: [title: "List Captured States", summary: "List saved device state snapshots."],
+        hub_delete_captured_state: [title: "Delete Captured State", summary: "Delete one or all captured device state snapshots."],
+        // File Manager
+        hub_list_files: [title: "List Files", summary: "List all files in the hub File Manager."],
+        hub_read_file: [title: "Read File", summary: "Read a File Manager file's contents."],
+        hub_write_file: [title: "Write File", summary: "Create or update a File Manager file (auto-backs up existing)."],
+        hub_delete_file: [title: "Delete File", summary: "Delete a File Manager file (auto-backs up first)."],
+        // Apps / drivers / libraries / backups / HPM
+        hub_list_apps: [title: "List Apps", summary: "List installed app types or enumerate app instances."],
+        hub_list_drivers: [title: "List Drivers", summary: "List all installed drivers."],
+        hub_list_libraries: [title: "List Libraries", summary: "List installed Groovy libraries."],
+        hub_get_source: [title: "Get Source Code", summary: "Read Groovy source for an app, driver, or library."],
+        hub_list_backups: [title: "List Code Backups", summary: "List auto-created source-code backups."],
+        hub_get_backup: [title: "Get Code Backup", summary: "Read source code from a backup."],
+        hub_create_app: [title: "Install App", summary: "Install a new app from source, a File Manager file, or a URL, or instantiate installed app code."],
+        hub_create_driver: [title: "Install Driver", summary: "Install one or more drivers from source, File Manager files, or a URL."],
+        hub_update_app: [title: "Update App Code", summary: "Modify an existing app's source code."],
+        hub_update_driver: [title: "Update Driver Code", summary: "Modify an existing driver's source code."],
+        hub_create_library: [title: "Install Library", summary: "Install a new Groovy library."],
+        hub_update_library: [title: "Update Library Code", summary: "Modify an existing library's source code."],
+        hub_delete_item: [title: "Delete Code Item", summary: "Permanently delete an app, driver, or library (auto-backs up first)."],
+        hub_restore_backup: [title: "Restore Code Backup", summary: "Restore an app or driver to a backed-up version."],
+        hub_list_device_dependents: [title: "List Device Dependents", summary: "Find all apps that reference a device."],
+        hub_get_app_config: [title: "Get App Configuration", summary: "Read an installed app's configuration page."],
+        hub_list_app_pages: [title: "List App Pages", summary: "List known page names for a multi-page app."],
+        hub_list_hpm_packages: [title: "List HPM Packages", summary: "List packages tracked by Hubitat Package Manager, optionally with drift detection."],
+        // Bundles
+        hub_list_bundles: [title: "List Bundles", summary: "List installed code bundles and what they contain."],
+        hub_install_bundle: [title: "Install Bundle", summary: "Install a code bundle (.zip) from a URL."],
+        hub_delete_bundle: [title: "Delete Bundle", summary: "Delete an installed code bundle."],
+        hub_export_bundle: [title: "Export Bundle", summary: "Export an installed bundle's zip to the File Manager."],
+        // Native Rule Machine + classic apps
+        hub_list_rules: [title: "List Rule Machine Rules", summary: "List all Rule Machine rules."],
+        hub_call_rule: [title: "Trigger Rule Machine Rule", summary: "Trigger a Rule Machine rule, run its actions, or stop it."],
+        hub_set_rule_paused: [title: "Pause or Resume Rule", summary: "Pause or resume a Rule Machine rule."],
+        hub_set_rule_private_boolean: [title: "Set Rule Private Boolean", summary: "Set a Rule Machine rule's private boolean."],
+        hub_set_rule: [title: "Author Rule Machine Rule", summary: "Create or edit a Rule Machine rule."],
+        hub_get_rule_health: [title: "Get Rule Health", summary: "Read-only health check on any installed app."],
+        hub_set_native_app: [title: "Create or Edit Native App", summary: "Create or edit a classic native app (Room Lighting, Notifier, etc.)."],
+        hub_delete_native_app: [title: "Delete Native App", summary: "Delete a classic native app (auto-snapshot first)."],
+        hub_clone_native_app: [title: "Clone Native App", summary: "Clone an existing classic app."],
+        hub_export_native_app: [title: "Export Native App", summary: "Export a classic app to JSON, optionally saving it to the File Manager."],
+        hub_import_native_app: [title: "Import Native App", summary: "Import previously exported app JSON as a new instance."],
+        // MCP self-administration (Developer Mode)
+        hub_update_mcp_settings: [title: "Update MCP Settings", summary: "Update the MCP app's own settings (Developer Mode)."],
+        hub_update_package: [title: "Deploy MCP Package", summary: "Full repair-install of the MCP package at a git ref (Developer Mode)."],
+        // Gateways
+        hub_read_apps_code: [title: "Read Apps and Code", summary: "Read-only: apps, drivers, libraries, source code, backups, and HPM packages."],
+        hub_read_devices: [title: "Read Devices", summary: "Read-only device queries: list, details, attributes, events."],
+        hub_read_diagnostics: [title: "Read Diagnostics", summary: "Read-only diagnostics: logs, performance, memory, radios, device health."],
+        hub_read_files: [title: "Read Files", summary: "Read-only File Manager access: list and read files."],
+        hub_read_rooms: [title: "Read Rooms", summary: "Read-only room queries: list rooms and room details."],
+        hub_read_rules: [title: "Read Rules", summary: "Read-only rule introspection: custom rules, Rule Machine rules, rule health."],
+        hub_read_variables: [title: "Read Variables", summary: "Read-only hub-variable queries: list, get, recent changes."],
+        hub_manage_custom_rules: [title: "Manage Custom Rules", summary: "Create, update, delete, test, export, import, and clone custom-engine rules."],
+        hub_manage_devices: [title: "Manage Devices", summary: "Control devices and update device properties, plus device queries."],
+        hub_manage_variables: [title: "Manage Variables", summary: "Create, set, and delete hub variables and their connectors."],
+        hub_manage_rooms: [title: "Manage Rooms", summary: "Create, rename, and delete rooms."],
+        hub_manage_destructive_ops: [title: "Manage Destructive Ops", summary: "Reboot or shut down the hub, or permanently delete devices."],
+        hub_manage_code: [title: "Manage Code", summary: "Install, update, and delete apps, drivers, libraries, and code bundles; restore backups."],
+        hub_manage_logs: [title: "Manage Logs", summary: "Read hub logs and performance stats; clear MCP debug logs and set log level."],
+        hub_manage_diagnostics: [title: "Manage Diagnostics", summary: "Diagnostics plus maintenance actions: GC, Z-Wave repair, state snapshots."],
+        hub_manage_files: [title: "Manage Files", summary: "List, read, write, and delete File Manager files."],
+        hub_manage_rule_machine: [title: "Manage Rule Machine", summary: "Author, trigger, pause, inspect, and delete Rule Machine rules."],
+        hub_manage_native_rules_and_apps: [title: "Manage Native Rules and Apps", summary: "Runtime control of Rule Machine rules plus create, edit, clone, export, import, and delete classic native apps."],
+        hub_manage_mcp: [title: "Manage MCP Server", summary: "Self-administer the MCP app's own settings (Developer Mode)."]
+    ]
+}
+
+// Returns the MCP `annotations` map for a leaf tool name. Both hint keys are
 // emitted explicitly so the wire payload is unambiguous regardless of which
-// spec-default a given client honours.
-def annotationsForLeaf(String toolName, Set readOnlyNames) {
+// spec-default a given client honours. When the caller passes the display-meta
+// map, the friendly name rides along as `annotations.title` (the field
+// claude.ai and other MCP clients render in place of the bare tool name).
+def annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta = null) {
     def isReadOnly = readOnlyNames.contains(toolName)
-    def ann = [readOnlyHint: isReadOnly]
+    def ann = [:]
+    def title = displayMeta?.get(toolName)?.title
+    if (title) {
+        ann.title = title as String
+    }
+    ann.readOnlyHint = isReadOnly
     if (!isReadOnly) {
         // destructiveHint is meaningful only when readOnlyHint=false (per spec).
         // Every write is treated as destructive -- matches the spec default and
@@ -1671,6 +1846,7 @@ def handleGateway(gatewayName, toolName, toolArgs) {
         def visibleSubTools = config.tools.findAll { !hidden.contains(it) }
         def defMap = applyDescriptionTransform(getAllToolDefinitions(), false)
             .collectEntries { [(it.name): it] }
+        def displayMeta = getToolDisplayMeta()
 
         return [
             gateway: gatewayName,
@@ -1679,6 +1855,8 @@ def handleGateway(gatewayName, toolName, toolArgs) {
             tools: visibleSubTools.collect { name ->
                 def d = defMap[name]
                 def entry = [name: name, description: d?.description, inputSchema: d?.inputSchema]
+                def title = displayMeta[name]?.title
+                if (title) entry.title = title as String
                 // Forward outputSchema when the tool declares one (PR1C). The flat
                 // tools/list path drops it for size; the gateway catalog is the
                 // disclosure surface where full schemas belong.
@@ -1858,6 +2036,7 @@ def getToolDefinitions() {
 
     // Hoist annotation source-of-truth once per call.
     def readOnlyNames = getReadOnlyToolNames()
+    def displayMeta = getToolDisplayMeta()
 
     // Flat mode: every tool advertised individually under its real name; hub_search_tools
     // is dropped because it only helps navigate gateway-hidden tools.
@@ -1880,7 +2059,7 @@ def getToolDefinitions() {
             // (this is the all-tools-individually surface). outputSchema is still
             // published in gateway mode (base tools) and the gateway catalog disclosure,
             // where the per-response budget has headroom.
-            tool.findAll { it.key != 'outputSchema' } + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames)]
+            tool.findAll { it.key != 'outputSchema' } + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta)]
         }
     }
 
@@ -1913,7 +2092,10 @@ def getToolDefinitions() {
                     args: [type: "object", description: "Arguments for the tool. Call with just tool name first to see required parameters."]
                 ]
             ],
-            annotations: annotationsForGateway(visibleSubTools, readOnlyNames)
+            // Gateway entries get their friendly name from the same display-meta
+            // map as the leaves; map-add keeps title first in the wire payload.
+            annotations: (displayMeta[gwName]?.title ? [title: displayMeta[gwName].title as String] : [:]) +
+                annotationsForGateway(visibleSubTools, readOnlyNames)
         ]]
     }
 
@@ -1928,7 +2110,7 @@ def getToolDefinitions() {
         // readOnlyHint (not just the annotations map) is the load-bearing
         // signal -- a partial pre-populated map without readOnlyHint still
         // needs the leaf classifier to merge in the missing key.
-        tool.annotations?.containsKey('readOnlyHint') ? tool : tool + [annotations: (tool.annotations ?: [:]) + annotationsForLeaf(tool.name as String, readOnlyNames)]
+        tool.annotations?.containsKey('readOnlyHint') ? tool : tool + [annotations: (tool.annotations ?: [:]) + annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta)]
     }
 }
 
@@ -2241,9 +2423,11 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
 
 Create a new automation rule (MCP sandbox engine). Call `hub_get_tool_guide(section='rules')` for structure, syntax, and examples.
 
+[[FLAT_TRIM]]
 Trigger types: device_event (supports duration, multi-device), button_event, time (HH:mm/sunrise/sunset+offset), periodic, mode_change, hsm_change
 Condition types: device_state, device_was, time_range, mode, variable, days_of_week, sun_position, hsm_status
 Action types: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay, if_then_else, cancel_delayed, repeat, stop, log, set_thermostat, http_request, speak, comment, set_valve, set_fan_speed, set_shade, variable_math
+[[/FLAT_TRIM]]
 
 Verify rule after creation.""",
             inputSchema: [
@@ -2687,7 +2871,9 @@ def _getAllToolDefinitions_part2() {
             name: "hub_update_package",
             description: """Developer Mode self-deploy: full HPM-repair of the MCP package at a git ref in one call -- OVERRIDES whatever is installed, the same way Hubitat Package Manager's Repair does, but anchored to packageManifest.json AT `ref` so an UNMERGED PR installs (HPM repair only reads the published manifest).
 
+[[FLAT_TRIM]]
 Flow: fetch packageManifest.json at `ref` -> install every declared library BUNDLE first (the hub fetches + unpacks the .zip, overwriting libraries in place) -> then deploy every declared app, the SELF app (mcp / "MCP Rule Server", the running parent) LAST so its recompile (which can drop the response, #237) is the final act. Deploys the parent app code class, the child app (mcp / "MCP Rule"), AND the library bundle -- each app's Apps Code class id is resolved at runtime from /hub2/userAppTypes by namespace+name (not hard-coded). Does NOT touch app INSTANCES, undeclared drivers, or anything outside this package's manifest.
+[[/FLAT_TRIM]]
 
 Brick-safe: if ANYTHING before the self app save fails (app/manifest fetch, an unresolved app class, a bundle install, a non-self app), it aborts BEFORE touching the self app -- the running server is left exactly as-is and still updatable via hub_update_app, the always-available escape hatch. Self-modification is gated by this tool's own enableDeveloperMode check (it deploys by Apps Code CLASS id, so hub_update_app's instance-id self-update guard does not fire here).
 
@@ -4314,7 +4500,9 @@ Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, l
 
 Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value), and `embeddedActions` — clickable button affordances embedded in paragraph HTML (RM 5.1 wizards expose "Create New Trigger", "Edit Trigger", "Delete Trigger" etc. as `<div class='submitOnChange'>` elements rather than schema inputs; this field surfaces them with their button name + stateAttribute so hub_set_rule can drive them). Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything.
 
+[[FLAT_TRIM]]
 Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after hub_list_apps (scope='instances') / hub_list_device_dependents narrows the field.
+[[/FLAT_TRIM]]
 
 Workflow: (1) Get the appId from hub_list_apps (scope='instances', all apps), hub_list_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not hub_get_custom_rule, which only handles MCP-native rules), or hub_list_apps (scope='instances') with filter=parents to explore app hierarchy. (2) Call hub_get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call hub_list_app_pages first to discover available page names (the pageName param lists the common HPM / RM / Room Lighting pages).
 
@@ -4685,7 +4873,9 @@ Requires the Write master + confirm=true + recent hub backup.""",
                         type: "object",
                         description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or call `hub_get_tool_guide(section='set_rule_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed.[[FLAT_TRIM]] (Exception: if updateRule itself is rejected the response carries `subscriptionsNotLive: true` -- see PARTIAL-SUCCESS HANDLING for the recovery path.)[[/FLAT_TRIM]] (Bulk addTriggers[] fires updateRule once at the end of the batch.)
 
+[[FLAT_TRIM]]
 Capability families (NAMES here; full per-field specs via addTrigger:{discover:true} or hub_get_tool_guide(section='set_rule_reference')): Device-state (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source) = capability + deviceIds + state, optional allOfThese for "all of these"; Numeric (Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints) = capability + deviceIds + comparator + value; Button = capability='Button' + deviceIds + buttonNumber + state; Custom Attribute = capability='Custom Attribute' + deviceIds + attribute + comparator + value; Time / Sunrise / Sunset = capability='Certain Time (and optional date)' + time + atTime ('HH:mm' = daily-recurring, full ISO datetime = one-shot dated) + offset; Mode = capability='Mode' + state (name) or modeIds; Periodic Schedule = capability='Periodic Schedule' + periodic={frequency, everyN, ...}. Modifier: andStays={hours,minutes,seconds} on any device-state/numeric trigger.
+[[/FLAT_TRIM]]
 
 Optional fields on every spec:
   - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
@@ -4809,7 +4999,9 @@ Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the respon
                         type: "object",
                         description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: docs/rm_action_subtype_schemas.md (or pass `addAction: {discover: true}` for the live structured schema -- returns immediately, no hub mutation). Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. No trailing updateRule call is needed from the caller: doActPage->selectActions navigation self-bakes the action into the rule's actions[] map.
 
-Capability families (NAMES here; full per-field specs via addAction:{discover:true} or hub_get_tool_guide(section='set_rule_reference')): switch (on/off/toggle/flash, setPerMode/choosePerMode); dimmer (setLevel/toggle/adjust/fade/stopFade/startRaiseLower/stopChanging/setLevelPerMode); color; colorTemp; button (push/pushPerMode/choosePerMode); runCommand (any driver command + deviceIds + parameters, literal or hub-variable-sourced); lock; thermostat; shade; fan; mode (setMode + modeName or modeId); setVariable (variable + value or sourceVariable); log / notification / httpGet / httpPost / ping; volume / mute / chime / siren; privateBoolean / runRule / cancelTimers / pauseRule (+ ruleIds); capture / restore / refresh / poll / disableDevice; fileWrite / fileAppend / fileDelete; zwavePoll; flow control (delay [hours/minutes/seconds or a variable-sourced seconds] / delayPerMode / cancelDelay / repeat / stopRepeat / repeatWhile / waitExpression / waitEvents / ifThen / elseIf / else / endIf / exitRule / comment). Most take deviceIds + action + fields; the expression-based ones (ifThen / elseIf / repeatWhile / waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents action per rule (RM stores wait events globally, not per-action).
+[[FLAT_TRIM]]
+Capability families (NAMES here; full per-field specs via addAction:{discover:true} or hub_get_tool_guide(section='set_rule_reference')): switch (on/off/toggle/flash, setPerMode/choosePerMode); dimmer (setLevel/toggle/adjust/fade/stopFade/startRaiseLower/stopChanging/setLevelPerMode); color; colorTemp; button (push/pushPerMode/choosePerMode); runCommand (any driver command + deviceIds + parameters, literal or hub-variable-sourced); lock; thermostat; shade; fan; mode (setMode + modeName or modeId); setVariable (variable + value or sourceVariable); log / notification / httpGet / httpPost / ping; volume / mute / chime / siren; privateBoolean / runRule / cancelTimers / pauseRule (+ ruleIds); capture / restore / refresh / poll / disableDevice; fileWrite / fileAppend / fileDelete; zwavePoll; flow control (delay [hours/minutes/seconds or a variable-sourced seconds] / delayPerMode / cancelDelay / repeat / stopRepeat / repeatWhile / waitExpression / waitEvents / ifThen / elseIf / else / endIf / exitRule / comment). Most take deviceIds + action + fields; the expression-based ones (ifThen / elseIf / repeatWhile / waitExpression) take expression={conditions:[...], operator|operators}.
+[[/FLAT_TRIM]] LIMIT: only ONE waitEvents action per rule (RM stores wait events globally, not per-action).
 
   Per-condition shape inside any expression:
     {capability: <RM-condition-cap>, deviceIds?: [<id>], state?: <enum-value>, comparator?: <op>, value?: <num>, attribute?: <name>, not?: true, rawSettings?: {...}}[[FLAT_TRIM]]
@@ -4999,13 +5191,13 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
         ],
         [
             name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report — the LLM uses this to detect broken rules without having to investigate via curl. Surfaces:
+            description: """Inspect a rule's current state and return a structured health report — the LLM uses this to detect broken rules without having to investigate via curl.[[FLAT_TRIM]] Surfaces:
 
   - configPage.error: page render failures (often caused by multi-flag DB poisoning)
   - label markers: '*BROKEN*' suffix RM appends when a rule has a malformed trigger or action
   - paragraph markers: '**Broken Trigger**', '**Broken Action**', '**Broken Condition**'
   - multiple-flag corruption: lists settings whose statusJson .multiple flag has been flipped to false despite the schema declaring multiple=true
-  - structural imbalance: walks actType.<N>/actSubType.<N> and flags IF/ELSE-IF/ELSE/END-IF or Repeat/End-Repeat blocks left unmatched by a false-failed mutation that committed post-response; RM does NOT surface this via the paragraph markers above
+  - structural imbalance: walks actType.<N>/actSubType.<N> and flags IF/ELSE-IF/ELSE/END-IF or Repeat/End-Repeat blocks left unmatched by a false-failed mutation that committed post-response; RM does NOT surface this via the paragraph markers above[[/FLAT_TRIM]]
 
 Run after every mutation to confirm the change didn't leave the rule in a broken state. hub_set_rule already attaches this report automatically as `health` on every response, but you can call it explicitly any time.
 
@@ -27791,7 +27983,7 @@ def toolSearchTools(args) {
         // Tokenize every corpus entry once, in corpus order, so docTokensAll[i] is the
         // tokenization of corpus[i] (a pure function of that entry). Plain List<List<String>>
         // (sandbox-safe; whole-value single assignment, no nested-subscript mutation).
-        docTokensAll = corpus.collect { bm25Tokenize("${it.name} ${it.description} ${it.params ?: ''} ${it.hints ?: ''}") }
+        docTokensAll = corpus.collect { bm25Tokenize("${it.name} ${it.title ?: ''} ${it.description} ${it.params ?: ''} ${it.hints ?: ''}") }
         atomicState.toolSearchCorpus = corpus
         atomicState.toolSearchTokens = docTokensAll
     }
@@ -27855,6 +28047,8 @@ def toolSearchTools(args) {
             description: tool.description,
             relevance: Math.round(r.score * 100) / 100.0
         ]
+        // Cached pre-title corpus entries (until updated() invalidates) have no title.
+        if (tool.title) entry.title = tool.title
         if (tool.gateway) {
             entry.gateway = tool.gateway
             entry.callAs = "Call via ${tool.gateway}(tool=\"${tool.name}\", args={...})"
@@ -27881,6 +28075,9 @@ private buildToolSearchCorpus() {
     // SHOULD (so hub_search_tools still matches "switch motion contact").
     def allDefs = applyDescriptionTransform(getAllToolDefinitions(), false)
     def allDefsMap = allDefs.collectEntries { [(it.name): it] }
+    // Friendly names join the searchable text: arcane bare names (hub_call_gc)
+    // become findable by their human phrasing ("garbage collection").
+    def displayMeta = getToolDisplayMeta()
 
     def corpus = []
 
@@ -27888,7 +28085,7 @@ private buildToolSearchCorpus() {
     allDefs.each { toolDef ->
         if (!proxiedNames.contains(toolDef.name)) {
             def params = toolDef.inputSchema?.properties?.keySet()?.join(" ") ?: ""
-            corpus << [name: toolDef.name, description: toolDef.description?.replaceAll(/\n+/, ' ')?.trim(), params: params, gateway: null]
+            corpus << [name: toolDef.name, title: displayMeta[toolDef.name]?.title, description: toolDef.description?.replaceAll(/\n+/, ' ')?.trim(), params: params, gateway: null]
         }
     }
 
@@ -27899,7 +28096,7 @@ private buildToolSearchCorpus() {
             def hints = config.searchHints?."${toolName}" ?: ""
             def fullDef = allDefsMap[toolName]
             def params = fullDef?.inputSchema?.properties?.keySet()?.join(" ") ?: ""
-            corpus << [name: toolName, description: "${summary} [${config.description}]", params: params, hints: hints, gateway: gwName]
+            corpus << [name: toolName, title: displayMeta[toolName]?.title, description: "${summary} [${config.description}]", params: params, hints: hints, gateway: gwName]
         }
     }
 

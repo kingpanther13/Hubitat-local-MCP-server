@@ -470,7 +470,7 @@ class TestRunner:
             self.created_variable_names.remove(name)
 
     # -----------------------------------------------------------------------
-    # GROUP 1: infrastructure (4 tests)
+    # GROUP 1: infrastructure (6 tests)
     # -----------------------------------------------------------------------
 
     @test("infrastructure")
@@ -494,6 +494,40 @@ class TestRunner:
             f"Expected 30 default tools (11 core + 19 gateways), got {len(default_tools)}: {sorted(names)}"
         assert "hub_update_package" in names, \
             "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
+
+    @test("infrastructure")
+    def test_tools_list_titles(self) -> None:
+        # Issue #245: every tools/list entry (core tools, gateways, dev-mode tools)
+        # carries a human-readable friendly name in annotations.title -- the field
+        # claude.ai renders in place of the bare tool name.
+        result = self.client.list_tools()
+        tools = result.get("tools", [])
+        assert tools, "tools/list returned no tools"
+        missing = [
+            t.get("name") for t in tools
+            if not isinstance((t.get("annotations") or {}).get("title"), str)
+            or not (t.get("annotations") or {}).get("title", "").strip()
+        ]
+        assert not missing, f"tools/list entries missing annotations.title: {missing}"
+        by_name = {t["name"]: t for t in tools}
+        info_title = by_name["hub_get_info"]["annotations"]["title"]
+        assert info_title == "Get Hub Info", f"hub_get_info title unexpected: {info_title!r}"
+        gw_title = by_name["hub_read_devices"]["annotations"]["title"]
+        assert gw_title == "Read Devices", f"hub_read_devices title unexpected: {gw_title!r}"
+
+    @test("infrastructure")
+    def test_gateway_catalog_titles(self) -> None:
+        # Issue #245: the gateway no-arg catalog disclosure also surfaces each
+        # sub-tool's friendly title next to its bare name and schema.
+        catalog = self.client.call_tool("hub_read_rooms", {})
+        assert catalog.get("mode") == "catalog", f"Expected catalog mode, got: {catalog.get('mode')}"
+        entries = catalog.get("tools", [])
+        assert entries, "hub_read_rooms catalog returned no tools"
+        missing = [e.get("name") for e in entries
+                   if not isinstance(e.get("title"), str) or not e.get("title", "").strip()]
+        assert not missing, f"gateway catalog entries missing title: {missing}"
+        rooms = next(e for e in entries if e.get("name") == "hub_list_rooms")
+        assert rooms["title"] == "List Rooms", f"hub_list_rooms catalog title unexpected: {rooms['title']!r}"
 
     @test("infrastructure")
     def test_health_endpoint(self) -> None:

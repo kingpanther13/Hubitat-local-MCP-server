@@ -737,6 +737,8 @@ Additionally, tools that modify or delete existing apps/drivers automatically ba
 
 Under **Settings > Advanced: Per-tool Overrides**, you can disable individual tools or whole gateways **below** the masters — these only turn things OFF, never re-enable. A disabled tool (or every tool inside a disabled gateway, including tools shared across gateways) drops from `tools/list` and `hub_search_tools`, and a cached call returns a distinct error: "…is disabled in Advanced settings (Per-tool Overrides)…". A disabled tool stays documented in `hub_get_tool_guide`. Use **Reset all overrides** to clear them.
 
+Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[write]` marker, and a one-sentence description — so you can tell what you're disabling without decoding the bare names. The same friendly names are published on `tools/list` as MCP `annotations.title`, so clients like claude.ai display them in their tool lists too.
+
 </details>
 
 <details>
