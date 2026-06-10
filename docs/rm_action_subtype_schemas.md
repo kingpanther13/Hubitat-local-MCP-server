@@ -141,7 +141,7 @@ Calls any device-driver command not exposed by higher-level capability mappings 
 | `command` | String | Required. Driver command name (e.g. 'flashOff', 'refresh', 'setLevel') |
 | `deviceIds` | List\<Integer\> | Required |
 | `capabilityFilter` | String | Default 'Switch' |
-| `parameters` | List | Literal: `[{type: 'number', value: 75}]`. Variable-sourced: `[{type: 'number', variable: 'myVar'}]`. Mix literal and variable entries across slots. Fails loud (success=false with descriptive error) if the hub does not reveal the xVar enum after enabling variable mode for a slot. |
+| `parameters` | List | Each slot is `{type, value}` (literal) or `{type, variable}` (variable-sourced). `type` is one of `'number'`, `'decimal'`, or `'string'` (lowercase) -- it maps to RM's per-parameter `cpType` selector. Literal: `[{type: 'number', value: 75}]` or `[{type: 'string', value: 'auto'}]`. Variable-sourced: `[{type: 'number', variable: 'myVar'}]`. Mix literal and variable entries across slots. Fails loud (success=false with descriptive error) if the hub does not reveal the xVar enum after enabling variable mode for a slot. |
 | `useLastEventDevice` | Boolean | |
 | `delay` | Map | |
 | `rawSettings` | Map | |
