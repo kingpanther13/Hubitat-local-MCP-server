@@ -538,6 +538,10 @@ class TestRunner:
             "pure-read gateway must roll up idempotent"
         assert by_name["hub_read_devices"]["openWorldHint"] is False, \
             "pure-read gateway must be closed-world"
+        assert by_name["hub_read_diagnostics"]["openWorldHint"] is True, \
+            "diagnostics gateway must roll up open-world (hub_get_device_health pingHosts)"
+        assert by_name["hub_read_diagnostics"]["idempotentHint"] is False, \
+            "diagnostics gateway must roll up non-idempotent (hub_get_metrics recordSnapshot carve-out)"
 
     @test("infrastructure")
     def test_gateway_catalog_titles(self) -> None:

@@ -398,6 +398,7 @@ def updated() {
     log.info "MCP Rule Server updated"
     atomicState.remove("toolSearchCorpus")        // Invalidate BM25 corpus cache on app update
     atomicState.remove("toolSearchTokens")        // ...and the paired BM25 token cache in lockstep
+    atomicState.remove("toolSearchCorpusVersion")  // ...and the corpus version stamp
     atomicState.remove("requiredParamsByTool")    // ...and the gateway required-param memo
     initialize()
 
@@ -1543,11 +1544,13 @@ def getGatewayConfig() {
 //     spec defaults. idempotentHint = read-only OR classified retry-safe in
 //     getIdempotentWriteToolNames(); openWorldHint = reaches the open
 //     internet per getOpenWorldToolNames() (the hub itself is closed-world).
-//   * Every classification set is POSITIVE: a tool that nobody lists falls
-//     to the cautious side (write+destructive, non-idempotent, closed-world).
-//     New tools default to the safer prompt; the "every leaf classified"
-//     spec tests force the decision to be made in code review rather than
-//     left implicit.
+//   * Every classification set is POSITIVE. For read/write and idempotency an
+//     unlisted tool falls to the cautious side (write+destructive,
+//     non-idempotent). For openWorldHint the unlisted default is closed-world
+//     -- an ACCURACY statement (the hub and its devices ARE the system), not
+//     caution: the MCP spec default for an OMITTED openWorldHint is true,
+//     which is why the key is always emitted explicitly. The snapshot specs
+//     force every classification through code review.
 
 // Single source of truth for the legacy custom-rule engine's visibility mode.
 // "full"     -- engine ON; all custom_* tools shown.
@@ -1672,7 +1675,15 @@ def getReadOnlyToolNames() {
 //     a client that lost the response (the #237 recompile drop) SHOULD retry
 //     these, and the code/content lands identical.
 //   * delete-style writes are idempotent (second call finds nothing to do).
+//     EXCEPTION: hub_delete_native_app -- a retry after success throws a
+//     misleading pre-delete-snapshot error instead of already-deleted, and the
+//     soft-delete-refused path mints a fresh snapshot per repeat call.
 //   * create/clone/import-style writes are NOT (each call makes another one).
+//     EXCEPTION: hub_create_connector IS -- a connector is keyed 1:1 to its
+//     variable and the repeat call short-circuits to alreadyExists success.
+//   * exports are idempotent only when the artifact is a pure function of the
+//     source: hub_export_custom_rule stamps a fresh exportedAt per call, so it
+//     is NOT; hub_export_native_app / hub_export_bundle are timestamp-free.
 //   * invoke-style writes (device commands, rule runs, GC, repair, reboot)
 //     are NOT -- a retry re-fires the action.
 //   * hub_set_rule / hub_set_native_app are upserts whose no-appId mode
@@ -1680,11 +1691,11 @@ def getReadOnlyToolNames() {
 def getIdempotentWriteToolNames() {
     return [
         // Custom rules (legacy engine)
-        "hub_update_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule",
+        "hub_update_custom_rule", "hub_delete_custom_rule",
         // Hub state
         "hub_set_mode", "hub_set_hsm",
         // Variables + connectors
-        "hub_set_variable", "hub_delete_variable", "hub_delete_connector",
+        "hub_set_variable", "hub_delete_variable", "hub_create_connector", "hub_delete_connector",
         // MCP self-admin + logging
         "hub_update_mcp_settings", "hub_set_log_level", "hub_delete_debug_logs",
         // Diagnostics
@@ -1701,11 +1712,22 @@ def getIdempotentWriteToolNames() {
         "hub_write_file", "hub_delete_file",
         // Native rules / classic apps
         "hub_set_rule_paused", "hub_set_rule_private_boolean",
-        "hub_delete_native_app", "hub_export_native_app",
+        "hub_export_native_app",
         // Developer Mode self-deploy (full repair to a ref converges; retrying
         // after a dropped response is its designed recovery path)
         "hub_update_package"
     ] as Set
+}
+
+// The COMPLETE idempotent surface consumed by the annotation helpers: every
+// read-only tool EXCEPT the documented carve-outs whose optional modes append
+// durable artifacts, plus the retry-safe writes. Hoisted once per catalog
+// build alongside the other classification sets.
+def getIdempotentToolNames() {
+    // hub_get_metrics: recordSnapshot=true appends a CSV row per call (a
+    // Write-master-gated mutation), so the read-implies-idempotent rule does
+    // not hold for it at the tool level.
+    return (getReadOnlyToolNames() - (["hub_get_metrics"] as Set)) + getIdempotentWriteToolNames()
 }
 
 // Tools that reach BEYOND the hub to the open internet (MCP `openWorldHint`):
@@ -1719,7 +1741,10 @@ def getOpenWorldToolNames() {
         "hub_update_package",                                      // GitHub raw manifest + sources
         "hub_install_bundle",                                      // fetches the bundle .zip URL
         "hub_create_app", "hub_create_driver", "hub_create_library",   // importUrl mode
-        "hub_update_app", "hub_update_driver", "hub_update_library"   // importUrl mode
+        "hub_update_app", "hub_update_driver", "hub_update_library",  // importUrl mode
+        // pingHosts sends caller-directed ICMP to ANY routable IPv4 (the tool's
+        // own description says "arbitrary hosts"), which can leave the LAN.
+        "hub_get_device_health"
     ] as Set
 }
 
@@ -1874,7 +1899,7 @@ def getToolDisplayMeta() {
 // new wire surface cannot silently ship incomplete annotations by forgetting
 // an argument; the friendly name rides along as `annotations.title` (the
 // field claude.ai and other MCP clients render in place of the bare name).
-def annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta, Set idempotentWrites, Set openWorldNames) {
+def annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta, Set idempotentNames, Set openWorldNames) {
     def isReadOnly = readOnlyNames.contains(toolName)
     def ann = [:]
     def title = displayMeta?.get(toolName)?.title
@@ -1888,8 +1913,9 @@ def annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta, Set 
         // gets clients the cautious permission prompt.
         ann.destructiveHint = true
     }
-    // Reads are idempotent by definition; writes only when classified so.
-    ann.idempotentHint = isReadOnly || idempotentWrites.contains(toolName)
+    // idempotentNames is the COMPLETE idempotent surface (getIdempotentToolNames):
+    // reads minus the documented carve-outs, plus the retry-safe writes.
+    ann.idempotentHint = idempotentNames.contains(toolName)
     ann.openWorldHint = openWorldNames.contains(toolName)
     return ann
 }
@@ -1901,7 +1927,7 @@ def annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta, Set 
 // roll-up direction for each hint). Callers pass `visibleSubTools` so
 // feature-toggle hiding (a Read/Write master OFF, custom engine readonly, or
 // an Advanced override) propagates into the gateway label.
-def annotationsForGateway(List visibleSubTools, Set readOnlyNames, Set idempotentWrites, Set openWorldNames) {
+def annotationsForGateway(List visibleSubTools, Set readOnlyNames, Set idempotentNames, Set openWorldNames) {
     if (!visibleSubTools) {
         throw new IllegalArgumentException(
             "annotationsForGateway requires at least one visible sub-tool"
@@ -1912,7 +1938,7 @@ def annotationsForGateway(List visibleSubTools, Set readOnlyNames, Set idempoten
     if (anyWrite) {
         ann.destructiveHint = true
     }
-    ann.idempotentHint = visibleSubTools.every { readOnlyNames.contains(it) || idempotentWrites.contains(it) }
+    ann.idempotentHint = visibleSubTools.every { idempotentNames.contains(it) }
     ann.openWorldHint = visibleSubTools.any { openWorldNames.contains(it) }
     return ann
 }
@@ -2129,7 +2155,7 @@ def getToolDefinitions() {
     // Hoist annotation source-of-truth once per call.
     def readOnlyNames = getReadOnlyToolNames()
     def displayMeta = getToolDisplayMeta()
-    def idempotentWrites = getIdempotentWriteToolNames()
+    def idempotentNames = getIdempotentToolNames()
     def openWorldNames = getOpenWorldToolNames()
 
     // Flat mode: every tool advertised individually under its real name; hub_search_tools
@@ -2153,7 +2179,7 @@ def getToolDefinitions() {
             // (this is the all-tools-individually surface). outputSchema is still
             // published in gateway mode (base tools) and the gateway catalog disclosure,
             // where the per-response budget has headroom.
-            tool.findAll { it.key != 'outputSchema' } + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentWrites, openWorldNames)]
+            tool.findAll { it.key != 'outputSchema' } + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
         }
     }
 
@@ -2189,7 +2215,7 @@ def getToolDefinitions() {
             // Gateway entries get their friendly name from the same display-meta
             // map as the leaves; map-add keeps title first in the wire payload.
             annotations: (displayMeta[gwName]?.title ? [title: displayMeta[gwName].title as String] : [:]) +
-                annotationsForGateway(visibleSubTools, readOnlyNames, idempotentWrites, openWorldNames)
+                annotationsForGateway(visibleSubTools, readOnlyNames, idempotentNames, openWorldNames)
         ]]
     }
 
@@ -2204,7 +2230,7 @@ def getToolDefinitions() {
         // readOnlyHint (not just the annotations map) is the load-bearing
         // signal -- a partial pre-populated map without readOnlyHint still
         // needs the leaf classifier to merge in the missing key.
-        tool.annotations?.containsKey('readOnlyHint') ? tool : tool + [annotations: (tool.annotations ?: [:]) + annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentWrites, openWorldNames)]
+        tool.annotations?.containsKey('readOnlyHint') ? tool : tool + [annotations: (tool.annotations ?: [:]) + annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
     }
 }
 
@@ -2912,7 +2938,7 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_delete_variable",
-            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (drives Settings → Hub Variables wizard; also deletes the connector device if one exists) or a rule_engine variable (rewrites state). Throws if the name resolves to neither.\n\nGated on the Write master + confirm=true + a recent backup. [[FLAT_TRIM]]Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.[[/FLAT_TRIM]]\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found — [[FLAT_TRIM]]deletion would silently break those rules (null lookups → false conditions, literal `%varname%` left in substitutions)[[/FLAT_TRIM]]. To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.",
+            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (drives Settings → Hub Variables wizard; also deletes the connector device if one exists) or a rule_engine variable (rewrites state). Throws if the name resolves to neither.\n\nGated on the Write master + confirm=true + a recent backup. [[FLAT_TRIM]]Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.[[/FLAT_TRIM]]\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found[[FLAT_TRIM]] — deletion would silently break those rules (null lookups → false conditions, literal `%varname%` left in substitutions)[[/FLAT_TRIM]]. To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -4984,7 +5010,7 @@ Optional fields on every spec:
 
 Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
 
-[[FLAT_TRIM]]PARTIAL-SUCCESS HANDLING: success:true = the call completed and the trigger skeleton was written; partial:true (orthogonal) = some fields didn't land or the row carries a *BROKEN* marker — the trigger exists but needs repair via repairHints. Common repair: pass missing fields via rawSettings and re-add, or walkStep introspect on selectTriggers to see the live fields. Don't treat partial as failure — exhaust tool-only repair first. On a rejected trailing updateRule the trigger is written but not subscribed (subscriptionsNotLive:true) — retry hub_set_rule(button='updateRule', confirm=true). Full slot reference: guide:true.[[/FLAT_TRIM]]"""
+PARTIAL-SUCCESS: success:true can come with partial:true -- check partial/repairHints in the response (full protocol: guide:true).[[FLAT_TRIM]] DETAIL: success:true = the call completed and the trigger skeleton was written; partial:true (orthogonal) = some fields didn't land or the row carries a *BROKEN* marker — the trigger exists but needs repair via repairHints. Common repair: pass missing fields via rawSettings and re-add, or walkStep introspect on selectTriggers to see the live fields. Don't treat partial as failure — exhaust tool-only repair first. On a rejected trailing updateRule the trigger is written but not subscribed (subscriptionsNotLive:true) — retry hub_set_rule(button='updateRule', confirm=true). Full slot reference: guide:true.[[/FLAT_TRIM]]"""
                     ],
                     addTriggers: [
                         type: "array",
@@ -5024,7 +5050,7 @@ Extended per-capability spec shapes — Mode, Between two times, Variable compar
 
 [[FLAT_TRIM]]The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately.[[/FLAT_TRIM]] The cond counter is shared at the Rule Machine parent app's atomicState level (the parent app's id varies per hub) — condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
 
-[[FLAT_TRIM]]PARTIAL-SUCCESS HANDLING: partial:true means some condition fields didn't land (settingsSkipped names them); repairHints names the next step — pass missing fields via rawSettings on the affected condition. On a rejected trailing updateRule the expression is committed but not live (expressionNotLive:true) — retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true the wizard couldn't auto-cancel — call hub_set_rule(button='cancelCapab', pageName='STPage', confirm=true) first (restoreHint has the exact command). Discrete-event sensor state names (wet/dry, detected/clear, etc.) and the full settingsSkipped-sentinel reference: guide:true.[[/FLAT_TRIM]]"""
+PARTIAL-SUCCESS: partial:true / expressionNotLive / wizardStuck can accompany success -- check repairHints (full protocol: guide:true).[[FLAT_TRIM]] DETAIL: partial:true means some condition fields didn't land (settingsSkipped names them); repairHints names the next step — pass missing fields via rawSettings on the affected condition. On a rejected trailing updateRule the expression is committed but not live (expressionNotLive:true) — retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true the wizard couldn't auto-cancel — call hub_set_rule(button='cancelCapab', pageName='STPage', confirm=true) first (restoreHint has the exact command). Discrete-event sensor state names (wet/dry, detected/clear, etc.) and the full settingsSkipped-sentinel reference: guide:true.[[/FLAT_TRIM]]"""
                     ],
 
                     addActions: [
@@ -5087,6 +5113,7 @@ Spec shape:
   }
 
 Operations:
+
 [[FLAT_TRIM]]
   - introspect: fetch schema; no mutation
   - write: write one field's value (with hrefContext for sub-pages)
@@ -9836,7 +9863,13 @@ def toolRestoreItemBackup(args) {
         def responseText = hubInternalGet(ajaxPath, [id: entryCopy.id])
         if (responseText) {
             def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-            if (parsed.source) {
+            if (parsed.source == source) {
+                // The live source already equals the backup being restored (a retry
+                // after a dropped response): capturing it now would overwrite the
+                // real pre-restore undo with the just-restored content, silently
+                // destroying the only undo point. Keep the existing undo file.
+                mcpLog("info", "hub-admin", "Current source already matches the backup being restored -- keeping the existing pre-restore undo")
+            } else if (parsed.source) {
                 uploadHubFile(preRestoreFileName, parsed.source.getBytes("UTF-8"))
                 // atomicState read-modify-write: read full map, mutate locally, write back.
                 def mfst = atomicState.itemBackupManifest ?: [:]
@@ -10126,7 +10159,14 @@ def toolWriteFile(args) {
     def backupFileName = null
     try {
         def existingBytes = downloadHubFile(args.fileName)
-        if (existingBytes != null) {
+        if (existingBytes != null && new String(existingBytes, "UTF-8") == args.content.toString()) {
+            // Identical-content write (e.g. a retry after a dropped response): a
+            // backup would duplicate the very bytes being written, and a fresh
+            // timestamped file per retry is unbounded growth -- the exact
+            // additional side effect the tool's idempotentHint promises not to
+            // have. Skip the backup; the overwrite below is a byte-level no-op.
+            mcpLog("info", "file-manager", "Existing '${args.fileName}' already matches the incoming content -- skipping backup")
+        } else if (existingBytes != null) {
             // File exists — create a backup before overwriting
             def dotIndex = args.fileName.lastIndexOf('.')
             def baseName = dotIndex > 0 ? args.fileName.substring(0, dotIndex) : args.fileName
@@ -11832,6 +11872,18 @@ def toolGetHubJobs(args) {
 def toolGetHubPerformance(args) {
 
     def recordSnapshot = args.recordSnapshot == true
+    // The tool is classified read-only (Read master), but recordSnapshot=true
+    // persists a CSV row to File Manager -- a mutation. Gate that one mode on
+    // the Write master so a read-classified tool can never write while writes
+    // are disabled; it is also why this tool is carved out of the
+    // read-implies-idempotent rule in getIdempotentToolNames().
+    if (recordSnapshot && settings.enableWrite == false) {
+        return [
+            success: false,
+            error: "recordSnapshot=true persists a CSV snapshot to File Manager, which requires the Write master.",
+            note: "Write tools are disabled in MCP settings. Call again without recordSnapshot for the read-only metrics view, or enable Write tools."
+        ]
+    }
     def trendPoints = Math.min(args.trendPoints ?: 10, 50)
 
     // Gather current metrics
@@ -28084,11 +28136,13 @@ def toolSearchTools(args) {
     // display meta), so app-update invalidation is sufficient.
     def corpus = atomicState.toolSearchCorpus
     def docTokensAll = atomicState.toolSearchTokens
-    // The shape check (corpus[0] has no `title` key) self-heals a cache written by a
-    // pre-title version of this app: a code deploy does NOT fire updated() (that takes
-    // a settings save), so without it the size-aligned stale corpus -- title tokens
-    // missing from every BM25 doc -- would be served indefinitely.
-    if (!corpus || !docTokensAll || docTokensAll.size() != corpus.size() || !(corpus[0]?.containsKey('title'))) {
+    // Version + shape checks self-heal a cache written by an older build: a code
+    // deploy does NOT fire updated() (that takes a settings save), so without them
+    // a stale corpus -- old titles/summaries/search hints, or the pre-title shape --
+    // would be served until the next settings save. The version stamp catches every
+    // released content change; the shape check additionally covers pre-stamp caches.
+    if (!corpus || !docTokensAll || docTokensAll.size() != corpus.size() ||
+        !(corpus[0]?.containsKey('title')) || atomicState.toolSearchCorpusVersion != currentVersion()) {
         corpus = buildToolSearchCorpus()
         // Tokenize every corpus entry once, in corpus order, so docTokensAll[i] is the
         // tokenization of corpus[i] (a pure function of that entry). Plain List<List<String>>
@@ -28096,6 +28150,7 @@ def toolSearchTools(args) {
         docTokensAll = corpus.collect { bm25Tokenize("${it.name} ${it.title ?: ''} ${it.description} ${it.params ?: ''} ${it.hints ?: ''}") }
         atomicState.toolSearchCorpus = corpus
         atomicState.toolSearchTokens = docTokensAll
+        atomicState.toolSearchCorpusVersion = currentVersion()
     }
 
     // Apply the SAME visibility filter that getToolDefinitions() uses so that

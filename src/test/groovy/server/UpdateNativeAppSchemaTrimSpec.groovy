@@ -106,8 +106,8 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         then: 'the dev-mode tool is actually present (guard is not vacuous)'
         tools*.name.contains('hub_update_package')
 
-        and: 'under the hub hard cap with the dev-mode entry included'
-        assert catalogBytes < 124000 : "dev-mode flat tools/list is ${catalogBytes} bytes, over the 124,000 cap"
+        and: 'under the hub hard cap with the dev-mode entry included, less an allowance for the JSON-RPC envelope (jsonrpc/id/result wrapper) the live response adds around this payload'
+        assert catalogBytes < 123_500 : "dev-mode flat tools/list payload is ${catalogBytes} bytes; with the JSON-RPC envelope the live response must stay under the 124,000 hub cap"
 
         and: 'no marker tokens leak from the dev-mode entry (or any other)'
         !catalogJson.contains(OPEN_MARKER)
@@ -459,11 +459,11 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         // bypasses that tool's description.
         //
         // get_hpm_drift was a third site here pre-merge; issue #105 folded it into
-        // hub_list_hpm_packages, which carries NO FLAT_TRIM markers -- the full
-        // drift-signal taxonomy now lives only in hub_get_tool_guide(section=
-        // 'builtin_app_tools'), so there is no flat-vs-gateway description delta to
-        // pin for that tool. The pointer-resolution test still verifies the
-        // hub_list_hpm_packages description carries the builtin_app_tools pointer.
+        // hub_list_hpm_packages, which NOW carries FLAT_TRIM wraps of its own (the
+        // heID-normalization notes, the response-field enumeration, and the
+        // multi-instance error protocol); the generic flat/gateway leak guards cover
+        // them. The pointer-resolution test still verifies the hub_list_hpm_packages
+        // description carries the builtin_app_tools pointer.
         given:
         enableEveryToggle()
 

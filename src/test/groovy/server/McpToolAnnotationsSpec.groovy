@@ -314,9 +314,9 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         def nonIdempotent = allWrites - idempotent
 
         def expectedIdempotent = [
-            'hub_update_custom_rule', 'hub_delete_custom_rule', 'hub_export_custom_rule',
+            'hub_update_custom_rule', 'hub_delete_custom_rule',
             'hub_set_mode', 'hub_set_hsm',
-            'hub_set_variable', 'hub_delete_variable', 'hub_delete_connector',
+            'hub_set_variable', 'hub_delete_variable', 'hub_create_connector', 'hub_delete_connector',
             'hub_update_mcp_settings', 'hub_set_log_level', 'hub_delete_debug_logs',
             'hub_delete_captured_state',
             'hub_update_device', 'hub_delete_device',
@@ -326,21 +326,22 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_install_bundle', 'hub_delete_bundle', 'hub_export_bundle',
             'hub_write_file', 'hub_delete_file',
             'hub_set_rule_paused', 'hub_set_rule_private_boolean',
-            'hub_delete_native_app', 'hub_export_native_app',
+            'hub_export_native_app',
             'hub_update_package'
         ] as Set
 
         def expectedNonIdempotent = [
             'hub_call_device_command',
             'hub_create_custom_rule', 'hub_import_custom_rule', 'hub_clone_custom_rule',
-            'hub_create_variable', 'hub_create_connector',
+            'hub_export_custom_rule',
+            'hub_create_variable',
             'hub_create_backup',
             'hub_reboot', 'hub_shutdown', 'hub_call_zwave_repair', 'hub_call_gc',
             'hub_manage_virtual_device',
             'hub_create_room',
             'hub_create_app', 'hub_create_driver', 'hub_create_library',
             'hub_call_rule', 'hub_set_rule', 'hub_set_native_app',
-            'hub_clone_native_app', 'hub_import_native_app'
+            'hub_clone_native_app', 'hub_import_native_app', 'hub_delete_native_app'
         ] as Set
 
         then:
@@ -355,7 +356,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         script.getOpenWorldToolNames() == [
             'hub_get_update_status', 'hub_update_package', 'hub_install_bundle',
             'hub_create_app', 'hub_create_driver', 'hub_create_library',
-            'hub_update_app', 'hub_update_driver', 'hub_update_library'
+            'hub_update_app', 'hub_update_driver', 'hub_update_library',
+            'hub_get_device_health'
         ] as Set
     }
 
@@ -387,23 +389,52 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         and: 'the Developer Mode self-deploy is retry-safe and reaches GitHub'
         byName.hub_update_package.idempotentHint == true
         byName.hub_update_package.openWorldHint == true
+
+        and: 'the carve-out and the ping capability roll up into the diagnostics gateways'
+        byName.hub_read_diagnostics.readOnlyHint == true
+        byName.hub_read_diagnostics.idempotentHint == false
+        byName.hub_read_diagnostics.openWorldHint == true
+        byName.hub_manage_diagnostics.openWorldHint == true
+
+        when: 'flat mode, where the metrics tool is advertised individually'
+        settingsMap.useGateways = false
+        def flatByName = script.getToolDefinitions().collectEntries { [(it.name): it.annotations] }
+
+        then: 'the read-implies-idempotent carve-out: read-only, but its recordSnapshot mode appends per call'
+        flatByName.hub_get_metrics.readOnlyHint == true
+        flatByName.hub_get_metrics.idempotentHint == false
+    }
+
+    def "getIdempotentToolNames composes reads minus carve-outs plus the retry-safe writes"() {
+        expect:
+        script.getIdempotentToolNames() ==
+            (script.getReadOnlyToolNames() - (['hub_get_metrics'] as Set)) + script.getIdempotentWriteToolNames()
     }
 
     def "annotationsForLeaf and annotationsForGateway emit the idempotent and open-world hints from the classification sets"() {
         when:
-        def readOnly = ['hub_list_rooms'] as Set
-        def idem = ['hub_delete_room'] as Set
+        // idempotentNames is the COMPLETE surface (getIdempotentToolNames): a read
+        // NOT in it (the carve-out case) ships idempotentHint=false despite being
+        // read-only.
+        def readOnly = ['hub_list_rooms', 'hub_get_metrics'] as Set
+        def idem = ['hub_list_rooms', 'hub_delete_room'] as Set
         def open = ['hub_create_app'] as Set
         def readLeaf = script.annotationsForLeaf('hub_list_rooms', readOnly, null, idem, open)
+        def carveOut = script.annotationsForLeaf('hub_get_metrics', readOnly, null, idem, open)
         def idemWrite = script.annotationsForLeaf('hub_delete_room', readOnly, null, idem, open)
         def openCreate = script.annotationsForLeaf('hub_create_app', readOnly, null, idem, open)
         def gwAllIdem = script.annotationsForGateway(['hub_list_rooms', 'hub_delete_room'], readOnly, idem, open)
         def gwMixed = script.annotationsForGateway(['hub_list_rooms', 'hub_create_app'], readOnly, idem, open)
+        def gwCarve = script.annotationsForGateway(['hub_list_rooms', 'hub_get_metrics'], readOnly, idem, open)
 
-        then: 'reads are implicitly idempotent; classified writes explicitly so'
+        then: 'membership in the complete idempotent surface drives the hint'
         readLeaf.idempotentHint == true
         idemWrite.idempotentHint == true
         openCreate.idempotentHint == false
+
+        and: 'a carved-out read stays read-only but loses the idempotent claim'
+        carveOut.readOnlyHint == true
+        carveOut.idempotentHint == false
 
         and: 'open-world only from the positive set'
         readLeaf.openWorldHint == false
@@ -414,6 +445,10 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         gwAllIdem.openWorldHint == false
         gwMixed.idempotentHint == false
         gwMixed.openWorldHint == true
+
+        and: 'a pure-read gateway containing a carved-out read is read-only yet non-idempotent'
+        gwCarve.readOnlyHint == true
+        gwCarve.idempotentHint == false
     }
 
     def "every name in getReadOnlyToolNames() resolves to a real tool in getAllToolDefinitions()"() {
