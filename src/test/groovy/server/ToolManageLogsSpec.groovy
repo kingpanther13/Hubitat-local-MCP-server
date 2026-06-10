@@ -312,9 +312,11 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def result = script.toolGetDeviceHistory([:])
 
         then:
+        result.success == false
         result.source == 'location'
         result.error.contains('failed')
         result.error.contains('location event store unavailable')
+        result.note.contains('retry')
     }
 
     def "hub_list_device_events throws when device is not found"() {
@@ -360,6 +362,48 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.events[0].description == 'Rule triggered'
         result.events[0].date == '2009-02-13T22:00:00.000+0000'
         result.events[0].keySet() == ['name', 'value', 'description', 'date'] as Set
+
+        and: 'every date parsed, so the unparseable counter stays absent'
+        !result.containsKey('timeFilterUnparseable')
+    }
+
+    def "hub_list_device_events app mode: rows with malformed or missing dates survive the window and are counted in timeFilterUnparseable"() {
+        given: 'one in-window row, one garbage date, one missing date, one parseable out-of-window row'
+        hubGet.register('/installedapp/eventsJson/974') { params ->
+            '''[
+              {"name":"pushed","value":"1","descriptionText":"in window","date":"2009-02-13T22:00:00.000+0000"},
+              {"name":"pushed","value":"2","descriptionText":"garbage date","date":"not-a-date"},
+              {"name":"pushed","value":"3","descriptionText":"missing date"},
+              {"name":"pushed","value":"4","descriptionText":"too old","date":"2009-02-10T00:00:00.000+0000"}
+            ]'''
+        }
+
+        when:
+        def result = script.toolGetDeviceHistory([appId: 974, hoursBack: 6])
+
+        then: 'unparseable-date rows pass through the always-active window; only the parseable out-of-window row is dropped'
+        result.count == 3
+        result.events*.value == ['1', '2', '3']
+
+        and: 'the silent escape is surfaced with the affected row count'
+        result.timeFilterUnparseable == 2
+    }
+
+    def "hub_list_device_events location mode surfaces timeFilterUnparseable the same way"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params ->
+            '''[
+              {"name":"mode","value":"Night","descriptionText":"in window","isStateChange":true,"type":"API","date":"2009-02-13T22:00:00.000+0000"},
+              {"name":"mode","value":"Day","descriptionText":"no date","isStateChange":true,"type":"API"}
+            ]'''
+        }
+
+        when:
+        def result = script.toolGetDeviceHistory([hoursBack: 6])
+
+        then: 'the dateless row survives and is counted'
+        result.count == 2
+        result.timeFilterUnparseable == 1
     }
 
     def "hub_list_device_events applies attribute and limit filters to app events client-side"() {
@@ -391,10 +435,12 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def result = script.toolGetDeviceHistory([appId: 974])
 
         then:
+        result.success == false
         result.source == 'app'
         result.appId == 974
         result.error.contains('failed')
         result.error.contains('app event store unavailable')
+        result.note.contains('retry')
     }
 
     def "hub_list_device_events throws when appId is non-numeric (no HTTP call made)"() {

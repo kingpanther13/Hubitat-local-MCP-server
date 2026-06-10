@@ -2450,6 +2450,7 @@ The hub only offers compatible replacement devices: an incompatible to_device_id
                         from: [type: "string", description: "Replaced device ID"],
                         to: [type: "string", description: "Replacement device ID"]
                     ]],
+                    verified: [type: "boolean", description: "true when the before/after dependent counts were both read and confirmed the swap; false = swap clicked but count verification was degraded"],
                     appsRewired: [type: "integer", description: "Apps that referenced from_device_id before the swap (the rewired set); absent when the pre-count was unavailable"],
                     remainingDependents: [type: "integer", description: "Apps still referencing from_device_id after the swap (0 expected)"],
                     note: [type: "string", description: "Verification guidance"],
@@ -2468,7 +2469,7 @@ The hub only offers compatible replacement devices: an incompatible to_device_id
             name: "hub_list_device_events",
             description: """Get event history for a device, an APP (app events: events emitted by an app or rule -- automation events), or the location.
 
-Default: most-recent events for a device (deviceId + optional limit). Add hoursBack to pull a time window instead (up to 168h / 7 days). appId returns an installed app's events instead. Omit deviceId/appId for location-level events.[[FLAT_TRIM]] attribute filters by event name. Higher limits (50+) may slow the hub.[[/FLAT_TRIM]]""",
+Default: most-recent events for a device (deviceId + optional limit). Add hoursBack to widen/narrow the window (default 24h for app/location modes, max 168h). appId returns an installed app's events instead. Omit deviceId/appId for location-level events.[[FLAT_TRIM]] attribute filters by event name. Higher limits (50+) may slow the hub.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2498,7 +2499,8 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
                     source: [type: "string", description: "'device', 'app', or 'location'; present in history mode"],
                     hoursBack: [type: "integer", description: "History window in hours; present in history mode"],
                     attributeFilter: [type: "string", description: "Echoed attribute filter; present in history mode"],
-                    sinceTimestamp: [type: "string", description: "Window start (ISO); present in history mode"]
+                    sinceTimestamp: [type: "string", description: "Window start (ISO); present in history mode"],
+                    timeFilterUnparseable: [type: "integer", description: "App/location modes: rows kept despite unparseable dates (window not enforced for them); present when > 0"]
                 ]
             ]
         ],
@@ -7590,13 +7592,13 @@ private String _validateHubVarType(String type) {
  * always installed on every hub). The id varies per hub, so we discover
  * once on first need and cache in atomicState.
  *
- * Resolution order:
- *   1. atomicState.hubVarsAppId cache.
- *   2. /installedapp/direct/hubVariables redirect chain (_resolveDirectAppId).
+ * Resolution order (matches the inline Stage labels below):
+ *   Stage 1. atomicState.hubVarsAppId cache.
+ *   Stage 2. /installedapp/direct/hubVariables redirect chain (_resolveDirectAppId).
  *      The alias is name-addressed by the hub itself, so the resolved id
  *      needs no verify fetch; hubVariables is a singleton system app, so
  *      the chain's get-or-create hop always lands on the existing instance.
- *   3. /hub2/appsList walk -- fallback for firmware where the direct alias
+ *   Stage 3. /hub2/appsList walk -- fallback for firmware where the direct alias
  *      misbehaves. Note the feed omits hidden system apps on at least some
  *      firmware versions (verified on 2.5.0.126: Hub Variables reachable at
  *      /installedapp/configure/json/<id> but absent from /hub2/appsList --
@@ -7627,6 +7629,7 @@ def _primeHubVarsWizard(Integer appId, String context) {
 // private method and hit the real implementation, which makes mocking the
 // hub-side discovery painful in unit tests.
 def _findHubVariablesAppId() {
+    // Stage 1: atomicState cache.
     def cached = atomicState.hubVarsAppId
     if (cached != null) {
         try { return cached.toString().toInteger() } catch (NumberFormatException e) {
@@ -7635,7 +7638,7 @@ def _findHubVariablesAppId() {
         }
     }
 
-    // Stage 1: name-addressed direct alias -- a single redirect chain, no
+    // Stage 2: name-addressed direct alias -- a single redirect chain, no
     // payload walking. Safe to probe: hubVariables is a singleton, so the
     // chain's create hop is get-or-create and never strands a transient
     // instance.
@@ -7646,7 +7649,7 @@ def _findHubVariablesAppId() {
         return directId
     }
 
-    // Stage 2: /hub2/appsList walk.
+    // Stage 3: /hub2/appsList walk.
     try {
         def responseText = hubInternalGet("/hub2/appsList")
         if (responseText) {
@@ -9242,6 +9245,7 @@ private Integer _resolveDirectAppId(String alias) {
             resp = hubInternalGetRaw(path)
         } catch (Exception e) {
             logDebug("_resolveDirectAppId(${alias}): hop ${hop} GET ${path} threw ${e.toString()}")
+            mcpLog("warn", "hub-admin", "_resolveDirectAppId(${alias}) -> null: hop ${hop} GET threw ${e.class.simpleName}: ${e.message}")
             return null
         }
         Integer status = null
@@ -9249,6 +9253,7 @@ private Integer _resolveDirectAppId(String alias) {
         def location = resp?.location?.toString()
         if (status == null || status < 300 || status >= 400 || !location) {
             logDebug("_resolveDirectAppId(${alias}): hop ${hop} ${path} status=${status} location=${location} -- not a redirect")
+            mcpLog("warn", "hub-admin", "_resolveDirectAppId(${alias}) -> null: hop ${hop} returned status=${status} instead of a redirect -- a 200 with no Location usually means the hub auto-followed an absolute Location (hubInternalGetRaw caveat)")
             return null
         }
         def cfg = (location =~ /\/installedapp\/configure\/(\d+)/)
@@ -9262,6 +9267,7 @@ private Integer _resolveDirectAppId(String alias) {
             continue
         }
         logDebug("_resolveDirectAppId(${alias}): hop ${hop} unexpected Location ${location}")
+        mcpLog("warn", "hub-admin", "_resolveDirectAppId(${alias}) -> null: hop ${hop} redirected to an unexpected Location shape -- the direct/create/configure chain may have changed on this firmware (the debug-logging toggle surfaces the raw Location in the hub logs)")
         return null
     }
     return null
@@ -11801,28 +11807,32 @@ def toolGetDeviceHistory(args) {
         try {
             rawJson = hubInternalGet("/installedapp/eventsJson/${appIdStr}")
         } catch (Exception e) {
-            mcpLog("warn", "monitoring", "/installedapp/eventsJson/${appIdStr} fetch failed: ${e.message}")
-            return [error: "App event history fetch failed: ${e.message}", source: "app", appId: appIdStr as Integer]
+            mcpLogError("monitoring", "/installedapp/eventsJson/${appIdStr} fetch failed", e)
+            return [success: false, error: "App event history fetch failed: ${e.message}", source: "app", appId: appIdStr as Integer,
+                    note: "Likely a transient hub blip -- retry. Verify the appId with hub_list_apps if it persists."]
         }
         def appRows
         try {
             def parsed = new groovy.json.JsonSlurper().parseText(rawJson?.toString() ?: "[]")
             appRows = (parsed instanceof List) ? parsed : []
         } catch (Exception e) {
-            mcpLog("warn", "monitoring", "/installedapp/eventsJson/${appIdStr} parse failed: ${e.message}")
-            return [error: "App event history parse failed: ${e.message}", source: "app", appId: appIdStr as Integer]
+            mcpLogError("monitoring", "/installedapp/eventsJson/${appIdStr} parse failed", e)
+            return [success: false, error: "App event history parse failed: ${e.message}", source: "app", appId: appIdStr as Integer,
+                    note: "Retry; if persistent, firmware may have changed the /installedapp/eventsJson format -- report with hub_report_issue."]
         }
 
         def appResults = []
+        def timeFilterUnparseable = 0
         for (evt in appRows) {
             if (!(evt instanceof Map)) continue
             if (attributeFilter && evt.name != attributeFilter) continue
             // Best-effort hoursBack window, mirroring the location branch: drop
             // events older than sinceDate when the date parses; keep them if it
-            // doesn't (don't silently lose history).
+            // doesn't (don't silently lose history), and count the unparseable
+            // rows so the caller can see the window was not fully enforced.
             def evtDate = null
             try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
-            catch (Exception ignored) { evtDate = null }
+            catch (Exception ignored) { timeFilterUnparseable++ }
             if (evtDate != null && evtDate.before(sinceDate)) continue
             appResults << [
                 name: evt.name,
@@ -11834,7 +11844,7 @@ def toolGetDeviceHistory(args) {
         }
 
         mcpLog("info", "monitoring", "Retrieved ${appResults.size()} app history events for app ${appIdStr} (${hoursBack}h back) from /installedapp/eventsJson")
-        return [
+        def appResult = [
             source: "app",
             appId: appIdStr as Integer,
             hoursBack: hoursBack,
@@ -11843,6 +11853,10 @@ def toolGetDeviceHistory(args) {
             count: appResults.size(),
             sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
         ]
+        // Mirror the hub-log path: surface rows that escaped the time window
+        // because their date would not parse (the window is always active here).
+        if (timeFilterUnparseable > 0) appResult.timeFilterUnparseable = timeFilterUnparseable
+        return appResult
     }
 
     // Location-scope branch: when deviceId is omitted, return location history
@@ -11857,28 +11871,32 @@ def toolGetDeviceHistory(args) {
         try {
             rawJson = hubInternalGet("/logs/eventsJson")
         } catch (Exception e) {
-            mcpLog("warn", "monitoring", "/logs/eventsJson fetch failed: ${e.message}")
-            return [error: "Location event history fetch failed: ${e.message}", source: "location"]
+            mcpLogError("monitoring", "/logs/eventsJson fetch failed", e)
+            return [success: false, error: "Location event history fetch failed: ${e.message}", source: "location",
+                    note: "Likely a transient hub blip (the same endpoint feeds the hub's Logs page) -- retry."]
         }
         def rows
         try {
             def parsed = new groovy.json.JsonSlurper().parseText(rawJson?.toString() ?: "[]")
             rows = (parsed instanceof List) ? parsed : []
         } catch (Exception e) {
-            mcpLog("warn", "monitoring", "/logs/eventsJson parse failed: ${e.message}")
-            return [error: "Location event history parse failed: ${e.message}", source: "location"]
+            mcpLogError("monitoring", "/logs/eventsJson parse failed", e)
+            return [success: false, error: "Location event history parse failed: ${e.message}", source: "location",
+                    note: "Retry; if persistent, firmware may have changed the /logs/eventsJson format -- report with hub_report_issue."]
         }
 
         def locResults = []
+        def timeFilterUnparseable = 0
         for (evt in rows) {
             if (!(evt instanceof Map)) continue
             if (attributeFilter && evt.name != attributeFilter) continue
             // Best-effort hoursBack window: drop events older than sinceDate when the
             // ISO+offset date parses; keep them if it doesn't (don't silently lose
-            // history). The numeric offset (e.g. -0400) parses via the 'Z' pattern.
+            // history), counting the unparseable rows. The numeric offset (e.g.
+            // -0400) parses via the 'Z' pattern.
             def evtDate = null
             try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
-            catch (Exception ignored) { evtDate = null }
+            catch (Exception ignored) { timeFilterUnparseable++ }
             if (evtDate != null && evtDate.before(sinceDate)) continue
             locResults << [
                 name: evt.name,
@@ -11893,7 +11911,7 @@ def toolGetDeviceHistory(args) {
         }
 
         mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history events (${hoursBack}h back) from /logs/eventsJson")
-        return [
+        def locResult = [
             source: "location",
             hoursBack: hoursBack,
             attributeFilter: attributeFilter,
@@ -11901,6 +11919,10 @@ def toolGetDeviceHistory(args) {
             count: locResults.size(),
             sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
         ]
+        // Mirror the hub-log path: surface rows that escaped the always-active
+        // time window because their date would not parse.
+        if (timeFilterUnparseable > 0) locResult.timeFilterUnparseable = timeFilterUnparseable
+        return locResult
     }
 
     def device = findDevice(args.deviceId)
@@ -11912,8 +11934,9 @@ def toolGetDeviceHistory(args) {
     try {
         events = device.eventsSince(sinceDate, [max: limit])
     } catch (Exception e) {
-        mcpLog("warn", "monitoring", "eventsSince failed for ${deviceLabel}: ${e.message}")
-        return [error: "eventsSince not supported or failed: ${e.message}", device: deviceLabel, deviceId: args.deviceId]
+        mcpLogError("monitoring", "eventsSince failed for ${deviceLabel}", e)
+        return [success: false, error: "eventsSince not supported or failed: ${e.message}", device: deviceLabel, deviceId: args.deviceId,
+                note: "Retry; if persistent, drop hoursBack/attribute to read the most-recent events instead, or check the device's Events page in the hub UI."]
     }
 
     def results = events?.collect { evt ->
@@ -15837,9 +15860,11 @@ def toolGetDeviceInUseBy(args) {
  * check -> write newDev -> click the revealed swap-action button).
  *
  * The direct/swapDevice alias creates a FRESH TRANSIENT app instance on every
- * resolve, so every exit path after the resolve must close that instance
- * (closeApp) unless the swap action itself already removed it — otherwise the
- * hub's Apps list accumulates orphaned Swap Device entries.
+ * resolve, so every exit path after the resolve closes that instance via
+ * _deviceSwapCleanup (/installedapp/delete) — UNCONDITIONALLY after the click,
+ * because the delete is idempotent/harmless when the swap action already
+ * removed the instance, whereas skipping it on a misread verify leaks an
+ * orphaned Swap Device entry in the hub's Apps list with zero trace.
  */
 def toolCallDeviceSwap(args) {
     requireDestructiveConfirm(args?.confirm as Boolean)
@@ -15861,7 +15886,7 @@ def toolCallDeviceSwap(args) {
     if (appId == null) {
         return [success: false,
                 error: "Could not open the built-in Swap Device tool (direct/swapDevice did not resolve to an app instance).",
-                note: "The hub firmware may not expose the Swap Device system app, or its redirect chain changed. Verify Settings > Swap Apps Device exists in the hub UI, then retry. Nothing was swapped."]
+                note: "Likely causes: the firmware does not expose the direct/swapDevice alias, the redirect chain shape changed, or the hub auto-followed an absolute Location (200 with no Location header). A hub-admin warn log entry summarizes which; hub_set_log_level(level=info) captures per-hop detail on retry. Verify Settings > Swap Apps Device exists in the hub UI, then retry. Nothing was swapped."]
     }
     mcpLog("info", "device-swap", "Swap Device transient instance ${appId} opened")
 
@@ -15934,11 +15959,21 @@ def toolCallDeviceSwap(args) {
         mcpLog("info", "device-swap", "Clicking swap action '${buttons[0]}' on instance ${appId}")
         _rmClickAppButton(appId, buttons[0], null, "mainPage")
 
-        // The swap action usually removes the transient instance itself; a
-        // failing re-fetch means it is gone and no closeApp is needed.
+        // Post-click: the swap action usually removes the transient instance
+        // itself, but a transient read failure on the verify re-fetch is
+        // indistinguishable from "instance gone", so the fetch only informs
+        // LOGGING and never gates cleanup. The delete ALWAYS runs: it is
+        // idempotent/harmless against an already-reaped instance, and
+        // _deviceSwapCleanup swallows + logs its own failure -- skipping the
+        // delete on a misread is the only way to leak an instance untraced.
         def instanceGone = false
-        try { _rmFetchConfigJson(appId, "mainPage") } catch (Exception ignored) { instanceGone = true }
-        if (!instanceGone) _deviceSwapCleanup(appId)
+        try {
+            _rmFetchConfigJson(appId, "mainPage")
+        } catch (Exception e) {
+            instanceGone = true
+            mcpLog("warn", "device-swap", "post-click verify fetch threw ${e.class.simpleName}: ${e.message} -- treating instance as present for cleanup (the delete is harmless if it already self-removed)")
+        }
+        _deviceSwapCleanup(appId)
 
         def afterCount = _deviceSwapDependentCount(fromId)
         if (beforeCount != null && afterCount != null && beforeCount > 0 && afterCount >= beforeCount) {
@@ -15946,9 +15981,10 @@ def toolCallDeviceSwap(args) {
                     error: "Swap action was clicked but ${afterCount} app(s) still reference device ${fromId} (was ${beforeCount}).",
                     note: "The hub accepted the click but the dependents count did not drop. Inspect with hub_list_device_dependents(deviceId=${fromId}) before retrying -- some references may not be swappable."]
         }
-        mcpLog("info", "device-swap", "Swap ${fromId} -> ${toId} complete; dependents ${beforeCount} -> ${afterCount}")
+        mcpLog("info", "device-swap", "Swap ${fromId} -> ${toId} complete; dependents ${beforeCount} -> ${afterCount}; transient instance ${instanceGone ? 'self-removed (verify fetch threw)' : 'survived the click'}; cleanup delete issued either way")
         def result = [success: true,
                       swapped: [from: fromId, to: toId],
+                      verified: (beforeCount != null && afterCount != null),
                       note: "Every app that referenced ${fromId} now uses ${toId}. Verify with hub_list_device_dependents(deviceId=${toId}) and spot-check the most critical automations."]
         if (beforeCount != null) result.appsRewired = beforeCount
         if (afterCount != null) result.remainingDependents = afterCount
@@ -16041,7 +16077,9 @@ private void _deviceSwapCleanup(Integer appId) {
         hubInternalGetRaw("/installedapp/delete/${appId}")
         mcpLog("info", "device-swap", "Transient Swap Device instance ${appId} deleted")
     } catch (Exception e) {
-        mcpLog("warn", "device-swap", "Delete of Swap Device instance ${appId} failed (${e.message}) -- a leftover transient instance is harmless but can be removed from the hub's Apps list")
+        // error (not warn) so the orphan-leak case is queryable at the default
+        // error-only MCP log level.
+        mcpLogError("device-swap", "Delete of Swap Device instance ${appId} failed -- a leftover transient instance is harmless but can be removed from the hub's Apps list", e)
     }
 }
 

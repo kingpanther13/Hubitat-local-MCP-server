@@ -1535,6 +1535,10 @@ class ToolHubVariablesSpec extends ToolSpecBase {
             gets << path
             [status: 200, location: null, data: '<html>configure page</html>']
         }
+        def logged = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            logged << [level: level, component: component, msg: msg]
+        }
 
         when:
         def id = script._resolveDirectAppId('hubVariables')
@@ -1544,6 +1548,9 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
         and: 'it gave up on the first hop instead of guessing from the HTML body'
         gets.size() == 1
+
+        and: 'a hub-admin warn summarizes the cause (incl. the absolute-Location auto-follow caveat) without needing debug logging'
+        logged.any { it.level == 'warn' && it.component == 'hub-admin' && it.msg.contains('hubVariables') && it.msg.contains('auto-followed') }
     }
 
     def "_resolveDirectAppId returns null on a garbage Location"() {
@@ -1554,6 +1561,25 @@ class ToolHubVariablesSpec extends ToolSpecBase {
 
         expect:
         script._resolveDirectAppId('hubVariables') == null
+    }
+
+    def "_resolveDirectAppId returns null when hop 2 redirects to create/ again"() {
+        given: 'the create hop bounces to ANOTHER create/ instead of configure/ — a create match is only legal on hop 1'
+        def logged = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            logged << [level: level, component: component, msg: msg]
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            path == '/installedapp/direct/hubVariables' ?
+                [status: 302, location: '/installedapp/create/32', data: null] :
+                [status: 302, location: '/installedapp/create/99', data: null]
+        }
+
+        expect:
+        script._resolveDirectAppId('hubVariables') == null
+
+        and: 'the unexpected-Location warn fired at hub-admin'
+        logged.any { it.level == 'warn' && it.component == 'hub-admin' && it.msg.contains('unexpected Location') }
     }
 
     def "_resolveDirectAppId returns null when the request throws"() {

@@ -19,8 +19,10 @@ import support.ToolSpecBase
  * The Swap Device direct alias creates a fresh TRANSIENT instance per
  * resolve. The Cancel button (closeApp) does NOT reap a pending
  * (installed:false) instance, so cleanup is a GET to
- * /installedapp/delete/<appId> — asserted on every exit path unless the
- * swap action already removed the instance itself.
+ * /installedapp/delete/<appId> — asserted on EVERY exit path after the
+ * resolve, including the post-click path where the swap action already
+ * removed the instance itself (the delete is idempotent; the post-click
+ * verify fetch only informs logging, never gates cleanup).
  */
 class ToolDeviceSwapSpec extends ToolSpecBase {
 
@@ -67,11 +69,14 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
      * fixture.fetches: configure/json bodies returned in call order — fetch 1
      * is the oldDev eligibility pre-check (before any setting write), fetch 2
      * the newDev compatibility check, fetch 3 the button discovery, fetch 4
-     * the post-click gone-check (the last entry repeats; '' makes
-     * _rmFetchConfigJson throw = instance gone). fixture.beforeCount /
-     * afterCount: /device/fullJson/101 appsUsingCount on the 1st / subsequent
-     * reads. Returns the recorded call sequence (resolve / write / fetch /
-     * click / count / delete steps, in order).
+     * the post-click verify (the last entry repeats; '' makes
+     * _rmFetchConfigJson throw = instance likely gone — logging only, the
+     * cleanup delete fires on every post-click path regardless).
+     * fixture.beforeCount / afterCount: /device/fullJson/101 appsUsingCount
+     * on the 1st / subsequent reads; the sentinel 'unreadable' returns an
+     * empty body so _deviceSwapDependentCount degrades to null. Returns the
+     * recorded call sequence (resolve / write / fetch / click / count /
+     * delete steps, in order).
      */
     private List wireSwapStubs(Map fixture) {
         def calls = []
@@ -114,14 +119,16 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/101') { params ->
             countReads++
             calls << [step: 'count', n: countReads]
-            JsonOutput.toJson([appsUsing: [], appsUsingCount: (countReads == 1 ? fixture.beforeCount : fixture.afterCount)])
+            def count = (countReads == 1 ? fixture.beforeCount : fixture.afterCount)
+            if (count == 'unreadable') return ''   // empty body -> _deviceSwapDependentCount returns null
+            JsonOutput.toJson([appsUsing: [], appsUsingCount: count])
         }
         return calls
     }
 
     // -------- happy paths --------
 
-    def "happy path: count, resolve, eligibility check, write oldDev, options check, write newDev, button discovery, swap click, gone-check — instance self-removes"() {
+    def "happy path: count, resolve, eligibility check, write oldDev, options check, write newDev, button discovery, swap click, verify — cleanup delete fires even though the instance self-removed"() {
         given:
         enableWriteWithBackup()
         registerDevices()
@@ -140,15 +147,16 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         when:
         def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
 
-        then: 'success envelope reports the swap and the before/after dependent counts'
+        then: 'success envelope reports the swap, verified, and the before/after dependent counts'
         result.success == true
+        result.verified == true
         result.swapped == [from: '101', to: '202']
         result.appsRewired == 3
         result.remainingDependents == 0
         result.note.contains('hub_list_device_dependents')
 
-        and: 'the wizard ran in exactly the contract order — eligibility fetch BEFORE the first write'
-        calls.collect { it.step } == ['count', 'resolve', 'fetch', 'write', 'fetch', 'write', 'fetch', 'click', 'fetch', 'count']
+        and: 'the wizard ran in exactly the contract order — eligibility fetch BEFORE the first write, cleanup delete between the post-click verify and the after-count'
+        calls.collect { it.step } == ['count', 'resolve', 'fetch', 'write', 'fetch', 'write', 'fetch', 'click', 'fetch', 'delete', 'count']
         calls[1].path == '/installedapp/direct/swapDevice'
         calls[3].key == 'oldDev'
         calls[3].value == '101'
@@ -158,8 +166,8 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         calls[7].btn == 'swapDev'
         calls[7].appId == SWAP_APP_ID
 
-        and: 'no delete call — the swap action removed the transient instance itself'
-        !calls.any { it.step == 'delete' }
+        and: 'the delete fires even though the verify fetch said the instance self-removed — idempotent, and skipping it on a misread is what leaks instances'
+        calls.findAll { it.step == 'delete' }*.path == ["/installedapp/delete/${SWAP_APP_ID}".toString()]
     }
 
     def "happy path variant: instance survives the swap click, so the delete cleanup fires after success verification"() {
@@ -184,6 +192,7 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
 
         then:
         result.success == true
+        result.verified == true
         result.appsRewired == 2
 
         and: 'the swap action is the only click, and the delete GET fires AFTER it, never before'
@@ -217,6 +226,86 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         inner.swapped.from == '101'
         inner.swapped.to == '202'
         inner.appsRewired == 1
+    }
+
+    // -------- post-click verification outcomes --------
+
+    def "clicked but dependents did not drop: success:false 'still reference' envelope and the cleanup delete still fired"() {
+        given: 'both counts read fine but the after-count never drops'
+        enableWriteWithBackup()
+        registerDevices()
+        def compat = [['202': 'BAT Swap Target']]
+        def calls = wireSwapStubs(
+            beforeCount: 3,
+            afterCount: 3,
+            fetches: [
+                pageJson(),                                               // eligibility check
+                pageJson(newDevOptions: compat),
+                pageJson(newDevOptions: compat, buttons: ['swapDev']),
+                ''                                                        // post-click verify: instance gone
+            ]
+        )
+
+        when:
+        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+
+        then: 'the click landed but verification failed loud'
+        result.success == false
+        result.error.contains('still reference')
+        result.error.contains('(was 3)')
+        result.note.contains('hub_list_device_dependents')
+
+        and: 'the swap action was clicked and the cleanup delete fired anyway'
+        calls.findAll { it.step == 'click' }*.btn == ['swapDev']
+        calls.findAll { it.step == 'delete' }*.path == ["/installedapp/delete/${SWAP_APP_ID}".toString()]
+    }
+
+    def "degraded verification: after-count unreadable through a successful click -> success:true, verified:false, degraded note, remainingDependents absent"() {
+        given:
+        enableWriteWithBackup()
+        registerDevices()
+        def compat = [['202': 'BAT Swap Target']]
+        def calls = wireSwapStubs(
+            beforeCount: 2,
+            afterCount: 'unreadable',
+            fetches: [pageJson(), pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), '']
+        )
+
+        when:
+        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+
+        then: 'success is reported but explicitly machine-readably unverified'
+        result.success == true
+        result.verified == false
+        result.note.contains('degraded')
+        result.appsRewired == 2
+        !result.containsKey('remainingDependents')
+
+        and: 'the click happened and the cleanup delete still fired'
+        calls.findAll { it.step == 'click' }*.btn == ['swapDev']
+        calls.any { it.step == 'delete' }
+    }
+
+    def "degraded verification: before-count unreadable -> success:true, verified:false, appsRewired absent"() {
+        given:
+        enableWriteWithBackup()
+        registerDevices()
+        def compat = [['202': 'BAT Swap Target']]
+        wireSwapStubs(
+            beforeCount: 'unreadable',
+            afterCount: 0,
+            fetches: [pageJson(), pageJson(newDevOptions: compat), pageJson(newDevOptions: compat, buttons: ['swapDev']), '']
+        )
+
+        when:
+        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+
+        then:
+        result.success == true
+        result.verified == false
+        result.note.contains('degraded')
+        !result.containsKey('appsRewired')
+        result.remainingDependents == 0
     }
 
     // -------- ineligible source (oldDev eligibility pre-check) --------
@@ -356,6 +445,11 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         result.error.contains('did not resolve')
         result.note.contains('Nothing was swapped')
 
+        and: 'the note names the likely causes and points at the log surfaces'
+        result.note.contains('direct/swapDevice alias')
+        result.note.contains('auto-followed an absolute Location')
+        result.note.contains('hub_set_log_level')
+
         and: 'no writes, clicks, configure fetches, or cleanup deletes happened'
         !calls.any { it.step in ['write', 'click', 'fetch', 'delete'] }
     }
@@ -427,6 +521,59 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         ex.message.contains('999')
     }
 
+    // -------- setting writes rejected by the page --------
+
+    def "oldDev write rejected by the page: structured error names the skip reason and the instance is closed"() {
+        given: 'the eligibility check passes but the oldDev write comes back skipped'
+        enableWriteWithBackup()
+        registerDevices()
+        def calls = wireSwapStubs(beforeCount: 1, afterCount: 1, fetches: [pageJson()])
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null ->
+            calls << [step: 'write', key: key]
+            skipped << [key: 'oldDev', reason: 'rejected']
+        }
+
+        when:
+        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('oldDev')
+        result.error.contains('rejected')
+        result.note.contains('Nothing was swapped')
+
+        and: 'cleanup deleted the transient instance and the wizard stopped at the first write'
+        calls.findAll { it.step == 'delete' }*.path == ["/installedapp/delete/${SWAP_APP_ID}".toString()]
+        !calls.any { it.step == 'click' }
+        calls.count { it.step == 'write' } == 1
+    }
+
+    def "newDev write rejected by the page: structured error names the skip reason and the instance is closed"() {
+        given: 'oldDev lands, the compatibility check passes, but the newDev write comes back skipped'
+        enableWriteWithBackup()
+        registerDevices()
+        def compat = [['202': 'BAT Swap Target']]
+        def calls = wireSwapStubs(beforeCount: 1, afterCount: 1, fetches: [pageJson(), pageJson(newDevOptions: compat)])
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null ->
+            calls << [step: 'write', key: key]
+            if (key == 'newDev') skipped << [key: 'newDev', reason: 'rejected']
+            else applied << key
+        }
+
+        when:
+        def result = script.toolCallDeviceSwap([from_device_id: '101', to_device_id: '202', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('newDev')
+        result.error.contains('rejected')
+        result.note.contains('Retry')
+
+        and: 'cleanup deleted the transient instance and nothing was clicked'
+        calls.findAll { it.step == 'delete' }*.path == ["/installedapp/delete/${SWAP_APP_ID}".toString()]
+        !calls.any { it.step == 'click' }
+    }
+
     // -------- runtime failure inside the wizard --------
 
     def "exception mid-wizard returns a structured failure and still closes the transient instance"() {
@@ -464,5 +611,26 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         and: 'the cleanup contract held — the transient instance was deleted, nothing was clicked'
         !calls.any { it.step == 'click' }
         calls.findAll { it.step == 'delete' }*.path == ["/installedapp/delete/${SWAP_APP_ID}".toString()]
+    }
+
+    // -------- _deviceSwapDependentCount response shapes --------
+    // Direct helper tests (Groovy doesn't enforce `private` for direct calls
+    // from specs). null = "count unreadable" -> the tool degrades to
+    // verified:false instead of failing a swap that already committed.
+
+    @spock.lang.Unroll
+    def "_deviceSwapDependentCount: #label"() {
+        given:
+        hubGet.register('/device/fullJson/55') { params -> body }
+
+        expect:
+        script._deviceSwapDependentCount('55') == expected
+
+        where:
+        label                                            | body                                              | expected
+        'empty response -> null'                         | ''                                                | null
+        'non-Map JSON -> null'                           | '[1,2,3]'                                         | null
+        'appsUsingCount absent -> appsUsing.size()'      | '{"appsUsing":[{"id":1},{"id":2}]}'               | 2
+        'non-numeric appsUsingCount -> appsUsing.size()' | '{"appsUsing":[{"id":1}],"appsUsingCount":"42+"}' | 1
     }
 }
