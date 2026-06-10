@@ -26,8 +26,10 @@ JSON/form payload the browser sends, not something the server documents. The
 two UIs split the work:
 
 - **Vue SPA (`vue-hub2.min.js`)** — the contract for apps rewritten in Vue
-  (Basic Rules, Visual Rules Builder, hub variables, device swap, …) is the
-  JSON the Vue components POST.
+  (Basic Rules, Visual Rules Builder, …) is the JSON the Vue components POST.
+  (Hub variables and device swap are NOT on this list: their Vue components
+  are stubs/iframes and the classic wizard is the real contract — see the
+  `direct/*` endpoint rows below.)
 - **Classic engine (`appUI.js` + `main.js`)** — the contract for Rule Machine
   and the other classic `dynamicPage` apps is the form/settings POST this
   jQuery engine performs on `submitOnChange`, button clicks, and page
@@ -97,8 +99,9 @@ editor backed by `/app/ruleBuilder20Json/<id>` — not a separate engine.
 | `GET  /installedapp/statusJson/<id>` | App status JSON |
 | `GET  /installedapp/eventsJson/<id>` | Events history JSON |
 | `POST /installedapp/forcedelete/<id>/quiet` | Force-delete, no prompts |
-| `*    /installedapp/direct/swapDevice` | Vue direct page, global device swap |
-| `*    /installedapp/direct/hubVariables` | Vue direct page, variable CRUD |
+| `GET  /installedapp/direct/<alias>` | NOT a Vue CRUD endpoint — a name-addressed 302 redirect chain: `direct/<alias>` → `create/<typeId>` → `configure/<instanceId>` (type ids vary per hub; the alias is the stable key). Get-or-create, so it doubles as a stable name→id resolver (fw 2.5.0.143) |
+| `GET  /installedapp/direct/hubVariables` | Singleton: the chain lands on the SAME instance every visit. The Vue `HubVariables` component is a non-functional stub — the classic `hubVar` wizard is the real variable-CRUD contract |
+| `GET  /installedapp/direct/swapDevice` | Transient: every visit CREATES a fresh instance (1802, then 1803 observed) — callers own cleanup of instances they don't drive to completion. The swap flow itself is the classic `mainPage` wizard |
 
 ## Working with the files
 

@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B 19-gateway read/write split (11 flat core + 19 gateways = 30 on tools/list, 94 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B 19-gateway read/write split (11 flat core + 19 gateways = 30 on tools/list, 95 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2364,21 +2364,21 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 11 |
 | Gateways on `tools/list` | 19 |
 | Total visible on `tools/list` | 30 |
-| Total distinct tools in codebase | 94 |
+| Total distinct tools in codebase | 95 |
 
 **7 read gateways**: `hub_read_apps_code` (10), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (4), `hub_read_variables` (3)
 
-**12 manage gateways**: `hub_manage_code` (8), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (3), `hub_manage_devices` (6), `hub_manage_diagnostics` (8), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_rooms` (5), `hub_manage_rule_machine` (5), `hub_manage_variables` (8)
+**12 manage gateways**: `hub_manage_code` (8), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (3), `hub_manage_devices` (7), `hub_manage_diagnostics` (8), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_rooms` (5), `hub_manage_rule_machine` (5), `hub_manage_variables` (8)
 
 **11 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_set_mode`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_get_update_status`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 94 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 95 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 235 test scenarios** (120 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice device-relative (STPage) + 1 compareToDevice device-relative (doActPage) + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness) plus 13 excluded destructive operations documented for manual testing
+**Total: 238 test scenarios** (120 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice device-relative (STPage) + 1 compareToDevice device-relative (doActPage) + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 1 device swap + 2 installed-app read modes) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -3754,11 +3754,59 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ---
 
+### T641 — hub_get_app_config summary mode: thin identity read without the config-page render
+
+```json
+{
+  "setup_prompt": "The Read master is enabled. Pick any installed app id from hub_list_apps (scope='instances') — e.g. the MCP Rule Server itself.",
+  "test_prompt": "Call hub_get_app_config with that appId and summary=true. Inspect the result: it must carry the app's identity fields (id, name/label, type, disabled) and must NOT contain a rendered config page (no configPage/sections). Then call it again WITHOUT summary and confirm the full mode still returns the rendered page.",
+  "teardown_prompt": "Nothing to clean up (read-only)."
+}
+```
+
+**Expected**: summary mode returns `success=true` with the thin identity record from `/installedapp/json/<id>` (id/name/type/disabled/user) and no `configPage`; full mode is unchanged. The AI reaches the tool via `hub_read_apps_code` (or `hub_manage_native_rules_and_apps`).
+
+**Failure modes**: summary mode returning the full rendered page (mode ignored); missing identity fields; an error on a valid installed-app id; the AI calling `hub_list_apps` and stopping there instead of exercising the summary read.
+
+---
+
+### T642 — hub_call_device_swap: rewire every referencing app from one device to another (built-in Swap Device)
+
+```json
+{
+  "setup_prompt": "The Write master is enabled and a hub backup exists (<24h). Create two virtual switches via hub_manage_virtual_device: 'BAT Swap Source' and 'BAT Swap Target'. Note both device IDs. Then create RM rule 'BAT Swap Rule' with hub_set_rule using addTrigger {capability:'Switch', deviceIds:[<BAT Swap Source id>], state:'on'}.",
+  "test_prompt": "Preview which apps reference 'BAT Swap Source' with hub_list_device_dependents — 'BAT Swap Rule' must be listed. Then call hub_call_device_swap with from_device_id=<BAT Swap Source id>, to_device_id=<BAT Swap Target id>, confirm=true. Inspect result.success, result.swapped, result.appsRewired, and result.remainingDependents. Verify the swap took: hub_list_device_dependents on 'BAT Swap Source' no longer lists 'BAT Swap Rule', hub_list_device_dependents on 'BAT Swap Target' now does, and hub_get_app_config on 'BAT Swap Rule' shows the trigger device is now 'BAT Swap Target'.",
+  "teardown_prompt": "Delete the rule 'BAT Swap Rule' with hub_delete_native_app. Delete both virtual switches 'BAT Swap Source' and 'BAT Swap Target' via hub_manage_virtual_device."
+}
+```
+
+**Expected**: AI calls `hub_manage_devices(tool=hub_call_device_swap)` with `from_device_id`/`to_device_id`/`confirm=true` after previewing the blast radius with `hub_list_device_dependents`. The response is `success=true` with `swapped={from, to}`, `appsRewired>=1` (the rule referenced the source device before the swap), and `remainingDependents=0`. The dependents move: source device lists no apps afterwards, target device lists 'BAT Swap Rule', and the rule's `tDev` trigger setting now carries the target device ID. No orphaned "Swap Device" instance remains in the hub's Apps list (the transient instance closes itself or is closed by the tool).
+
+**Failure modes**: the tool refuses without `confirm` or a recent backup (expected gate — but the AI must then create the backup, not bypass). An incompatible-target error even though both devices are virtual switches of the same driver (the hub should offer the target as compatible). `success=true` but `hub_list_device_dependents` still lists the rule under the source device (the click did not commit). A leftover transient Swap Device instance in the Apps list after the call (cleanup contract broken). Swapping via manual rule edits (`hub_set_rule`) instead of `hub_call_device_swap` is a routing failure for this scenario.
+
+---
+
+### T643 — hub_list_device_events appId mode: per-app event history
+
+```json
+{
+  "setup_prompt": "The Read master is enabled. Pick an installed app likely to have emitted events recently (the MCP Rule Server instance, or a BAT rule that just fired).",
+  "test_prompt": "Call hub_list_device_events with appId=<that app's id> (no deviceId). Inspect the result: source must be 'app', the events list rows carry {name, value, description, date}, and a limit parameter is respected. Then call it with BOTH deviceId and appId and confirm it is rejected as invalid arguments.",
+  "teardown_prompt": "Nothing to clean up (read-only)."
+}
+```
+
+**Expected**: appId mode returns `source='app'` with normalized rows from `/installedapp/eventsJson/<id>` (client-side hoursBack/attribute/limit filtering applies); `deviceId`+`appId` together is rejected with an invalid-params error (-32602) naming the conflict. The AI discovers the mode from the tool description ("events emitted by an app or rule").
+
+**Failure modes**: app events silently treated as device events (wrong source); the mutual-exclusivity rejection missing (both params accepted); a row shape missing name/value/date; the AI failing to find the capability and claiming per-app events are unsupported (description/BM25 regression).
+
+---
+
 ## Changes from BAT v1
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **11 flat core + 19 gateways (30 on tools/list, 94 total distinct tools)** post installed-apps + RM interop + native CRUD + hub_list_app_pages + poll_until_attribute + library management + HPM package state + the PR1B read/write gateway split (was 23 core + 13 gateways / 36 total / 103 tools before PR1B; 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
+1. **Architecture**: 18 core + 8 gateways (26 total) → **11 flat core + 19 gateways (30 on tools/list, 95 total distinct tools)** post installed-apps + RM interop + native CRUD + hub_list_app_pages + poll_until_attribute + library management + HPM package state + the PR1B read/write gateway split (was 23 core + 13 gateways / 36 total / 103 tools before PR1B; 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
 2. **Merged tools**: `enable_rule`/`disable_rule` → `hub_update_custom_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `hub_manage_virtual_device` (action enum)
 3. **Promoted to core**: `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `hub_manage_diagnostics`, other tools merged into `hub_get_info` (core) or promoted

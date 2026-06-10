@@ -1484,4 +1484,226 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         where:
         useGateways << [true, false]
     }
+
+    // -------- _resolveDirectAppId (name-addressed app-id resolution) --------
+    //
+    // The /installedapp/direct/<alias> chain is two 302 hops:
+    //   direct/<alias> -> create/<typeId> -> configure/<instanceId>.
+    // hubInternalGetRaw is non-private, so a per-test metaClass stub
+    // intercepts the helper's internal calls (class 1 on the dispatch cheat
+    // sheet); the helper itself is invoked directly — Groovy doesn't enforce
+    // `private` for direct calls from specs.
+
+    def "_resolveDirectAppId follows the two-hop redirect chain to the configure instance id"() {
+        given: 'the hub answers both hops with relative 302 Locations'
+        def gets = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            gets << path
+            switch (path) {
+                case '/installedapp/direct/hubVariables': return [status: 302, location: '/installedapp/create/32', data: null]
+                case '/installedapp/create/32':           return [status: 302, location: '/installedapp/configure/1424', data: null]
+                default: throw new IllegalStateException("unexpected GET ${path}")
+            }
+        }
+
+        when:
+        def id = script._resolveDirectAppId('hubVariables')
+
+        then: 'the configure instance id comes back'
+        id == 1424
+
+        and: 'exactly two hops — the configure page itself is never fetched'
+        gets == ['/installedapp/direct/hubVariables', '/installedapp/create/32']
+    }
+
+    def "_resolveDirectAppId tolerates an absolute Location on the final hop"() {
+        given: 'hop 2 redirects with a scheme://host-qualified Location'
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            path == '/installedapp/direct/swapDevice' ?
+                [status: 302, location: '/installedapp/create/38', data: null] :
+                [status: 302, location: 'http://127.0.0.1:8080/installedapp/configure/1802', data: null]
+        }
+
+        expect:
+        script._resolveDirectAppId('swapDevice') == 1802
+    }
+
+    def "_resolveDirectAppId returns null on a non-redirect response"() {
+        given: 'the platform client auto-followed an absolute Location and handed back 200 HTML with no Location (hubInternalGetRaw caveat)'
+        def gets = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            gets << path
+            [status: 200, location: null, data: '<html>configure page</html>']
+        }
+
+        when:
+        def id = script._resolveDirectAppId('hubVariables')
+
+        then:
+        id == null
+
+        and: 'it gave up on the first hop instead of guessing from the HTML body'
+        gets.size() == 1
+    }
+
+    def "_resolveDirectAppId returns null on a garbage Location"() {
+        given: 'a 302 pointing somewhere outside the direct chain'
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            [status: 302, location: '/hub/error', data: null]
+        }
+
+        expect:
+        script._resolveDirectAppId('hubVariables') == null
+    }
+
+    def "_resolveDirectAppId returns null when the request throws"() {
+        given:
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            throw new RuntimeException('connection refused')
+        }
+
+        expect:
+        script._resolveDirectAppId('hubVariables') == null
+    }
+
+    // -------- _findHubVariablesAppId resolution order (cache -> direct -> appsList) --------
+    //
+    // The old per-id endpoint scan (1..3000 GETs of configure/json) is gone;
+    // the "throws when both miss" spec pins its absence via hubGet.calls.
+
+    def "_findHubVariablesAppId returns the cached id without any HTTP"() {
+        given:
+        atomicStateMap.hubVarsAppId = 777
+        def rawGets = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            rawGets << path
+            [status: 200, location: null, data: null]
+        }
+
+        when:
+        def id = script._findHubVariablesAppId()
+
+        then:
+        id == 777
+        rawGets.empty
+        hubGet.calls.empty
+    }
+
+    def "_findHubVariablesAppId resolves via the direct alias first and caches the result"() {
+        given: 'no cache; the direct chain resolves'
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            path == '/installedapp/direct/hubVariables' ?
+                [status: 302, location: '/installedapp/create/32', data: null] :
+                [status: 302, location: '/installedapp/configure/1424', data: null]
+        }
+
+        when:
+        def id = script._findHubVariablesAppId()
+
+        then:
+        id == 1424
+        atomicStateMap.hubVarsAppId == 1424
+
+        and: 'the appsList walk never ran'
+        hubGet.calls.empty
+    }
+
+    def "_findHubVariablesAppId falls back to the appsList walk when the direct alias fails"() {
+        given: 'the direct chain dead-ends (non-redirect)'
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            [status: 200, location: null, data: null]
+        }
+
+        and: 'appsList carries the Hub Variables node; configure/json confirms it'
+        hubGet.register('/hub2/appsList') { params ->
+            groovy.json.JsonOutput.toJson([apps: [[data: [id: 9, type: 'Other App'], children: [[data: [id: 1424, type: 'Hub Variables'], children: []]]]]])
+        }
+        hubGet.register('/installedapp/configure/json/1424') { params ->
+            groovy.json.JsonOutput.toJson([app: [appType: [name: 'Hub Variables']]])
+        }
+
+        when:
+        def id = script._findHubVariablesAppId()
+
+        then:
+        id == 1424
+        atomicStateMap.hubVarsAppId == 1424
+    }
+
+    def "_findHubVariablesAppId rejects an appsList candidate whose configure/json name mismatches"() {
+        given:
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            [status: 200, location: null, data: null]
+        }
+        hubGet.register('/hub2/appsList') { params ->
+            groovy.json.JsonOutput.toJson([apps: [[data: [id: 50, type: 'Hub Variables'], children: []]]])
+        }
+        hubGet.register('/installedapp/configure/json/50') { params ->
+            groovy.json.JsonOutput.toJson([app: [appType: [name: 'Definitely Not Hub Variables']]])
+        }
+
+        when:
+        script._findHubVariablesAppId()
+
+        then: 'the mismatched id is neither returned nor cached — a wrong cached id would break every wizard tool'
+        thrown(IllegalStateException)
+        atomicStateMap.hubVarsAppId == null
+    }
+
+    def "_findHubVariablesAppId keeps an appsList match when the verify fetch errors (best-effort verify)"() {
+        given:
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            [status: 200, location: null, data: null]
+        }
+
+        and: 'configure/json left unregistered — the mock throws, simulating transient HTTP failure'
+        hubGet.register('/hub2/appsList') { params ->
+            groovy.json.JsonOutput.toJson([apps: [[data: [id: 60, type: 'Hub Variables'], children: []]]])
+        }
+
+        when:
+        def id = script._findHubVariablesAppId()
+
+        then: 'the name-keyed appsList match survives a flaky verify'
+        id == 60
+        atomicStateMap.hubVarsAppId == 60
+    }
+
+    def "_findHubVariablesAppId throws (no id scan) when both direct alias and appsList miss"() {
+        given: 'the direct chain dead-ends and appsList has no Hub Variables node'
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            [status: 200, location: null, data: null]
+        }
+        hubGet.register('/hub2/appsList') { params ->
+            groovy.json.JsonOutput.toJson([apps: [[data: [id: 9, type: 'Other App'], children: []]]])
+        }
+
+        when:
+        script._findHubVariablesAppId()
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.contains('/installedapp/direct/hubVariables')
+        ex.message.contains('/hub2/appsList')
+
+        and: 'no per-id endpoint scan happened — the only classic GET was the appsList walk'
+        hubGet.calls*.path == ['/hub2/appsList']
+    }
+
+    def "_findHubVariablesAppId rediscovers when the cached id is garbage"() {
+        given: 'a non-numeric cache value left behind by an older version'
+        atomicStateMap.hubVarsAppId = 'not-a-number'
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            path == '/installedapp/direct/hubVariables' ?
+                [status: 302, location: '/installedapp/create/32', data: null] :
+                [status: 302, location: '/installedapp/configure/1424', data: null]
+        }
+
+        when:
+        def id = script._findHubVariablesAppId()
+
+        then:
+        id == 1424
+        atomicStateMap.hubVarsAppId == 1424
+    }
 }

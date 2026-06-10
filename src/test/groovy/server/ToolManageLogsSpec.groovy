@@ -11,7 +11,7 @@ import support.ToolSpecBase
  * Spec for the hub_manage_logs gateway tools (hubitat-mcp-server.groovy):
  *
  * - toolGetHubLogs         -> hub_get_logs          (additional coverage beyond ToolGetHubLogsSpec)
- * - toolGetDeviceHistory   -> hub_list_device_events (core tool; windowed/location branch)
+ * - toolGetDeviceHistory   -> hub_list_device_events (core tool; windowed/app/location branches)
  * - toolGetPerformanceStats-> hub_get_performance_stats
  * - toolGetHubJobs         -> hub_get_jobs
  * - toolGetDebugLogs       -> hub_get_debug_logs
@@ -324,6 +324,130 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('Device not found')
+    }
+
+    // -------- toolGetDeviceHistory: per-app events (appId) --------
+    // Pinned now() is 1234567890000L = 2009-02-13T23:31:30Z; in-window event
+    // dates below are chosen relative to that.
+
+    def "hub_list_device_events returns app events when appId is given (reads /installedapp/eventsJson)"() {
+        given: '/installedapp/eventsJson stubbed with app-emitted rows (real wire shape: name/value/descriptionText/date) plus one row outside the 6h window'
+        hubGet.register('/installedapp/eventsJson/974') { params ->
+            '''[
+              {"name":"pushed","value":"1","descriptionText":"Rule triggered","date":"2009-02-13T22:00:00.000+0000"},
+              {"name":"switch","value":"on","descriptionText":"Rule turned on Kitchen","date":"2009-02-13T21:00:00.000+0000"},
+              {"name":"switch","value":"off","descriptionText":"too old","date":"2009-02-10T00:00:00.000+0000"}
+            ]'''
+        }
+
+        when:
+        def result = script.toolGetDeviceHistory([appId: 974, hoursBack: 6, limit: 25])
+
+        then: 'it reads the per-app events endpoint'
+        hubGet.calls.any { it.path == '/installedapp/eventsJson/974' }
+
+        and: 'source/appId identify the mode; no device keys leak in'
+        result.source == 'app'
+        result.appId == 974
+        !result.containsKey('device')
+        !result.containsKey('deviceId')
+        result.hoursBack == 6
+
+        and: 'rows are normalized to {name, value, description, date} and the out-of-window row is dropped'
+        result.count == 2
+        result.events*.name == ['pushed', 'switch']
+        result.events[0].value == '1'
+        result.events[0].description == 'Rule triggered'
+        result.events[0].date == '2009-02-13T22:00:00.000+0000'
+        result.events[0].keySet() == ['name', 'value', 'description', 'date'] as Set
+    }
+
+    def "hub_list_device_events applies attribute and limit filters to app events client-side"() {
+        given: 'the endpoint takes no query params, so filtering must happen client-side; 5 switch rows exceed the limit of 3'
+        hubGet.register('/installedapp/eventsJson/974') { params ->
+            JsonOutput.toJson((1..10).collect { i ->
+                [name: (i % 2 == 0 ? 'switch' : 'level'), value: "${i}".toString(),
+                 descriptionText: "evt ${i}".toString(), date: '2009-02-13T22:00:00.000+0000']
+            })
+        }
+
+        when:
+        def result = script.toolGetDeviceHistory([appId: 974, attribute: 'switch', limit: 3])
+
+        then: 'limit is enforced while collecting (before the response is built)'
+        result.count == 3
+        result.events.size() == 3
+        result.events.every { it.name == 'switch' }
+        result.attributeFilter == 'switch'
+    }
+
+    def "hub_list_device_events returns an error map when /installedapp/eventsJson fetch fails"() {
+        given:
+        hubGet.register('/installedapp/eventsJson/974') { params ->
+            throw new RuntimeException('app event store unavailable')
+        }
+
+        when:
+        def result = script.toolGetDeviceHistory([appId: 974])
+
+        then:
+        result.source == 'app'
+        result.appId == 974
+        result.error.contains('failed')
+        result.error.contains('app event store unavailable')
+    }
+
+    def "hub_list_device_events throws when appId is non-numeric (no HTTP call made)"() {
+        // No endpoint registered: reaching HTTP would surface the unstubbed-path
+        // error instead of the expected validation exception.
+        when:
+        script.toolGetDeviceHistory([appId: 'not-a-number'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('numeric')
+    }
+
+    @spock.lang.Unroll
+    def "hub_list_device_events via dispatch returns app events for appId (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        hubGet.register('/installedapp/eventsJson/974') { params ->
+            '[{"name":"pushed","value":"1","descriptionText":"Rule triggered","date":"2009-02-13T22:00:00.000+0000"}]'
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_device_events', [appId: 974])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.source == 'app'
+        inner.appId == 974
+        inner.count == 1
+        inner.events[0].name == 'pushed'
+        inner.events[0].description == 'Rule triggered'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "hub_list_device_events via dispatch rejects deviceId+appId together with -32602 (useGateways=#useGateways)"() {
+        given: 'no endpoint registered and no device needed -- the exclusivity check fires before any routing'
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('hub_list_device_events', [deviceId: '42', appId: 974])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('mutually exclusive')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "hub_list_device_events returns events for a selected device"() {

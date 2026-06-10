@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 30 items (11 core + 19 gateways) covering 94 total tools. Use `hub_search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 30 items (11 core + 19 gateways) covering 95 total tools. Use `hub_search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
@@ -14,7 +14,7 @@ Gateway verbs encode mutation: **`hub_read_*`** gateways are pure-read (every su
 
 **Read gateways:** `hub_read_apps_code` (9), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (4), `hub_read_variables` (3)
 
-**Manage gateways:** `hub_manage_code` (9), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (3), `hub_manage_devices` (6), `hub_manage_diagnostics` (8), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_rooms` (5), `hub_manage_rule_machine` (5), `hub_manage_variables` (8)
+**Manage gateways:** `hub_manage_code` (9), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (3), `hub_manage_devices` (7), `hub_manage_diagnostics` (8), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_rooms` (5), `hub_manage_rule_machine` (5), `hub_manage_variables` (8)
 
 All safety gates are preserved: the Read/Write master gate runs centrally in `executeTool()` and re-applies per sub-tool when a gateway routes back through it, and the destructive `confirm`+backup checks run in the handlers of the destructive write tools.
 
