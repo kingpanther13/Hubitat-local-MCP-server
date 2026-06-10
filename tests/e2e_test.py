@@ -1577,6 +1577,132 @@ class TestRunner:
                     print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
+    # GROUP 4d: app_code_update (1 test) -- the hub_update_app code-deploy path
+    # (POST /app/saveOrUpdateJson). One throwaway code class, three legs before its delete:
+    # a real round-trip edit (success + version advance + source landed), the
+    # hub's verbatim compile error on broken Groovy (not our generic fallback),
+    # and the client-side expectedVersion optimistic lock (refused, no write).
+    # -----------------------------------------------------------------------
+
+    @test("app_code_update")
+    def test_update_app_code_lifecycle(self) -> None:
+        # Throwaway Apps Code class (code only, never installed as an instance). The name
+        # deliberately starts with "Deadman Test Target" (namespace mcptest) so the cleanup
+        # Layer 5 startswith sweep reclaims a stranded copy if a crash skips the finally below.
+        source_v1 = '''\
+definition(
+    name: "Deadman Test Target Update",
+    namespace: "mcptest",
+    author: "ci",
+    description: "Throwaway e2e app-code update-leg target",
+    category: "Utility",
+    iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
+    iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png"
+)
+
+preferences {
+    page(name: "p", title: "Update Leg Target", install: true, uninstall: true) {
+        section { paragraph "Throwaway update-leg target. Marker: ${updateLegMarker()}" }
+    }
+}
+
+def installed() {}
+def updated() {}
+
+def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
+'''
+        code_app_id = None
+        try:
+            created = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_app",
+                "args": {"source": source_v1, "confirm": True},
+            })
+            code_app_id = created.get("appId")
+            assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created}"
+
+            before = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "app", "id": code_app_id},
+            })
+            assert before.get("success") is True and before.get("version") is not None \
+                and "UPDATE-LEG-MARKER-V1" in (before.get("source") or ""), \
+                f"could not read back the created code class: {before}"
+            version_before = int(before["version"])
+
+            # Leg 1: round-trip edit -- valid modified source must save, advance the hub's
+            # version counter, and be readable back via hub_get_source.
+            source_v2 = source_v1.replace("UPDATE-LEG-MARKER-V1", "UPDATE-LEG-MARKER-V2")
+            updated = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_app",
+                "args": {"appId": code_app_id, "source": source_v2, "confirm": True},
+            })
+            assert updated.get("success") is True, f"hub_update_app round-trip failed: {updated}"
+            assert updated.get("previousVersion") is not None, \
+                f"hub_update_app success carries no previousVersion: {updated}"
+            after = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "app", "id": code_app_id},
+            })
+            assert "UPDATE-LEG-MARKER-V2" in (after.get("source") or ""), \
+                f"updated source did not land on the hub: {after}"
+            version_after = int(after["version"])
+            assert version_after > version_before, \
+                f"version did not advance after update ({version_before} -> {version_after})"
+
+            # Leg 2: compile error -- the hub's verbatim compiler text must ride back in
+            # `error`, not our generic fallback string.
+            source_broken = source_v2.replace(
+                "def updated() {}",
+                "def updated() { new ClassThatDoesNotExistBatE2e() }",
+            )
+            failed = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_app",
+                "args": {"appId": code_app_id, "source": source_broken, "confirm": True},
+            })
+            assert failed.get("success") is False, f"broken Groovy was accepted: {failed}"
+            err = str(failed.get("error") or "")
+            assert err and err != "Update failed - the hub returned an error", \
+                f"compile failure did not surface the hub's error text: {failed}"
+            assert "unable to resolve" in err.lower() or "ClassThatDoesNotExistBatE2e" in err, \
+                f"error text is not the hub's compiler output: {err!r}"
+
+            # Leg 3: optimistic lock -- a stale expectedVersion must be refused client-side
+            # with conflict:true, before anything is written.
+            source_v3 = source_v2.replace("UPDATE-LEG-MARKER-V2", "UPDATE-LEG-MARKER-V3")
+            conflicted = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_app",
+                "args": {"appId": code_app_id, "source": source_v3,
+                         "expectedVersion": 99999, "confirm": True},
+            })
+            assert conflicted.get("success") is False, \
+                f"stale expectedVersion was accepted: {conflicted}"
+            assert conflicted.get("conflict") is True, \
+                f"conflict flag missing on optimistic-lock refusal: {conflicted}"
+
+            # One re-read proves NEITHER refused leg wrote anything: still V2, no V3 marker,
+            # version unchanged since the round-trip edit.
+            final = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "app", "id": code_app_id},
+            })
+            final_src = final.get("source") or ""
+            assert "UPDATE-LEG-MARKER-V2" in final_src and "UPDATE-LEG-MARKER-V3" not in final_src, \
+                f"a refused update mutated the stored source: {final}"
+            assert int(final["version"]) == version_after, \
+                f"a refused update advanced the version ({version_after} -> {final.get('version')})"
+
+            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write")
+        finally:
+            if code_app_id:
+                try:
+                    self.client.call_tool("hub_manage_code", {
+                        "tool": "hub_delete_item",
+                        "args": {"type": "app", "id": code_app_id, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] app-code update cleanup: delete code class {code_app_id} failed: {exc}")
+
+    # -----------------------------------------------------------------------
     # GROUP 5: trigger_types (1 batched test -- all trigger types in one rule)
     # -----------------------------------------------------------------------
 
@@ -2919,10 +3045,12 @@ class TestRunner:
             except Exception as exc:
                 print(f"  [WARN] Native rule sweep failed: {exc}")
 
-        # Layer 5: stranded deadman install-fix throwaway. The @test("deadman") test installs
-        # 'Deadman Test Target' (namespace mcptest) + its code class; neither carries the BAT_E2E_
-        # prefix, so a crash/kill between its create and finally would strand it past the other
-        # sweeps. Reclaim instance(s) + code class by namespace+name (idempotent across runs).
+        # Layer 5: stranded mcptest throwaways. The @test("deadman") test installs 'Deadman Test
+        # Target' (instance + code class) and the @test("app_code_update") test creates the
+        # 'Deadman Test Target Update' code class (named to ride this same startswith match);
+        # none carry the BAT_E2E_ prefix, so a crash/kill between a create and its finally would
+        # strand them past the other sweeps. Reclaim instance(s) + code class by namespace+name
+        # (idempotent across runs).
         try:
             dtypes = self.client.call_tool("hub_read_apps_code",
                                            {"tool": "hub_list_apps", "args": {"scope": "types"}})

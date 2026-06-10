@@ -378,4 +378,74 @@ class HubInternalRetrySpec extends ToolSpecBase {
         loginCalls == 0
         atomicStateMap.hubSecurityCookie == 'JSESSIONID=cached'
     }
+
+    // ---- hubInternalPostJson response-body contract (parsed Map / strict-empty null / sentinel) ----
+    // hubInternalPostJson has no metaClass shadow in the harness, so these run the real helper
+    // down to the httpPost dispatcher above. Callers key fail-open/fail-closed decisions on the
+    // three-way split, so each leg is pinned.
+
+    def "hubInternalPostJson parses a JSON response body into the response Map"() {
+        given:
+        enableHubSecurity()
+        seedCachedCookie('JSESSIONID=cached')
+
+        and:
+        httpPostHandler = { Map params, Closure cb ->
+            cb.call([status: 200, data: '{"success": true, "id": 7}'])
+        }
+
+        when:
+        def result = script.hubInternalPostJson('/app/saveOrUpdateJson', '{"id": 7, "source": "s"}')
+
+        then:
+        result instanceof Map
+        result.success == true
+        result.id == 7
+        !result.containsKey('_unparseable')
+    }
+
+    def "hubInternalPostJson returns null STRICTLY for an empty response body"() {
+        given:
+        enableHubSecurity()
+        seedCachedCookie('JSESSIONID=cached')
+
+        and: 'the POST commits but the response body is empty (the dropped-response signature)'
+        httpPostHandler = { Map params, Closure cb ->
+            cb.call([status: 200, data: ''])
+        }
+
+        when:
+        def result = script.hubInternalPostJson('/app/saveOrUpdateJson', '{"id": 1}')
+
+        then: 'null means empty body and nothing else -- the signal self-deploy callers treat leniently'
+        result == null
+    }
+
+    def "hubInternalPostJson returns the _unparseable sentinel (not null) on a non-JSON response body"() {
+        given:
+        enableHubSecurity()
+        seedCachedCookie('JSESSIONID=cached')
+
+        and: 'the hub answers the POST with an HTML body (e.g. a login or error page), not JSON'
+        httpPostHandler = { Map params, Closure cb ->
+            cb.call([status: 200, data: '<html>Hub Login</html>'])
+        }
+        def errorLogs = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            if (level == 'error') errorLogs << msg
+        }
+
+        when:
+        def result = script.hubInternalPostJson('/app/saveOrUpdateJson', '{"id": 1}')
+
+        then: 'callers can distinguish a non-JSON body from a legitimately empty (dropped) one'
+        result instanceof Map
+        result._unparseable == true
+        result.message.contains('non-JSON body')
+        result.message.contains('/app/saveOrUpdateJson')
+        result.message.contains('<html>Hub Login</html>')
+
+        and: 'the error log names the failing path'
+        errorLogs.any { it.contains('/app/saveOrUpdateJson') && it.contains('not JSON') }
+    }
 }

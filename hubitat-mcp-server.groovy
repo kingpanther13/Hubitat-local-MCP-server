@@ -9190,10 +9190,6 @@ def hubInternalPost(String path, Map body = null, int timeout = 30, boolean isRe
 }
 
 /**
- * Make an authenticated POST request to the hub's internal API with form-encoded body.
- * Used for app/driver management endpoints that require application/x-www-form-urlencoded.
- */
-/**
  * POST a pre-encoded form-urlencoded body to the hub's internal API. Use
  * this instead of `hubInternalPostForm` when the body contains values
  * HTTPBuilder's auto-encoder mangles (notably backslash + quote sequences
@@ -9206,6 +9202,11 @@ def hubInternalPostFormRaw(String path, String encodedBody, int timeout = 420, b
                               returnShape: 'struct', isRetry: isRetry])
 }
 
+/**
+ * Form-encoded POST to the hub's internal API. Used by the classic dynamicPage surfaces
+ * (/installedapp/* settings submits, button clicks, lifecycle fires) and other endpoints
+ * that require application/x-www-form-urlencoded.
+ */
 def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetry = false) {
     _hubRequest('POST', path, [body: body, timeout: timeout,
                               requestContentType: "application/x-www-form-urlencoded", keepAlive: true,
@@ -9213,9 +9214,12 @@ def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetr
 }
 
 /**
- * POST to the hub's internal API with a JSON body. Used by library management endpoints
- * which accept Content-Type: application/json (unlike app/driver endpoints that use form-encoded).
- * Returns a parsed Map/List from the JSON response body, or null on empty response.
+ * POST to the hub's internal API with a JSON body. Used by the saveOrUpdateJson family
+ * (app/driver/library create and update) and other Content-Type: application/json endpoints.
+ * Returns a parsed Map/List from the JSON response body, null on an EMPTY body, or an
+ * [_unparseable: true, message: ...] sentinel Map when the body wasn't JSON (e.g. an HTML
+ * login page) -- callers must not conflate the last two: an empty body can be a legitimate
+ * dropped-response signature, a non-JSON body never is.
  */
 def hubInternalPostJson(String path, String jsonBody, int timeout = 420, boolean isRetry = false) {
     def bodyText = _hubRequest('POST', path, [body: jsonBody, timeout: timeout,
@@ -9225,8 +9229,8 @@ def hubInternalPostJson(String path, String jsonBody, int timeout = 420, boolean
         try {
             return new groovy.json.JsonSlurper().parseText(bodyText)
         } catch (Exception parseErr) {
-            mcpLog("error", "hub-admin", "hubInternalPostJson response not JSON: ${bodyText?.take(200)}")
-            return null
+            mcpLog("error", "hub-admin", "hubInternalPostJson ${path}: response not JSON: ${bodyText?.take(200)}")
+            return [_unparseable: true, message: "hub returned a non-JSON body from ${path}: ${bodyText?.take(200)}"]
         }
     }
     return null
@@ -9475,7 +9479,8 @@ def toolRestoreItemBackup(args) {
         ]
     }
 
-    // Library backups cannot be restored via the app/driver ajax/update endpoint.
+    // Library restores don't ride this path -- the version fetch + pre-restore backup here
+    // are wired to /app|driver/ajax/code, which has no library twin.
     // Direct the caller to use hub_create_library or hub_update_library with the backup source.
     if (entry.type == "library") {
         return [
@@ -9555,6 +9560,16 @@ def toolRestoreItemBackup(args) {
         mcpLog("warn", "hub-admin", "Could not create pre-restore backup: ${preBackupErr.message} -- proceeding with restore anyway")
     }
 
+    // Restoring the MCP server's OWN code drops the response exactly like a self-update
+    // (the recompile kills the in-flight request), so it gets the same empty-body leniency
+    // and lastSelfDeploy stash the update path has. Computed before the try so the
+    // exception path can stash too.
+    boolean isSelfRestore = false
+    if (entryCopy.type == "app") {
+        def selfIds = [app?.id?.toString(), _resolveSelfAppClassId()?.toString()].findAll { it != null }
+        isSelfRestore = selfIds.contains(entryCopy.id?.toString())
+    }
+
     // Now push the backup source directly via the hub internal API (bypass toolUpdateAppCode to avoid
     // its backupItemSource call which would overwrite our original backup file)
     try {
@@ -9569,32 +9584,54 @@ def toolRestoreItemBackup(args) {
             } catch (Exception vErr) { /* proceed without version */ }
         }
 
-        def updatePath = (entryCopy.type == "app") ? "/app/ajax/update" : "/driver/ajax/update"
-        def result = hubInternalPostForm(updatePath, [
-            id: entryCopy.id,
-            version: currentVersion ?: entryCopy.version,
-            source: source
-        ])
+        // Same JSON save endpoint the update path uses; id present => in-place update.
+        def savePath = (entryCopy.type == "app") ? "/app/saveOrUpdateJson" : "/driver/saveOrUpdateJson"
 
-        def responseData = result?.data
+        def parsed = hubInternalPostJson(savePath, groovy.json.JsonOutput.toJson([
+            id: entryCopy.id as Integer,
+            source: source,
+            version: currentVersion ?: entryCopy.version
+        ]))
+
         def success = false
         def errorMsg = null
-        if (responseData) {
-            try {
-                def parsed = (responseData instanceof String) ? new groovy.json.JsonSlurper().parseText(responseData) : responseData
-                success = parsed.status == "success"
-                errorMsg = parsed.errorMessage
-            } catch (Exception parseErr) {
-                mcpLog("warn", "hub-admin", "Restore update response was not JSON: ${responseData?.toString()?.take(200)}")
-                errorMsg = "Unexpected response format — restore may have succeeded but could not be confirmed."
+        if (parsed instanceof Map) {
+            success = parsed.success == true
+            if (success && parsed.id != null && parsed.id.toString() != entryCopy.id.toString()) {
+                success = false
+                errorMsg = "Hub reported success but saved to ${entryCopy.type} id ${parsed.id} instead of the targeted id ${entryCopy.id} -- a duplicate code entry may have been created."
+            } else if (!success) {
+                errorMsg = parsed.message ?: parsed.errorMessage ?: "hub response lacked success=true: ${parsed.toString().take(200)}"
             }
+        } else if (parsed == null) {
+            // null is strictly an EMPTY body (non-JSON bodies arrive as the _unparseable sentinel
+            // and fail above). Lenient only for a self-restore; otherwise fail closed.
+            success = isSelfRestore
+            if (!success) errorMsg = "Empty response from ${savePath} — restore may or may not have applied. Verify the ${entryCopy.type} source before retrying."
         } else {
-            success = true
+            errorMsg = "Unexpected response shape from ${savePath}: ${parsed.toString().take(200)}"
+        }
+
+        if (isSelfRestore) {
+            try {
+                def stash = [
+                    success: success,
+                    error: success ? null : (errorMsg ?: "Restore failed -- the hub returned an error"),
+                    sourceMode: "restore",
+                    importUrl: null,
+                    sourceLength: source.length(),
+                    at: now()
+                ]
+                if (success && parsed == null) stash.assumed = true
+                atomicState.lastSelfDeploy = stash
+            } catch (Exception stashErr) {
+                mcpLog("error", "hub-admin", "lastSelfDeploy stash write failed -- self-restore outcome record lost: ${stashErr}")
+            }
         }
 
         if (success) {
             mcpLog("info", "hub-admin", "Restore succeeded: ${entryCopy.type} ID ${entryCopy.id} restored to version ${entryCopy.version}")
-            return [
+            def restoreResult = [
                 success: true,
                 message: "Restored ${entryCopy.type} ID ${entryCopy.id} to version ${entryCopy.version} (backup from ${formatTimestamp(entryCopy.timestamp)})",
                 type: entryCopy.type,
@@ -9604,6 +9641,11 @@ def toolRestoreItemBackup(args) {
                 preRestoreFile: preRestoreFileName,
                 undoHint: "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'"
             ]
+            if (isSelfRestore && parsed == null) {
+                restoreResult.assumed = true
+                restoreResult.note = "This restored the MCP server's own code, so the hub's response was dropped by the recompile -- success is inferred, not hub-confirmed. Verify via hub_get_info (lastSelfDeploy) or hub_get_source."
+            }
+            return restoreResult
         } else {
             mcpLog("error", "hub-admin", "Restore failed for ${entryCopy.type} ID ${entryCopy.id}: ${errorMsg ?: 'unknown error'}")
             return [
@@ -9616,6 +9658,20 @@ def toolRestoreItemBackup(args) {
         }
     } catch (Exception e) {
         mcpLogError("hub-admin", "Restore failed with exception for ${entryCopy.type} ID ${entryCopy.id}", e)
+        if (isSelfRestore) {
+            try {
+                atomicState.lastSelfDeploy = [
+                    success: false,
+                    error: "Restore failed: ${e.message}",
+                    sourceMode: "restore",
+                    importUrl: null,
+                    sourceLength: (source != null ? source.length() : 0),
+                    at: now()
+                ]
+            } catch (Exception stashErr) {
+                mcpLog("error", "hub-admin", "lastSelfDeploy stash write failed -- self-restore outcome record lost: ${stashErr}")
+            }
+        }
         return [
             success: false,
             error: "Restore failed: ${e.message}",
@@ -12913,6 +12969,15 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
         throw new IllegalArgumentException("expectedVersion was supplied as null. Omit the field entirely to skip the optimistic-lock check, or pass an integer.")
     }
 
+    // Validate id shape up front: bad args are caller-recoverable and belong on the
+    // IllegalArgumentException path, not in a runtime-failure envelope from the POST.
+    def itemIdInt
+    try {
+        itemIdInt = itemId as Integer
+    } catch (NumberFormatException | ClassCastException idErr) {
+        throw new IllegalArgumentException("${idParam} must be an integer ${type} code id (got '${itemId}')")
+    }
+
     // Self-update guard: blocks overwriting our own app source unless Developer Mode is on.
     // Runs before any I/O so blocked self-updates don't pull source. Fails closed when `app` is
     // unavailable -- can't verify it's not a self-update, so refuse rather than risk a silent brick.
@@ -12932,7 +12997,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
     }
 
     def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
-    def updatePath = (type == "app") ? "/app/ajax/update" : "/driver/ajax/update"
+    def savePath = (type == "app") ? "/app/saveOrUpdateJson" : "/driver/saveOrUpdateJson"
 
     // Resolve source from one of three modes: source, sourceFile, or resave
     def sourceCode = null
@@ -13056,35 +13121,45 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
     }
     mcpLog("info", "hub-admin", "Updating ${type} ID: ${itemId} (version: ${currentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
     try {
-        def result = hubInternalPostForm(updatePath, [
-            id: itemId,
-            version: currentVersion,
-            source: sourceCode
-        ])
+        // Update rides POST /app|driver/saveOrUpdateJson (JSON); a non-null id means in-place
+        // update of the existing code class. Response is {success, id, message[, version]}; a
+        // compile failure rides verbatim in `message`. (The old form /app|driver/ajax/update
+        // returns a different envelope entirely: {status, errorMessage}.)
+        def parsed = hubInternalPostJson(savePath, groovy.json.JsonOutput.toJson([
+            id: itemIdInt,
+            source: sourceCode,
+            version: currentVersion
+        ]))
 
-        def responseData = result?.data
         def success = false
         def errorMsg = null
 
-        if (responseData) {
-            try {
-                def responseStr = responseData?.toString()
-                def parsed = new groovy.json.JsonSlurper().parseText(responseStr)
-                success = parsed.status == "success"
-                errorMsg = parsed.errorMessage
-            } catch (Exception parseErr) {
-                mcpLog("warn", "hub-admin", "${type} update response was not JSON: ${responseData?.toString()?.take(200)}")
-                errorMsg = "Unexpected response format — update may have succeeded but could not be confirmed. Check the ${type} in the Hubitat web UI."
+        if (parsed instanceof Map) {
+            success = parsed.success == true
+            if (success && parsed.id != null && parsed.id.toString() != itemIdInt.toString()) {
+                // saveOrUpdateJson is an upsert: success echoing a DIFFERENT id means the hub
+                // saved somewhere other than the target -- likely a duplicate code entry.
+                success = false
+                errorMsg = "Hub reported success but saved to ${type} id ${parsed.id} instead of the targeted id ${itemIdInt} -- a duplicate code entry may have been created. Check Apps Code / Drivers Code before retrying."
+            } else if (!success) {
+                errorMsg = parsed.message ?: parsed.errorMessage ?: "hub response lacked success=true: ${parsed.toString().take(200)}"
             }
+        } else if (parsed == null) {
+            // null is strictly an EMPTY body (a non-JSON body comes back as the _unparseable
+            // sentinel Map and fails above). A SELF-update legitimately drops the response --
+            // the recompile kills the in-flight request, and the lastSelfDeploy stash below
+            // covers recovery; for anything else, fail closed rather than assume the write landed.
+            success = isSelfUpdate
+            if (!success) errorMsg = "Empty response from ${savePath} -- the update may or may not have applied. Re-read the ${type} source to verify before retrying."
         } else {
-            success = true
+            errorMsg = "Unexpected response shape from ${savePath}: ${parsed.toString().take(200)}"
         }
 
         // Persist the self-deploy outcome (incl. the hub's verbatim errorMessage) so it survives the
         // post-success app reload AND the failure-case cloud 504 -- a later hub_get_info read recovers it.
         if (isSelfUpdate) {
             try {
-                atomicState.lastSelfDeploy = [
+                def stash = [
                     success: success,
                     error: success ? null : (errorMsg ?: "Update failed -- the hub returned an error"),
                     sourceMode: sourceMode,
@@ -13092,7 +13167,15 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
                     sourceLength: sourceCode.length(),
                     at: now()
                 ]
-            } catch (Exception ignore) { /* bookkeeping must never break the deploy */ }
+                // A dropped (empty) response is the expected self-update signature, but the success
+                // is inferred, not hub-confirmed -- mark it so consumers can choose to re-verify.
+                if (success && parsed == null) stash.assumed = true
+                atomicState.lastSelfDeploy = stash
+            } catch (Exception stashErr) {
+                // Never break the deploy over bookkeeping, but a lost stash means the self-deploy
+                // outcome is unrecoverable -- say so instead of failing silently.
+                mcpLog("error", "hub-admin", "lastSelfDeploy stash write failed -- self-deploy outcome record lost: ${stashErr}")
+            }
         }
 
         if (success) {
@@ -13173,7 +13256,9 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
                     sourceLength: (sourceCode != null ? sourceCode.length() : 0),
                     at: now()
                 ]
-            } catch (Exception ignore) { }
+            } catch (Exception stashErr) {
+                mcpLog("error", "hub-admin", "lastSelfDeploy stash write failed -- self-deploy outcome record lost: ${stashErr}")
+            }
         }
         return [
             success: false,
