@@ -539,7 +539,7 @@ Reads (`hub_list_rules`, `hub_get_rule_health`) are gated by the Read master; th
 | `hub_call_rule` | Trigger an RM rule (`action`: "rule"/"actions"/"stop") |
 | `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible) |
 | `hub_set_rule_private_boolean` | Set an RM rule's private boolean variable |
-| `hub_set_native_app` | Create or edit any classic non-RM native app (omit `appId` to create; `appType` enum covers Room Lighting / Button Controllers / Notifier / Groups+Scenes / Visual Rule / etc.). Returns `appId`. Lean schema (`name`, `settings`, `button`, `pageName`, `stateAttribute`, `confirm`); no trigger/action sugar. |
+| `hub_set_native_app` | Create or edit any classic native app (omit `appId` to create; `appType` enum covers Button Controllers / Notifier / Groups+Scenes / Visual Rule / Basic Rules; default `rule_machine`). Create a Button Rule under its controller via `buttonRule`. Returns `appId`. Generic upsert; `walkStep` (generic classic-page walker) also works here. |
 | `hub_set_rule` | Author a Rule Machine rule by appId (omit `appId` to create) — triggers, actions, required expressions, settings, structured shortcuts. Auto-snapshots before every write. `clearActions` / `replaceActions` commit the delete synchronously via a full selectActions page-form submit (runs RM's trashActs handler in-band), so the actions are gone when the call returns. A thin defensive verify-retry remains: on the rare residual it returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` -- verify via `hub_get_app_config` rather than rolling back. |
 | `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
 | `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. |
@@ -1538,6 +1538,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.1.4** - feat: register basic_rule, add Button Rule creation + walkStep to the native-app tool. PRs: [#260](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/260)
 - **v2.1.3** - feat: hub_update_package full HPM-repair deploy, top-level dev-mode tool. PRs: [#261](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/261)
 - **v2.1.2** - fix: enum-recognized Custom Attribute false-partial across all RM 5.1 wizard surfaces. PRs: [#244](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/244)
 - **v2.1.1** - chore: vendor classic-UI dynamicPage engine as RM wire-format reference; ci: speed up the watchdog e2e ~23% (bundle-only deploy, batched fixtures, deferred deletes); docs: point AGENTS.md at resources/hub2-source as the reverse-engineering reference; feat: surface pending hub firmware update + health alerts from /hub2/hubData. PRs: [#253](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/253), [#251](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/251), [#255](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/255), [#256](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/256)
