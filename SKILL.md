@@ -579,8 +579,9 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/hub/reboot` | none | Reboot hub |
 | `/hub/shutdown` | none | Shutdown hub |
 | `/hub/zwaveRepair` | none | Start Z-Wave network repair |
-| `/app/saveOrUpdateJson` | JSON: `{"id": <id\|null>, "source": "<code>", "version": <ver\|1>}` | Install (id=null) or update (id=N, version for optimistic lock) app code. Returns `{success, id, message}`; compile errors ride verbatim in `message`. MUST use `Content-Type: application/json`. (Legacy `/app/save` and `/app/ajax/update` are no longer used.) |
+| `/app/saveOrUpdateJson` | JSON: `{"id": <id\|null>, "source": "<code>", "version": <ver\|1>}` | Install (id=null) or update (id=N) app code. Returns `{success, id, message}`; compile errors ride verbatim in `message`. MUST use `Content-Type: application/json`. `version` echoes the current code version (hub-side stale-version enforcement unverified; see the library row for the verified lock behavior). |
 | `/driver/saveOrUpdateJson` | JSON: `{"id": <id\|null>, "source": "<code>", "version": <ver\|1>}` | Install (id=null) or update (id=N) driver code — same contract as the app endpoint. |
+| `/app/ajax/update` | `id=<id>, version=<ver>, source=<code>` | Legacy form-encoded app-code update; still works on fw 2.5.x (the e2e watchdog still uses it). Response: `{status, errorMessage}`. Same shape at `/driver/ajax/update`. |
 | `/library/saveOrUpdateJson` | JSON: `{"id": null, "source": "<code>", "version": null}` | Install new library (id=null creates; id=N updates with version=N for optimistic lock). Returns `{success, message, id, version}`. MUST use `Content-Type: application/json`. |
 | `/login` | `username=<u>, password=<p>, submit=Login` | Hub Security login |
 | `/device/save` | `id=<deviceId>, label=<label>, name=<name>, deviceNetworkId=<dni>, type.id=<typeId>` | Update device properties (flat field names, Grails convention). NOTE: silently ignores `roomId` — use `/room/save` instead |

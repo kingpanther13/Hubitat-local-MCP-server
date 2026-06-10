@@ -1445,8 +1445,7 @@ class TestRunner:
 
     # -----------------------------------------------------------------------
     # GROUP 4d: app_code_update (1 test) -- the hub_update_app code-deploy path
-    # (POST /app/saveOrUpdateJson, the same endpoint the Vue editor and the
-    # create path use). One throwaway code class, three legs before its delete:
+    # (POST /app/saveOrUpdateJson). One throwaway code class, three legs before its delete:
     # a real round-trip edit (success + version advance + source landed), the
     # hub's verbatim compile error on broken Groovy (not our generic fallback),
     # and the client-side expectedVersion optimistic lock (refused, no write).

@@ -25,8 +25,9 @@ import support.ToolSpecBase
  *   - hubInternalGet       -- routed by HarnessSpec via hubGet.register(path) closures.
  *   - hubInternalPostJson  -- create/update/restore POST helper (POST /app|driver/saveOrUpdateJson),
  *                            stubbed per-test on script.metaClass; takes (String path,
- *                            String body) and returns the PARSED response Map ({success, id, ...})
- *                            or null for an empty/unparseable body.
+ *                            String body) and returns the PARSED response Map ({success, id, ...}),
+ *                            null for an EMPTY body, or the [_unparseable: true, message: ...]
+ *                            sentinel Map for a non-JSON body.
  *   - uploadHubFile / downloadHubFile -- purely dynamic, stubbed per-test on script.metaClass.
  *
  * Each direct-call feature has a parallel "via dispatch" feature that fires
@@ -1825,6 +1826,33 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "hub_update_app rejects a non-numeric appId before any I/O"() {
+        given:
+        enableWrite()
+        def getCalls = 0
+        hubGet.register('/app/ajax/code') { params ->
+            getCalls++
+            '{"status": "ok", "version": 1, "source": "x"}'
+        }
+        def postCalls = 0
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            postCalls++
+            [success: true]
+        }
+
+        when:
+        script.toolUpdateAppCode([appId: 'abc', source: 'code', confirm: true])
+
+        then: 'a bad id is caller-recoverable: IllegalArgumentException, not a runtime envelope from the POST'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('must be an integer')
+        ex.message.contains('abc')
+
+        and: 'validation fired before any I/O -- no backup fetch, no save POST'
+        getCalls == 0
+        postCalls == 0
+    }
+
     def "hub_update_app throws when none of source, sourceFile, or resave are supplied"() {
         given:
         enableWrite()
@@ -2191,7 +2219,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         errKey << ['message', 'errorMessage']
     }
 
-    def "hub_update_app fails closed on an empty/unparseable hub response (non-self update)"() {
+    def "hub_update_app fails closed on an empty hub response (non-self update)"() {
         given:
         enableWrite()
         hubGet.register('/app/ajax/code') { params ->
@@ -2205,8 +2233,51 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then: 'a dropped response on a foreign app is NOT assumed to have landed'
         result.success == false
-        result.error.contains('Empty or unparseable response')
+        result.error.contains('Empty response from /app/saveOrUpdateJson')
         result.error.contains('verify')
+    }
+
+    def "hub_update_app fails closed when the hub echoes success for a DIFFERENT id (duplicate-save signature)"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 1, "source": "old"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+
+        and: 'saveOrUpdateJson is an upsert: success with a different echoed id means it saved elsewhere'
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 999]
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '50', source: 'new', confirm: true])
+
+        then: 'reported as failure naming both ids, not as a silent mis-targeted success'
+        result.success == false
+        result.error.contains('duplicate')
+        result.error.contains('999')
+        result.error.contains('50')
+    }
+
+    def "hub_update_app failure with neither message nor errorMessage still returns a concrete error"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 1, "source": "old"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: false, foo: 'bar']
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '80', source: 'new', confirm: true])
+
+        then: 'the raw response rides in the error instead of a null/blank message'
+        result.success == false
+        result.error.contains('hub response lacked success=true')
+        result.error.contains('foo')
     }
 
     def "hub_update_app reports failure on an unexpected response shape (hub returned a list)"() {
@@ -3324,14 +3395,19 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 3, "source": "current"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        def captured = [:]
         script.metaClass.hubInternalPostJson = { String path, String body ->
+            captured.path = path
             [success: false, message: 'bad code']
         }
 
         when:
         def result = script.toolRestoreItemBackup([backupKey: 'driver_88', confirm: true])
 
-        then: 'failure is reported, original manifest entry preserved for retry'
+        then: 'a driver restore rides the DRIVER save endpoint (a cross-write to /app/ would corrupt an app)'
+        captured.path == '/driver/saveOrUpdateJson'
+
+        and: 'failure is reported, original manifest entry preserved for retry'
         result.success == false
         result.error.contains('bad code')
         result.message.contains('preserved')
@@ -3352,7 +3428,9 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 3, "source": "current"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        def captured = [:]
         script.metaClass.hubInternalPostJson = { String path, String body ->
+            captured.path = path
             [success: false, message: 'bad code']
         }
 
@@ -3360,6 +3438,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_restore_backup', [backupKey: 'driver_88', confirm: true])
 
         then:
+        captured.path == '/driver/saveOrUpdateJson'
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
@@ -3372,7 +3451,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "hub_restore_backup fails closed on an empty/unparseable hub response (restore has no self-update leniency)"() {
+    def "hub_restore_backup fails closed on an empty hub response (non-self restore)"() {
         given:
         enableWrite()
         atomicStateMap.itemBackupManifest = [
@@ -3391,8 +3470,72 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then: 'failure is reported and the backup entry is preserved for retry'
         result.success == false
-        result.error.contains('Empty or unparseable response')
+        result.error.contains('Empty response from /app/saveOrUpdateJson')
         result.message.contains('preserved')
+        atomicStateMap.itemBackupManifest.containsKey('app_99')
+    }
+
+    def "hub_restore_backup self-restore treats an empty response as assumed success and stashes lastSelfDeploy"() {
+        // Restoring the MCP server's OWN code drops the response exactly like a self-update
+        // (the recompile kills the in-flight request), so the empty-body leniency applies and
+        // the outcome is recoverable from atomicState.lastSelfDeploy via hub_get_info.
+        given:
+        enableWrite()
+
+        and: 'backup entry id matches app.id (sharedAppStub id 1); class-id lookup resolves nothing'
+        atomicStateMap.itemBackupManifest = [
+            'app_1': [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
+                      version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
+        ]
+        script.metaClass._resolveSelfAppClassId = { -> null }
+        script.metaClass.downloadHubFile = { String fileName -> 'self backup source'.getBytes('UTF-8') }
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 9, "source": "current self source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'app_1', confirm: true])
+
+        then: 'success is inferred, flagged as assumed (not hub-confirmed) with a verification pointer'
+        result.success == true
+        result.assumed == true
+        result.note.contains('hub_get_info')
+
+        and: 'the lastSelfDeploy stash records the restore outcome for a follow-up read'
+        atomicStateMap.lastSelfDeploy?.success == true
+        atomicStateMap.lastSelfDeploy.assumed == true
+        atomicStateMap.lastSelfDeploy.sourceMode == 'restore'
+        atomicStateMap.lastSelfDeploy.error == null
+    }
+
+    def "hub_restore_backup fails closed when the hub echoes success for a DIFFERENT id (duplicate-save signature)"() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [
+            'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
+                       version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
+        ]
+        script.metaClass.downloadHubFile = { String fileName -> 'old source v4'.getBytes('UTF-8') }
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 9, "source": "current source on hub"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+
+        and: 'saveOrUpdateJson is an upsert: success with a different echoed id means it saved elsewhere'
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [success: true, id: 777]
+        }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: 'app_99', confirm: true])
+
+        then: 'reported as failure naming both ids; backup entry preserved for retry'
+        result.success == false
+        result.error.contains('duplicate')
+        result.error.contains('777')
+        result.error.contains('99')
         atomicStateMap.itemBackupManifest.containsKey('app_99')
     }
 
@@ -3949,10 +4092,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         warnLogs.any { it.contains('ALLOWED') && it.contains('id=1') }
     }
 
-    def "hub_update_app self-update treats an empty/unparseable response as success and records lastSelfDeploy"() {
+    def "hub_update_app self-update treats an empty response as success and records lastSelfDeploy with assumed:true"() {
         // A self-update legitimately drops the response -- the recompile kills the in-flight
-        // request -- so a null parse is success here; the outcome is recovered later from
-        // atomicState.lastSelfDeploy via hub_get_info.
+        // request -- so an EMPTY body is success here; the outcome is recovered later from
+        // atomicState.lastSelfDeploy via hub_get_info. The success is inferred, not
+        // hub-confirmed, so the stash carries assumed:true.
         given:
         enableWrite()
         settingsMap.enableDeveloperMode = true
@@ -3969,6 +4113,34 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.success == true
         atomicStateMap.lastSelfDeploy?.success == true
         atomicStateMap.lastSelfDeploy.error == null
+        atomicStateMap.lastSelfDeploy.assumed == true
+    }
+
+    def "hub_update_app self-update fails closed on a non-JSON (unparseable-sentinel) response and stashes the failure"() {
+        // The empty-body leniency must NOT extend to a non-JSON body: an HTML login page or
+        // error page is never a legitimate dropped-response signature, even mid-self-update.
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 5, "source": "self source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            [_unparseable: true, message: 'hub returned a non-JSON body from /app/saveOrUpdateJson: <html>...']
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '1', source: 'self-update v4', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('non-JSON body')
+
+        and: 'the stash records the failure with the sentinel message, not an assumed success'
+        atomicStateMap.lastSelfDeploy?.success == false
+        atomicStateMap.lastSelfDeploy.error.contains('non-JSON body')
+        !atomicStateMap.lastSelfDeploy.containsKey('assumed')
     }
 
     def "hub_update_app self-update guard blocks resave mode (most-likely real-world brick scenario)"() {
