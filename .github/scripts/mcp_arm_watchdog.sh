@@ -129,11 +129,6 @@ if [ -z "$CLASS_ID" ] || [ "$CLASS_ID" = "null" ]; then
 fi
 echo "Resolved MCP server class ID: $CLASS_ID"
 
-# The watchdog restores the app from this File Manager file. The watchdog's hub_get_source on a >1MB
-# app source writes mcp-source-app-<CLASS_ID>.groovy = the CURRENT full source as a side effect -- a
-# reliable hub-side copy (no 1.6MB cloud transfer). We refresh it just below so it is guaranteed
-# present + current at arm time, and assemble the manifest's app entry to point at it.
-APP_RESTORE_FILE="mcp-source-app-${CLASS_ID}.groovy"
 
 # --- 2) Assert the (manually-installed) watchdog's checkDeadman schedule is live ---------------------
 # The watchdog is a one-time MANUAL install by @level99, and the preceding "Watchdog health check" step
@@ -185,24 +180,16 @@ fi
 # when MAIN_* is absent or the manifest/zip can't be read -> the restore cleanup + assertion skip (safe).
 MAIN_BUNDLES_JSON="[]"
 if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA:-}" ]; then
-  # THE ARM NEVER INSTALLS ANYTHING PRE-RUN (maintainer's flow): it only guarantees canonical main's
-  # FILES are cached on the hub -- bundle zip(s) below, app + child sources further down, all fetched
-  # by the hub from GitHub raw at MAIN_SHA via hub_cache_url_to_file. The PR deploy fully overwrites
-  # whatever is live (HPM repair), and the teardown restore installs cached main the same way -- so a
-  # hub that is NOT currently on main (e.g. a prior failed restore) needs no pre-run fixing, and the
-  # old pre-run main refresh (bundle + parent + child installs = several ~1.8MB recompiles before the
-  # PR even landed) is gone entirely. Cache freshness is one marker: the MAIN_SHA the cache files
-  # were taken from.
-  CACHE_SHA_FILE="mcp-main-cache-sha.txt"
-  STORED_CACHE_SHA=$(mcp_tool_call_text "hub_read_file (main-cache sha marker)" \
-    "$(jq -nc --arg fn "$CACHE_SHA_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')" \
-    | jq -r '.content // ""' 2>/dev/null | tr -d '[:space:]' || true)
-  CACHE_FRESH="false"
-  if [ "$STORED_CACHE_SHA" = "$MAIN_SHA" ]; then CACHE_FRESH="true"; fi
-  echo "Main cache marker: stored=${STORED_CACHE_SHA:-<none>} main=${MAIN_SHA:0:12} -> fresh=${CACHE_FRESH}"
+  # THE ARM NEVER INSTALLS OR CACHES ANYTHING (maintainer's final flow): no local backup exists on
+  # the hub at all (Hubitat's own DB backup is a separate concern). The arm only RECORDS canonical
+  # main's install URLs (bundle zip + parent + child raw https URLs at MAIN_SHA) in the flag
+  # manifest; the teardown restore -- clean disarm OR dead-man fire -- downloads and installs main
+  # at the END through the verified HPM repair endpoints (GET /bundle2/uploadZipFromUrl, then POST
+  # /app/ajax/update -- confirmed against HPM's installBundle/upgradeApp source). If a restore
+  # install fails (e.g. GitHub unreachable at fire time), the watchdog endpoint itself stays
+  # reachable for manual recovery -- the design's safety floor.
 
-  # (2c-i) Ensure main's BUNDLE zip(s) are CACHED on the hub (no install -- the restore installs).
-  # main's bundle URL(s) come from main's packageManifest.json at MAIN_SHA.
+  # (2c-i) Resolve main's BUNDLE URL(s) + identity from main's packageManifest.json at MAIN_SHA.
   MAIN_RAW_PREFIX="${MAIN_SOURCE_URL%/*}"
   MAIN_PKG_MANIFEST=$(curl -fsSL "${MAIN_RAW_PREFIX}/packageManifest.json" 2>/dev/null || true)
   if [ -n "$MAIN_PKG_MANIFEST" ]; then
@@ -250,64 +237,36 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
     exit 1
   fi
 
-  # (2c-ii) Cache canonical main's APP sources from GitHub raw at MAIN_SHA -- NO hub install. The hub
-  # fetches each file itself (hub_cache_url_to_file), so the cache is byte-exact main regardless of
-  # what is currently live on the hub. Skipped entirely when the cache marker already matches
-  # MAIN_SHA and the files exist (asserted in section 3 below). The marker is written ONLY after
-  # every file (bundle zips above + parent + children here) cached successfully, so a partial cache
-  # can never masquerade as fresh.
-  if [ "$CACHE_FRESH" = "true" ]; then
-    echo "Main source cache already at ${MAIN_SHA:0:12} (marker match) -- no downloads needed."
-  else
-    echo "Caching canonical main's app sources from GitHub at ${MAIN_SHA:0:12} (no hub install)..."
-    APP_CACHE_RPC=$(jq -nc --arg url "$MAIN_SOURCE_URL" --arg fn "$APP_RESTORE_FILE"       '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_cache_url_to_file",arguments:{url:$url,fileName:$fn,confirm:true}}}')
-    if ! APP_CACHE_TEXT=$(mcp_tool_call_text "hub_cache_url_to_file (cache main parent app)" "$APP_CACHE_RPC"); then
-      echo "::error::e2e HALT: could not cache main's parent app source on the hub (non-JSON ${RPC_ATTEMPTS} times). Re-run."
-      exit 1
-    fi
-    if [ "$(printf '%s' "$APP_CACHE_TEXT" | jq -r '.success // false' 2>/dev/null)" != "true" ]; then
-      echo "::error::e2e HALT: hub_cache_url_to_file did not report success for the parent app: $(printf '%s' "$APP_CACHE_TEXT" | head -c 300)."
-      exit 1
-    fi
-    echo "Cached main parent app -> ${APP_RESTORE_FILE} ($(printf '%s' "$APP_CACHE_TEXT" | jq -r '.byteLength') bytes)."
-
-    # Cache every NON-server mcp app (the child) the same way. The class id comes from the same
-    # hub_list_apps types listing the arm already fetched; the cache file name must match what
-    # section 3e records in the manifest (mcp-source-app-<classId>.groovy).
-    MAIN_CHILD_RECS=$(printf '%s' "$MAIN_PKG_MANIFEST" | jq -r       '.apps[]? | select(.namespace == "mcp" and .name != "MCP Rule Server") | "\(.namespace)	\(.name)	\(.location)"' 2>/dev/null || true)
-    if [ -z "$MAIN_CHILD_RECS" ]; then
-      echo "::error::e2e HALT: main's packageManifest.json declared no non-server mcp app, but the package ships a child app (mcp:MCP Rule). Filter/manifest drift -- refusing to arm a partial cache."
-      exit 1
-    fi
-    while IFS=$'	' read -r C_NS C_NAME C_LOC; do
-      [ -z "$C_NS" ] && continue
-      if [ -z "$C_LOC" ] || [ "$C_LOC" = "null" ]; then
-        echo "::error::e2e HALT: main manifest app ${C_NS}:${C_NAME} has no usable location -- cannot cache it. Refusing to arm a partial cache."
-        exit 1
-      fi
-      C_REL=$(printf '%s' "$C_LOC" | sed -E 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+/##')
-      C_URL="${MAIN_RAW_PREFIX}/${C_REL}"
-      C_ID=$(printf '%s' "$LIST_TEXT" | jq -r --arg ns "$C_NS" --arg name "$C_NAME"         '.apps[]? | select(.namespace == $ns and .name == $name) | .id' | head -n1)
-      if [ -z "$C_ID" ] || [ "$C_ID" = "null" ]; then
-        echo "::error::e2e HALT: no Apps Code class for child ${C_NS}:${C_NAME} via hub_list_apps -- cannot name its cache file. Refusing to arm a partial cache."
-        exit 1
-      fi
-      C_CACHE_RPC=$(jq -nc --arg url "$C_URL" --arg fn "mcp-source-app-${C_ID}.groovy"         '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_cache_url_to_file",arguments:{url:$url,fileName:$fn,confirm:true}}}')
-      if ! C_CACHE_TEXT=$(mcp_tool_call_text "hub_cache_url_to_file (cache main child ${C_NAME})" "$C_CACHE_RPC"); then
-        echo "::error::e2e HALT: could not cache main child app ${C_NS}:${C_NAME} (non-JSON ${RPC_ATTEMPTS} times). Re-run."
-        exit 1
-      fi
-      if [ "$(printf '%s' "$C_CACHE_TEXT" | jq -r '.success // false' 2>/dev/null)" != "true" ]; then
-        echo "::error::e2e HALT: hub_cache_url_to_file did not report success for child ${C_NS}:${C_NAME}: $(printf '%s' "$C_CACHE_TEXT" | head -c 300)."
-        exit 1
-      fi
-      echo "Cached main child ${C_NS}:${C_NAME} -> mcp-source-app-${C_ID}.groovy ($(printf '%s' "$C_CACHE_TEXT" | jq -r '.byteLength') bytes)."
-    done <<< "$MAIN_CHILD_RECS"
-
-    # ALL cache files (bundle zips + parent + children) landed -- stamp the cache marker.
-    mcp_tool_call_text "hub_write_file (record main-cache sha)"       "$(jq -nc --arg fn "$CACHE_SHA_FILE" --arg c "$MAIN_SHA" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:$c,confirm:true}}}')" >/dev/null       || echo "::warning::could not record the main-cache SHA; the next arm re-caches (harmless, just slower)."
-    echo "WATCHDOG_MAIN_CACHED sha=${MAIN_SHA} chars=${MAIN_CHARS}"
+  # (2c-ii) Record the CHILD app URL(s) + expected char counts. The parent's URL/chars come from
+  # the workflow env (MAIN_SOURCE_URL/MAIN_CHARS); each child's URL is re-anchored from main's
+  # manifest and its char count measured by a CI-side fetch (the restore's landing assert).
+  MAIN_CHILD_APPS_JSON="[]"
+  MAIN_CHILD_RECS=$(printf '%s' "$MAIN_PKG_MANIFEST" | jq -r     '.apps[]? | select(.namespace == "mcp" and .name != "MCP Rule Server") | "\(.namespace)	\(.name)	\(.location)"' 2>/dev/null || true)
+  if [ -z "$MAIN_CHILD_RECS" ]; then
+    echo "::error::e2e HALT: main's packageManifest.json declared no non-server mcp app, but the package ships a child app (mcp:MCP Rule). Filter/manifest drift -- refusing to arm a partial restore manifest."
+    exit 1
   fi
+  while IFS=$'	' read -r C_NS C_NAME C_LOC; do
+    [ -z "$C_NS" ] && continue
+    if [ -z "$C_LOC" ] || [ "$C_LOC" = "null" ]; then
+      echo "::error::e2e HALT: main manifest app ${C_NS}:${C_NAME} has no usable location -- cannot record its restore URL. Refusing to arm."
+      exit 1
+    fi
+    C_REL=$(printf '%s' "$C_LOC" | sed -E 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+/##')
+    C_URL="${MAIN_RAW_PREFIX}/${C_REL}"
+    C_ID=$(printf '%s' "$LIST_TEXT" | jq -r --arg ns "$C_NS" --arg name "$C_NAME"       '.apps[]? | select(.namespace == $ns and .name == $name) | .id' | head -n1)
+    if [ -z "$C_ID" ] || [ "$C_ID" = "null" ]; then
+      echo "::error::e2e HALT: no Apps Code class for child ${C_NS}:${C_NAME} via hub_list_apps -- cannot record its restore target. Refusing to arm."
+      exit 1
+    fi
+    C_CHARS=$(curl -fsSL "$C_URL" 2>/dev/null | LC_ALL=C.UTF-8 wc -m | tr -d '[:space:]')
+    if ! printf '%s' "$C_CHARS" | grep -qE '^[0-9]+$' || [ "$C_CHARS" -lt 1000 ]; then
+      echo "::error::e2e HALT: could not measure child ${C_NS}:${C_NAME} source at ${C_URL} (chars=${C_CHARS:-<none>}). Refusing to arm."
+      exit 1
+    fi
+    MAIN_CHILD_APPS_JSON=$(jq -nc --argjson acc "$MAIN_CHILD_APPS_JSON"       --arg id "$C_ID" --arg url "$C_URL" --arg chars "$C_CHARS"       '$acc + [{classId:$id, url:$url, mainChars:$chars}]')
+    echo "Recorded child ${C_NS}:${C_NAME} (class ${C_ID}) -> restore installs from ${C_URL} (${C_CHARS} chars)"
+  done <<< "$MAIN_CHILD_RECS"
 else
   echo "::error::e2e HALT: MAIN_SHA/MAIN_SOURCE_URL/MAIN_CHARS not provided -- the cache is GitHub-direct now, so without them there is nothing to cache and the dead-man would have no restore source. (The workflow's compute step always provides them; their absence is a workflow bug.)"
   exit 1
@@ -317,10 +276,9 @@ fi
 # (the hub-registered namespace+name), so it is immune to a prior run's leftover bundle still on the hub.
 echo "Main bundle set for restore cleanup (from main's bundle manifests): ${MAIN_BUNDLES_JSON}"
 
-# --- 3) Assert the cache + assemble the restore manifest --------------------------------------------
-# The cache itself was taken in 2c (GitHub-direct via hub_cache_url_to_file -- byte-exact canonical
-# main regardless of what is live on the hub). This section only ASSERTS the files are real and
-# assembles the manifest restorePackage() consumes.
+# --- 3) Assemble the restore manifest ----------------------------------------------------------------
+# Nothing is cached anywhere: this section resolves ids and records the canonical URLs the restore
+# installs from at teardown.
 
 # 3a) Parse main's #include directives from a CI-side head fetch of the canonical source (the
 # directives live at the top of the file; a ranged GET keeps it cheap). These are MAIN's includes --
@@ -331,21 +289,6 @@ if [ -z "$APP_SRC_CHUNK" ]; then
   exit 1
 fi
 
-# 3b) Assert the APP cache is real (>1MB). THIS IS THE HALT GATE: if main is not cached, the dead-man
-# has nothing to restore from, so e2e must NOT proceed -- exit 1.
-echo "Asserting app backup '$APP_RESTORE_FILE' exists and is >1MB (HALT gate)..."
-READ_APP_RPC=$(jq -nc --arg fn "$APP_RESTORE_FILE" \
-  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')
-if ! APP_BACKUP_TEXT=$(mcp_tool_call_text "hub_read_file (app backup existence check)" "$READ_APP_RPC"); then
-  echo "::error::hub_read_file('$APP_RESTORE_FILE') returned non-JSON $RPC_ATTEMPTS times -- transient relay/timeout. Re-run the job."
-  exit 1
-fi
-APP_BACKUP_LEN=$(echo "$APP_BACKUP_TEXT" | jq -r '.totalLength // 0')
-if ! [ "$APP_BACKUP_LEN" -gt 1000000 ] 2>/dev/null; then
-  echo "::error::e2e HALT: main is not cached -- app backup '$APP_RESTORE_FILE' is missing or too small (totalLength=$APP_BACKUP_LEN, need >1000000). The dead-man would have no good app to restore. Refusing to arm and halting e2e."
-  exit 1
-fi
-echo "App backup '$APP_RESTORE_FILE' present (totalLength=$APP_BACKUP_LEN bytes)."
 
 # 3c) Parse the app's #include directives (namespace.Name) so we back up exactly the libraries main
 # depends on. #include directives live at the TOP of the file (before/around the definition block),
@@ -369,135 +312,53 @@ if [ "${#INCLUDE_TOKENS[@]}" -gt 0 ]; then
   fi
 fi
 
-# 3d) Record each #include'd library for the manifest. Since the restore is BUNDLE-driven (the
-# cached main zip from 2c-i delivers every library in one install), the arm no longer caches each
-# library's SOURCE individually -- that was 1-2 extra calls + a File-Manager write per library per
-# run, and the per-library restore it fed recompiled the ~1.8MB dependent app once per write (the
-# load profile that tripped the platform's per-app limiter). The manifest still records id +
-# namespace + name: the keep-set for the stale-library reconcile, and the id re-resolution for the
-# legacy fallback. Source caching (file:) happens ONLY when no bundle cache exists (a main with
-# #includes but no bundle), where the legacy per-library restore is still the only path.
-HAVE_BUNDLE_CACHE=$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -r 'map(select(.url)) | length > 0')
-LIB_MANIFEST_JSON="[]"   # JSON array of {id,namespace,name[,file]} accumulated for the manifest
+# 3d) Record each #include'd library (id + namespace + name) for the manifest: the keep-set for
+# the stale-library reconcile (id-aware, so same-name duplicate rows self-clean). Libraries are
+# DELIVERED by the bundle install at restore time -- nothing is cached.
+if [ "$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -r 'length')" = "0" ] && [ "${#INCLUDE_TOKENS[@]}" -gt 0 ]; then
+  echo "::error::e2e HALT: main #includes ${#INCLUDE_TOKENS[@]} library(ies) but declares NO bundle to deliver them at restore -- packaging error."
+  exit 1
+fi
+LIB_MANIFEST_JSON="[]"   # JSON array of {id,namespace,name} accumulated for the manifest
 for TOKEN in "${INCLUDE_TOKENS[@]:-}"; do
   [ -z "$TOKEN" ] && continue
   NS="${TOKEN%%.*}"
   NM="${TOKEN#*.}"
-  LIB_ID=$(echo "$LIBLIST_TEXT" | jq -r \
-    --arg ns "$NS" --arg nm "$NM" \
-    '.libraries[]? | select((.namespace == $ns) and (.name == $nm)) | .id' | head -n1)
+  LIB_ID=$(echo "$LIBLIST_TEXT" | jq -r     --arg ns "$NS" --arg nm "$NM"     '.libraries[]? | select((.namespace == $ns) and (.name == $nm)) | .id' | head -n1)
   if [ -z "$LIB_ID" ] || [ "$LIB_ID" = "null" ]; then
-    echo "::error::e2e HALT: the app #includes '$TOKEN' but no installed library matches namespace=$NS name=$NM (hub_list_libraries). Cannot back up the package; refusing to arm."
+    echo "::error::e2e HALT: the app #includes '$TOKEN' but no installed library matches namespace=$NS name=$NM (hub_list_libraries). Refusing to arm."
     exit 1
   fi
-  if [ "$HAVE_BUNDLE_CACHE" = "true" ]; then
-    echo "Library $TOKEN (id=$LIB_ID) recorded for the manifest (restored via the cached main bundle; no per-library source cache)."
-    LIB_MANIFEST_JSON=$(jq -nc \
-      --argjson acc "$LIB_MANIFEST_JSON" \
-      --arg id "$LIB_ID" --arg ns "$NS" --arg name "$NM" \
-      '$acc + [{id:$id, namespace:$ns, name:$name}]')
-    continue
-  fi
-  # No cached bundle (main with #includes but no bundle) -- the legacy per-library restore is the only
-  # path, so cache the library SOURCE the old way.
-  LIB_RESTORE_FILE="mcp-source-library-${LIB_ID}.groovy"
-  echo "Backing up library $TOKEN (id=$LIB_ID): watchdog hub_get_source(type=library, id=$LIB_ID)..."
-  LIB_SRC_RPC=$(jq -nc --arg id "$LIB_ID" \
-    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"library",id:$id,offset:0,length:64000}}}')
-  if ! LIB_SRC_TEXT=$(mcp_tool_call_text "hub_get_source (backup library $LIB_ID)" "$LIB_SRC_RPC"); then
-    echo "::error::hub_get_source(library $LIB_ID) returned non-JSON $RPC_ATTEMPTS times -- could not back up library $TOKEN. Re-run the job."
-    exit 1
-  fi
-  LIB_SRC_OK=$(echo "$LIB_SRC_TEXT" | jq -r '.success // false')
-  if [ "$LIB_SRC_OK" != "true" ]; then
-    echo "::error::e2e HALT: hub_get_source(library $LIB_ID) failed (success=$LIB_SRC_OK). Cannot back up '$TOKEN'; refusing to arm. Response: $(printf '%s' "$LIB_SRC_TEXT" | head -c 600)"
-    exit 1
-  fi
-  LIB_SRC_FILE=$(echo "$LIB_SRC_TEXT" | jq -r '.sourceFile // empty')
-  LIB_TOTLEN=$(echo "$LIB_SRC_TEXT" | jq -r '.totalLength // 0')
-  if [ "$LIB_SRC_FILE" = "$LIB_RESTORE_FILE" ]; then
-    echo "Library $LIB_ID is large (>64KB); auto-saved to '$LIB_RESTORE_FILE'."
-  elif [ "$LIB_TOTLEN" -gt 64000 ] 2>/dev/null; then
-    echo "::error::e2e HALT: library $LIB_ID is >64KB (totalLength=$LIB_TOTLEN) but did not auto-save and the inline read caps at 64000 -- cannot cache it in one call. Refusing to arm."
-    exit 1
-  else
-    LIB_SRC_BODY=$(echo "$LIB_SRC_TEXT" | jq -r '.source // ""')
-    WRITE_LIB_RPC=$(jq -nc --arg fn "$LIB_RESTORE_FILE" --arg c "$LIB_SRC_BODY" \
-      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:$c,confirm:true}}}')
-    if ! WRITE_LIB_TEXT=$(mcp_tool_call_text "hub_write_file (cache small library $LIB_ID)" "$WRITE_LIB_RPC"); then
-      echo "::error::hub_write_file('$LIB_RESTORE_FILE') returned non-JSON $RPC_ATTEMPTS times -- could not cache library $TOKEN. Re-run the job."
-      exit 1
-    fi
-    if [ "$(echo "$WRITE_LIB_TEXT" | jq -r '.success // false')" = "false" ]; then
-      echo "::error::e2e HALT: hub_write_file('$LIB_RESTORE_FILE') reported failure caching library $TOKEN. Refusing to arm. Response: $(printf '%s' "$WRITE_LIB_TEXT" | head -c 400)"
-      exit 1
-    fi
-    echo "Library $LIB_ID is small; cached to '$LIB_RESTORE_FILE' via hub_write_file (${LIB_TOTLEN} chars)."
-  fi
-  LIB_MANIFEST_JSON=$(jq -nc \
-    --argjson acc "$LIB_MANIFEST_JSON" \
-    --arg id "$LIB_ID" \
-    --arg file "$LIB_RESTORE_FILE" \
-    --arg ns "$NS" \
-    --arg name "$NM" \
-    '$acc + [{id:$id, file:$file, namespace:$ns, name:$name}]')
+  LIB_MANIFEST_JSON=$(jq -nc     --argjson acc "$LIB_MANIFEST_JSON"     --arg id "$LIB_ID" --arg ns "$NS" --arg name "$NM"     '$acc + [{id:$id, namespace:$ns, name:$name}]')
+  echo "Library $TOKEN (id=$LIB_ID) recorded (delivered by the bundle at restore)."
 done
 
-# 3e) Assert the CHILD app cache (mcp:MCP Rule). Full HPM repair redeploys EVERY manifest app, so the
-# restore must restore the child too -- otherwise a PR that changes the child app would leave the PR's
-# child live on the hub after the run (an incomplete restore). The cache itself was taken in 2c-ii
-# (GitHub-direct); this resolves the class id (the cache file's name) and asserts the file is real.
+# 3e) Resolve the CHILD app class id (mcp:MCP Rule). Full HPM repair redeploys EVERY manifest app,
+# so the restore must install the child too; its URL + expected chars were recorded in 2c-ii.
 CHILD_NAMESPACE="mcp"
 CHILD_NAME="MCP Rule"
-CHILD_CLASS_ID=$(echo "$LIST_TEXT" | jq -r --arg ns "$CHILD_NAMESPACE" --arg name "$CHILD_NAME" \
-  '.apps[]? | select(.namespace == $ns and .name == $name) | .id' | head -n1)
+CHILD_CLASS_ID=$(echo "$LIST_TEXT" | jq -r --arg ns "$CHILD_NAMESPACE" --arg name "$CHILD_NAME"   '.apps[]? | select(.namespace == $ns and .name == $name) | .id' | head -n1)
 if [ -z "$CHILD_CLASS_ID" ] || [ "$CHILD_CLASS_ID" = "null" ]; then
-  echo "::error::e2e HALT: child Apps Code class for $CHILD_NAMESPACE:$CHILD_NAME not found via hub_list_apps -- full repair redeploys it, so it must be cached to restore. Refusing to arm."
+  echo "::error::e2e HALT: child Apps Code class for $CHILD_NAMESPACE:$CHILD_NAME not found via hub_list_apps -- full repair redeploys it, so its restore target must resolve. Refusing to arm."
   exit 1
 fi
-CHILD_RESTORE_FILE="mcp-source-app-${CHILD_CLASS_ID}.groovy"
-# Assert the child cache is real (>1000 chars). The child app is ~179KB, far above this floor; it is not
-# the >1MB brick-critical server parent, so this gate is a sanity floor, not the dead-man HALT gate.
-READ_CHILD_RPC=$(jq -nc --arg fn "$CHILD_RESTORE_FILE" \
-  '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')
-if ! CHILD_BACKUP_TEXT=$(mcp_tool_call_text "hub_read_file (child app backup existence check)" "$READ_CHILD_RPC"); then
-  echo "::error::hub_read_file('$CHILD_RESTORE_FILE') returned non-JSON $RPC_ATTEMPTS times -- transient relay/timeout. Re-run the job."
-  exit 1
-fi
-CHILD_BACKUP_LEN=$(echo "$CHILD_BACKUP_TEXT" | jq -r '.totalLength // 0')
-if ! [ "$CHILD_BACKUP_LEN" -gt 1000 ] 2>/dev/null; then
-  echo "::error::e2e HALT: child app backup '$CHILD_RESTORE_FILE' is missing or too small (totalLength=$CHILD_BACKUP_LEN, need >1000). Refusing to arm against an unrestorable child app."
-  exit 1
-fi
-echo "Child app backup '$CHILD_RESTORE_FILE' present (totalLength=$CHILD_BACKUP_LEN bytes)."
 
-# Assemble the restore manifest: {app:{classId,file}, apps:[{classId,file},...],
-# libraries:[{id,file,namespace,name}], bundles:[{namespace,name}]} -- the exact shape restorePackage()
-# reads (drop the PR's stale bundle, restore libraries first, then EVERY app in `apps`, drop the PR's
-# stale libraries; namespace/name let it re-resolve a library id the deploy changed via delete+recreate,
-# and identify main's bundles vs the PR's). `apps` lists the server parent + the child app (full repair
-# redeploys both, so both must restore); the singular `app` is kept for the flag-readback assertion and
-# back-compat -- restorePackage prefers `apps` when present.
-MANIFEST_JSON=$(jq -nc \
-  --arg classId "$CLASS_ID" \
-  --arg appFile "$APP_RESTORE_FILE" \
-  --arg mainChars "$APP_BACKUP_LEN" \
-  --arg childClassId "$CHILD_CLASS_ID" \
-  --arg childFile "$CHILD_RESTORE_FILE" \
-  --arg childChars "$CHILD_BACKUP_LEN" \
-  --argjson libs "$LIB_MANIFEST_JSON" \
-  --argjson bundles "${MAIN_BUNDLES_JSON:-[]}" \
-  '{app:{classId:$classId, file:$appFile, mainChars:$mainChars},
-    apps:[{classId:$classId, file:$appFile, mainChars:$mainChars},
-          {classId:$childClassId, file:$childFile, mainChars:$childChars}],
+# Assemble the restore manifest: {apps:[{classId,url,mainChars},...],
+# libraries:[{id,namespace,name}], bundles:[{namespace,name,url}]} -- the exact shape
+# restorePackage() reads: drop the PR's stale bundle, install main's bundle from its url (verified
+# HPM endpoint GET /bundle2/uploadZipFromUrl), install EVERY app from its url (verified HPM endpoint
+# POST /app/ajax/update, fetched hub-side), drop the PR's stale/duplicate libraries (id-aware
+# keep-set). The singular `app` is kept for the flag-readback assertion and back-compat.
+MANIFEST_JSON=$(jq -nc   --arg classId "$CLASS_ID"   --arg appUrl "$MAIN_SOURCE_URL"   --arg mainChars "$MAIN_CHARS"   --argjson childApps "${MAIN_CHILD_APPS_JSON:-[]}"   --argjson libs "$LIB_MANIFEST_JSON"   --argjson bundles "${MAIN_BUNDLES_JSON:-[]}"   '{app:{classId:$classId, url:$appUrl, mainChars:$mainChars},
+    apps:([{classId:$classId, url:$appUrl, mainChars:$mainChars}] + $childApps),
     libraries:$libs, bundles:$bundles}')
 echo "Assembled restore manifest: $MANIFEST_JSON"
 
 # --- 4) Write the manifest-shaped armed flag, then READ IT BACK and assert ------------------------
 # `date +%s` * 1000 (not %s%3N): %3N is a GNU-only extension; this stays portable (the second-
 # granularity is irrelevant for a 35-minute deadline). armPrSha records the PR head SHA being tested
-# this run -- a forensic breadcrumb on a fire. The cached sources ARE canonical main at MAIN_SHA
-# (GitHub-direct cache, 2c-ii), which is what canonicalMainSha records.
+# this run -- a forensic breadcrumb on a fire. canonicalMainSha records the MAIN_SHA whose URLs
+# the manifest carries -- the revision the restore will install.
 DEADLINE_MS=$(( $(date +%s) * 1000 + ARM_WINDOW_MS ))
 FLAG_JSON=$(jq -nc \
   --argjson deadline "$DEADLINE_MS" \
@@ -541,4 +402,4 @@ if [ "$RB_ARMED" != "true" ] || [ "$RB_CLASS" != "$CLASS_ID" ]; then
   exit 1
 fi
 
-echo "WATCHDOG_ARMED classId=$CLASS_ID deadline=$DEADLINE_MS runId=$GITHUB_RUN_ID appBackup=$APP_RESTORE_FILE libCount=$(echo "$LIB_MANIFEST_JSON" | jq 'length')"
+echo "WATCHDOG_ARMED classId=$CLASS_ID deadline=$DEADLINE_MS runId=$GITHUB_RUN_ID restoreUrl=$MAIN_SOURCE_URL libCount=$(echo "$LIB_MANIFEST_JSON" | jq 'length')"

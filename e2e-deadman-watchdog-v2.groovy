@@ -285,24 +285,41 @@ private Map restorePackage(Map flag) {
             detail << "bundle ${b?.name ?: '?'}(url)=${ok}"
             if (!ok) return [ok: false, detail: "bundle ${b?.name} restore failed: ${r?.error} [${detail.join('; ')}]"]
         }
-    } else {
-        def libs = (m.libraries instanceof List) ? m.libraries.findAll { it?.file } : []
-        for (lib in libs) {
-            // Re-resolve the library's CURRENT id from its namespace.name: the deploy may have deleted +
-            // recreated a bundle-managed library, giving it a new id the arm-time manifest doesn't know.
-            // Falls back to the manifest id if the lookup fails, so it never makes a restore worse.
-            String curId = resolveLibraryId(lib?.namespace?.toString(), lib?.name?.toString(), lib?.id?.toString())
-            boolean ok = restoreLibrary(curId, lib?.file?.toString())
-            detail << "lib ${lib?.name ?: lib?.id}(${curId})=${ok}"
-            if (!ok) return [ok: false, detail: "library ${lib?.name ?: lib?.id} restore failed [${detail.join('; ')}]"]
-        }
+    } else if ((m.bundles instanceof List) && !m.bundles.isEmpty()) {
+        // Bundle entries exist but carry no url: an old-format flag (pre url-manifest arm). There is
+        // no local cache to fall back to anymore -- fail loudly so the operator re-arms; the watchdog
+        // endpoint stays reachable for manual recovery (the design's safety floor).
+        return [ok: false, detail: "manifest bundles carry no url (old-format flag?) -- re-run the arm [${detail.join('; ')}]"]
     }
-    // (2) App(s). manifest.app is a single {classId,file}; manifest.apps an optional list.
+    // (no bundles at all = an apps-only package; nothing library-side to restore)
+    // (2) App(s) -- installed from their CANONICAL https URLs, the exact HPM repair path (the hub
+    // downloads main at the END; nothing was saved locally). adminUpdateApp(importUrl) runs hub-side
+    // here (no cloud relay cap) and captures the hub's verbatim compile error (#237). A landing
+    // assert cross-checks the live source length against the manifest's expected char count.
     def apps = (m.apps instanceof List) ? m.apps : (m.app ? [m.app] : [])
     for (a in apps) {
-        boolean ok = restoreApp(a?.classId?.toString(), a?.file?.toString())
-        detail << "app ${a?.classId}=${ok}"
-        if (!ok) return [ok: false, detail: "app ${a?.classId} restore failed [${detail.join('; ')}]"]
+        String classId = a?.classId?.toString()
+        String srcUrl = a?.url?.toString()
+        if (!classId || !srcUrl) {
+            return [ok: false, detail: "app entry missing classId/url (old-format flag? re-arm) [${detail.join('; ')}]"]
+        }
+        def r = null
+        try { r = adminUpdateApp([appId: classId, importUrl: srcUrl, confirm: true]) }
+        catch (Exception e) { r = [success: false, error: e.message] }
+        boolean ok = (r?.success == true)
+        if (ok && a?.mainChars) {
+            try {
+                def live = hubGet("/app/ajax/code", [id: classId])
+                def parsed = live ? new groovy.json.JsonSlurper().parseText(live) : null
+                def liveLen = (parsed instanceof Map) ? parsed.source?.toString()?.length() : null
+                if (liveLen != null && liveLen.toString() != a.mainChars.toString()) {
+                    ok = false
+                    r = [success: false, error: "landed source length ${liveLen} != expected ${a.mainChars}"]
+                }
+            } catch (Exception e) { logDebug "restore app ${classId}: length cross-check skipped (${e.message})" }
+        }
+        detail << "app ${classId}(url)=${ok}"
+        if (!ok) return [ok: false, detail: "app ${classId} restore failed: ${r?.error} [${detail.join('; ')}]"]
     }
     if (apps.isEmpty()) return [ok: false, detail: "manifest has no app to restore [${detail.join('; ')}]"]
 
@@ -372,171 +389,9 @@ private String reconcileStaleLibraries(Map m) {
     return "lib-cleanup:removed=${removed}${failed ? " failed=${failed}" : ''}"
 }
 
-// ---- restore one app class: read cached source, POST it to the LOCAL /app/ajax/update ----
-boolean restoreApp(String classId, String restoreFileName) {
-    if (!classId || !restoreFileName) {
-        log.error "restoreApp: missing classId (${classId}) or restoreFileName (${restoreFileName})"
-        return false
-    }
-    String source = readHubFileText(restoreFileName)
-    if (source == null || source.length() < 50) {
-        log.error "restoreApp: cache '${restoreFileName}' missing/empty/too-small -- refusing to push it."
-        return false
-    }
-    def oldVersion = appCodeVersion(classId)
-    if (oldVersion == null) {
-        log.error "restoreApp: could not read current version of app class ${classId}"
-        return false
-    }
-    def resp = hubPostForm("/app/ajax/update", [id: classId, version: oldVersion, source: source])
-    if (resp?.status != 200) {
-        log.error "restoreApp: /app/ajax/update returned status ${resp?.status}; body=${resp?.data?.toString()?.take(300)}"
-        return false
-    }
-    boolean reported = false
-    try { reported = (new groovy.json.JsonSlurper().parseText(resp.data ?: "{}")).status == "success" }
-    catch (Exception e) { log.error "restoreApp: could not parse update response (${e.message}); body=${resp?.data?.toString()?.take(300)}" }
-    if (!reported) {
-        log.error "restoreApp: hub did not report success; body=${resp?.data?.toString()?.take(300)}"
-        return false
-    }
-    // A real code-class save advances the version -- but Hubitat may NOT bump it on a byte-identical
-    // save, which is a legitimate no-op (the live app already equals what we pushed; common when a PR
-    // triggers e2e WITHOUT changing hubitat-mcp-server.groovy). So: version-advanced -> restored; else
-    // re-read the live source and require it to be BYTE-IDENTICAL to what we pushed (NOT merely the same
-    // length -- a same-length-but-different live source means the push silently dropped and main is NOT
-    // restored). Mirrors mcp_watchdog_deploy.sh's no-op handling.
-    def newVersion = appCodeVersion(classId)
-    String oldStr = oldVersion?.toString()?.trim()
-    String newStr = newVersion?.toString()?.trim()
-    if (newStr?.isLong() && oldStr?.isLong() && newStr.toLong() > oldStr.toLong()) {
-        logInfo "restoreApp: pushed ${source.length()} chars to class ${classId}; version ${oldVersion}->${newVersion}, confirmed."
-        return true
-    }
-    String live = readAppSource(classId)
-    if (live != null && live == source) {
-        logInfo "restoreApp: class ${classId} version unchanged (${oldVersion}) but live source is byte-identical to the pushed source -- legitimate no-op, treating as restored."
-        return true
-    }
-    log.error "restoreApp: reported success but version did not advance (old=${oldVersion}, new=${newVersion}) and the live source is not byte-identical to the pushed source -- the restore did not land for class ${classId}."
-    return false
-}
 
-// ---- restore one library from its LOCAL cached source (no external fetch, so the dead-man fires even
-// when GitHub is unreachable). Robust to a bundle-managed library that rejects an in-place update, and
-// to a library that no longer exists (a deploy-time delete+recreate, or a bundle delete that cascaded
-// its managed libraries): in-place update -> if not confirmed, delete+recreate -> if absent, create.
-// All three land the SAME cached source; each confirms BYTE-IDENTICAL live source (never id alone), so
-// a silently-dropped push can't false-green as restored.
-boolean restoreLibrary(String libId, String fileName) {
-    if (!fileName) {
-        log.error "restoreLibrary: missing fileName"
-        return false
-    }
-    String source = readHubFileText(fileName)
-    if (source == null || source.length() < 20) {
-        log.error "restoreLibrary: cache '${fileName}' missing/empty/too-small -- refusing to push it."
-        return false
-    }
-    Integer curVer = (libId) ? libraryVersion(libId) : null
-    if (curVer == null) {
-        // Library not present at this id (cascade-removed / never existed) -- create it fresh from cache.
-        logInfo "restoreLibrary: library '${libId}' has no readable version -- creating fresh from cache '${fileName}'."
-        return _createLibraryFromSource(source)
-    }
-    // In-place update first (the proven path; bundle-managed libs usually accept saveOrUpdateJson).
-    if (_restoreLibraryInPlace(libId, source, curVer)) return true
-    // Not confirmed -- self-heal by delete+recreate from the SAME cached source (a bundle-managed library
-    // may reject an in-place update; deleting frees it, then create re-installs it). Local only.
-    // THE DELETE MUST BE VERIFIED before the create: the hub refuses deleting an in-use library with a
-    // 200 {"success":false,"message":"Library is in use"}, and creating while the old row survives mints
-    // a DUPLICATE name+namespace row at a new id. That exact unchecked-delete-then-create minted 36
-    // orphan duplicates over days of e2e runs and eventually wedged /hub2/userLibraries hub-wide.
-    log.warn "restoreLibrary ${libId}: in-place update not confirmed -- attempting delete + recreate from cache (the library may be bundle-managed)."
-    boolean deleted = false
-    try {
-        String resp = hubGet("/library/edit/deleteJson/${libId}", [:])
-        def parsed = resp ? new groovy.json.JsonSlurper().parseText(resp) : null
-        deleted = (parsed instanceof Map) && (parsed.success == true)
-        if (!deleted) log.error "restoreLibrary ${libId}: delete did not confirm (${resp?.take(120)}) -- NOT creating (would mint a duplicate row)."
-    } catch (Exception e) {
-        log.error "restoreLibrary ${libId}: delete threw (${e.message}) -- NOT creating (would mint a duplicate row)."
-    }
-    if (!deleted) return false
-    return _createLibraryFromSource(source)
-}
 
-// In-place library restore via /library/saveOrUpdateJson {id, source, version}. Confirms it LANDED:
-// version advanced, OR (a byte-identical no-op the hub may not bump) the live source is byte-identical
-// to what we pushed. Returns false (so the caller self-heals) on any non-confirmation -- including a
-// same-length-but-different live source (a silently-dropped push).
-private boolean _restoreLibraryInPlace(String libId, String source, Integer curVer) {
-    String body = groovy.json.JsonOutput.toJson([id: libId.toInteger(), source: source, version: curVer])
-    Map resp = hubPostJson("/library/saveOrUpdateJson", body)
-    if (resp?.status != 200) {
-        log.warn "restoreLibrary ${libId}: in-place /library/saveOrUpdateJson returned status ${resp?.status}; body=${resp?.data?.toString()?.take(200)}"
-        return false
-    }
-    try {
-        def parsed = new groovy.json.JsonSlurper().parseText(resp.data ?: "{}")
-        if (parsed?.success == false || parsed?.id == null) {
-            log.warn "restoreLibrary ${libId}: in-place update reported failure or no id (${resp?.data?.toString()?.take(200)})"
-            return false
-        }
-        def newVer = parsed?.version
-        if (newVer != null && (newVer as Integer) > curVer) {
-            logInfo "restoreLibrary ${libId}: in-place update confirmed (version ${curVer}->${newVer})."
-            return true
-        }
-        String live = readLibrarySource(libId)
-        if (live != null && live == source) {
-            logInfo "restoreLibrary ${libId}: in-place update is a byte-identical no-op -- restored."
-            return true
-        }
-        log.warn "restoreLibrary ${libId}: in-place success reported but version did not advance and live source is not byte-identical -- not confirmed."
-        return false
-    } catch (Exception e) {
-        log.warn "restoreLibrary ${libId}: could not parse in-place update response (${e.message})"
-        return false
-    }
-}
 
-// Create a fresh library from source via /library/saveOrUpdateJson {id:null}. Confirms the restore
-// LANDED the same way restoreApp / the in-place path do: a returned id AND a readable BYTE-IDENTICAL
-// live source -- never the id alone. An unreadable read-back is NOT accepted (it would weaken the
-// byte-identical restore guarantee); it returns false so actAndRecord retries the whole restore, which
-// re-confirms via the in-place path now that the library exists. readLibrarySource is a local loopback
-// read, so a persistent failure means we genuinely cannot confirm ANY restore -- failing closed is right.
-private boolean _createLibraryFromSource(String source) {
-    String body = groovy.json.JsonOutput.toJson([id: null, source: source, version: null])
-    Map resp = hubPostJson("/library/saveOrUpdateJson", body)
-    if (resp?.status != 200) {
-        log.error "restoreLibrary(create): /library/saveOrUpdateJson returned status ${resp?.status}; body=${resp?.data?.toString()?.take(200)}"
-        return false
-    }
-    try {
-        def parsed = new groovy.json.JsonSlurper().parseText(resp.data ?: "{}")
-        def newId = parsed?.id?.toString()
-        if (parsed?.success == false || !newId) {
-            log.error "restoreLibrary(create): hub reported failure or no id (${resp?.data?.toString()?.take(200)})"
-            return false
-        }
-        String live = readLibrarySource(newId)
-        if (live == null) {
-            log.error "restoreLibrary(create) ${newId}: created but could not read the live source back to byte-confirm it landed -- treating as NOT restored (the restore retry re-confirms via the in-place path)."
-            return false
-        }
-        if (live != source) {
-            log.error "restoreLibrary(create) ${newId}: created but live source differs from the pushed source -- did not land."
-            return false
-        }
-        logInfo "restoreLibrary(create): created library id ${newId} from cache (${source.length()} chars), byte-identical confirmed."
-        return true
-    } catch (Exception e) {
-        log.error "restoreLibrary(create): could not parse create response (${e.message})"
-        return false
-    }
-}
 
 // Current version of an app class (optimistic-lock field on /app/ajax/update).
 def appCodeVersion(String classId) {
@@ -557,28 +412,6 @@ Integer libraryVersion(String libId) {
     return null
 }
 
-// Re-resolve a library's CURRENT id from its namespace.name via /hub2/userLibraries (same source as
-// hub_list_libraries). Used by restorePackage so a deploy-time delete+recreate (which changes the id)
-// can't strand the restore on a stale arm-time id. Returns fallbackId if name is missing or the lookup
-// fails -- defensive, never makes a restore worse.
-private String resolveLibraryId(String ns, String name, String fallbackId) {
-    if (!ns || !name) return fallbackId
-    try {
-        def body = hubGet("/hub2/userLibraries", [:])
-        if (body) {
-            def parsed = new groovy.json.JsonSlurper().parseText(body)
-            if (parsed instanceof List) {
-                def match = parsed.find { it?.namespace == ns && it?.name == name }
-                if (match?.id != null) {
-                    String resolved = match.id.toString()
-                    if (resolved != fallbackId) logInfo "resolveLibraryId: ${ns}.${name} id ${fallbackId} -> ${resolved} (re-resolved from live hub state)."
-                    return resolved
-                }
-            }
-        }
-    } catch (Exception e) { logDebug "resolveLibraryId(${ns}.${name}): ${e.message}" }
-    return fallbackId
-}
 
 // Full current source of an app class / library -- for the restore no-op check (a reported success
 // that doesn't bump the version is legitimate when the live source already equals what we pushed).
@@ -757,7 +590,6 @@ def executeAdminTool(String toolName, Map args) {
         case "hub_delete_item":     return adminDeleteItem(args)
         case "hub_force_delete_app": return adminForceDeleteInstalledApp(args)
         case "hub_set_app_disabled": return adminSetAppDisabled(args)
-        case "hub_cache_url_to_file": return adminCacheUrlToFile(args)
         case "hub_get_metrics":      return adminGetMetrics(args)
         case "hub_get_memory_history": return adminGetMemoryHistory(args)
         case "hub_get_hub_logs":     return adminGetHubLogs(args)
@@ -1117,7 +949,7 @@ def adminUpdateLibrary(args) {
         // Fail CLOSED: a dropped/empty loopback POST yields resp.data null -> parsed null, and a lone
         // `parsed?.success == false` gate would fall through to success:true (null?.success == false is
         // false). The hub returns the saved library's id + version on success; require status 200, a
-        // parsed body, no explicit failure, and an id -- mirrors adminCreateLibrary / restoreLibrary.
+        // parsed body, no explicit failure, and an id -- mirrors adminCreateLibrary.
         if (resp?.status != 200 || parsed == null || parsed?.success == false || parsed?.id == null) {
             return [success: false,
                     error: "Library update failed: ${parsed?.message ?: (resp?.status != 200 ? "hub HTTP ${resp?.status}" : 'empty/dropped hub response -- the loopback POST may have failed')}",
@@ -1269,36 +1101,6 @@ def adminSetAppDisabled(args) {
             error: "POST accepted (HTTP ${st}) but the read-back shows disabled=${observed} (wanted ${disable})."]
 }
 
-// hub_cache_url_to_file: have the HUB fetch a URL (binary-safe) and store the bytes in File Manager.
-// The arm step uses it to cache canonical main's bundle .zip locally so the dead-man restore can
-// re-install it from the hub's own /local/ URL with no network dependency at fire time.
-def adminCacheUrlToFile(args) {
-    requireConfirm(args)
-    def url = args.url?.toString()?.trim()
-    if (!url || !(url.toLowerCase().startsWith("http://") || url.toLowerCase().startsWith("https://"))) {
-        throw new IllegalArgumentException("url (http/https) is required")
-    }
-    if (!(args.fileName ==~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/)) {
-        throw new IllegalArgumentException("Invalid fileName '${args.fileName}'.")
-    }
-    byte[] payload = null
-    try {
-        httpGet([uri: url, contentType: "application/octet-stream", timeout: 120, ignoreSSLIssues: true]) { resp ->
-            payload = resp?.data?.bytes
-        }
-    } catch (Exception e) {
-        return [success: false, error: "fetch of ${url} failed: ${e.message}"]
-    }
-    if (payload == null || payload.length == 0) {
-        return [success: false, error: "fetch of ${url} returned no bytes"]
-    }
-    try {
-        uploadHubFile(args.fileName.toString(), payload)
-    } catch (Exception e) {
-        return [success: false, error: "File Manager write of '${args.fileName}' failed: ${e.message}"]
-    }
-    return [success: true, fileName: args.fileName, byteLength: payload.length]
-}
 
 // hub_get_metrics: probe-grade current metrics + the hub's own health alerts. Mirrors the main
 // server's toolGetHubPerformance current block (/hub/advanced/* reads) and _healthAlertsFromHub2
@@ -1886,8 +1688,6 @@ def getAdminToolDefinitions() {
          inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
         [name: "hub_set_app_disabled", description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
-        [name: "hub_cache_url_to_file", description: "Hub fetches a URL (binary-safe) and stores the bytes in File Manager (arm-time bundle caching for the offline dead-man restore). confirm:true required.",
-         inputSchema: [type: "object", properties: [url: [type: "string"], fileName: [type: "string"], confirm: [type: "boolean"]], required: ["url", "fileName", "confirm"]]],
         [name: "hub_get_metrics", description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
         [name: "hub_get_memory_history", description: "Free-memory / CPU-load history rows from the hub. Args: limit (default 60). Read-only.",
          inputSchema: [type: "object", properties: [limit: [type: "integer"]]]],

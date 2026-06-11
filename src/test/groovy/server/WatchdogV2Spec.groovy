@@ -17,7 +17,6 @@ import support.PermissiveLog
  *   - adminUpdateLibrary fails CLOSED on a dropped/invalid POST (a null response is NOT success);
  *   - adminGetSource's noSave gate (the deploy probes pass noSave so they don't auto-save the live PR
  *     source over the dead-man restore cache -- the critical cache-poisoning fix);
- *   - resolveLibraryId re-resolves a library id by namespace.name (deploy-time delete+recreate);
  *   - checkDeadman parses a non-numeric deadline defensively (fires, never throws out of the tick).
  */
 class WatchdogV2Spec extends Specification {
@@ -46,44 +45,6 @@ class WatchdogV2Spec extends Specification {
                 Flags.DontRunScript
             ])
         )
-    }
-
-    @Unroll
-    def "restoreApp no-op requires BYTE-IDENTICAL live source, not just a length match (#scenario)"() {
-        given:
-        String cached = 'a' * 100
-        script.metaClass.readHubFileText = { String fn -> cached }
-        script.metaClass.appCodeVersion = { String id -> 5 }      // version does NOT advance -> no-op path
-        script.metaClass.hubPostForm = { String p, Map b, int t = 420 -> [status: 200, data: '{"status":"success"}'] }
-        script.metaClass.readAppSource = { String id -> live }
-
-        expect:
-        script.restoreApp('178', 'mcp-source-app-178.groovy') == expected
-
-        where:
-        scenario                          | live      || expected
-        'byte-identical -> restored'      | 'a' * 100 || true
-        'same length, different -> NOT'   | 'b' * 100 || false
-        'different length -> NOT'         | 'a' * 90  || false
-    }
-
-    @Unroll
-    def "restoreLibrary no-op requires BYTE-IDENTICAL live source (#scenario)"() {
-        given:
-        String cached = 'a' * 100
-        script.metaClass.readHubFileText = { String fn -> cached }
-        script.metaClass.libraryVersion = { String id -> 5 }      // no advance -> no-op path
-        script.metaClass.hubPostJson = { String p, String b -> [status: 200, data: '{"success":true,"id":119,"version":5}'] }
-        script.metaClass.readLibrarySource = { String id -> live }
-        script.metaClass.hubGet = { String p, Map q -> "" }       // self-heal delete GET (no-op here)
-
-        expect:
-        script.restoreLibrary('119', 'mcp-source-library-119.groovy') == expected
-
-        where:
-        scenario                          | live      || expected
-        'byte-identical -> restored'      | 'a' * 100 || true
-        'same length, different -> NOT'   | 'b' * 100 || false
     }
 
     @Unroll
@@ -131,33 +92,15 @@ class WatchdogV2Spec extends Specification {
         false  || true
     }
 
-    @Unroll
-    def "resolveLibraryId re-resolves by namespace.name, else falls back to the manifest id (#scenario)"() {
-        given:
-        script.metaClass.hubGet = { String p, Map q ->
-            '[{"namespace":"mcp","name":"Foo","id":200},{"namespace":"other","name":"Bar","id":201}]'
-        }
-
-        expect:
-        script.resolveLibraryId(ns, name, '119') == expected
-
-        where:
-        scenario               | ns    | name   || expected
-        'match -> current id'  | 'mcp' | 'Foo'  || '200'
-        'no match -> fallback' | 'mcp' | 'Nope' || '119'
-        'null name -> fallback'| 'mcp' | null   || '119'
-    }
-
     def "checkDeadman tolerates a non-numeric deadline (fires the restore, never throws)"() {
         given:
         // restorePackage is private (metaClass can't intercept it), so stub the PUBLIC leaf restoreApp/
         // restoreLibrary the real restorePackage calls, and capture the flag actAndRecord writes back.
         boolean appRestored = false
         Map written = null
-        script.metaClass.restoreApp = { String c, String f -> appRestored = true; true }
-        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.adminUpdateApp = { Map a -> appRestored = true; [success: true] }
         script.metaClass.readFlag = { -> [armed: true, deadline: 'not-a-number', runId: '1',
-                                          manifest: [app: [classId: '178', file: 'f'], libraries: []]] }
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
         script.metaClass.writeFlag = { Map fl -> written = fl; true }
 
         when:
@@ -172,11 +115,10 @@ class WatchdogV2Spec extends Specification {
     def "a successful restore stamps the canonical-main marker from the flag (CI's disarm no longer polls)"() {
         given:
         Map uploaded = [:]
-        script.metaClass.restoreApp = { String c, String f -> true }
-        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.adminUpdateApp = { Map a -> [success: true] }
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> uploaded[name] = new String(bytes, 'UTF-8') }
         script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7', canonicalMainSha: 'abc123',
-                                          manifest: [app: [classId: '178', file: 'f'], libraries: []]] }
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
         script.metaClass.writeFlag = { Map fl -> true }
 
         when:
@@ -192,10 +134,9 @@ class WatchdogV2Spec extends Specification {
         // each tick starts ANOTHER full concurrent restore (seen live: three overlapping
         // "disarm complete" per teardown -- a load spike that trips the hub's per-app limiter).
         int restores = 0
-        script.metaClass.restoreApp = { String c, String f -> restores++; true }
-        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.adminUpdateApp = { Map a -> restores++; [success: true] }
         script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7',
-                                          manifest: [app: [classId: '178', file: 'f'], libraries: []]] }
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
         script.metaClass.writeFlag = { Map fl -> true }
         atomicStateMap.restoreInFlightFor = '7'
         atomicStateMap.restoreInFlightAt = System.currentTimeMillis() - 30_000L
@@ -210,10 +151,9 @@ class WatchdogV2Spec extends Specification {
     def "a STALE in-flight latch (crashed restore) does not block the next restore"() {
         given:
         int restores = 0
-        script.metaClass.restoreApp = { String c, String f -> restores++; true }
-        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.adminUpdateApp = { Map a -> restores++; [success: true] }
         script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7',
-                                          manifest: [app: [classId: '178', file: 'f'], libraries: []]] }
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
         script.metaClass.writeFlag = { Map fl -> true }
         atomicStateMap.restoreInFlightFor = '7'
         atomicStateMap.restoreInFlightAt = System.currentTimeMillis() - 700_000L   // > 10-min escape
@@ -227,10 +167,9 @@ class WatchdogV2Spec extends Specification {
 
     def "the in-flight latch is cleared after the restore completes"() {
         given:
-        script.metaClass.restoreApp = { String c, String f -> true }
-        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.adminUpdateApp = { Map a -> [success: true] }
         script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '8',
-                                          manifest: [app: [classId: '178', file: 'f'], libraries: []]] }
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
         script.metaClass.writeFlag = { Map fl -> true }
 
         when:
@@ -243,11 +182,10 @@ class WatchdogV2Spec extends Specification {
     def "no marker is stamped when the flag has no canonicalMainSha or the restore fails (#scenario)"() {
         given:
         Map uploaded = [:]
-        script.metaClass.restoreApp = { String c, String f -> restoreOk }
-        script.metaClass.restoreLibrary = { String i, String f -> restoreOk }
+        script.metaClass.adminUpdateApp = { Map a -> [success: restoreOk] }
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> uploaded[name] = new String(bytes, 'UTF-8') }
         script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7', fireAttempts: 4,
-                                          manifest: [app: [classId: '178', file: 'f'], libraries: []]] + extraFlag }
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] + extraFlag }
         script.metaClass.writeFlag = { Map fl -> true }
 
         when:
@@ -483,50 +421,17 @@ class WatchdogV2Spec extends Specification {
         script.adminDeleteBundle([bundleId: '99', confirm: true]).success == false
     }
 
-    def "restoreLibrary self-heals a rejected in-place update via delete+recreate"() {
-        given:
-        String cached = 'library mcp.Foo source body aaaa'
-        script.metaClass.readHubFileText = { String fn -> cached }
-        script.metaClass.libraryVersion = { String id -> 7 }       // exists -> in-place attempted first
-        int posts = 0
-        script.metaClass.hubPostJson = { String p, String b ->
-            posts++
-            (posts == 1)
-                ? [status: 200, data: '{"success":false,"message":"bundle-managed; update via the bundle"}']  // in-place rejected
-                : [status: 200, data: '{"success":true,"id":222,"version":1}']                                 // recreate OK
-        }
-        script.metaClass.hubGet = { String p, Map q -> "" }        // delete GET
-        script.metaClass.readLibrarySource = { String id -> cached }  // post-create byte-confirm matches
-
-        expect:
-        script.restoreLibrary('119', 'mcp-source-library-119.groovy') == true
-    }
-
-    def "restoreLibrary creates the library when it is absent (cascade-removed)"() {
-        given:
-        String cached = 'library mcp.Foo source body bbbb'
-        script.metaClass.readHubFileText = { String fn -> cached }
-        script.metaClass.libraryVersion = { String id -> null }     // not present -> straight to create
-        script.metaClass.hubPostJson = { String p, String b -> [status: 200, data: '{"success":true,"id":333,"version":1}'] }
-        script.metaClass.readLibrarySource = { String id -> cached }
-
-        expect:
-        script.restoreLibrary('119', 'mcp-source-library-119.groovy') == true
-    }
-
-    def "restorePackage with a manifest bundle url installs from the CANONICAL https URL and never touches per-library restore"() {
+    def "restorePackage installs the bundle from the manifest CANONICAL https URL"() {
         given:
         // The bundle-driven path: ONE adminInstallBundle from the hub's own /local/ URL delivers every
         // library (the HPM way). The legacy per-library loop -- which POSTed each library's source and
         // recompiled the ~1.8MB dependent app per write, the load profile that tripped the platform's
         // per-app limiter -- must NOT run when the manifest carries a cached bundle.
         def bundleUrls = []
-        int libRestores = 0
         script.metaClass.adminInstallBundle = { Map a -> bundleUrls << a.importUrl; [success: true] }
-        script.metaClass.restoreLibrary = { String i, String f -> libRestores++; true }
-        script.metaClass.restoreApp = { String c, String f -> true }
+        script.metaClass.adminUpdateApp = { Map a -> [success: true] }
         script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '9',
-                                          manifest: [app: [classId: '178', file: 'f'],
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'],
                                                      libraries: [[id: '119', namespace: 'mcp', name: 'McpSmokeTestLib']],
                                                      bundles: [[namespace: 'mcp', name: 'mcp_libraries', url: 'https://raw.example/main/bundles/mcp-libraries.zip']]]] }
         script.metaClass.writeFlag = { Map fl -> true }
@@ -539,7 +444,30 @@ class WatchdogV2Spec extends Specification {
 
         then:
         bundleUrls == ['https://raw.example/main/bundles/mcp-libraries.zip']
-        libRestores == 0
+    }
+
+    def "restorePackage fails loudly on an old-format flag whose bundles carry no url"() {
+        given:
+        // No local cache exists anymore; bundle entries without a url cannot be restored -- the
+        // operator must re-arm. The watchdog endpoint itself stays reachable (the safety floor).
+        script.metaClass.adminInstallBundle = { Map a -> throw new IllegalStateException("must not be called") }
+        script.metaClass.adminUpdateApp = { Map a -> [success: true] }
+        script.metaClass.adminInstallBundle = { Map a -> [success: true] }
+        script.metaClass.adminListBundles = { Map a -> [source: "hub_api", bundles: []] }
+        script.metaClass.adminListLibraries = { Map a -> [source: "hub_api", libraries: []] }
+        Map written = null
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '12',
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'],
+                                                     libraries: [],
+                                                     bundles: [[namespace: 'mcp', name: 'mcp_libraries']]]] }
+        script.metaClass.writeFlag = { Map fl -> written = fl; true }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        written?.restoreResult != 'restored'
+        written?.restoreDetail?.contains('no url')
     }
 
     @Unroll
@@ -551,10 +479,10 @@ class WatchdogV2Spec extends Specification {
         // or "changed" must install: fail-safe toward restoring.
         int bundleInstalls = 0
         script.metaClass.adminInstallBundle = { Map a -> bundleInstalls++; [success: true] }
-        script.metaClass.restoreApp = { String c, String f -> true }
+        script.metaClass.adminUpdateApp = { Map a -> [success: true] }
         script.metaClass.readHubFileText = { String fn -> marker }
         script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '11',
-                                          manifest: [app: [classId: '178', file: 'f'], libraries: [],
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: [],
                                                      bundles: [[namespace: 'mcp', name: 'mcp_libraries', url: 'https://raw.example/main/bundles/mcp-libraries.zip']]]] }
         script.metaClass.writeFlag = { Map fl -> true }
         script.metaClass.adminListBundles = { Map a -> [source: "hub_api", bundles: []] }
@@ -572,28 +500,6 @@ class WatchdogV2Spec extends Specification {
         'stale runId -> install'            | '999:unchanged'   || 1
         'changed -> install'                | '11:changed'      || 1
         'missing marker -> install'         | null              || 1
-    }
-
-    def "restorePackage falls back to the legacy per-library restore when the manifest has no cached bundle"() {
-        given:
-        int libRestores = 0
-        script.metaClass.adminInstallBundle = { Map a -> throw new IllegalStateException("must not be called") }
-        script.metaClass.restoreLibrary = { String i, String f -> libRestores++; true }
-        script.metaClass.restoreApp = { String c, String f -> true }
-        script.metaClass.resolveLibraryId = { String ns, String nm, String fallback -> fallback }
-        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '10',
-                                          manifest: [app: [classId: '178', file: 'f'],
-                                                     libraries: [[id: '119', file: 'lf', namespace: 'mcp', name: 'McpSmokeTestLib']],
-                                                     bundles: [[namespace: 'mcp', name: 'mcp_libraries']]]] }
-        script.metaClass.writeFlag = { Map fl -> true }
-        script.metaClass.adminListBundles = { Map a -> [source: "hub_api", bundles: []] }
-        script.metaClass.adminListLibraries = { Map a -> [source: "hub_api", libraries: []] }
-
-        when:
-        script.checkDeadman()
-
-        then:
-        libRestores == 1
     }
 
     def "adminGetHubLogs parses tab-delimited rows newest-first with a level filter"() {
@@ -652,7 +558,8 @@ class WatchdogV2Spec extends Specification {
         // Hub holds main's mcp_smoke_test bundle + the PR's mcp_libraries bundle; main's McpSmokeTestLib +
         // the PR's McpRoomsLib + an unrelated 'other'-namespace library. The manifest's main sets list
         // only mcp_smoke_test + McpSmokeTestLib, so the PR's bundle/library are the stale ones to drop.
-        script.metaClass.hubGet = { String p, Map q -> null }       // resolveLibraryId -> falls back to manifest id
+        script.metaClass.hubGet = { String p, Map q -> null }
+        script.metaClass.adminInstallBundle = { Map a -> [success: true] }
         script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: [
             [id: '1', name: 'mcp_smoke_test', namespace: 'mcp'],
             [id: '2', name: 'mcp_libraries', namespace: 'mcp']]] }
@@ -662,13 +569,12 @@ class WatchdogV2Spec extends Specification {
             [id: '11', name: 'McpRoomsLib', namespace: 'mcp'],
             [id: '12', name: 'Unrelated', namespace: 'other']]] }
         script.metaClass.adminDeleteItem = { Map a -> deletedLibs << a.id; [success: true] }
-        script.metaClass.restoreLibrary = { String i, String f -> true }
-        script.metaClass.restoreApp = { String c, String f -> true }
+        script.metaClass.adminUpdateApp = { Map a -> [success: true] }
         Map written = null
         script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9', manifest: [
-            app: [classId: '178', file: 'mcp-source-app-178.groovy'],
-            libraries: [[namespace: 'mcp', name: 'McpSmokeTestLib', id: '10', file: 'mcp-source-library-10.groovy']],
-            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test']]]] }
+            app: [classId: '178', url: 'https://raw.example/main/app.groovy'],
+            libraries: [[namespace: 'mcp', name: 'McpSmokeTestLib', id: '10']],
+            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test', url: 'https://raw.example/main/bundle.zip']]]] }
         script.metaClass.writeFlag = { Map fl -> written = fl; true }
 
         when:
@@ -684,15 +590,15 @@ class WatchdogV2Spec extends Specification {
         given:
         def deletedBundles = []
         script.metaClass.hubGet = { String p, Map q -> null }
+        script.metaClass.adminInstallBundle = { Map a -> [success: true] }
         script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: [[id: '2', name: 'mcp_libraries', namespace: 'mcp']]] }
         script.metaClass.adminDeleteBundle = { Map a -> deletedBundles << a.bundleId; [success: true] }
         script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: []] }
-        script.metaClass.restoreLibrary = { String i, String f -> true }
-        script.metaClass.restoreApp = { String c, String f -> true }
+        script.metaClass.adminUpdateApp = { Map a -> [success: true] }
         Map written = null
         // No 'bundles' / no 'libraries' key in the manifest -> both cleanups must SKIP (don't blind-delete).
         script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9',
-            manifest: [app: [classId: '178', file: 'mcp-source-app-178.groovy']]] }
+            manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy']]] }
         script.metaClass.writeFlag = { Map fl -> written = fl; true }
 
         when:
@@ -706,18 +612,18 @@ class WatchdogV2Spec extends Specification {
     def "restorePackage cleanup is best-effort: a FAILED stale-bundle delete does not abort the restore"() {
         given:
         script.metaClass.hubGet = { String p, Map q -> null }
+        script.metaClass.adminInstallBundle = { Map a -> [success: true] }
         script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: [
             [id: '1', name: 'mcp_smoke_test', namespace: 'mcp'],
             [id: '2', name: 'mcp_libraries', namespace: 'mcp']]] }
         script.metaClass.adminDeleteBundle = { Map a -> [success: false, error: 'hub refused'] }   // delete FAILS
         script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: []] }
-        script.metaClass.restoreLibrary = { String i, String f -> true }
-        script.metaClass.restoreApp = { String c, String f -> true }
+        script.metaClass.adminUpdateApp = { Map a -> [success: true] }
         Map written = null
         script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9', manifest: [
-            app: [classId: '178', file: 'app.groovy'],
-            libraries: [[namespace: 'mcp', name: 'McpSmokeTestLib', id: '10', file: 'lib.groovy']],
-            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test']]]] }
+            app: [classId: '178', url: 'https://raw.example/main/app.groovy'],
+            libraries: [[namespace: 'mcp', name: 'McpSmokeTestLib', id: '10']],
+            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test', url: 'https://raw.example/main/bundle.zip']]]] }
         script.metaClass.writeFlag = { Map fl -> written = fl; true }
 
         when:
@@ -730,18 +636,18 @@ class WatchdogV2Spec extends Specification {
     def "restorePackage cleanup is best-effort: a THROWING stale-library delete does not abort the restore"() {
         given:
         script.metaClass.hubGet = { String p, Map q -> null }
+        script.metaClass.adminInstallBundle = { Map a -> [success: true] }
         script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: []] }
         script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: [
             [id: '10', name: 'McpSmokeTestLib', namespace: 'mcp'],
             [id: '11', name: 'McpRoomsLib', namespace: 'mcp']]] }
         script.metaClass.adminDeleteItem = { Map a -> throw new RuntimeException('boom') }   // delete THROWS
-        script.metaClass.restoreLibrary = { String i, String f -> true }
-        script.metaClass.restoreApp = { String c, String f -> true }
+        script.metaClass.adminUpdateApp = { Map a -> [success: true] }
         Map written = null
         script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9', manifest: [
-            app: [classId: '178', file: 'app.groovy'],
-            libraries: [[namespace: 'mcp', name: 'McpSmokeTestLib', id: '10', file: 'lib.groovy']],
-            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test']]]] }
+            app: [classId: '178', url: 'https://raw.example/main/app.groovy'],
+            libraries: [[namespace: 'mcp', name: 'McpSmokeTestLib', id: '10']],
+            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test', url: 'https://raw.example/main/bundle.zip']]]] }
         script.metaClass.writeFlag = { Map fl -> written = fl; true }
 
         when:
@@ -749,25 +655,6 @@ class WatchdogV2Spec extends Specification {
 
         then:
         written?.restoreResult == 'restored'   // a throwing cleanup delete is caught; restore still succeeds
-    }
-
-    @Unroll
-    def "restoreLibrary(create) requires a readable byte-identical live source (#scenario)"() {
-        given:
-        String cached = 'library mcp.Foo source body cccc'
-        script.metaClass.readHubFileText = { String fn -> cached }
-        script.metaClass.libraryVersion = { String id -> null }     // not present -> straight to create
-        script.metaClass.hubPostJson = { String p, String b -> [status: 200, data: '{"success":true,"id":444,"version":1}'] }
-        script.metaClass.readLibrarySource = { String id -> live }   // post-create confirm read
-
-        expect:
-        script.restoreLibrary('119', 'mcp-source-library-119.groovy') == expected
-
-        where:
-        scenario                         | live                               || expected
-        'unreadable -> NOT confirmed'    | null                               || false
-        'byte-identical -> restored'     | 'library mcp.Foo source body cccc' || true
-        'different live -> did not land' | 'a DIFFERENT source'               || false
     }
 
     def "adminDeleteBundle reports verified=false when the post-delete re-list is degraded"() {
@@ -793,16 +680,16 @@ class WatchdogV2Spec extends Specification {
         given:
         def deletedBundles = []
         script.metaClass.hubGet = { String p, Map q -> null }
+        script.metaClass.adminInstallBundle = { Map a -> [success: true] }
         script.metaClass.adminListBundles = { Map a -> [source: 'hub_api_raw', bundles: []] }   // degraded -> skip
         script.metaClass.adminDeleteBundle = { Map a -> deletedBundles << a.bundleId; [success: true] }
         script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: []] }
-        script.metaClass.restoreLibrary = { String i, String f -> true }
-        script.metaClass.restoreApp = { String c, String f -> true }
+        script.metaClass.adminUpdateApp = { Map a -> [success: true] }
         Map written = null
         script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9', manifest: [
-            app: [classId: '178', file: 'app.groovy'],
+            app: [classId: '178', url: 'https://raw.example/main/app.groovy'],
             libraries: [],
-            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test']]]] }
+            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test', url: 'https://raw.example/main/bundle.zip']]]] }
         script.metaClass.writeFlag = { Map fl -> written = fl; true }
 
         when:
