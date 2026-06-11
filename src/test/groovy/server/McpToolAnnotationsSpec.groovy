@@ -114,7 +114,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         where:
         name << [
-            'hub_call_device_command',
+            'hub_call_device_command', 'hub_call_device_swap',
             'hub_create_custom_rule', 'hub_update_custom_rule', 'hub_delete_custom_rule',
             'hub_import_custom_rule', 'hub_clone_custom_rule', 'hub_export_custom_rule',
             'hub_set_mode',
@@ -173,7 +173,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_manage_rooms',              // create/delete/rename + others
             'hub_manage_destructive_ops',// reboot/shutdown/hub_delete_device
             'hub_manage_code',          // install/update/delete code
-            'hub_manage_devices',            // hub_call_device_command, hub_update_device
+            'hub_manage_devices',            // hub_call_device_command, hub_call_device_swap, hub_update_device
             'hub_manage_logs',               // hub_delete_debug_logs, hub_set_log_level
             'hub_manage_diagnostics',        // hub_call_zwave_repair, hub_delete_captured_state
             'hub_manage_files',              // hub_write_file, hub_delete_file
@@ -332,7 +332,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         ] as Set
 
         def expectedNonIdempotent = [
-            'hub_call_device_command',
+            'hub_call_device_command', 'hub_call_device_swap',
             'hub_create_custom_rule', 'hub_import_custom_rule', 'hub_clone_custom_rule',
             'hub_export_custom_rule',
             'hub_create_variable',
@@ -497,7 +497,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         ] as Set
 
         def expectedWrites = [
-            'hub_call_device_command',
+            'hub_call_device_command', 'hub_call_device_swap',
             'hub_create_custom_rule', 'hub_update_custom_rule', 'hub_delete_custom_rule',
             'hub_import_custom_rule', 'hub_clone_custom_rule', 'hub_export_custom_rule',
             'hub_set_mode',
@@ -565,7 +565,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 97
+        names.size() == 98
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk

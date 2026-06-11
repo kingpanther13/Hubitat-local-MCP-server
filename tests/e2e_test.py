@@ -1979,10 +1979,11 @@ class TestRunner:
 
     # -----------------------------------------------------------------------
     # GROUP 4d: app_code_update (1 test) -- the hub_update_app code-deploy path
-    # (POST /app/saveOrUpdateJson). One throwaway code class, three legs before its delete:
+    # (POST /app/saveOrUpdateJson). One throwaway code class, four legs before its delete:
     # a real round-trip edit (success + version advance + source landed), the
     # hub's verbatim compile error on broken Groovy (not our generic fallback),
-    # and the client-side expectedVersion optimistic lock (refused, no write).
+    # the client-side expectedVersion optimistic lock (refused, no write), and a
+    # hub_restore_backup of the pre-update auto-backup (V1 back, undo key returned).
     # -----------------------------------------------------------------------
 
     @test("app_code_update")
@@ -2092,7 +2093,29 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
             assert int(final["version"]) == version_after, \
                 f"a refused update advanced the version ({version_after} -> {final.get('version')})"
 
-            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write")
+            # Leg 4: restore -- the auto-backup snapped before the FIRST update still
+            # holds the V1 source (backupItemSource keeps the pre-edit original for an
+            # hour rather than re-snapshotting on the later legs), so hub_restore_backup
+            # must bring V1 back and hand back a pre-restore backup key as the undo path.
+            restored = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_restore_backup",
+                "args": {"backupKey": f"app_{code_app_id}", "confirm": True},
+            })
+            assert restored.get("success") is True, f"hub_restore_backup failed: {restored}"
+            pre_restore_key = restored.get("preRestoreBackup")
+            assert pre_restore_key == f"prerestore_app_{code_app_id}", \
+                f"restore did not return the pre-restore backup key: {restored}"
+            after_restore = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "app", "id": code_app_id},
+            })
+            restored_src = after_restore.get("source") or ""
+            assert "UPDATE-LEG-MARKER-V1" in restored_src and "UPDATE-LEG-MARKER-V2" not in restored_src, \
+                f"restore did not bring back the pre-update source: {after_restore}"
+            assert int(after_restore["version"]) > version_after, \
+                f"restore reported success but the version did not advance ({version_after} -> {after_restore.get('version')})"
+
+            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write; restore brought V1 back (undo key {pre_restore_key})")
         finally:
             if code_app_id:
                 try:
@@ -2102,6 +2125,324 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
                     })
                 except Exception as exc:
                     print(f"  [WARN] app-code update cleanup: delete code class {code_app_id} failed: {exc}")
+
+    # -----------------------------------------------------------------------
+    # GROUP 4e: driver_code_update (1 test) -- the hub_update_driver code-deploy
+    # path (POST /driver/saveOrUpdateJson), mirroring the app leg above: one
+    # throwaway driver code class, a round-trip edit (success + version advance +
+    # source landed) and the hub's verbatim compile error on broken Groovy.
+    # -----------------------------------------------------------------------
+
+    @test("driver_code_update")
+    def test_update_driver_code_lifecycle(self) -> None:
+        # Throwaway Drivers Code class (code only, never assigned to a device). The
+        # name deliberately starts with "Deadman Test Target" (namespace mcptest) so
+        # the cleanup Layer 5 startswith sweep reclaims a stranded copy if a crash
+        # skips the finally below.
+        source_v1 = '''\
+metadata {
+    definition(name: "Deadman Test Target Driver", namespace: "mcptest", author: "ci") {
+        capability "Switch"
+    }
+}
+
+def installed() {}
+def updated() {}
+def on() { sendEvent(name: "switch", value: "on") }
+def off() { sendEvent(name: "switch", value: "off") }
+
+def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
+'''
+        driver_id = None
+        try:
+            created = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_driver",
+                "args": {"source": source_v1, "confirm": True},
+            })
+            driver_id = created.get("driverId")
+            assert created.get("success") is True and driver_id, \
+                f"hub_create_driver(source) failed or returned no driverId: {created}"
+
+            before = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "driver", "id": driver_id},
+            })
+            assert before.get("success") is True and before.get("version") is not None \
+                and "DRIVER-LEG-MARKER-V1" in (before.get("source") or ""), \
+                f"could not read back the created driver code class: {before}"
+            version_before = int(before["version"])
+
+            # Leg 1: round-trip edit -- valid modified source must save, advance the
+            # hub's version counter, and be readable back via hub_get_source.
+            source_v2 = source_v1.replace("DRIVER-LEG-MARKER-V1", "DRIVER-LEG-MARKER-V2")
+            updated = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_driver",
+                "args": {"driverId": driver_id, "source": source_v2, "confirm": True},
+            })
+            assert updated.get("success") is True, f"hub_update_driver round-trip failed: {updated}"
+            assert updated.get("previousVersion") is not None, \
+                f"hub_update_driver success carries no previousVersion: {updated}"
+            after = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "driver", "id": driver_id},
+            })
+            assert "DRIVER-LEG-MARKER-V2" in (after.get("source") or ""), \
+                f"updated driver source did not land on the hub: {after}"
+            version_after = int(after["version"])
+            assert version_after > version_before, \
+                f"driver version did not advance after update ({version_before} -> {version_after})"
+
+            # Leg 2: compile error -- the hub's verbatim compiler text must ride back
+            # in `error`, not our generic fallback string.
+            source_broken = source_v2.replace(
+                "def updated() {}",
+                "def updated() { new ClassThatDoesNotExistBatE2eDrv() }",
+            )
+            failed = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_driver",
+                "args": {"driverId": driver_id, "source": source_broken, "confirm": True},
+            })
+            assert failed.get("success") is False, f"broken driver Groovy was accepted: {failed}"
+            err = str(failed.get("error") or "")
+            assert err and err != "Update failed - the hub returned an error", \
+                f"driver compile failure did not surface the hub's error text: {failed}"
+            assert "unable to resolve" in err.lower() or "ClassThatDoesNotExistBatE2eDrv" in err, \
+                f"error text is not the hub's compiler output: {err!r}"
+
+            # One re-read proves the refused leg wrote nothing: still V2, no broken
+            # marker, version unchanged since the round-trip edit.
+            final = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_source",
+                "args": {"type": "driver", "id": driver_id},
+            })
+            final_src = final.get("source") or ""
+            assert "DRIVER-LEG-MARKER-V2" in final_src and "ClassThatDoesNotExistBatE2eDrv" not in final_src, \
+                f"a refused driver update mutated the stored source: {final}"
+            assert int(final["version"]) == version_after, \
+                f"a refused driver update advanced the version ({version_after} -> {final.get('version')})"
+
+            print(f"    DRIVER_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error refused with the hub's verbatim text")
+        finally:
+            if driver_id:
+                try:
+                    self.client.call_tool("hub_manage_code", {
+                        "tool": "hub_delete_item",
+                        "args": {"type": "driver", "id": driver_id, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] driver-code update cleanup: delete driver code class {driver_id} failed: {exc}")
+
+    # -----------------------------------------------------------------------
+    # GROUP 4f: installed_app_reads (2 tests) -- the thin app-summary mode of
+    # hub_get_app_config (/installedapp/json/<id>) and the per-app events mode
+    # of hub_list_device_events (/installedapp/eventsJson/<id>).
+    # -----------------------------------------------------------------------
+
+    @test("installed_app_reads")
+    def test_get_app_config_summary_mode(self) -> None:
+        # summary:true returns the thin identity payload WITHOUT the rendered config
+        # page -- the cheap existence/identity probe for installed apps. Pin it on a
+        # throwaway RM rule so the identity fields are deterministic.
+        app_id = self._create_native_rule("CfgSummary")
+        try:
+            result = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": str(app_id), "summary": True},
+            })
+            assert result.get("success") is True, f"summary fetch failed: {result}"
+            ident = result.get("app") if isinstance(result.get("app"), dict) else result
+            assert str(ident.get("id")) == str(app_id), \
+                f"summary identity id mismatch (expected {app_id}): {result}"
+            label_blob = " ".join(str(ident.get(k) or "") for k in ("label", "name", "type"))
+            assert PREFIX in label_blob, \
+                f"summary identity carries no recognizable name/label for the fixture rule: {result}"
+            # The point of summary mode: no rendered config page rides along.
+            assert not result.get("page") and not result.get("configPage"), \
+                f"summary:true must omit the rendered config page: {sorted(result.keys())}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("installed_app_reads")
+    def test_list_app_events_structural(self) -> None:
+        # Per-app events -- structural contract only. There is no cheap deterministic
+        # way to make an app emit an event on demand (RM rules only write events when
+        # they actually fire), so this pins the envelope (source=='app', list payload)
+        # against the MCP server's own instance, which always exists; row-shape keys
+        # are asserted only when rows came back.
+        result = self.client.call_tool("hub_list_device_events", {
+            "appId": str(self.client.app_id), "limit": 10,
+        })
+        assert isinstance(result, dict), f"app-events mode did not return an object: {result!r}"
+        assert result.get("source") == "app", f"expected source=='app': {result}"
+        events = result.get("events")
+        assert isinstance(events, list), f"app-events mode did not return an events list: {result}"
+        if events:
+            row = events[0]
+            assert isinstance(row, dict) and "name" in row and "date" in row, \
+                f"app event row missing name/date: {row}"
+        if result.get("count") is not None:
+            assert int(result["count"]) == len(events), f"count != len(events): {result}"
+
+        # deviceId and appId address different event tables; the combination must be
+        # refused outright, not silently resolved to one of them.
+        try:
+            self.client.call_tool("hub_list_device_events", {
+                "appId": str(self.client.app_id), "deviceId": self.get_first_device_id(),
+            })
+            raise AssertionError("hub_list_device_events accepted deviceId+appId together")
+        except (McpToolError, McpError) as exc:
+            blob = str(exc).lower()
+            assert "appid" in blob or "deviceid" in blob or "exclusive" in blob, \
+                f"mutual-exclusivity refusal does not name the conflicting params: {exc}"
+
+    # -----------------------------------------------------------------------
+    # GROUP 4g: device_swap (1 test) -- hub_call_device_swap child-device
+    # ineligibility: an MCP-created virtual switch must be refused by the
+    # hub's Swap Device tool with the structured eligibility error, and the
+    # transient Swap Device instance must not leak.
+    # -----------------------------------------------------------------------
+
+    def _create_swap_switch(self, label: str) -> tuple[str, str]:
+        """Create a BAT_E2E_ virtual-switch fixture and return (deviceId, dni).
+        Tracked in created_device_dnis immediately so the Layer 1/2 cleanup reclaims
+        it if the swap test crashes before its own teardown."""
+        result = self.client.call_tool("hub_manage_virtual_device", {
+            "action": "create",
+            "deviceType": "Virtual Switch",
+            "deviceLabel": label,
+            "confirm": True,
+        })
+        dev_id = str(result.get("id", result.get("deviceId", "")) or "")
+        dni = str(result.get("deviceNetworkId", result.get("dni", "")) or "")
+        if not dev_id or not dni:
+            # Response may not carry the ids -- look the device up by label.
+            time.sleep(0.3)
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+            devices_list = vdevs if isinstance(vdevs, list) else (vdevs.get("devices", []) if isinstance(vdevs, dict) else [])
+            for d in devices_list:
+                if label in (d.get("label") or d.get("name") or ""):
+                    dev_id = dev_id or str(d["id"])
+                    dni = dni or str(d.get("deviceNetworkId", d.get("dni", "")) or "")
+                    break
+        assert dev_id and dni, f"failed to create swap fixture switch '{label}'"
+        self.created_device_dnis.append(dni)
+        return dev_id, dni
+
+    def _swap_device_instance_ids(self) -> set[str]:
+        """Ids of installed 'Swap Device' app instances (the transient instances the
+        direct/swapDevice alias creates on every resolve). A single un-cursored
+        hub_list_apps call returns the FULL flattened instance list (pagination only
+        kicks in once a cursor is passed); includeHidden covers a pending
+        (installed:false) transient instance, should the hub list it as hidden."""
+        listing = self.client.call_tool("hub_read_apps_code", {
+            "tool": "hub_list_apps", "args": {"filter": "builtin", "includeHidden": True},
+        })
+        return {
+            str(a.get("id"))
+            for a in (listing.get("apps") or [])
+            if isinstance(a, dict)
+            and "swap device" in f"{a.get('type') or ''} {a.get('name') or ''}".lower()
+        }
+
+    @test("device_swap")
+    def test_call_device_swap_child_device_ineligibility(self) -> None:
+        # WHY there is no happy-path swap scenario here: the hub's built-in Swap
+        # Device app offers only FREE-STANDING devices in its pickers (and oldDev
+        # additionally lists only devices referenced by at least one app) -- devices
+        # owned as another app's child/component device appear in NEITHER list
+        # (verified live on fw 2.5.0.143). Every device this suite can create goes
+        # through hub_manage_virtual_device -> addChildDevice, i.e. is an MCP child
+        # device and therefore permanently ineligible; free-standing fixtures cannot
+        # be created through the MCP tool surface, and the suite must not touch
+        # non-BAT devices. The full swap round-trip is therefore BAT/manual-only
+        # (tests/BAT-v2.md T642, with hub-UI-created free-standing switches). This
+        # scenario still exercises the whole chain end-to-end: the direct-alias
+        # resolver (transient Swap Device instance creation), the wizard
+        # configure/json fetch, the oldDev eligibility pre-check, the structured
+        # error envelope, and the transient-instance cleanup.
+        id_a, dni_a = self._create_swap_switch(f"{PREFIX}Swap_A")
+        id_b, dni_b = self._create_swap_switch(f"{PREFIX}Swap_B")
+        try:
+            swap_instances_before = self._swap_device_instance_ids()
+
+            result = self.client.call_tool("hub_manage_devices", {
+                "tool": "hub_call_device_swap",
+                "args": {"from_device_id": id_a, "to_device_id": id_b, "confirm": True},
+            })
+            assert result.get("success") is False, \
+                f"swap of an MCP child device unexpectedly succeeded -- hub eligibility rules changed? {result}"
+            blob = f"{result.get('error') or ''} {result.get('note') or ''}".lower()
+            assert "does not offer" in blob or "child" in blob, \
+                f"ineligibility failure does not name the eligibility rule: {result}"
+
+            # Cleanup contract: the failed call must not leak its transient Swap
+            # Device instance into the hub's Apps list. Compared as a before/after
+            # id-set delta so pre-existing leaked instances (prior runs, manual UI
+            # visits) cannot false-fail the run.
+            leaked = self._swap_device_instance_ids() - swap_instances_before
+            assert not leaked, \
+                f"hub_call_device_swap leaked transient Swap Device instance(s): {sorted(leaked)}"
+
+            print(f"    DEVICE_SWAP ok -- child-device fixture {id_a} refused as ineligible, no instance leak")
+        finally:
+            for dni in (dni_a, dni_b):
+                try:
+                    self.client.call_tool("hub_manage_virtual_device", {
+                        "action": "delete", "deviceNetworkId": dni, "confirm": True,
+                    })
+                    if dni in self.created_device_dnis:
+                        self.created_device_dnis.remove(dni)
+                except Exception as exc:
+                    print(f"  [WARN] device-swap cleanup: delete device DNI={dni} failed: {exc}")
+
+    # -----------------------------------------------------------------------
+    # GROUP 4h: hub_variables (1 test) -- hub-NAMESPACE variable lifecycle
+    # (the system Hub Variables app, not the legacy rule_engine map).
+    # -----------------------------------------------------------------------
+
+    @test("hub_variables")
+    def test_hub_variable_create_get_delete_round_trip(self) -> None:
+        # create/delete drive the Hub Variables system app's wizard (its instance id
+        # resolved via the direct-alias redirect); get reads back through getGlobalVar,
+        # so a green round-trip proves the wizard writes landed in the real namespace.
+        var_name = f"{PREFIX}HubVar_RT"
+        # Track BEFORE creating: there is no prefix sweep for variables, so a crash
+        # between the create landing and a later append would strand it.
+        self.created_variable_names.append(var_name)
+        created = self.client.call_tool("hub_manage_variables", {
+            "tool": "hub_create_variable",
+            "args": {"name": var_name, "type": "String", "value": "round-trip-v1", "confirm": True},
+        })
+        assert created.get("success") is True and created.get("source") == "hub", \
+            f"hub_create_variable did not create in the hub namespace: {created}"
+
+        got = self.client.call_tool("hub_manage_variables", {
+            "tool": "hub_get_variable", "args": {"name": var_name},
+        })
+        assert got.get("source") == "hub", f"created variable not visible in the hub namespace: {got}"
+        assert got.get("value") == "round-trip-v1", f"hub variable value mismatch: {got}"
+        assert got.get("type"), f"hub variable read-back carries no type metadata: {got}"
+
+        deleted = self.client.call_tool("hub_manage_variables", {
+            "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True},
+        })
+        assert deleted.get("success") is True and deleted.get("deleted") is True, \
+            f"hub_delete_variable failed: {deleted}"
+        assert deleted.get("source") == "hub", f"delete resolved the wrong namespace: {deleted}"
+        assert deleted.get("previousValue") == "round-trip-v1", \
+            f"delete did not report the previous value: {deleted}"
+
+        # Verify gone from BOTH namespaces (hub_get_variable searches hub first,
+        # then falls back to rule_engine -- a not-found proves both are clean).
+        try:
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": var_name},
+            })
+            raise AssertionError(f"{var_name} still retrievable after hub-namespace delete")
+        except (McpToolError, McpError) as exc:
+            assert "not found" in str(exc).lower(), f"unexpected error after delete: {exc}"
+        if var_name in self.created_variable_names:
+            self.created_variable_names.remove(var_name)
 
     # -----------------------------------------------------------------------
     # GROUP 5: trigger_types (1 batched test -- all trigger types in one rule)
@@ -3302,7 +3643,7 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
         2. Virtual devices (prefix sweep)
         3. Custom rules (prefix sweep)
         4. Native RM apps + Visual Rules (tracked + prefix sweeps)
-        5. Deadman install-fix throwaway (namespace+name)
+        5. mcptest throwaway app + driver code classes (namespace+name)
         6. Rooms (prefix sweep)
         """
         print("\n--- Cleanup ---")
@@ -3482,11 +3823,12 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
                 print(f"  [WARN] Visual Rule sweep failed: {exc}")
 
         # Layer 5: stranded mcptest throwaways. The @test("deadman") test installs 'Deadman Test
-        # Target' (instance + code class) and the @test("app_code_update") test creates the
-        # 'Deadman Test Target Update' code class (named to ride this same startswith match);
-        # none carry the BAT_E2E_ prefix, so a crash/kill between a create and its finally would
-        # strand them past the other sweeps. Reclaim instance(s) + code class by namespace+name
-        # (idempotent across runs).
+        # Target' (instance + code class), the @test("app_code_update") test creates the
+        # 'Deadman Test Target Update' code class, and the @test("driver_code_update") test
+        # creates the 'Deadman Test Target Driver' driver code class (all named to ride this
+        # same startswith match); none carry the BAT_E2E_ prefix, so a crash/kill between a
+        # create and its finally would strand them past the other sweeps. Reclaim instance(s)
+        # + code classes by namespace+name (idempotent across runs).
         try:
             dtypes = self.client.call_tool("hub_read_apps_code",
                                            {"tool": "hub_list_apps", "args": {"scope": "types"}})
@@ -3511,6 +3853,24 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
                         print(f"  [WARN] deadman sweep: code-class delete failed: {exc}")
         except Exception as exc:
             print(f"  [WARN] deadman target sweep failed: {exc}")
+
+        # Layer 5 (drivers): the driver-code throwaway rides the same namespace+name
+        # convention but lives in Drivers Code, which the app-type listing above
+        # never sees -- sweep it through the driver list.
+        try:
+            ddrvs = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_drivers", "args": {}})
+            for d in (ddrvs.get("drivers", []) if isinstance(ddrvs, dict) else []):
+                if d.get("namespace") == "mcptest" and str(d.get("name") or "").startswith("Deadman Test Target"):
+                    try:
+                        print(f"  Sweep: deleting stranded throwaway driver code class {d.get('id')}")
+                        self.client.call_tool("hub_manage_code", {
+                            "tool": "hub_delete_item",
+                            "args": {"type": "driver", "id": str(d.get("id")), "confirm": True},
+                        })
+                    except Exception as exc:
+                        print(f"  [WARN] driver sweep: code-class delete failed: {exc}")
+        except Exception as exc:
+            print(f"  [WARN] throwaway driver sweep failed: {exc}")
 
         # Layer 6: rooms with the BAT_E2E_ prefix (issue #209 McpRoomsLib round-trip).
         # The create/rename/delete test cleans up in its own finally; this reclaims a

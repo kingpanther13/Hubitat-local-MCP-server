@@ -16,6 +16,7 @@ import support.ToolSpecBase
  *  - pageName arg: URL includes the page segment
  *  - includeSettings=false (default): settings key absent, settingsNote present
  *  - includeSettings=true: settings key populated
+ *  - summary=true: identity-only fast path via /installedapp/json (pass-through + error paths)
  *  - Empty hub response: returns success=false
  *  - Unknown appId (hub returns {app:null}): fingerprint check fires, success=false
  *  - HTML stripping: span tags removed from labels
@@ -553,6 +554,111 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
+    }
+
+    // -------------------------------------------------------------------------
+    // summary=true — identity-only fast path via /installedapp/json/<id>
+    // -------------------------------------------------------------------------
+
+    def "summary=true passes the thin identity record through with success=true and never renders the config page"() {
+        given:
+        settingsMap.enableRead = true
+        // configure/json deliberately NOT registered -- if summary mode rendered the
+        // config page, HubInternalGetMock would throw on the unregistered path.
+        // extraField proves unknown hub fields pass through untouched.
+        hubGet.register('/installedapp/json/35') { params ->
+            JsonOutput.toJson([id: 35, name: 'My Rule', type: 'Rule Machine', disabled: false, user: false, extraField: 'future-firmware-key'])
+        }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, summary: true])
+
+        then: 'identity fields pass through as-is'
+        result.success == true
+        result.id == 35
+        result.name == 'My Rule'
+        result.type == 'Rule Machine'
+        result.disabled == false
+        result.user == false
+        result.extraField == 'future-firmware-key'
+        result.endpoint == '/installedapp/json/35'
+
+        and: 'no full-mode keys'
+        !result.containsKey('page')
+        !result.containsKey('settingsKeyCount')
+
+        and: 'only the thin endpoint was hit'
+        hubGet.calls.every { it.path == '/installedapp/json/35' }
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_app_config via dispatch summary=true returns the thin identity record (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/json/35') { params ->
+            JsonOutput.toJson([id: 35, name: 'My Rule', type: 'Rule Machine', disabled: false, user: false])
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, summary: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.id == 35
+        inner.name == 'My Rule'
+        inner.type == 'Rule Machine'
+        inner.disabled == false
+        inner.user == false
+        inner.endpoint == '/installedapp/json/35'
+        !inner.containsKey('page')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "summary=true returns success=false when hub returns empty body"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/json/99') { params -> '' }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 99, summary: true])
+
+        then:
+        result.success == false
+        result.error.toLowerCase().contains('empty')
+        result.appId == 99
+    }
+
+    def "summary=true returns success=false with fingerprint when response is not a JSON object"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/json/35') { params -> '"just a string"' }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, summary: true])
+
+        then:
+        result.success == false
+        result.fingerprint == 'top-level not a Map'
+    }
+
+    def "summary=true still validates appId before any HTTP call"() {
+        given:
+        settingsMap.enableRead = true
+        // No endpoint registered: reaching HTTP would throw the unstubbed-path
+        // error instead of the expected validation exception.
+
+        when:
+        script.toolGetAppConfig([appId: 'not-a-number', summary: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('numeric')
     }
 
     // -------------------------------------------------------------------------
