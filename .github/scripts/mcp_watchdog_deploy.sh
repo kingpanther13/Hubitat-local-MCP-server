@@ -225,5 +225,50 @@ while IFS=$'\t' read -r A_NS A_NAME A_LOC; do
   DEPLOYED_APPS=$((DEPLOYED_APPS + 1))
 done <<< "$APP_RECS"
 
+# ===========================================================================
+# 4) CLEAR THE PER-APP LOAD THROTTLE -- bounce (disable/enable) the server app.
+#    Hubitat's platform load limiter ("LimitExceededException: App N generates
+#    excessive hub load") silently blocks the app's device-method dispatch once
+#    tripped -- device commands false-succeed (the exception is thrown in the
+#    DEVICE's context, invisible to the calling app) -- and the block does NOT
+#    lift when the load drains. A short disable/enable of the app INSTANCE clears
+#    it (verified live 2026-06-11 on fw 2.5.0.143; a hub reboot is NOT required).
+#    Back-to-back e2e runs are the normal cadence, so every run clears any block
+#    left by prior activity before its tests start. Routed via the WATCHDOG (a
+#    different app) so the toggle cannot race the server's own request handling.
+#    Failing to RE-ENABLE is a hard stop: tests against a disabled app would all
+#    red with a misleading signature (the watchdog stays alive for manual rescue).
+# ===========================================================================
+SERVER_APP_ID="${HUBITAT_APP_ID:-}"
+if [ -z "$SERVER_APP_ID" ]; then
+  echo "::warning::HUBITAT_APP_ID not set -- skipping the load-throttle bounce (this run stays exposed to a stale platform throttle from prior activity)."
+else
+  echo "Bouncing server app instance ${SERVER_APP_ID} (disable/enable via watchdog) to clear any platform load throttle..."
+  BOUNCE_OFF=$(jq -nc --arg id "$SERVER_APP_ID" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_set_app_disabled",arguments:{appId:$id,disable:true,confirm:true}}}')
+  BOUNCE_ON=$(jq -nc --arg id "$SERVER_APP_ID" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_set_app_disabled",arguments:{appId:$id,disable:false,confirm:true}}}')
+  OFF_TEXT=$(call_tool "$BOUNCE_OFF" || true)
+  if [ "$(ok_of "$OFF_TEXT")" != "true" ]; then
+    # Never confirmed disabled -> nothing to undo; the run proceeds merely unbounced.
+    echo "::warning::throttle-bounce disable did not confirm ($(err_of "$OFF_TEXT")) -- skipping the enable leg; this run stays exposed to a stale platform throttle."
+  else
+    sleep 3
+    ENABLED="false"
+    for ATTEMPT in 1 2 3 4 5; do
+      ON_TEXT=$(call_tool "$BOUNCE_ON" || true)
+      if [ "$(ok_of "$ON_TEXT")" = "true" ] && printf '%s' "$ON_TEXT" | grep -q '"disabled":false'; then
+        ENABLED="true"
+        break
+      fi
+      echo "re-enable attempt ${ATTEMPT}/5 not confirmed ($(err_of "$ON_TEXT")); retrying in 5s..."
+      sleep 5
+    done
+    if [ "$ENABLED" != "true" ]; then
+      echo "::error::Server app ${SERVER_APP_ID} was disabled for the load-throttle bounce and could NOT be verifiably re-enabled after 5 attempts. Re-enable it via the watchdog (hub_set_app_disabled appId=${SERVER_APP_ID} disable=false confirm=true) before re-running. Failing loudly instead of running every test against a disabled app."
+      exit 1
+    fi
+    echo "Load-throttle bounce complete: app ${SERVER_APP_ID} disable->enable verified."
+  fi
+fi
+
 echo "Full-repair deploy succeeded via watchdog: ${DEPLOYED_APPS} app(s) + their library bundle(s) live on the hub."
 echo "WATCHDOG_DEPLOY_OK apps=${DEPLOYED_APPS} libraries=${#INCLUDES[@]}"
