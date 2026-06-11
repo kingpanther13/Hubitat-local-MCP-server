@@ -36,6 +36,34 @@ mcp_call() {
     -d "$1"
 }
 
+# ==== TEMPORARY: one-shot test-hub reboot -- REVERT THIS BLOCK after the hub recovers ====
+# The hub's device-command pipeline wedged on 2026-06-11 (commands accepted, state never
+# changes; heavy ops 504). Fire hub_reboot through the normal destructive-ops gateway,
+# ride out the restart, and let the rest of this run validate against the fresh hub.
+echo "TEMPORARY: sending hub_reboot to the test hub..."
+REBOOT_RESP=$(curl -sS --max-time 60 -X POST "$MCP_URL" -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"hub_manage_destructive_ops","arguments":{"tool":"hub_reboot","args":{"confirm":true}}}}' || true)
+echo "reboot response head: $(printf '%s' "$REBOOT_RESP" | head -c 300 | tr '\n' ' ')"
+if printf '%s' "$REBOOT_RESP" | grep -qiE "SAFETY CHECK|BACKUP REQUIRED|Write tools are disabled"; then
+  echo "::error::hub_reboot was REFUSED by the destructive-ops gate -- see response above. Hub not rebooted."
+  exit 1
+fi
+echo "Waiting 60s for the hub to go down, then polling for recovery (up to ~8 min)..."
+sleep 60
+attempt=1
+until curl -sS --fail --max-time 20 -X POST "$MCP_URL" -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' \
+    | jq -e '.result.content[0].text' >/dev/null 2>&1; do
+  if [ "$attempt" -ge 32 ]; then
+    echo "::error::Test hub did not come back within ~8 min of the reboot. Investigate before re-running."
+    exit 1
+  fi
+  attempt=$((attempt + 1))
+  sleep 15
+done
+echo "Hub is back after reboot (poll attempt ${attempt}). Continuing setup."
+# ==== END TEMPORARY reboot block ====
+
 # Pull the toggle state from hub_get_info. The settings-visibility block on
 # lines 3026+ of hubitat-mcp-server.groovy exposes these fields without
 # requiring Hub Admin Read.
