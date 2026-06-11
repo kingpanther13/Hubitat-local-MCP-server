@@ -23,6 +23,7 @@ import support.PermissiveLog
 class WatchdogV2Spec extends Specification {
     HubitatAppScript script
     List<List<Object>> runInCalls = []     // captures (delaySeconds, handler[, opts]) of every runIn
+    Map atomicStateMap = [:]               // backs the script's atomicState (the single-flight latch)
 
     def setup() {
         File appFile = new File('e2e-deadman-watchdog-v2.groovy')
@@ -31,6 +32,10 @@ class WatchdogV2Spec extends Specification {
             api: Mock(AppExecutor) {
                 _ * getLog() >> new PermissiveLog()
                 _ * getSettings() >> [hubSecurityEnabled: false, debugLogging: false]
+                _ * getAtomicState() >> { atomicStateMap }
+                // Real wall-clock: the single-flight latch computes (now() - restoreInFlightAt);
+                // an unstubbed mock now() returns 0, making every latch age hugely negative.
+                _ * now() >> { System.currentTimeMillis() }
                 _ * runIn(*_) >> { args -> runInCalls << (args as List) }
             },
             userSettingValues: [hubSecurityEnabled: false, debugLogging: false],
@@ -192,8 +197,8 @@ class WatchdogV2Spec extends Specification {
         script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7',
                                           manifest: [app: [classId: '178', file: 'f'], libraries: []]] }
         script.metaClass.writeFlag = { Map fl -> true }
-        script.atomicState.restoreInFlightFor = '7'
-        script.atomicState.restoreInFlightAt = System.currentTimeMillis() - 30_000L
+        atomicStateMap.restoreInFlightFor = '7'
+        atomicStateMap.restoreInFlightAt = System.currentTimeMillis() - 30_000L
 
         when:
         script.checkDeadman()
@@ -210,8 +215,8 @@ class WatchdogV2Spec extends Specification {
         script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7',
                                           manifest: [app: [classId: '178', file: 'f'], libraries: []]] }
         script.metaClass.writeFlag = { Map fl -> true }
-        script.atomicState.restoreInFlightFor = '7'
-        script.atomicState.restoreInFlightAt = System.currentTimeMillis() - 700_000L   // > 10-min escape
+        atomicStateMap.restoreInFlightFor = '7'
+        atomicStateMap.restoreInFlightAt = System.currentTimeMillis() - 700_000L   // > 10-min escape
 
         when:
         script.checkDeadman()
@@ -232,7 +237,7 @@ class WatchdogV2Spec extends Specification {
         script.checkDeadman()
 
         then: 'a finished restore releases the latch for the next run'
-        script.atomicState.restoreInFlightFor == null
+        atomicStateMap.restoreInFlightFor == null
     }
 
     def "no marker is stamped when the flag has no canonicalMainSha or the restore fails (#scenario)"() {
