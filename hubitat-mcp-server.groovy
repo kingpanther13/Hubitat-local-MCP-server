@@ -1395,7 +1395,7 @@ def getGatewayConfig() {
                 hub_test_custom_rule: "simulate preview validate check automation custom dry run",
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
                 hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption",
-                hub_get_visual_rule: "visual rules builder VRB read list show inspect simple automation json definition when then else nodes graph"
+                hub_get_visual_rule: "visual rules builder VRB read list show inspect automation json definition when then else nodes graph"
             ]
         ],
         hub_manage_native_rules_and_apps: [
