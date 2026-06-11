@@ -313,6 +313,20 @@ class TestRunner:
         self.defer_native_deletes = os.environ.get("E2E_DEFER_NATIVE_DELETES") == "1"
         self.created_variable_names: list[str] = []
 
+        # Mid-run recovery for the platform's per-app load limiter. Once enough load
+        # accumulates in the platform's sliding window (back-to-back full runs get
+        # there), the hub throws LimitExceededException in the DEVICE's context on
+        # every device-method dispatch from the server app -- commands false-succeed
+        # and produce no event, and the block stays until the app instance is
+        # bounced (disable/enable; verified live, no reboot needed). The watchdog
+        # endpoint can do that bounce while the server stays the app under test, so
+        # the dispatch-dependent tests retry ONCE after a bounce instead of failing
+        # a healthy build on cadence. Every bounce is printed loudly and counted in
+        # the summary -- recovery is never silent.
+        self.watchdog_url = os.environ.get("WATCHDOG_URL", "")
+        self.server_app_id = os.environ.get("HUBITAT_APP_ID", "")
+        self.throttle_bounces = 0
+
         # Cached helpers
         self._first_device_id: str | None = None
         self._test_start_time: str | None = None  # ISO for log check
@@ -328,6 +342,57 @@ class TestRunner:
                 raise RuntimeError("No devices available on hub -- cannot run tests")
             self._first_device_id = str(devices[0]["id"])
         return self._first_device_id
+
+    def _watchdog_set_app_disabled(self, disable: bool) -> bool:
+        """One leg of the throttle bounce via the watchdog endpoint. True only on a
+        verified flag read-back (the tool re-reads /installedapp/json after the write)."""
+        try:
+            resp = requests.post(self.watchdog_url, json={
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "hub_set_app_disabled",
+                           "arguments": {"appId": self.server_app_id,
+                                         "disable": disable, "confirm": True}},
+            }, timeout=30)
+            text = resp.json().get("result", {}).get("content", [{}])[0].get("text", "")
+            parsed = json.loads(text) if text else {}
+            return parsed.get("success") is True and parsed.get("disabled") is disable
+        except Exception as exc:
+            print(f"    [THROTTLE] watchdog bounce leg (disable={disable}) failed: {exc}")
+            return False
+
+    def _clear_load_throttle(self, reason: str) -> bool:
+        """Bounce (disable/enable) the server app via the WATCHDOG to clear the
+        platform's per-app load-limiter block (LimitExceededException -- device
+        commands false-succeed with no event until the app instance bounces).
+        Returns True when the bounce fully verified, so the caller can retry its
+        dispatch exactly once. LOUD on purpose: a recovery that happened must be
+        visible in the run log and the summary."""
+        if not (self.watchdog_url and self.server_app_id):
+            print(f"    [THROTTLE] suspected load-limiter block ({reason}) but "
+                  "WATCHDOG_URL/HUBITAT_APP_ID not set -- cannot bounce, failing as-is.")
+            return False
+        print(f"    [THROTTLE] suspected platform load-limiter block: {reason}")
+        print(f"    [THROTTLE] bouncing server app {self.server_app_id} via the watchdog (disable/enable)...")
+        if not self._watchdog_set_app_disabled(True):
+            print("    [THROTTLE] disable leg did not verify -- not retrying the enable; failing as-is.")
+            return False
+        time.sleep(3)
+        enabled = False
+        for _ in range(5):
+            if self._watchdog_set_app_disabled(False):
+                enabled = True
+                break
+            time.sleep(5)
+        if not enabled:
+            # Never leave the app disabled: that converts one flaky test into a
+            # whole-suite wipeout. Surface and bail hard.
+            raise RuntimeError(
+                f"[THROTTLE] server app {self.server_app_id} was disabled for a bounce and could "
+                "not be re-enabled -- re-enable via the watchdog (hub_set_app_disabled disable=false) NOW.")
+        time.sleep(3)
+        self.throttle_bounces += 1
+        print(f"    [THROTTLE] bounce #{self.throttle_bounces} complete -- retrying the blocked dispatch once.")
+        return True
 
     def get_test_switch_id(self) -> str:
         """Get or create the persistent BAT_E2E_ virtual switch scaffold that rule
@@ -802,6 +867,12 @@ class TestRunner:
             print(f"    DIAG[{dev_id}] " + " | ".join(parts))
             return "full diagnostics printed above (DIAG line in the test output)"
 
+        def _drive(value: str) -> Any:
+            cmd = self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": value})
+            assert not (isinstance(cmd, dict) and cmd.get("success") is False), \
+                f"'{value}' command reported failure: {cmd}"
+            return _poll_switch(value)
+
         try:
             cur = self.client.call_tool("hub_get_device_attribute", {
                 "deviceId": dev_id, "attribute": "switch",
@@ -811,19 +882,21 @@ class TestRunner:
             # covers that edge identically to a real "off" start.
             first, second = ("off", "on") if start == "on" else ("on", "off")
 
-            cmd = self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": first})
-            assert not (isinstance(cmd, dict) and cmd.get("success") is False), \
-                f"'{first}' command reported failure: {cmd}"
-            result = _poll_switch(first)
+            result = _drive(first)
+            # A command that polls out with no state change on a device this test just
+            # created is the load-limiter block signature -- bounce + retry once.
+            if (result.get("timedOut") is not False or result.get("finalValue") != first) \
+                    and self._clear_load_throttle(f"'{first}' on fresh device {dev_id} never landed: {result}"):
+                result = _drive(first)
             assert result.get("timedOut") is False and result.get("finalValue") == first, \
                 f"Expected switch={first} (from {start!r}) within the poll budget, " \
                 f"got: {result}\n    DIAG {_switch_diagnostics()}"
 
             # Toggle back the other way
-            cmd = self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": second})
-            assert not (isinstance(cmd, dict) and cmd.get("success") is False), \
-                f"'{second}' command reported failure: {cmd}"
-            result = _poll_switch(second)
+            result = _drive(second)
+            if (result.get("timedOut") is not False or result.get("finalValue") != second) \
+                    and self._clear_load_throttle(f"'{second}' on fresh device {dev_id} never landed: {result}"):
+                result = _drive(second)
             assert result.get("timedOut") is False and result.get("finalValue") == second, \
                 f"Expected switch={second} (from {first!r}) within the poll budget, " \
                 f"got: {result}\n    DIAG {_switch_diagnostics()}"
@@ -3606,16 +3679,25 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         """Happy path: device already in expected state -> polledCount=1, success=true."""
         # Use the shared virtual switch; get_or_create ensures it exists in 'off' state.
         dev_id = self.get_test_switch_id()
-        # Drive it to 'off' first so we know its state.
-        self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
-        time.sleep(0.3)
 
-        result = self.client.call_tool("hub_get_device_attribute", {
-            "deviceId": dev_id,
-            "attribute": "switch",
-            "expectedValue": "off",
-            "timeoutMs": 5000,
-        })
+        def _drive_off_and_poll() -> Any:
+            # Drive it to 'off' first so we know its state.
+            self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
+            time.sleep(0.3)
+            return self.client.call_tool("hub_get_device_attribute", {
+                "deviceId": dev_id,
+                "attribute": "switch",
+                "expectedValue": "off",
+                "timeoutMs": 5000,
+            })
+
+        result = _drive_off_and_poll()
+        # An 'off' that produces NO state change while the poll keeps reading the old
+        # value is the load-limiter block signature (the command false-succeeds and
+        # the device never dispatches). Bounce the app via the watchdog and retry once.
+        if result.get("success") is not True and self._clear_load_throttle(
+                f"'off' on device {dev_id} never landed: {result}"):
+            result = _drive_off_and_poll()
         assert result.get("success") is True, f"Expected success=true, got: {result}"
         assert result.get("timedOut") is False, f"Expected timedOut=false, got: {result}"
         assert result.get("polledCount", 0) >= 1, f"Expected polledCount>=1, got: {result}"
@@ -3624,20 +3706,27 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     def test_poll_timeout(self) -> None:
         """Timeout path: value won't match -> timedOut=true, elapsedMs approx timeoutMs."""
         dev_id = self.get_test_switch_id()
-        # Ensure switch is 'off' so 'on' won't match.
-        self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
-        time.sleep(0.3)
-
         import time as _time
-        t0 = _time.monotonic()
-        result = self.client.call_tool("hub_get_device_attribute", {
-            "deviceId": dev_id,
-            "attribute": "switch",
-            "expectedValue": "on",
-            "timeoutMs": 2000,
-        })
-        elapsed_wall = (_time.monotonic() - t0) * 1000
 
+        def _drive_off_and_poll_for_on() -> tuple[Any, float]:
+            # Ensure switch is 'off' so 'on' won't match.
+            self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
+            time.sleep(0.3)
+            t0 = _time.monotonic()
+            res = self.client.call_tool("hub_get_device_attribute", {
+                "deviceId": dev_id,
+                "attribute": "switch",
+                "expectedValue": "on",
+                "timeoutMs": 2000,
+            })
+            return res, (_time.monotonic() - t0) * 1000
+
+        result, elapsed_wall = _drive_off_and_poll_for_on()
+        # success=true here means the switch read 'on' AFTER an 'off' was sent -- the
+        # 'off' never dispatched (load-limiter block leaves it stuck in the old state).
+        if result.get("success") is True and self._clear_load_throttle(
+                f"'off' on device {dev_id} never landed (poll matched 'on'): {result}"):
+            result, elapsed_wall = _drive_off_and_poll_for_on()
         assert result.get("success") is False, f"Expected success=false, got: {result}"
         assert result.get("timedOut") is True, f"Expected timedOut=true, got: {result}"
         # Wall clock should reflect roughly the timeout (within 1 second of variance)
@@ -4145,6 +4234,12 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         print(f"  Total: {total_pass}/{total_all} passed, "
               f"{total_fail} failed, {total_skip} skipped  "
               f"({total_dur:.1f}s)")
+
+        if self.throttle_bounces:
+            print(f"\n  [THROTTLE] {self.throttle_bounces} watchdog bounce(s) of app "
+                  f"{self.server_app_id or '?'} were needed mid-run -- the platform's per-app "
+                  "load limiter tripped under the accumulated back-to-back load. The retried "
+                  "dispatches passed; this is a capacity signal, not a product failure.")
 
         # Slowest tests (diagnostic -- surface optimization targets; the suite is the biggest e2e cost).
         slow = sorted(self.results, key=lambda r: r.get("duration", 0.0), reverse=True)[:15]
