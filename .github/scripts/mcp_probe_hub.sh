@@ -81,6 +81,8 @@ section "hub_list_apps (ALL running app instances: RM/Basic/Button/VRB/Notifier/
 section "hub_list_variables (hub + rule-engine)" "$MCP_URL" "$(gw_rpc hub_manage_variables hub_list_variables '{}')"
 section "hub_list_files (File Manager)" "$MCP_URL" "$(gw_rpc hub_read_files hub_list_files '{}')"
 section "location events (lowMemory / systemStart / mode / HSM, last 24h)" "$MCP_URL" "$(tool_rpc hub_list_device_events '{"limit":50}')"
+section "hub system logs: ERRORS, last 6h" "$MCP_URL" "$(gw_rpc hub_manage_logs hub_get_logs '{"level":"error","since":"6h","limit":60}')"
+section "hub system logs: WARNINGS, last 2h" "$MCP_URL" "$(gw_rpc hub_manage_logs hub_get_logs '{"level":"warn","since":"2h","limit":40}')"
 
 echo "######## BAT_E2E_ device deep-dive (events + subscribers) ########"
 BAT_IDS=$(printf '%s' "$ALL_DEVICES" | jq -r '.[] | select((.label // .name // "") | contains("BAT_E2E_")) | "\(.id)\t\(.label // .name)"' 2>/dev/null)
@@ -91,21 +93,77 @@ while IFS=$'\t' read -r did dlabel; do
   section "apps subscribed to ${dlabel} (${did})" "$MCP_URL" "$(gw_rpc hub_read_apps_code hub_list_device_dependents "{\"deviceId\":\"${did}\"}")"
 done <<< "$BAT_IDS"
 
-# LIVE WEDGE CHECK -- the probe's one deliberate write: command the persistent BAT
-# scaffold and see whether the event processes RIGHT NOW, outside any e2e run.
-echo "######## LIVE wedge check (commands the BAT scaffold only) ########"
+# LIVE WEDGE MATRIX -- the probe's deliberate writes, all against sacrificial test
+# devices. Four differential checks split the failure domain conclusively:
+#   A) the persistent BAT scaffold (an MCP-app child device created AFTER the last
+#      boot) -- the device the suite keeps failing on;
+#   B) an OLD MCP-app child device (created in an earlier era, survived many app
+#      source swaps) -- if A fails and B works, device CREATION is what broke;
+#   C) a NON-MCP-child device (the _CI_ Virtual Thermostat) -- if A+B fail and C
+#      works, the wedge is scoped to the MCP app's children; if C also fails the
+#      hub's whole device-event subsystem is stalled;
+#   D) a FRESH device created right here -- replicates exactly what the failing
+#      e2e test does, then deletes it.
+echo "######## LIVE wedge matrix (sacrificial test devices only) ########"
+
+wedge_check_switch() { # $1 check label, $2 device id
+  local label="$1" did="$2" cur val target
+  cur=$(mcp_text "$MCP_URL" "$(tool_rpc hub_get_device_attribute "{\"deviceId\":\"${did}\",\"attribute\":\"switch\"}")")
+  echo "[$label] device ${did} current state: ${cur}"
+  val=$(printf '%s' "$cur" | jq -r '.value // empty' 2>/dev/null)
+  if [ "$val" = "on" ]; then target="off"; else target="on"; fi
+  curl -sS --max-time 30 -X POST "$MCP_URL" -H "Content-Type: application/json" \
+    --data-binary "$(tool_rpc hub_call_device_command "{\"deviceId\":\"${did}\",\"command\":\"${target}\"}")" >/dev/null
+  section "[$label] poll device ${did} -> ${target} (timedOut=true = wedged)" "$MCP_URL" \
+    "$(tool_rpc hub_get_device_attribute "{\"deviceId\":\"${did}\",\"attribute\":\"switch\",\"expectedValue\":\"${target}\",\"timeoutMs\":4000}")"
+}
+
+# A) the persistent BAT scaffold
 SCAFFOLD_ID=$(printf '%s' "$ALL_DEVICES" | jq -r '.[] | select((.label // .name // "") | endswith("Action_Switch")) | .id' 2>/dev/null | head -1)
 if [ -n "$SCAFFOLD_ID" ]; then
-  CUR=$(mcp_text "$MCP_URL" "$(tool_rpc hub_get_device_attribute "{\"deviceId\":\"${SCAFFOLD_ID}\",\"attribute\":\"switch\"}")")
-  echo "scaffold ${SCAFFOLD_ID} current state: ${CUR}"
-  VAL=$(printf '%s' "$CUR" | jq -r '.value // empty' 2>/dev/null)
-  if [ "$VAL" = "on" ]; then TARGET="off"; else TARGET="on"; fi
-  curl -sS --max-time 30 -X POST "$MCP_URL" -H "Content-Type: application/json" \
-    --data-binary "$(tool_rpc hub_call_device_command "{\"deviceId\":\"${SCAFFOLD_ID}\",\"command\":\"${TARGET}\"}")" >/dev/null
-  section "poll scaffold -> ${TARGET} (timedOut=true here = the wedge is live right now)" "$MCP_URL" \
-    "$(tool_rpc hub_get_device_attribute "{\"deviceId\":\"${SCAFFOLD_ID}\",\"attribute\":\"switch\",\"expectedValue\":\"${TARGET}\",\"timeoutMs\":4000}")"
+  wedge_check_switch "A: BAT scaffold (new MCP child)" "$SCAFFOLD_ID"
 else
-  echo "(no Action_Switch scaffold found -- skipping live check)"
+  echo "(A: no Action_Switch scaffold found -- skipped)"
+fi
+
+# B) an OLD MCP-managed child switch from an earlier test era
+OLD_MCP_ID=$(printf '%s' "$ALL_DEVICES" | jq -r '.[] | select(.mcpManaged == true) | select((.label // "") | test("Test Plug|_CI_Virtual Switch")) | .id' 2>/dev/null | head -1)
+if [ -n "$OLD_MCP_ID" ]; then
+  wedge_check_switch "B: old MCP child" "$OLD_MCP_ID"
+else
+  echo "(B: no old MCP-managed switch found -- skipped)"
+fi
+
+# C) a NON-MCP-child device: the _CI_ Virtual Thermostat (system driver, different
+# parent). Toggle its heating setpoint between 68 and 69 and poll for the change.
+THERMO_ID=$(printf '%s' "$ALL_DEVICES" | jq -r '.[] | select((.label // "") == "_CI_Virtual Thermostat") | .id' 2>/dev/null | head -1)
+if [ -n "$THERMO_ID" ]; then
+  CUR_SP=$(mcp_text "$MCP_URL" "$(tool_rpc hub_get_device_attribute "{\"deviceId\":\"${THERMO_ID}\",\"attribute\":\"heatingSetpoint\"}")")
+  echo "[C: non-MCP thermostat] device ${THERMO_ID} current heatingSetpoint: ${CUR_SP}"
+  SP_VAL=$(printf '%s' "$CUR_SP" | jq -r '.value // empty' 2>/dev/null | cut -d. -f1)
+  if [ "$SP_VAL" = "69" ]; then SP_TARGET="68"; else SP_TARGET="69"; fi
+  curl -sS --max-time 30 -X POST "$MCP_URL" -H "Content-Type: application/json" \
+    --data-binary "$(tool_rpc hub_call_device_command "{\"deviceId\":\"${THERMO_ID}\",\"command\":\"setHeatingSetpoint\",\"parameters\":[\"${SP_TARGET}\"]}")" >/dev/null
+  section "[C: non-MCP thermostat] poll heatingSetpoint -> ${SP_TARGET} (timedOut=true = wedged)" "$MCP_URL" \
+    "$(tool_rpc hub_get_device_attribute "{\"deviceId\":\"${THERMO_ID}\",\"attribute\":\"heatingSetpoint\",\"expectedValues\":[\"${SP_TARGET}\",\"${SP_TARGET}.0\"],\"timeoutMs\":4000}")"
+else
+  echo "(C: no _CI_Virtual Thermostat found -- skipped)"
+fi
+
+# D) a fresh MCP child created right now (exactly what the failing test does), then deleted.
+FRESH=$(mcp_text "$MCP_URL" "$(tool_rpc hub_manage_virtual_device '{"action":"create","deviceType":"Virtual Switch","deviceLabel":"BAT_E2E_ProbeFresh","confirm":true}')")
+FRESH_ID=$(printf '%s' "$FRESH" | jq -r '.device.id // empty' 2>/dev/null)
+FRESH_DNI=$(printf '%s' "$FRESH" | jq -r '.device.deviceNetworkId // empty' 2>/dev/null)
+if [ -n "$FRESH_ID" ]; then
+  echo "[D: fresh MCP child] created device ${FRESH_ID} (DNI ${FRESH_DNI})"
+  wedge_check_switch "D: fresh MCP child" "$FRESH_ID"
+  if [ -n "$FRESH_DNI" ]; then
+    curl -sS --max-time 30 -X POST "$MCP_URL" -H "Content-Type: application/json" \
+      --data-binary "$(tool_rpc hub_manage_virtual_device "{\"action\":\"delete\",\"deviceNetworkId\":\"${FRESH_DNI}\",\"confirm\":true}")" >/dev/null
+    echo "[D] fresh device deleted"
+  fi
+else
+  echo "(D: fresh-device create did not return an id: $(printf '%s' "$FRESH" | head -c 300))"
 fi
 
 echo "######## Watchdog flag / marker files ########"
