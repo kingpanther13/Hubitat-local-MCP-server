@@ -725,27 +725,32 @@ class TestRunner:
 
         # Event processing can lag on a busy hub, so block-poll the attribute instead
         # of the old fixed sleep + single read (which flaked as "Expected switch=on,
-        # got None").
+        # got None"). Each poll stays WELL under the ~10s cloud-relay budget (a single
+        # 10s block-poll holds the request past the relay timeout and 504s); patience
+        # comes from retrying the short polls.
+        def _poll_switch(expected: str) -> Any:
+            result: Any = {}
+            for _ in range(3):
+                result = self.client.call_tool("hub_get_device_attribute", {
+                    "deviceId": dev_id,
+                    "attribute": "switch",
+                    "expectedValue": expected,
+                    "timeoutMs": 4000,
+                })
+                if isinstance(result, dict) and result.get("timedOut") is False:
+                    return result
+            return result
+
         self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "on"})
-        result = self.client.call_tool("hub_get_device_attribute", {
-            "deviceId": dev_id,
-            "attribute": "switch",
-            "expectedValue": "on",
-            "timeoutMs": 10000,
-        })
+        result = _poll_switch("on")
         assert result.get("timedOut") is False and result.get("finalValue") == "on", \
-            f"Expected switch=on within 10s, got: {result}"
+            f"Expected switch=on within the poll budget, got: {result}"
 
         # Turn off
         self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
-        result = self.client.call_tool("hub_get_device_attribute", {
-            "deviceId": dev_id,
-            "attribute": "switch",
-            "expectedValue": "off",
-            "timeoutMs": 10000,
-        })
+        result = _poll_switch("off")
         assert result.get("timedOut") is False and result.get("finalValue") == "off", \
-            f"Expected switch=off within 10s, got: {result}"
+            f"Expected switch=off within the poll budget, got: {result}"
 
     @test("virtual_device_lifecycle")
     def test_list_virtual_devices(self) -> None:
