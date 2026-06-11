@@ -330,54 +330,47 @@ class TestRunner:
         return self._first_device_id
 
     def get_test_switch_id(self) -> str:
-        """Get or create a BAT_E2E_ virtual switch for tests needing a commandable device.
+        """Get or create the persistent BAT_E2E_ virtual switch scaffold that rule
+        fixtures reference in triggers/conditions/actions and the poll tests read
+        state from. Tests NEVER touch real devices -- only virtual devices we create.
 
-        Tests NEVER send commands to real devices — only to virtual devices we create.
-        """
-        if hasattr(self, "_test_switch_id") and self._test_switch_id:
+        Command ROUND-TRIP assertions (prove an event actually processed) do NOT
+        belong on this device: it is shared across the whole suite, so its state
+        history is unpredictable, and test_command_virtual_switch provisions its
+        own throwaway instead."""
+        if getattr(self, "_test_switch_id", None):
             return self._test_switch_id
 
-        # Check if one already exists from a previous test group. A REUSED switch must
-        # prove it still processes events before any test depends on it: every run's
-        # rule fixtures subscribe to this device and are then FORCE-deleted (which
-        # bypasses subscription teardown), and the device has been seen wedged across
-        # runs -- commands accepted, no event, no state change -- until a reboot
-        # rebuilt the subscription table. A wedged scaffolding switch is useless AND
-        # poisons every device-command assertion, so recreate it instead of reusing.
+        # Check if one already exists from a previous test group
         try:
             vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
                 if f"{PREFIX}Action_Switch" in lbl:
-                    found_id = str(d["id"])
-                    if self._probe_switch_responsive(found_id):
-                        self._test_switch_id = found_id
-                        return self._test_switch_id
-                    print(f"  [WARN] scaffolding switch {found_id} is unresponsive "
-                          f"(command accepted, state never changed) -- deleting and recreating it")
-                    dni = str(d.get("deviceNetworkId", d.get("dni", "")))
-                    if dni:
-                        self.client.call_tool("hub_manage_virtual_device", {
-                            "action": "delete", "deviceNetworkId": dni, "confirm": True,
-                        })
-                    break
+                    self._test_switch_id = str(d["id"])
+                    return self._test_switch_id
         except Exception:
             pass
 
-        # Create one
+        # Create one. The scaffold is PERSISTENT, not a fixture-under-test:
+        # deliberately NOT tracked in created_device_dnis, so teardown leaves it on
+        # the hub for the next run to find-and-reuse -- skipping a create+delete
+        # every run. Devices that ARE under test still track + delete themselves.
+        self._test_switch_id = self._create_virtual_switch_device(f"{PREFIX}Action_Switch")
+        assert self._test_switch_id, "Failed to create test switch"
+        return self._test_switch_id
+
+    def _create_virtual_switch_device(self, label: str) -> str:
+        """Create a Virtual Switch and return its device id ('' on failure)."""
         result = self.client.call_tool("hub_manage_virtual_device", {
             "action": "create",
             "deviceType": "Virtual Switch",
-            "deviceLabel": f"{PREFIX}Action_Switch",
+            "deviceLabel": label,
             "confirm": True,
         })
-        # The test switch is PERSISTENT scaffolding, not a fixture-under-test: rule/trigger tests merely
-        # reference it. Deliberately NOT tracked in created_device_dnis, so teardown leaves it on the hub
-        # for the next run to find-and-reuse (the existing-device lookup at the top of this method) --
-        # skipping a create+delete of the switch every run. Devices that ARE under test (test_create_*)
-        # still track + delete themselves. One inert virtual switch persists on the test hub; harmless.
-        dev_id = result.get("id", result.get("deviceId", ""))
+        dev_obj = result.get("device") if isinstance(result, dict) else None
+        dev_id = (dev_obj or {}).get("id") or result.get("id", result.get("deviceId", ""))
 
         # Response may not include ID directly — look it up
         if not dev_id:
@@ -386,35 +379,10 @@ class TestRunner:
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
-                if f"{PREFIX}Action_Switch" in lbl:
+                if label in lbl:
                     dev_id = str(d["id"])
                     break
-
-        self._test_switch_id = str(dev_id) if dev_id else ""
-        assert self._test_switch_id, "Failed to create test switch"
-        return self._test_switch_id
-
-    def _probe_switch_responsive(self, dev_id: str) -> bool:
-        """One command round-trip proving the device still PROCESSES events. The
-        block-poll matches on currentValue, so the probe must command the OPPOSITE
-        of the current state -- polling for the state the device is already in
-        would pass without any event processing at all. False on any error: an
-        unprobeable device is as useless to the tests as a wedged one."""
-        try:
-            cur = self.client.call_tool("hub_get_device_attribute", {
-                "deviceId": dev_id, "attribute": "switch",
-            })
-            target = "off" if (cur.get("value") if isinstance(cur, dict) else None) == "on" else "on"
-            self.client.call_tool("hub_call_device_command", {
-                "deviceId": dev_id, "command": target,
-            })
-            res = self.client.call_tool("hub_get_device_attribute", {
-                "deviceId": dev_id, "attribute": "switch",
-                "expectedValue": target, "timeoutMs": 4000,
-            })
-            return isinstance(res, dict) and res.get("timedOut") is False
-        except Exception:
-            return False
+        return str(dev_id) if dev_id else ""
 
     def get_test_temperature_ids(self) -> tuple[str, str]:
         """Get or create two BAT_E2E_ virtual temperature sensors for device-relative tests.
@@ -755,11 +723,28 @@ class TestRunner:
 
     @test("virtual_device_lifecycle")
     def test_command_virtual_switch(self) -> None:
-        # Command round-trips don't need the just-created device (creation is covered by
-        # test_create_virtual_switch and its state by test_list/delete): use the persistent
-        # scaffolding switch, which has a real prior state -- a FRESH Virtual Switch is born
-        # with switch=null, which is exactly the edge that made this test flake.
-        dev_id = self.get_test_switch_id()
+        # Command round-trips get their OWN throwaway device, created here and
+        # deleted in the finally -- NOT the shared scaffold, which the rest of the
+        # suite references (rule fixtures subscribe to it; poll tests read it) and
+        # whose history is therefore unpredictable. The create/delete cost is
+        # negligible next to a cross-run interference hunt. State-aware on purpose:
+        # read the CURRENT state first, toggle to the opposite, then toggle back, so
+        # each leg observes an actual state CHANGE -- polling for a state the device
+        # is already in would pass without any event processing at all.
+        dev_id = self._create_virtual_switch_device(f"{PREFIX}CmdRoundtrip")
+        assert dev_id, "Failed to create the command round-trip throwaway switch"
+        # Capture the DNI for the inline delete below; also track it so the cleanup
+        # sweep reaps the device if this test dies before its finally.
+        cmd_dni = ""
+        try:
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}CmdRoundtrip"})
+            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                cmd_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                if cmd_dni:
+                    self.created_device_dnis.append(cmd_dni)
+                    break
+        except Exception:
+            pass
 
         # Event processing can lag on a busy hub, so block-poll the attribute instead
         # of the old fixed sleep + single read (which flaked as "Expected switch=on,
@@ -781,12 +766,12 @@ class TestRunner:
 
         def _switch_diagnostics() -> str:
             # On a poll timeout the bare result can't distinguish "the command never
-            # processed" (a wedged hub) from "something instantly reverted it" (a rule
-            # stranded by a prior run, still subscribed to this persistent device).
-            # The event history shows which one happened -- a revert leaves an on->off
-            # pair with the producing app in the description -- and the dependents
-            # list names any app still subscribed. Best-effort: diagnostics must
-            # never mask the original failure.
+            # processed" (a wedged hub -- no event at all on a device this test just
+            # created) from "something instantly reverted it" (an app unexpectedly
+            # subscribed to it). The event history shows which one happened -- a
+            # revert leaves an on->off pair with the producing app in the description
+            # -- and the dependents list names any subscriber. Best-effort:
+            # diagnostics must never mask the original failure.
             parts = []
             try:
                 ev = self.client.call_tool("hub_list_device_events", {
@@ -811,20 +796,41 @@ class TestRunner:
             print(f"    DIAG[{dev_id}] " + " | ".join(parts))
             return "full diagnostics printed above (DIAG line in the test output)"
 
-        cmd = self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "on"})
-        assert not (isinstance(cmd, dict) and cmd.get("success") is False), \
-            f"'on' command reported failure: {cmd}"
-        result = _poll_switch("on")
-        assert result.get("timedOut") is False and result.get("finalValue") == "on", \
-            f"Expected switch=on within the poll budget, got: {result}\n    DIAG {_switch_diagnostics()}"
+        try:
+            cur = self.client.call_tool("hub_get_device_attribute", {
+                "deviceId": dev_id, "attribute": "switch",
+            })
+            start = cur.get("value") if isinstance(cur, dict) else None
+            # A fresh Virtual Switch is born with switch=null; toggling to "on" first
+            # covers that edge identically to a real "off" start.
+            first, second = ("off", "on") if start == "on" else ("on", "off")
 
-        # Turn off
-        cmd = self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
-        assert not (isinstance(cmd, dict) and cmd.get("success") is False), \
-            f"'off' command reported failure: {cmd}"
-        result = _poll_switch("off")
-        assert result.get("timedOut") is False and result.get("finalValue") == "off", \
-            f"Expected switch=off within the poll budget, got: {result}\n    DIAG {_switch_diagnostics()}"
+            cmd = self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": first})
+            assert not (isinstance(cmd, dict) and cmd.get("success") is False), \
+                f"'{first}' command reported failure: {cmd}"
+            result = _poll_switch(first)
+            assert result.get("timedOut") is False and result.get("finalValue") == first, \
+                f"Expected switch={first} (from {start!r}) within the poll budget, " \
+                f"got: {result}\n    DIAG {_switch_diagnostics()}"
+
+            # Toggle back the other way
+            cmd = self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": second})
+            assert not (isinstance(cmd, dict) and cmd.get("success") is False), \
+                f"'{second}' command reported failure: {cmd}"
+            result = _poll_switch(second)
+            assert result.get("timedOut") is False and result.get("finalValue") == second, \
+                f"Expected switch={second} (from {first!r}) within the poll budget, " \
+                f"got: {result}\n    DIAG {_switch_diagnostics()}"
+        finally:
+            # Best-effort inline delete (the tracked DNI + cleanup sweep backstop a
+            # miss); delete-contract assertions live in test_delete_virtual_switch.
+            if cmd_dni:
+                try:
+                    self.client.call_tool("hub_manage_virtual_device", {
+                        "action": "delete", "deviceNetworkId": cmd_dni, "confirm": True,
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] could not delete the command round-trip switch ({cmd_dni}): {exc}")
 
     @test("virtual_device_lifecycle")
     def test_list_virtual_devices(self) -> None:
