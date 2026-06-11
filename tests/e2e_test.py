@@ -767,7 +767,11 @@ class TestRunner:
                 parts.append(f"apps using this device: {json.dumps(deps)[:800]}")
             except Exception as exc:
                 parts.append(f"dependents fetch failed: {exc}")
-            return " | ".join(parts)
+            # _run_one truncates failure messages to 200 chars for the summary table,
+            # which clipped this diagnosis mid-first-event when it mattered. Print the
+            # full blob to the run log here; the assert carries only a pointer.
+            print(f"    DIAG[{dev_id}] " + " | ".join(parts))
+            return "full diagnostics printed above (DIAG line in the test output)"
 
         cmd = self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "on"})
         assert not (isinstance(cmd, dict) and cmd.get("success") is False), \
@@ -4215,20 +4219,33 @@ def main() -> None:
 
     if args.cleanup_only:
         # The disarm step fires the watchdog's restore-to-main asynchronously, so this
-        # step usually starts while the hub is recompiling the ~1.8MB main app -- a
-        # window where every MCP call 504s through the cloud relay. Sweeping into that
-        # window silently disables most cleanup layers (they are warn-only), so wait
-        # for the server to answer a cheap read before sweeping. On exhaustion fall
-        # through anyway: the fail-closed verify below still decides the outcome.
-        print("Waiting for the MCP server to answer (the async restore-to-main recompile 504s every call)...")
-        for attempt in range(1, 37):
-            try:
-                runner.client.call_tool("hub_get_info", {})
-                print(f"  Server is responsive (attempt {attempt}).")
-                break
-            except Exception:
-                if attempt == 36:
-                    print("  [WARN] server still not answering after ~6 min; sweeping anyway.")
+        # step races a ~3-5 min window where the hub recompiles the restored main app
+        # and every MCP call 504s through the cloud relay. A single liveness probe is
+        # not enough -- the recompile opens at an unpredictable point and can land
+        # MID-sweep (seen live: probe answered on attempt 3, sweeps still 504ed three
+        # minutes later). Gate on restore COMPLETION instead: the watchdog stamps the
+        # canonical-main SHA marker only after its restore verifies, so marker ==
+        # MAIN_SHA means the recompile is behind us. Each poll rides through the 504s;
+        # on budget exhaustion (or a failed restore, which leaves the marker cleared)
+        # sweep anyway -- the fail-closed verify below still decides the outcome.
+        main_sha = os.environ.get("MAIN_SHA", "")
+        if main_sha:
+            print("Waiting for the watchdog's restore-to-main to complete (canonical-main marker)...")
+            for attempt in range(1, 49):
+                try:
+                    marker = runner.client.call_tool("hub_manage_files", {
+                        "tool": "hub_read_file",
+                        "args": {"fileName": "mcp-main-deployed-sha.txt"},
+                    })
+                    content = (marker.get("content") or "").strip() if isinstance(marker, dict) else ""
+                    if content == main_sha:
+                        print(f"  Restore complete: marker matches main SHA (attempt {attempt}).")
+                        break
+                except Exception:
+                    pass
+                if attempt == 48:
+                    print("  [WARN] restore-complete marker never matched after ~8 min "
+                          "(failed restore, or a slow recompile); sweeping anyway.")
                 else:
                     time.sleep(10)
         runner.cleanup()
