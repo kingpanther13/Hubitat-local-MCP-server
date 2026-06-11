@@ -337,15 +337,31 @@ class TestRunner:
         if hasattr(self, "_test_switch_id") and self._test_switch_id:
             return self._test_switch_id
 
-        # Check if one already exists from a previous test group
+        # Check if one already exists from a previous test group. A REUSED switch must
+        # prove it still processes events before any test depends on it: every run's
+        # rule fixtures subscribe to this device and are then FORCE-deleted (which
+        # bypasses subscription teardown), and the device has been seen wedged across
+        # runs -- commands accepted, no event, no state change -- until a reboot
+        # rebuilt the subscription table. A wedged scaffolding switch is useless AND
+        # poisons every device-command assertion, so recreate it instead of reusing.
         try:
             vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
                 if f"{PREFIX}Action_Switch" in lbl:
-                    self._test_switch_id = str(d["id"])
-                    return self._test_switch_id
+                    found_id = str(d["id"])
+                    if self._probe_switch_responsive(found_id):
+                        self._test_switch_id = found_id
+                        return self._test_switch_id
+                    print(f"  [WARN] scaffolding switch {found_id} is unresponsive "
+                          f"(command accepted, state never changed) -- deleting and recreating it")
+                    dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                    if dni:
+                        self.client.call_tool("hub_manage_virtual_device", {
+                            "action": "delete", "deviceNetworkId": dni, "confirm": True,
+                        })
+                    break
         except Exception:
             pass
 
@@ -377,6 +393,28 @@ class TestRunner:
         self._test_switch_id = str(dev_id) if dev_id else ""
         assert self._test_switch_id, "Failed to create test switch"
         return self._test_switch_id
+
+    def _probe_switch_responsive(self, dev_id: str) -> bool:
+        """One command round-trip proving the device still PROCESSES events. The
+        block-poll matches on currentValue, so the probe must command the OPPOSITE
+        of the current state -- polling for the state the device is already in
+        would pass without any event processing at all. False on any error: an
+        unprobeable device is as useless to the tests as a wedged one."""
+        try:
+            cur = self.client.call_tool("hub_get_device_attribute", {
+                "deviceId": dev_id, "attribute": "switch",
+            })
+            target = "off" if (cur.get("value") if isinstance(cur, dict) else None) == "on" else "on"
+            self.client.call_tool("hub_call_device_command", {
+                "deviceId": dev_id, "command": target,
+            })
+            res = self.client.call_tool("hub_get_device_attribute", {
+                "deviceId": dev_id, "attribute": "switch",
+                "expectedValue": target, "timeoutMs": 4000,
+            })
+            return isinstance(res, dict) and res.get("timedOut") is False
+        except Exception:
+            return False
 
     def get_test_temperature_ids(self) -> tuple[str, str]:
         """Get or create two BAT_E2E_ virtual temperature sensors for device-relative tests.
