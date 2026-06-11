@@ -534,7 +534,7 @@ Write/delete require the Write master + confirm + a recent backup.
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
 | `hub_delete_native_app` | Delete any classic native app incl. RM rules (auto-snapshot first; `force=true` for hard delete; also in `hub_manage_native_rules_and_apps`) |
 | `hub_get_visual_rule` | List Visual Rules Builder rules (omit `appId`) or read one rule's full JSON definition + format (also in `hub_read_rules`) |
-| `hub_set_visual_rule` | Create or update a Visual Rules Builder rule — the primary rule engine, one JSON write with if/then/else gating. Use `hub_set_rule` only for complex automations (nested logic/loops/variables). |
+| `hub_set_visual_rule` | Create or update a Visual Rules Builder rule — VRB is the primary rule engine; one JSON write with if/then/else gating. Use `hub_set_rule` only for complex automations (nested logic/loops/variables). |
 | `hub_delete_visual_rule` | Delete a Visual Rules Builder rule (type-gated; returns the pre-delete definition for recovery) |
 
 Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated by the Read master; the writes by the Write master (both ON by default). `hub_set_rule`, `hub_delete_native_app`, `hub_set_visual_rule`, and `hub_delete_visual_rule` additionally require `confirm=true` + a backup within 24h.

@@ -287,7 +287,7 @@ Two surfaces: RMUtils-based runtime control for RM rules (read/trigger/pause-res
 
 ### hub_manage_rule_machine (10 tools)
 
-Dedicated rule-authoring gateway: the Visual Rules Builder tools (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`) are the PRIMARY engine for new automations -- one clean JSON write, no wizard, with if/then/else condition gating -- plus full RM authoring (`hub_set_rule`) for complex automations, RM deletion (`hub_delete_native_app`), and RMUtils-based runtime control -- list, trigger, pause/resume, set private boolean, and check health. (Create/edit of NON-RM classic apps lives in `hub_manage_native_rules_and_apps`.)
+Dedicated rule-authoring gateway: the Visual Rules Builder tools (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`) manage the PRIMARY engine for new automations -- one clean JSON write, no wizard, with if/then/else condition gating -- plus full RM authoring (`hub_set_rule`) for complex automations, RM deletion (`hub_delete_native_app`), and RMUtils-based runtime control -- list, trigger, pause/resume, set private boolean, and check health. (Create/edit of NON-RM classic apps lives in `hub_manage_native_rules_and_apps`.)
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
@@ -299,7 +299,7 @@ Dedicated rule-authoring gateway: the Visual Rules Builder tools (`hub_get_visua
 | `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Read master |
 | `hub_delete_native_app` | Delete any classic native app, type-agnostic (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Write master |
 | `hub_get_visual_rule` | List Visual Rules Builder rules (omit `appId`) or read one rule's full JSON definition. Reports `format`: `classic` (`whenNodes`/`thenNodes`/`elseNodes`) or `graph` (`nodes`/`edges`); pass the same format back when editing. | Read master |
-| `hub_set_visual_rule` | Create (omit `appId`; `name` + `definition` required) or update (definition replaces wholesale, `name` renames, `paused` pauses/resumes) a Visual Rules Builder rule -- the primary rule engine, one JSON write. The definition format must match the rule's existing format. | Write master + confirm + recent backup |
+| `hub_set_visual_rule` | Create (omit `appId`; `name` + `definition` required) or update (definition replaces wholesale, `name` renames, `paused` pauses/resumes) a Visual Rules Builder rule -- VRB is the primary rule engine; one JSON write. The definition format must match the rule's existing format. | Write master + confirm + recent backup |
 | `hub_delete_visual_rule` | Delete a Visual Rules Builder rule. Type-gated (refuses non-VRB appIds); returns the pre-delete definition for recovery. | Write master + confirm + recent backup |
 
 ### hub_manage_mcp (1 tool)
