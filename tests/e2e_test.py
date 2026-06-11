@@ -332,7 +332,8 @@ class TestRunner:
     def get_test_switch_id(self) -> str:
         """Get or create the persistent BAT_E2E_ virtual switch scaffold that rule
         fixtures reference in triggers/conditions/actions and the poll tests read
-        state from. Tests NEVER touch real devices -- only virtual devices we create.
+        state from. Tests stick to BAT_E2E_-prefixed virtual devices by convention
+        (deterministic fixtures, clean sweeps) -- the test hub itself is sacrificial.
 
         Command ROUND-TRIP assertions (prove an event actually processed) do NOT
         belong on this device: it is shared across the whole suite, so its state
