@@ -162,6 +162,15 @@ private void actAndRecord(Map flag, String trigger) {
         flag.restoredAt = now()
         flag.restoreDetail = res.detail
         flag.fireAttempts = 0
+        // Restore confirmed -> the hub is canonical main again. Stamp the SHA marker the PR
+        // install cleared so the next run's arm can skip its main refresh. CI's disarm is
+        // fire-and-forget (it no longer polls for this restore), so the stamp must happen
+        // HERE, on both the disarm and the dead-man fire paths. Best-effort: a missed stamp
+        // just means the next arm re-refreshes main.
+        if (flag.canonicalMainSha) {
+            try { uploadHubFile("mcp-main-deployed-sha.txt", flag.canonicalMainSha.toString().getBytes("UTF-8")) }
+            catch (Exception e) { log.warn "could not stamp the canonical-main marker after restore: ${e.message}" }
+        }
     } else {
         int attempts = ((flag.fireAttempts ?: 0) as int) + 1
         flag.fireAttempts = attempts

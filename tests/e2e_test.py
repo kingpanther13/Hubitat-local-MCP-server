@@ -717,23 +717,15 @@ class TestRunner:
 
     @test("virtual_device_lifecycle")
     def test_command_virtual_switch(self) -> None:
-        # Find the device we just created via hub_list_devices (core tool)
-        vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
-        dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
-        target = None
-        for d in dev_list:
-            lbl = d.get("label") or d.get("name") or ""
-            if f"{PREFIX}Switch_Test" in lbl:
-                target = d
-                break
-        if target is None:
-            raise AssertionError(f"Could not find {PREFIX}Switch_Test virtual device -- the upstream create test must have failed")
+        # Command round-trips don't need the just-created device (creation is covered by
+        # test_create_virtual_switch and its state by test_list/delete): use the persistent
+        # scaffolding switch, which has a real prior state -- a FRESH Virtual Switch is born
+        # with switch=null, which is exactly the edge that made this test flake.
+        dev_id = self.get_test_switch_id()
 
-        dev_id = str(target["id"])
-
-        # A fresh Virtual Switch is born with switch=null and event processing can
-        # lag on a busy hub, so block-poll the attribute instead of the old fixed
-        # sleep + single read (which flaked as "Expected switch=on, got None").
+        # Event processing can lag on a busy hub, so block-poll the attribute instead
+        # of the old fixed sleep + single read (which flaked as "Expected switch=on,
+        # got None").
         self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "on"})
         result = self.client.call_tool("hub_get_device_attribute", {
             "deviceId": dev_id,

@@ -164,6 +164,45 @@ class WatchdogV2Spec extends Specification {
         written?.restoreResult == 'restored'
     }
 
+    def "a successful restore stamps the canonical-main marker from the flag (CI's disarm no longer polls)"() {
+        given:
+        Map uploaded = [:]
+        script.metaClass.restoreApp = { String c, String f -> true }
+        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> uploaded[name] = new String(bytes, 'UTF-8') }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7', canonicalMainSha: 'abc123',
+                                          manifest: [app: [classId: '178', file: 'f'], libraries: []]] }
+        script.metaClass.writeFlag = { Map fl -> true }
+
+        when:
+        script.checkDeadman()
+
+        then: 'the marker carries the flag-stamped canonical main SHA'
+        uploaded['mcp-main-deployed-sha.txt'] == 'abc123'
+    }
+
+    def "no marker is stamped when the flag has no canonicalMainSha or the restore fails (#scenario)"() {
+        given:
+        Map uploaded = [:]
+        script.metaClass.restoreApp = { String c, String f -> restoreOk }
+        script.metaClass.restoreLibrary = { String i, String f -> restoreOk }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> uploaded[name] = new String(bytes, 'UTF-8') }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7', fireAttempts: 4,
+                                          manifest: [app: [classId: '178', file: 'f'], libraries: []]] + extraFlag }
+        script.metaClass.writeFlag = { Map fl -> true }
+
+        when:
+        script.checkDeadman()
+
+        then: 'a cleared marker stays cleared, so the next run refreshes main'
+        !uploaded.containsKey('mcp-main-deployed-sha.txt')
+
+        where:
+        scenario              | restoreOk | extraFlag
+        'no sha in the flag'  | true      | [:]
+        'restore failed'      | false     | [canonicalMainSha: 'abc123']
+    }
+
     // ---- disarm acceleration: adminWriteFile kicks a one-shot checkDeadman past the ~60s tick ----
 
     def "deadmanKick delegates to checkDeadman (so the periodic check stays the single decision point)"() {
