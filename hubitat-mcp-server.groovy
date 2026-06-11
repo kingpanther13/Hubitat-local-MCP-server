@@ -1511,7 +1511,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_rule_machine: [
-            description: "Dedicated rule-authoring gateway. For SIMPLE device automations (motion lights, contact alerts, schedules) PREFER the Visual Rules Builder tools — hub_set_visual_rule / hub_get_visual_rule / hub_delete_visual_rule — one clean JSON write, no wizard. CREATE and EDIT full RM rules with hub_set_rule (triggers, actions, conditions, required expressions, IF/THEN/ELSE, local variables, walkStep) when the automation needs branching logic, loops, variables, or arbitrary device commands; DELETE RM rules with hub_delete_native_app, plus RMUtils runtime control: list rules, trigger/run, pause/resume, set the private boolean, and check rule health. THIS is the right path for 'create a rule' / 'make a Hubitat automation'. For NON-RM classic apps (Room Lighting, Button Controllers, Notifier, Groups+Scenes, etc.) use hub_manage_native_rules_and_apps. Read-only views are also in hub_read_rules.",
+            description: "Dedicated rule-authoring gateway. Visual Rules Builder is the PRIMARY engine for new automations — hub_set_visual_rule / hub_get_visual_rule / hub_delete_visual_rule — one clean JSON write, no wizard, with if/then/else condition gating. CREATE and EDIT full RM rules with hub_set_rule (triggers, actions, conditions, required expressions, IF/THEN/ELSE, local variables, walkStep) when the automation needs something complex (nested logic, loops, variables, arbitrary device commands); DELETE RM rules with hub_delete_native_app, plus RMUtils runtime control: list rules, trigger/run, pause/resume, set the private boolean, and check rule health. THIS is the right path for 'create a rule' / 'make a Hubitat automation'. For NON-RM classic apps (Room Lighting, Button Controllers, Notifier, Groups+Scenes, etc.) use hub_manage_native_rules_and_apps. Read-only views are also in hub_read_rules.",
             tools: ["hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_get_rule_health", "hub_delete_native_app", "hub_get_visual_rule", "hub_set_visual_rule", "hub_delete_visual_rule"],
             summaries: [
                 hub_set_rule: "Create or edit a Rule Machine rule (RM 5.1) — the full authoring surface. Omit appId to create (name; optionally bundle addTriggers/addActions); provide appId to edit via addTrigger / addAction / addRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / addLocalVariable / patches / walkStep, or raw settings/button. Auto-backs-up first. Args: appId (omit=create), name, <shortcut>|settings|button, confirm.",
@@ -1522,7 +1522,7 @@ def getGatewayConfig() {
                 hub_get_rule_health: "Inspect a rule for broken state (BROKEN markers, configPage errors, multiple-flag corruption). Args: appId",
                 hub_delete_native_app: "Delete any classic native app incl. RM rules (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm.",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?",
-                hub_set_visual_rule: "Create or update a Visual Rules Builder rule — simplest rule engine, one JSON write. PREFER for simple automations; use hub_set_rule when you need branching/loops/variables. Args: appId (omit=create), name, definition, paused (opt), confirm.",
+                hub_set_visual_rule: "Create or update a Visual Rules Builder rule — the primary rule engine, one JSON write with if/then/else gating. Use hub_set_rule only for complex automations (nested logic/loops/variables). Args: appId (omit=create), name, definition, paused (opt), confirm.",
                 hub_delete_visual_rule: "Delete a Visual Rules Builder rule (type-gated; returns the pre-delete definition for recovery). Args: appId, confirm."
             ],
             searchHints: [
@@ -1533,9 +1533,9 @@ def getGatewayConfig() {
                 hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
                 hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger multiple flag corruption",
                 hub_delete_native_app: "remove delete destroy rule machine rule native app classic smartapp",
-                hub_get_visual_rule: "visual rules builder VRB read list show inspect simple automation json definition when then else nodes graph",
-                hub_set_visual_rule: "visual rules builder VRB create edit update make simple automation motion light contact alert schedule json easiest rule",
-                hub_delete_visual_rule: "visual rules builder VRB remove delete destroy simple automation"
+                hub_get_visual_rule: "visual rules builder VRB read list show inspect automation json definition when then else nodes graph",
+                hub_set_visual_rule: "visual rules builder VRB create edit update make automation rule motion light contact alert schedule json primary engine if then else",
+                hub_delete_visual_rule: "visual rules builder VRB remove delete destroy automation rule"
             ]
         ]
     ]
@@ -29082,7 +29082,7 @@ The right move when `partial: true` is to follow the `repairHints`, NOT to delet
 
         visual_rule_reference: '''## Visual Rules Builder reference (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`)
 
-Visual Rules Builder (VRB) is Hubitat's simplest rule engine — capability tier similar to Basic Rules, but stored as ONE clean JSON definition (no wizard, no settings[] protocol). PREFER it for simple device automations; use `hub_set_rule` (Rule Machine) when you need: nested IF/THEN/ELSE in actions, loops, local variables, boolean expressions, capture/restore, custom device commands, or running another rule's actions.
+Visual Rules Builder (VRB) is the PRIMARY rule engine for new automations, stored as ONE clean JSON definition (no wizard, no settings[] protocol). A VRB rule is: one or more trigger events, an optional condition gate, and then/else action branches — if/then/else logic is fully supported (a condition node routes execution to thenNodes or elseNodes). Pretty much everything can be done with it; use `hub_set_rule` (Rule Machine) when something complex is needed — nested or multiple condition blocks, loops, variables and expressions, capture/restore, waiting on a device-state expression (VRB's `wait` waits a fixed duration), or device commands outside the action catalog below.
 
 ### Two serializations (`format` in every single-rule success response)
 

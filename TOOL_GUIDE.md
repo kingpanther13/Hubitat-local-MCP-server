@@ -826,7 +826,7 @@ Full node schemas, field catalog, and a worked example: the "Visual Rules Builde
 
 ## Visual Rules Builder reference (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`)
 
-Visual Rules Builder (VRB) is Hubitat's simplest rule engine — capability tier similar to Basic Rules, but stored as ONE clean JSON definition (no wizard, no settings[] protocol). PREFER it for simple device automations; use `hub_set_rule` (Rule Machine) when you need: nested IF/THEN/ELSE in actions, loops, local variables, boolean expressions, capture/restore, custom device commands, or running another rule's actions.
+Visual Rules Builder (VRB) is the PRIMARY rule engine for new automations, stored as ONE clean JSON definition (no wizard, no settings[] protocol). A VRB rule is: one or more trigger events, an optional condition gate, and then/else action branches — if/then/else logic is fully supported (a condition node routes execution to thenNodes or elseNodes). Pretty much everything can be done with it; use `hub_set_rule` (Rule Machine) when something complex is needed — nested or multiple condition blocks, loops, variables and expressions, capture/restore, waiting on a device-state expression (VRB's `wait` waits a fixed duration), or device commands outside the action catalog below.
 
 ### Two serializations (`format` in every single-rule success response)
 
