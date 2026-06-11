@@ -1081,7 +1081,7 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_list_apps":
             return "For scope='instances': set includeHidden=false (the default), narrow via filter (builtin / user / disabled / parents / children), or pass cursor to page through the apps list."
         case "hub_get_app_config":
-            return "Omit includeSettings -- Room Lighting / RM 5.1 apps can have 500-1000 settings keys. For multi-page apps, call hub_list_app_pages then hub_get_app_config with a specific pageName."
+            return "Omit includeSettings -- Room Lighting / RM 5.1 apps can have 500-1000 settings keys. For multi-page apps, call hub_list_app_pages then hub_get_app_config with a specific pageName. If you only need identity, pass summary=true."
         case "hub_get_device_health":
             return "Set includeHealthy=false (the default), narrow staleHours, or pass cursor to page through staleDevices."
         case "hub_get_memory_history":
@@ -1295,7 +1295,7 @@ def getGatewayConfig() {
         ],
         // Option B: manage_logs_diagnostics split into logs + diagnostics
         hub_manage_logs: [
-            description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, MCP debug logs, and log level configuration. (Device/location event history: use the core hub_list_device_events tool.)",
+            description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, MCP debug logs, and log level configuration. (Device/app/location event history: use the core hub_list_device_events tool.)",
             tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_debug_logs", "hub_delete_debug_logs", "hub_set_log_level"],
             summaries: [
                 hub_get_logs: "Get Hubitat system logs, most recent first. Args: level (trace/debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex any/all), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
@@ -1443,13 +1443,13 @@ def getGatewayConfig() {
                 hub_list_devices: "List devices with current states. Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, format (summary/detailed/ids), fields?, limit?, cursor?",
                 hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll until it reaches expectedValue/expectedValues. Args: deviceId, attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), or location events (mode/HSM/hub-variable; omit deviceId). Args: deviceId?, hoursBack?, attribute?, limit?"
+                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), per-app events (appId), or location events (mode/HSM/hub-variable; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, attribute?, limit?"
             ],
             searchHints: [
                 hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate",
                 hub_get_device: "device detail capabilities attributes commands info inspect one",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity"
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted"
             ]
         ],
         hub_read_rooms: [
@@ -1491,23 +1491,25 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_devices: [
-            description: "Control and inspect devices: send commands and update a device, plus read-only inspection (list/get/attribute/events). Device reads are also in hub_read_devices.",
-            tools: ["hub_call_device_command", "hub_update_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
+            description: "Control and inspect devices: send commands, update a device, and swap/replace a device across all referencing apps, plus read-only inspection (list/get/attribute/events). Device reads are also in hub_read_devices.",
+            tools: ["hub_call_device_command", "hub_call_device_swap", "hub_update_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
             summaries: [
                 hub_call_device_command: "Send a command to a device (verify state after). Args: deviceId, command, parameters?",
+                hub_call_device_swap: "Replace a device across ALL apps/rules that reference it (built-in Swap Device tool). Args: from_device_id, to_device_id, confirm",
                 hub_update_device: "Update a device's properties: label, name, room, deviceNetworkId, enabled (enable/disable), dataValues, preferences. Args: deviceId, label?, name?, room?, deviceNetworkId?, enabled?, dataValues?, preferences?",
                 hub_list_devices: "List devices with current states. Args: detailed?, filter, labelFilter?, capabilityFilter?, format, fields?, limit?, cursor?",
                 hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll until it reaches expectedValue/expectedValues. Args: deviceId, attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history, or location events. Args: deviceId?, hoursBack?, attribute?, limit?"
+                hub_list_device_events: "Recent device events, a time-windowed history, per-app events (appId), or location events. Args: deviceId?, appId?, hoursBack?, attribute?, limit?"
             ],
             searchHints: [
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run",
+                hub_call_device_swap: "swap replace device migrate references substitute rewire apps rules everywhere retire failing hardware",
                 hub_update_device: "rename relabel move room device edit",
                 hub_list_devices: "show all devices switches lights sensors locks state inventory",
                 hub_get_device: "device detail capabilities attributes commands info inspect one",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity"
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted"
             ]
         ],
         hub_manage_rule_machine: [
@@ -1782,8 +1784,9 @@ def getToolDisplayMeta() {
         hub_list_devices: [title: "List Devices", summary: "List accessible devices with filtering, pagination, and field projection."],
         hub_get_device: [title: "Get Device Details", summary: "Get one device's full details: attributes, commands, capabilities."],
         hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
-        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device, or location events when no device is given."],
+        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location events when neither is given."],
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to a device."],
+        hub_call_device_swap: [title: "Swap Device", summary: "Replace a device across all apps and rules that reference it, in one operation."],
         hub_update_device: [title: "Update Device Properties", summary: "Update a device's label, room, or preferences."],
         hub_delete_device: [title: "Delete Device", summary: "Permanently delete a device from the hub (no undo)."],
         hub_manage_virtual_device: [title: "Manage Virtual Device", summary: "Create or delete an MCP-managed virtual device."],
@@ -2310,15 +2313,15 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
             inputSchema: [
                 type: "object",
                 properties: [
-                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands). WARNING: Resource-intensive for large device counts. Use with pagination (limit parameter) for best performance."],
+                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands). WARNING: Resource-intensive for large device counts.[[FLAT_TRIM]] Use with pagination (limit parameter) for best performance.[[/FLAT_TRIM]]"],
                     offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
                     limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true, higher values may slow hub.", default: 0],
                     filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' | 'virtual' (this MCP app's own virtual devices; use to find their IDs/DNIs).[[FLAT_TRIM]] stale example: 'stale:24' = no activity in the last 24 hours; never-reported devices count as stale. 'virtual' returns a different population and shape from the other filters, with driver namespace/type.[[/FLAT_TRIM]]"],
-                    labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set. Applied after filter, before pagination."],
-                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl', 'TemperatureMeasurement'). Applied after labelFilter, before pagination.[[FLAT_TRIM]] When count=0, response includes `capabilityFilterMatchedKnownCapability` to distinguish 'no devices have this capability' from a typo.[[/FLAT_TRIM]]"],
-                    format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands (same as detailed=true). 'ids' = flat array of device ID integers (cheapest, ignores fields arg). detailed=true overrides format='summary'."],
+                    labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set.[[FLAT_TRIM]] Applied after filter, before pagination.[[/FLAT_TRIM]]"],
+                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl', 'TemperatureMeasurement').[[FLAT_TRIM]] Applied after labelFilter, before pagination. When count=0, response includes `capabilityFilterMatchedKnownCapability` to distinguish 'no devices have this capability' from a typo.[[/FLAT_TRIM]]"],
+                    format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands[[FLAT_TRIM]] (same as detailed=true)[[/FLAT_TRIM]]. 'ids' = flat array of device ID integers (cheapest, ignores fields arg).[[FLAT_TRIM]] detailed=true overrides format='summary'.[[/FLAT_TRIM]]"],
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object.[[FLAT_TRIM]] Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section='performance')` for valid field names and projection semantics."],
-                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor returned alongside nextOffset."]
+                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor[[FLAT_TRIM]] returned alongside nextOffset[[/FLAT_TRIM]]."]
                 ]
             ],
             outputSchema: [
@@ -2450,14 +2453,54 @@ If no exact device match: suggest similar devices and get user confirmation befo
             ]
         ],
         [
-            name: "hub_list_device_events",
-            description: """Get a device's recent events, a time-windowed history, or location-level events.
+            name: "hub_call_device_swap",
+            description: """⚠️ DESTRUCTIVE: Swap a device — replace from_device_id with to_device_id across ALL apps and rules that reference it, in one operation.[[FLAT_TRIM]] Drives the hub's built-in Swap Device tool; use to migrate device references to new hardware or swap out a failing device without editing each automation.[[/FLAT_TRIM]]
 
-Default: most-recent events for a device (deviceId + optional limit). Add hoursBack to pull a time window instead (up to 168h / 7 days). Omit deviceId to get location-level events (mode/HSM/hub-variable/sendLocationEvent). attribute filters by event name. Higher limits (50+) may slow the hub.""",
+Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the blast radius with hub_list_device_dependents(deviceId=from_device_id) — every app listed gets rewired; 3) confirm with the user.[[FLAT_TRIM]]
+
+The hub only offers compatible replacement devices: an incompatible to_device_id fails with a structured error listing the compatible options.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID. Omit for location-level events (mode/HSM/hub variable)."],
+                    from_device_id: [type: "string", description: "Device ID whose references will be replaced everywhere (from hub_list_devices)."],
+                    to_device_id: [type: "string", description: "Replacement device ID. Must be capability-compatible — on mismatch the error lists the compatible candidates."],
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms a hub backup exists (<24h) and the user approved the swap."]
+                ],
+                required: ["from_device_id", "to_device_id", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the swap completed"],
+                    swapped: [type: "object", description: "The committed swap", properties: [
+                        from: [type: "string", description: "Replaced device ID"],
+                        to: [type: "string", description: "Replacement device ID"]
+                    ]],
+                    verified: [type: "boolean", description: "true when the before/after dependent counts were both read and confirmed the swap; false = swap clicked but count verification was degraded"],
+                    appsRewired: [type: "integer", description: "Apps that referenced from_device_id before the swap (the rewired set); absent when the pre-count was unavailable"],
+                    remainingDependents: [type: "integer", description: "Apps still referencing from_device_id after the swap (0 expected)"],
+                    note: [type: "string", description: "Verification guidance"],
+                    error: [type: "string", description: "Failure reason (success=false)"],
+                    compatibleOptions: [type: "array", description: "Incompatible-target failure: compatible replacement devices the hub offered (first 30)", items: [type: "object", properties: [
+                        id: [type: "string", description: "Device ID"],
+                        label: [type: "string", description: "Device label"]
+                    ]]],
+                    compatibleOptionCount: [type: "integer", description: "Total compatible options offered (may exceed the 30 listed)"],
+                    buttonsFound: [type: "array", description: "Button-discovery failure: action button names found on the swap page", items: [type: "string"]]
+                ],
+                required: ["success"]
+            ]
+        ],
+        [
+            name: "hub_list_device_events",
+            description: """Get event history for a device, an APP (app events: events emitted by an app or rule -- automation events), or the location.
+
+Default: most-recent events for a device (deviceId + optional limit). Add hoursBack to widen/narrow the window (default 24h for app/location modes, max 168h). appId returns an installed app's events instead. Omit deviceId/appId for location-level events.[[FLAT_TRIM]] attribute filters by event name. Higher limits (50+) may slow the hub.[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    deviceId: [type: "string", description: "Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable)."],
+                    appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted). Rows: {name, value, description, date}. Mutually exclusive with deviceId."],
                     hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events."],
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch'). Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name."],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500). Higher values may slow hub.", default: 10]
@@ -2478,10 +2521,12 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
                     count: [type: "integer", description: "Events returned"],
                     device: [type: "string", description: "Device label; present in device modes"],
                     deviceId: [type: "string", description: "Device ID; present in history mode"],
-                    source: [type: "string", description: "'device' or 'location'; present in history mode"],
+                    appId: [type: "integer", description: "App ID; present in app mode"],
+                    source: [type: "string", description: "'device', 'app', or 'location'; present in history mode"],
                     hoursBack: [type: "integer", description: "History window in hours; present in history mode"],
                     attributeFilter: [type: "string", description: "Echoed attribute filter; present in history mode"],
-                    sinceTimestamp: [type: "string", description: "Window start (ISO); present in history mode"]
+                    sinceTimestamp: [type: "string", description: "Window start (ISO); present in history mode"],
+                    timeFilterUnparseable: [type: "integer", description: "App/location modes: rows kept despite unparseable dates (window not enforced for them); present when > 0"]
                 ]
             ]
         ],
@@ -2813,7 +2858,7 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_get_variable",
-            description: "Get one variable's current value by name. Searches the hub-variable namespace first, then falls back to rule-engine variables; the returned source field says which matched. For hub variables it also returns metadata (type, plus deviceId/attribute when a connector is linked). Use hub_list_variables to enumerate; use this when you already know the name.",
+            description: "Get one variable's current value by name. Searches the hub-variable namespace first, then falls back to rule-engine variables[[FLAT_TRIM]]; the returned source field says which matched. For hub variables it also returns metadata (type, plus deviceId/attribute when a connector is linked)[[/FLAT_TRIM]]. Use hub_list_variables to enumerate; use this when you already know the name.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2858,7 +2903,7 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_create_variable",
-            description: "Create a new hub variable (global variable visible to apps and Rule Machine). Use this before hub_set_variable for a name that doesn't exist yet — Hubitat's setGlobalVar cannot create, only update. Drives the Settings → Hub Variables wizard, since creation isn't exposed via the public app API. Name must not contain any of these characters: ' \" \\ ~ [ : ] < >. To also expose the variable to device-only apps, follow up with hub_create_connector.",
+            description: "Create a new hub variable (global variable visible to apps and Rule Machine). Use this before hub_set_variable for a name that doesn't exist yet — Hubitat's setGlobalVar cannot create, only update.[[FLAT_TRIM]] Drives the Settings → Hub Variables wizard, since creation isn't exposed via the public app API. Name must not contain any of these characters: ' \" \\ ~ [ : ] < >.[[/FLAT_TRIM]] To also expose the variable to device-only apps, follow up with hub_create_connector.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2884,7 +2929,7 @@ def _getAllToolDefinitions_part2() {
         ],
         [
             name: "hub_create_connector",
-            description: "Create a virtual-device connector for an existing hub variable so apps that only consume devices can read/write it. For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass connectorType to pick, default 'Variable'. For String/Boolean/DateTime vars, the chooser is skipped. No-op if a connector already exists.",
+            description: "Create a virtual-device connector for an existing hub variable so apps that only consume devices can read/write it.[[FLAT_TRIM]] For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass connectorType to pick, default 'Variable'. For String/Boolean/DateTime vars, the chooser is skipped.[[/FLAT_TRIM]] No-op if a connector already exists.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3389,14 +3434,14 @@ def _getAllToolDefinitions_part4() {
             description: """List apps on the hub. scope selects what kind of "apps" to return.
 
 scope='instances' (default) — running app INSTANCES (built-in + user) with parent/child tree. Requires the Read master.
-  Each app entry returns: id, name, type, disabled, user (true=user-installed Groovy app, false=built-in), hidden, parentId (null for top-level), hasChildren, childCount.
+  Each app entry returns: id, name, type, disabled, user (true=user-installed Groovy app, false=built-in), hidden, parentId (null for top-level), hasChildren, childCount. Per-app event history: hub_list_device_events with appId.
   Use filter to narrow results: 'all' (default), 'builtin' (Hubitat native apps), 'user' (custom Groovy apps), 'disabled' (paused/disabled), 'parents' (apps with children like Rule Machine, Room Lighting, Groups and Scenes), 'children' (individual rules, scenes, etc.).
   filter, includeHidden, and cursor apply to this mode.
 
 scope='types' — installed app CODE LIBRARY / available app TYPES (the app code installed on the hub, not running instances). Requires Read master.
   filter and includeHidden are ignored in this mode.
 
-Pass cursor (opaque string from a prior call's nextCursor) to page through the list at 50 per page when the full response would exceed the hub's 128KB JSON-RPC cap.""",
+Pass cursor to page through the list at 50 per page when the full response would exceed the hub's 128KB JSON-RPC cap.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3588,12 +3633,12 @@ Pass cursor (opaque string from a prior call's nextCursor) to page through the l
                     deviceId: [type: "string", description: "Scope to a single device's log entries (server-side filter, mutually exclusive with appId)"],
                     appId: [type: "string", description: "Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
                     limit: [type: "integer", description: "Max entries to return. Default: 100, max: 500.", default: 100],
-                    pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only -- use source for app/device-name substring matching. Entry is kept when it matches.[[FLAT_TRIM]] Compiled once before the loop. Throws on invalid regex syntax. Note: pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes.[[/FLAT_TRIM]]"],
-                    patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns, same matching rules and caveats as `pattern` (message-field only; throws on invalid regex). Combine via patternMode ('any'=OR, default / 'all'=AND). Compatible with `pattern` (both apply)."],
+                    pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only -- use source for app/device-name substring matching.[[FLAT_TRIM]] Entry is kept when it matches. Compiled once before the loop. Throws on invalid regex syntax. Note: pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes.[[/FLAT_TRIM]]"],
+                    patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns, same matching rules and caveats as `pattern`[[FLAT_TRIM]] (message-field only; throws on invalid regex)[[/FLAT_TRIM]]. Combine via patternMode ('any'=OR, default / 'all'=AND).[[FLAT_TRIM]] Compatible with `pattern` (both apply).[[/FLAT_TRIM]]"],
                     patternMode: [type: "string", description: "How patterns array is combined: 'any' (default) = OR; 'all' = AND.[[FLAT_TRIM]] 'any' keeps an entry if any pattern matches; 'all' only if every pattern matches. Case-insensitive ('ANY' and 'any' both work).[[/FLAT_TRIM]]", enum: ["any", "all"]],
-                    since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d'). Relative offset is subtracted from now. Max relative offset: 30d (throws if exceeded -- use ISO-8601 for longer ranges).[[FLAT_TRIM]] Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise.[[/FLAT_TRIM]]"],
-                    until: [type: "string", description: "Return only entries at or before this time. Same format as since (relative offsets are subtracted from now, same as since; max 30d). Default: now (no upper bound).[[FLAT_TRIM]] Use since='2h', until='1h' to mean '1 to 2 hours ago'.[[/FLAT_TRIM]]"],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Filters + limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                    since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d').[[FLAT_TRIM]] Relative offset is subtracted from now.[[/FLAT_TRIM]] Max relative offset: 30d[[FLAT_TRIM]] (throws if exceeded -- use ISO-8601 for longer ranges)[[/FLAT_TRIM]].[[FLAT_TRIM]] Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise.[[/FLAT_TRIM]]"],
+                    until: [type: "string", description: "Return only entries at or before this time. Same format as since[[FLAT_TRIM]] (relative offsets are subtracted from now, same as since; max 30d)[[/FLAT_TRIM]]. Default: now (no upper bound).[[FLAT_TRIM]] Use since='2h', until='1h' to mean '1 to 2 hours ago'.[[/FLAT_TRIM]]"],
+                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Filters + limit apply first; cursor pages within the filtered result.[[/FLAT_TRIM]] Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
             ],
             outputSchema: [
@@ -4226,12 +4271,12 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""
                     driverId: [type: "string", description: "The driver ID to update (single-driver mode). Omit when using 'updates' array."],
                     source: [type: "string", description: "Inline Groovy source. Stubs only -- fills agent transcript."],
                     sourceFile: [type: "string", description: "File Manager filename. Upload first via curl per tool description."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly. http:// or https://. Mutually exclusive with source/sourceFile/resave."],
+                    importUrl: [type: "string", description: "URL the hub fetches directly. http:// or https://.[[FLAT_TRIM]] Mutually exclusive with source/sourceFile/resave.[[/FLAT_TRIM]]"],
                     resave: [type: "boolean", description: "Re-save the current source without changes. Runs entirely on-hub."],
-                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard. Update aborts with conflict:true on version mismatch. Bulk mode: put expectedVersion inside each updates[] entry."],
+                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard.[[FLAT_TRIM]] Update aborts with conflict:true on version mismatch.[[/FLAT_TRIM]] Bulk mode: put expectedVersion inside each updates[] entry."],
                     updates: [
                         type: "array",
-                        description: "BULK MODE -- one round-trip for many drivers. Each entry: {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}. Cannot mix with single-driver fields. Continue-on-error.",
+                        description: "BULK MODE -- one round-trip for many drivers.[[FLAT_TRIM]] Each entry: {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}. Cannot mix with single-driver fields. Continue-on-error.[[/FLAT_TRIM]]",
                         items: [
                             type: "object",
                             properties: [
@@ -4650,7 +4695,7 @@ Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, l
             name: "hub_get_app_config",
             description: """Read an installed app's configuration — the same structured data the Hubitat Web UI shows on each app's settings page. Works for Rule Machine rules, Room Lighting instances, Basic Rules, Button Controllers, Hubitat Package Manager, Mode Manager, and any other legacy SmartApp.
 
-Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value), and `embeddedActions` — clickable button affordances embedded in paragraph HTML (RM 5.1 wizards expose "Create New Trigger", "Edit Trigger", "Delete Trigger" etc. as `<div class='submitOnChange'>` elements rather than schema inputs; this field surfaces them with their button name + stateAttribute so hub_set_rule can drive them). Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything.
+Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value), and `embeddedActions` — clickable button affordances embedded in paragraph HTML[[FLAT_TRIM]] (RM 5.1 wizards expose "Create New Trigger", "Edit Trigger", "Delete Trigger" etc. as `<div class='submitOnChange'>` elements rather than schema inputs; this field surfaces them with their button name + stateAttribute so hub_set_rule can drive them)[[/FLAT_TRIM]]. Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything. summary=true: fast identity-only mode.
 
 [[FLAT_TRIM]]
 Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after hub_list_apps (scope='instances') / hub_list_device_dependents narrows the field.
@@ -4666,7 +4711,8 @@ Requires Read master.""",
                 properties: [
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
                     pageName: [type: "string", description: "Optional sub-page name for multi-page apps. Main page is used when omitted. Call hub_list_app_pages to discover available pages. HPM: prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefOptions (main menu). RM / Room Lighting: mainPage only."],
-                    includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map. Default false -- large apps can have 500-1000 keys with app-specific encoding (e.g. Room Lighting's dm~<deviceId>~<scene>). Set true only for power-user inspection.", default: false]
+                    includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map. Default false -- large apps can have 500-1000 keys with app-specific encoding (e.g. Room Lighting's dm~<deviceId>~<scene>). Set true only for power-user inspection.", default: false],
+                    summary: [type: "boolean", description: "Fast identity-only read (returns the hub's thin app record: id, name, type, disabled, user -- no config page). pageName/includeSettings are ignored.", default: false]
                 ],
                 required: ["appId"]
             ],
@@ -4674,7 +4720,12 @@ Requires Read master.""",
                 type: "object",
                 properties: [
                     success: [type: "boolean", description: "Whether the config was read"],
-                    app: [type: "object", description: "App identity", properties: [
+                    id: [description: "summary=true: app ID"],
+                    name: [type: "string", description: "summary=true: app name/label"],
+                    type: [type: "string", description: "summary=true: app type name"],
+                    disabled: [type: "boolean", description: "summary=true: app is disabled"],
+                    user: [type: "boolean", description: "summary=true: user-installed app (false=built-in)"],
+                    app: [type: "object", description: "App identity (full mode; summary mode passes the thin record through at top level)", properties: [
                         id: [description: "App ID"],
                         label: [type: "string", description: "User-visible label"],
                         name: [type: "string", description: "App type name"],
@@ -4683,7 +4734,7 @@ Requires Read master.""",
                         parentAppId: [description: "Parent app ID, when a child"],
                         installed: [type: "boolean", description: "App is installed"]
                     ]],
-                    page: [type: "object", description: "The config page", properties: [
+                    page: [type: "object", description: "The config page (full mode only)", properties: [
                         name: [type: "string", description: "Page name"],
                         title: [type: "string", description: "Page title"],
                         install: [type: "boolean", description: "Page is the install page"],
@@ -4714,7 +4765,7 @@ Requires Read master.""",
                     settings: [type: "object", description: "Raw app-internal settings; present when includeSettings=true"],
                     settingsNote: [type: "string", description: "Note when raw settings were omitted"]
                 ],
-                required: ["success", "app", "page"]
+                required: ["success"]
             ]
         ],
         // Hub Admin App Pages Directory
@@ -4965,8 +5016,8 @@ Requires the Write master + confirm=true + recent hub backup.""",
                 properties: [
                     appId: [type: "integer", description: "Installed-app id of an existing classic app (from hub_list_apps with scope='instances'). OMIT to CREATE a new app of `appType` (then `name` is required); PROVIDE to EDIT an existing app's settings/button."],
                     appType: [type: "string", enum: ["rule_machine", "button_controller", "groups_scenes", "notifier", "basic_rule"], description: "Native app class to CREATE (appId omitted). Default: rule_machine. Visual Rules are NOT created here -- use hub_set_visual_rule.[[FLAT_TRIM]] Enum is driven by _appTypeRegistry(); add types there. For full RM rule authoring use hub_set_rule. Button Rules are NOT an appType -- use the buttonRule param.[[/FLAT_TRIM]]"],
-                    name: [type: "string", description: "Label for the new app (shown in the hub's app list). Required on CREATE (when appId is omitted); ignored when appId is provided."],
-                    settings: [type: "object", description: "Map {inputName: value} to write to the app's current config page: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs. The multiple=true 3-field contract (settings[name]=csv + name.type=capability.X + name.multiple=true) is emitted automatically and post-write verified with one auto-retry. Discover input names via hub_get_app_config."],
+                    name: [type: "string", description: "Label for the new app[[FLAT_TRIM]] (shown in the hub's app list)[[/FLAT_TRIM]]. Required on CREATE (when appId is omitted); ignored when appId is provided."],
+                    settings: [type: "object", description: "Map {inputName: value} to write to the app's current config page: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs.[[FLAT_TRIM]] The multiple=true 3-field contract (settings[name]=csv + name.type=capability.X + name.multiple=true) is emitted automatically and post-write verified with one auto-retry.[[/FLAT_TRIM]] Discover input names via hub_get_app_config."],
                     button: [type: "string", description: "Page-transition button name to click (discover via hub_get_app_config)."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
@@ -5362,7 +5413,7 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
   - multiple-flag corruption: lists settings whose statusJson .multiple flag has been flipped to false despite the schema declaring multiple=true
   - structural imbalance: walks actType.<N>/actSubType.<N> and flags IF/ELSE-IF/ELSE/END-IF or Repeat/End-Repeat blocks left unmatched by a false-failed mutation that committed post-response; RM does NOT surface this via the paragraph markers above[[/FLAT_TRIM]]
 
-Run after every mutation to confirm the change didn't leave the rule in a broken state. hub_set_rule already attaches this report automatically as `health` on every response, but you can call it explicitly any time.
+Run after every mutation to confirm the change didn't leave the rule in a broken state. hub_set_rule already attaches this report automatically as `health` on every response, but you can call it explicitly any time. Per-app event history: hub_list_device_events with appId.
 
 Returns {ok: bool, label, configPageError, brokenMarkers: [...], multipleFlagPoison: [...], structuralIssues: [...], issues: [...]}. ok=false means at least one issue was found; the issues list explains what.""",
             inputSchema: [
@@ -5535,9 +5586,14 @@ def executeTool(toolName, args) {
             return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor)
         case "hub_get_device": return toolGetDevice(args.deviceId)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
+        case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_list_device_events":
             // Recent-N for one device when no window/filter given; otherwise windowed
-            // device history, or location-level events when deviceId is omitted.
+            // device history, per-app events (appId), or location-level events when
+            // both deviceId and appId are omitted. Reject deviceId+appId loudly --
+            // the recent-N route below would otherwise silently drop appId.
+            if (args.deviceId != null && args.appId != null)
+                throw new IllegalArgumentException("deviceId and appId are mutually exclusive. Pass deviceId for device events, appId for events emitted by an installed app/rule, or neither for location events.")
             if (args.deviceId != null && args.hoursBack == null && args.attribute == null)
                 return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
             return toolGetDeviceHistory(args)
@@ -7583,17 +7639,18 @@ private String _validateHubVarType(String type) {
  * always installed on every hub). The id varies per hub, so we discover
  * once on first need and cache in atomicState.
  *
- * Discovery is two-stage because /hub2/appsList omits hidden system apps
- * on at least some firmware versions (verified on 2.5.0.126: Hub Variables
- * is reachable at /installedapp/configure/json/<id> but not listed in
- * /hub2/appsList -- same gap that hides it from hub_list_apps (scope='instances')):
- *   1. Walk /hub2/appsList (cheap, single GET) -- catches hubs that DO
- *      list it.
- *   2. If miss, fall back to scanning installed-app config endpoints up
- *      to a bounded ceiling above the highest id we saw in step 1. Each
- *      404 returns immediately; matches return on appType.name. Result
- *      caches in atomicState so the scan only happens once per fresh
- *      install.
+ * Resolution order (matches the inline Stage labels below):
+ *   Stage 1. atomicState.hubVarsAppId cache.
+ *   Stage 2. /installedapp/direct/hubVariables redirect chain (_resolveDirectAppId).
+ *      The alias is name-addressed by the hub itself, so the resolved id
+ *      needs no verify fetch; hubVariables is a singleton system app, so
+ *      the chain's get-or-create hop always lands on the existing instance.
+ *   Stage 3. /hub2/appsList walk -- fallback for firmware where the direct alias
+ *      misbehaves. Note the feed omits hidden system apps on at least some
+ *      firmware versions (verified on 2.5.0.126: Hub Variables reachable at
+ *      /installedapp/configure/json/<id> but absent from /hub2/appsList --
+ *      same gap that hides it from hub_list_apps (scope='instances')),
+ *      which is why the direct chain is tried first.
  *
  * Used by hub_create_variable, hub_delete_variable's hub-namespace branch, and
  * hub_create_connector -- all of which drive that app's wizard via
@@ -7619,6 +7676,7 @@ def _primeHubVarsWizard(Integer appId, String context) {
 // private method and hit the real implementation, which makes mocking the
 // hub-side discovery painful in unit tests.
 def _findHubVariablesAppId() {
+    // Stage 1: atomicState cache.
     def cached = atomicState.hubVarsAppId
     if (cached != null) {
         try { return cached.toString().toInteger() } catch (NumberFormatException e) {
@@ -7627,8 +7685,18 @@ def _findHubVariablesAppId() {
         }
     }
 
-    // Stage 1: /hub2/appsList walk
-    def maxSeenId = 0
+    // Stage 2: name-addressed direct alias -- a single redirect chain, no
+    // payload walking. Safe to probe: hubVariables is a singleton, so the
+    // chain's create hop is get-or-create and never strands a transient
+    // instance.
+    def directId = _resolveDirectAppId("hubVariables")
+    if (directId != null) {
+        atomicState.hubVarsAppId = directId
+        mcpLog("info", "hub-vars", "Discovered Hub Variables app id: ${directId} (via /installedapp/direct/hubVariables)")
+        return directId
+    }
+
+    // Stage 3: /hub2/appsList walk.
     try {
         def responseText = hubInternalGet("/hub2/appsList")
         if (responseText) {
@@ -7637,10 +7705,6 @@ def _findHubVariablesAppId() {
             def recurse
             recurse = { node ->
                 def d = node?.data
-                if (d?.id != null) {
-                    def idVal = d.id.toString().isInteger() ? d.id.toString().toInteger() : 0
-                    if (idVal > maxSeenId) maxSeenId = idVal
-                }
                 if (found == null && d?.type == "Hub Variables" && d?.id != null) {
                     found = d
                 }
@@ -7649,48 +7713,38 @@ def _findHubVariablesAppId() {
             (parsed?.apps ?: []).each { a -> recurse(a) }
             if (found?.id != null) {
                 def id = found.id.toString().toInteger()
-                atomicState.hubVarsAppId = id
-                mcpLog("info", "hub-vars", "Discovered Hub Variables app id: ${id} (via /hub2/appsList)")
-                return id
+                // The feed's type label is the only evidence on this path, so
+                // confirm via configure/json before caching -- a wrong cached id
+                // would break every wizard-driving tool until manually cleared.
+                // Best-effort: a definitive name mismatch rejects; a fetch error
+                // must NOT discard an otherwise name-keyed match (transient HTTP
+                // trouble would lock the tools out entirely).
+                def verified = true
+                try {
+                    def cfgText = hubInternalGet("/installedapp/configure/json/${id}")
+                    if (cfgText) {
+                        def cfg = new groovy.json.JsonSlurper().parseText(cfgText)
+                        if (cfg?.app?.appType?.name != "Hub Variables") verified = false
+                    }
+                } catch (Exception e) {
+                    logDebug("_findHubVariablesAppId: verify fetch for ${id} threw ${e.class.simpleName}: ${e.message}")
+                }
+                if (verified) {
+                    atomicState.hubVarsAppId = id
+                    mcpLog("info", "hub-vars", "Discovered Hub Variables app id: ${id} (via /hub2/appsList)")
+                    return id
+                }
+                mcpLog("warn", "hub-vars", "appsList candidate ${id} failed configure/json verification -- not caching")
             }
         }
     } catch (Exception e) {
         logDebug("_findHubVariablesAppId: /hub2/appsList walk threw ${e.class.simpleName}: ${e.message}")
     }
 
-    // Stage 2: bounded scan of installed-app config endpoints.
-    // Hubitat sometimes hides the Hub Variables singleton from the
-    // appsList feed even though /installedapp/configure/json/<id> works.
-    // Scan from 1 to maxSeen+500, capped at 3000 to avoid runaway work.
-    // First-time cost is ~5-10s on a typical hub; result is cached so
-    // subsequent calls are free.
-    def upperBound = Math.min(3000, Math.max(maxSeenId + 500, 1500))
-    mcpLog("info", "hub-vars", "Hub Variables not in /hub2/appsList; falling back to id scan 1..${upperBound}")
-    for (int id = 1; id <= upperBound; id++) {
-        def cfgText = null
-        try {
-            cfgText = hubInternalGet("/installedapp/configure/json/${id}")
-        } catch (Exception e) {
-            continue
-        }
-        if (!cfgText) continue
-        try {
-            def cfg = new groovy.json.JsonSlurper().parseText(cfgText)
-            def typeName = cfg?.app?.appType?.name
-            if (typeName == "Hub Variables") {
-                atomicState.hubVarsAppId = id
-                mcpLog("info", "hub-vars", "Discovered Hub Variables app id: ${id} (via id scan)")
-                return id
-            }
-        } catch (Exception e) {
-            // Malformed response on this id -- ignore and continue
-        }
-    }
-
     throw new IllegalStateException(
-        "Hub Variables system app not found via /hub2/appsList walk OR id scan up to ${upperBound}. " +
-        "This should not happen on a normally-functioning hub -- the app is system-installed. " +
-        "Try increasing the scan ceiling or check that Hub Variables is enabled (Settings > Hub Variables).")
+        "Hub Variables system app not found via the /installedapp/direct/hubVariables redirect chain " +
+        "OR the /hub2/appsList walk. This should not happen on a normally-functioning hub -- the app " +
+        "is system-installed. Check that Hub Variables is enabled (Settings > Hub Variables).")
 }
 
 /**
@@ -9208,6 +9262,62 @@ def hubInternalGetRaw(String path, Map query = null, int timeout = 30, boolean i
     // followRedirects:false + handle3xx so the 302 Location header (new-child id) is readable.
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'struct',
                               followRedirects: false, handle3xx: true, isRetry: isRetry])
+}
+
+/**
+ * Resolve a name-addressed installed-app alias to its instance id via the
+ * hub's /installedapp/direct/<alias> redirect chain (two explicit hops):
+ *   GET /installedapp/direct/<alias>  -> 302 Location: /installedapp/create/<typeId>
+ *   GET /installedapp/create/<typeId> -> 302 Location: /installedapp/configure/<instanceId>
+ * Returns the instance id, or null on any failure (non-redirect status,
+ * missing/unparseable Location, exception) so callers can fall back to other
+ * discovery. The configure page itself is never fetched -- the id lives in
+ * the Location header, and following further would render HTML for nothing.
+ *
+ * Get-or-create caveat: the create hop is the hub's "open this app" flow.
+ * For singleton system apps (e.g. hubVariables) it returns the EXISTING
+ * instance every time, so probing is side-effect free. For transient tool
+ * apps (e.g. swapDevice) every call CREATES a fresh instance -- callers own
+ * cleanup of any instance they don't drive to completion.
+ */
+private Integer _resolveDirectAppId(String alias) {
+    def path = "/installedapp/direct/${alias}"
+    // Two hops max: direct -> create -> configure. Each hop re-validates the
+    // redirect shape so a hub that auto-followed an absolute Location (200
+    // with no Location header -- see hubInternalGetRaw's caveat) degrades to
+    // null instead of mis-parsing an HTML body.
+    for (int hop = 1; hop <= 2; hop++) {
+        def resp = null
+        try {
+            resp = hubInternalGetRaw(path)
+        } catch (Exception e) {
+            logDebug("_resolveDirectAppId(${alias}): hop ${hop} GET ${path} threw ${e.toString()}")
+            mcpLog("warn", "hub-admin", "_resolveDirectAppId(${alias}) -> null: hop ${hop} GET threw ${e.class.simpleName}: ${e.message}")
+            return null
+        }
+        Integer status = null
+        try { status = resp?.status as Integer } catch (Exception ignore) { status = null }
+        def location = resp?.location?.toString()
+        if (status == null || status < 300 || status >= 400 || !location) {
+            logDebug("_resolveDirectAppId(${alias}): hop ${hop} ${path} status=${status} location=${location} -- not a redirect")
+            mcpLog("warn", "hub-admin", "_resolveDirectAppId(${alias}) -> null: hop ${hop} returned status=${status} instead of a redirect -- a 200 with no Location usually means the hub auto-followed an absolute Location (hubInternalGetRaw caveat)")
+            return null
+        }
+        def cfg = (location =~ /\/installedapp\/configure\/(\d+)/)
+        if (cfg) return cfg[0][1] as Integer
+        def create = (location =~ /\/installedapp\/create\/(\d+)/)
+        if (create && hop == 1) {
+            // Rebuild the hop-2 path from the captured type id rather than
+            // following the Location verbatim -- normalizes absolute URLs and
+            // guarantees we never follow past the expected chain.
+            path = "/installedapp/create/${create[0][1]}"
+            continue
+        }
+        logDebug("_resolveDirectAppId(${alias}): hop ${hop} unexpected Location ${location}")
+        mcpLog("warn", "hub-admin", "_resolveDirectAppId(${alias}) -> null: hop ${hop} redirected to an unexpected Location shape -- the direct/create/configure chain may have changed on this firmware (the debug-logging toggle surfaces the raw Location in the hub logs)")
+        return null
+    }
+    return null
 }
 
 /**
@@ -11729,6 +11839,73 @@ def toolGetDeviceHistory(args) {
     def attributeFilter = args.attribute
     def sinceDate = new Date(now() - (hoursBack * 3600000L))
 
+    // App-scope branch: events an installed app/rule emitted, read from the same
+    // endpoint the admin UI's per-app Events page uses. The endpoint takes no
+    // query params and its row cap is server-side, so attribute/hoursBack/limit
+    // are applied client-side exactly like the location branch below -- limit
+    // enforced while collecting so an oversized event store can't balloon the
+    // response. Rows carry {name, value, descriptionText, date}.
+    if (args.appId != null) {
+        def appIdStr = args.appId.toString().trim()
+        if (!appIdStr.isInteger()) {
+            throw new IllegalArgumentException("appId must be numeric: ${appIdStr}")
+        }
+        def rawJson
+        try {
+            rawJson = hubInternalGet("/installedapp/eventsJson/${appIdStr}")
+        } catch (Exception e) {
+            mcpLogError("monitoring", "/installedapp/eventsJson/${appIdStr} fetch failed", e)
+            return [success: false, error: "App event history fetch failed: ${e.message}", source: "app", appId: appIdStr as Integer,
+                    note: "Likely a transient hub blip -- retry. Verify the appId with hub_list_apps if it persists."]
+        }
+        def appRows
+        try {
+            def parsed = new groovy.json.JsonSlurper().parseText(rawJson?.toString() ?: "[]")
+            appRows = (parsed instanceof List) ? parsed : []
+        } catch (Exception e) {
+            mcpLogError("monitoring", "/installedapp/eventsJson/${appIdStr} parse failed", e)
+            return [success: false, error: "App event history parse failed: ${e.message}", source: "app", appId: appIdStr as Integer,
+                    note: "Retry; if persistent, firmware may have changed the /installedapp/eventsJson format -- report with hub_report_issue."]
+        }
+
+        def appResults = []
+        def timeFilterUnparseable = 0
+        for (evt in appRows) {
+            if (!(evt instanceof Map)) continue
+            if (attributeFilter && evt.name != attributeFilter) continue
+            // Best-effort hoursBack window, mirroring the location branch: drop
+            // events older than sinceDate when the date parses; keep them if it
+            // doesn't (don't silently lose history), and count the unparseable
+            // rows so the caller can see the window was not fully enforced.
+            def evtDate = null
+            try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
+            catch (Exception ignored) { timeFilterUnparseable++ }
+            if (evtDate != null && evtDate.before(sinceDate)) continue
+            appResults << [
+                name: evt.name,
+                value: evt.value,
+                description: evt.descriptionText,
+                date: evt.date
+            ]
+            if (appResults.size() >= limit) break
+        }
+
+        mcpLog("info", "monitoring", "Retrieved ${appResults.size()} app history events for app ${appIdStr} (${hoursBack}h back) from /installedapp/eventsJson")
+        def appResult = [
+            source: "app",
+            appId: appIdStr as Integer,
+            hoursBack: hoursBack,
+            attributeFilter: attributeFilter,
+            events: appResults,
+            count: appResults.size(),
+            sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+        ]
+        // Mirror the hub-log path: surface rows that escaped the time window
+        // because their date would not parse (the window is always active here).
+        if (timeFilterUnparseable > 0) appResult.timeFilterUnparseable = timeFilterUnparseable
+        return appResult
+    }
+
     // Location-scope branch: when deviceId is omitted, return location history
     // (mode / HSM / hub-variable / sunrise-sunset / system events). There is NO
     // Groovy accessor for this -- neither location.eventsSince(Date, Map) nor
@@ -11741,28 +11918,32 @@ def toolGetDeviceHistory(args) {
         try {
             rawJson = hubInternalGet("/logs/eventsJson")
         } catch (Exception e) {
-            mcpLog("warn", "monitoring", "/logs/eventsJson fetch failed: ${e.message}")
-            return [error: "Location event history fetch failed: ${e.message}", source: "location"]
+            mcpLogError("monitoring", "/logs/eventsJson fetch failed", e)
+            return [success: false, error: "Location event history fetch failed: ${e.message}", source: "location",
+                    note: "Likely a transient hub blip (the same endpoint feeds the hub's Logs page) -- retry."]
         }
         def rows
         try {
             def parsed = new groovy.json.JsonSlurper().parseText(rawJson?.toString() ?: "[]")
             rows = (parsed instanceof List) ? parsed : []
         } catch (Exception e) {
-            mcpLog("warn", "monitoring", "/logs/eventsJson parse failed: ${e.message}")
-            return [error: "Location event history parse failed: ${e.message}", source: "location"]
+            mcpLogError("monitoring", "/logs/eventsJson parse failed", e)
+            return [success: false, error: "Location event history parse failed: ${e.message}", source: "location",
+                    note: "Retry; if persistent, firmware may have changed the /logs/eventsJson format -- report with hub_report_issue."]
         }
 
         def locResults = []
+        def timeFilterUnparseable = 0
         for (evt in rows) {
             if (!(evt instanceof Map)) continue
             if (attributeFilter && evt.name != attributeFilter) continue
             // Best-effort hoursBack window: drop events older than sinceDate when the
             // ISO+offset date parses; keep them if it doesn't (don't silently lose
-            // history). The numeric offset (e.g. -0400) parses via the 'Z' pattern.
+            // history), counting the unparseable rows. The numeric offset (e.g.
+            // -0400) parses via the 'Z' pattern.
             def evtDate = null
             try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
-            catch (Exception ignored) { evtDate = null }
+            catch (Exception ignored) { timeFilterUnparseable++ }
             if (evtDate != null && evtDate.before(sinceDate)) continue
             locResults << [
                 name: evt.name,
@@ -11777,7 +11958,7 @@ def toolGetDeviceHistory(args) {
         }
 
         mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history events (${hoursBack}h back) from /logs/eventsJson")
-        return [
+        def locResult = [
             source: "location",
             hoursBack: hoursBack,
             attributeFilter: attributeFilter,
@@ -11785,6 +11966,10 @@ def toolGetDeviceHistory(args) {
             count: locResults.size(),
             sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
         ]
+        // Mirror the hub-log path: surface rows that escaped the always-active
+        // time window because their date would not parse.
+        if (timeFilterUnparseable > 0) locResult.timeFilterUnparseable = timeFilterUnparseable
+        return locResult
     }
 
     def device = findDevice(args.deviceId)
@@ -11796,8 +11981,9 @@ def toolGetDeviceHistory(args) {
     try {
         events = device.eventsSince(sinceDate, [max: limit])
     } catch (Exception e) {
-        mcpLog("warn", "monitoring", "eventsSince failed for ${deviceLabel}: ${e.message}")
-        return [error: "eventsSince not supported or failed: ${e.message}", device: deviceLabel, deviceId: args.deviceId]
+        mcpLogError("monitoring", "eventsSince failed for ${deviceLabel}", e)
+        return [success: false, error: "eventsSince not supported or failed: ${e.message}", device: deviceLabel, deviceId: args.deviceId,
+                note: "Retry; if persistent, drop hoursBack/attribute to read the most-recent events instead, or check the device's Events page in the hub UI."]
     }
 
     def results = events?.collect { evt ->
@@ -12723,6 +12909,8 @@ private List _extractEmbeddedActions(String html) {
  * Read an installed app's configuration via the hub's SDK-level rendering endpoint
  * /installedapp/configure/json/<appId>[/<pageName>]. Returns a normalized structure
  * covering app identity, page sections, inputs, and optionally the raw settings map.
+ * summary=true instead reads /installedapp/json/<appId> -- the thin identity record
+ * the admin UI's app list consumes -- and skips the config-page render entirely.
  *
  * This endpoint is what the Hubitat Web UI itself consumes to render each app's
  * config page. The top-level shape {configPage, app, settings, childApps} is SDK-level
@@ -12747,6 +12935,40 @@ def toolGetAppConfig(args) {
     }
 
     boolean includeSettings = args?.includeSettings == true
+
+    // Identity-only fast path: /installedapp/json/<id> is the thin per-app record
+    // (no configPage render), so it stays cheap even on apps whose config page is
+    // expensive to build (Room Lighting, RM 5.1). Fields pass through as-is so
+    // firmware additions surface without a server update.
+    if (args?.summary == true) {
+        def summaryPath = "/installedapp/json/${appIdStr}"
+        mcpLog("info", "hub-admin", "hub_get_app_config appId=${appIdStr} summary mode")
+        def summaryText
+        try {
+            summaryText = hubInternalGet(summaryPath, null, 30)
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_get_app_config summary fetch failed", e)
+            return [success: false, error: "Failed to fetch app summary [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
+        }
+        if (!summaryText) {
+            return [success: false, error: "Empty response from ${summaryPath}. App may not exist or hub internal API is unavailable.", appId: appIdStr as Integer]
+        }
+        def summaryParsed
+        try {
+            summaryParsed = new groovy.json.JsonSlurper().parseText(summaryText)
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_get_app_config summary JSON parse failed", e)
+            return [success: false, error: "Failed to parse app summary JSON: ${e.message}. Hubitat firmware may have changed the endpoint contract.", appId: appIdStr as Integer]
+        }
+        if (!(summaryParsed instanceof Map)) {
+            return [success: false, error: "Unexpected response shape: expected a JSON object. Firmware may have changed the endpoint contract.", appId: appIdStr as Integer, fingerprint: "top-level not a Map"]
+        }
+        def summaryResult = [:]
+        summaryResult.putAll(summaryParsed)
+        summaryResult.success = true
+        summaryResult.endpoint = summaryPath
+        return summaryResult
+    }
 
     def path = "/installedapp/configure/json/${appIdStr}"
     if (pageName) path += "/${pageName}"
@@ -15673,6 +15895,238 @@ def toolGetDeviceInUseBy(args) {
     } catch (Exception e) {
         mcpLogError("installed-apps", "hub_list_device_dependents failed for device ${deviceId}", e)
         return [success: false, error: "Failed: ${e.message}", note: "Verify the device ID is valid and the Read master is enabled."]
+    }
+}
+
+// ==================== DEVICE SWAP (built-in Swap Device system app) ====================
+
+/**
+ * Replace one device with another across every app/rule that references it,
+ * by driving the hub's built-in Swap Device tool through the classic-wizard
+ * machinery (oldDev eligibility pre-check -> write oldDev -> compatibility
+ * check -> write newDev -> click the revealed swap-action button).
+ *
+ * The direct/swapDevice alias creates a FRESH TRANSIENT app instance on every
+ * resolve, so every exit path after the resolve closes that instance via
+ * _deviceSwapCleanup (/installedapp/delete) — UNCONDITIONALLY after the click,
+ * because the delete is idempotent/harmless when the swap action already
+ * removed the instance, whereas skipping it on a misread verify leaks an
+ * orphaned Swap Device entry in the hub's Apps list with zero trace.
+ */
+def toolCallDeviceSwap(args) {
+    requireDestructiveConfirm(args?.confirm as Boolean)
+    def fromId = args?.from_device_id?.toString()?.trim()
+    def toId = args?.to_device_id?.toString()?.trim()
+    if (!fromId) throw new IllegalArgumentException("from_device_id is required")
+    if (!toId) throw new IllegalArgumentException("to_device_id is required")
+    if (fromId == toId) throw new IllegalArgumentException("from_device_id and to_device_id must be different devices")
+    def fromDevice = findDevice(fromId)
+    if (!fromDevice) throw new IllegalArgumentException("Device not found: ${fromId}")
+    def toDevice = findDevice(toId)
+    if (!toDevice) throw new IllegalArgumentException("Device not found: ${toId}")
+
+    // Before-count is the verification baseline AND the reported blast radius.
+    def beforeCount = _deviceSwapDependentCount(fromId)
+    mcpLog("info", "device-swap", "Swap requested: ${fromId} -> ${toId}; ${beforeCount == null ? 'unknown' : beforeCount} dependent app(s) before swap")
+
+    def appId = _resolveDirectAppId("swapDevice")
+    if (appId == null) {
+        return [success: false,
+                error: "Could not open the built-in Swap Device tool (direct/swapDevice did not resolve to an app instance).",
+                note: "Likely causes: the firmware does not expose the direct/swapDevice alias, the redirect chain shape changed, or the hub auto-followed an absolute Location (200 with no Location header). A hub-admin warn log entry summarizes which; hub_set_log_level(level=info) captures per-hop detail on retry. Verify Settings > Swap Apps Device exists in the hub UI, then retry. Nothing was swapped."]
+    }
+    mcpLog("info", "device-swap", "Swap Device transient instance ${appId} opened")
+
+    try {
+        // Eligibility pre-check: the Swap Device page only offers oldDev candidates
+        // that are referenced by at least one app AND not owned as another app's
+        // child/component device (verified live on fw 2.5.0.143). Every MCP-created
+        // virtual device is a child device of this app, so it never appears.
+        def oldDevOptions = _deviceSwapEnumOptions(_deviceSwapFindInput(_rmFetchConfigJson(appId, "mainPage"), "oldDev"))
+        if (!oldDevOptions.any { it.id == fromId }) {
+            mcpLog("warn", "device-swap", "from_device_id ${fromId} not among ${oldDevOptions.size()} swappable oldDev option(s) -- closing instance ${appId}")
+            _deviceSwapCleanup(appId)
+            return [success: false,
+                    error: "The hub's Swap Device tool does not offer device ${fromId} as swappable.",
+                    oldDevOptionCount: oldDevOptions.size(),
+                    note: "Swap Device only offers devices that are referenced by at least one app AND not owned as another app's child/component device. MCP-created virtual devices (hub_manage_virtual_device) are child devices and are always ineligible. Pick a free-standing from_device_id, or use hub_list_device_dependents(deviceId=${fromId}) to confirm it is referenced by an app. Nothing was swapped; the transient instance was closed."]
+        }
+
+        def applied = []
+        def skipped = []
+        _rmWriteSettingOnPage(appId, "mainPage", "oldDev", fromId, applied, null, skipped)
+        def oldDevSkip = skipped.find { it.key == "oldDev" }
+        if (oldDevSkip) {
+            _deviceSwapCleanup(appId)
+            return [success: false,
+                    error: "Swap Device page did not accept the oldDev selection (${oldDevSkip.reason}).",
+                    note: "Hub firmware may have renamed the device pickers on the Swap Device page. Nothing was swapped; the transient instance was closed."]
+        }
+        mcpLog("info", "device-swap", "oldDev=${fromId} written on instance ${appId}")
+
+        // The hub fills newDev's options with compatible replacements only
+        // after oldDev lands — this re-fetch IS the compatibility check.
+        def cfg = _rmFetchConfigJson(appId, "mainPage")
+        def options = _deviceSwapEnumOptions(_deviceSwapFindInput(cfg, "newDev"))
+        if (!options.any { it.id == toId }) {
+            mcpLog("warn", "device-swap", "to_device_id ${toId} not among ${options.size()} compatible replacement(s) for ${fromId} -- closing instance ${appId}")
+            _deviceSwapCleanup(appId)
+            return [success: false,
+                    error: options.isEmpty()
+                        ? "The hub offered NO compatible replacement devices for ${fromId}."
+                        : "Device ${toId} is not a compatible replacement for ${fromId} -- the hub did not offer it.",
+                    compatibleOptions: options.take(30),
+                    compatibleOptionCount: options.size(),
+                    note: "The Swap Device tool only offers devices with compatible capabilities, and excludes devices owned as another app's child/component device -- to_device_id may be an app child device (every MCP-created virtual device is one). Pick a to_device_id from compatibleOptions${options.size() > 30 ? " (showing first 30 of ${options.size()})" : ""}, or choose free-standing replacement hardware of the same device class. Nothing was swapped."]
+        }
+
+        _rmWriteSettingOnPage(appId, "mainPage", "newDev", toId, applied, null, skipped)
+        def newDevSkip = skipped.find { it.key == "newDev" }
+        if (newDevSkip) {
+            _deviceSwapCleanup(appId)
+            return [success: false,
+                    error: "Swap Device page did not accept the newDev selection (${newDevSkip.reason}).",
+                    note: "The replacement was offered but the write did not land -- likely a transient hub blip. Nothing was swapped; the transient instance was closed. Retry the call."]
+        }
+        mcpLog("info", "device-swap", "newDev=${toId} written on instance ${appId}")
+
+        // The swap-action button only renders once both pickers are set, and
+        // its name is firmware-defined — discover it instead of hardcoding.
+        def buttons = _deviceSwapActionButtons(_rmFetchConfigJson(appId, "mainPage"))
+        if (buttons.size() != 1) {
+            mcpLog("warn", "device-swap", "Expected exactly one swap-action button, found ${buttons.size()} ${buttons} -- closing instance ${appId}")
+            _deviceSwapCleanup(appId)
+            return [success: false,
+                    error: buttons.isEmpty()
+                        ? "No swap-action button appeared after selecting both devices -- the hub did not unlock the swap."
+                        : "Ambiguous Swap Device page: ${buttons.size()} action buttons found (${buttons.join(', ')}); refusing to click blindly.",
+                    buttonsFound: buttons,
+                    note: "Hub firmware may have changed the Swap Device page layout. Nothing was swapped; the transient instance was closed. Verify the swap manually via Settings > Swap Apps Device and report the button names with hub_report_issue if this persists."]
+        }
+        mcpLog("info", "device-swap", "Clicking swap action '${buttons[0]}' on instance ${appId}")
+        _rmClickAppButton(appId, buttons[0], null, "mainPage")
+
+        // Post-click: the swap action usually removes the transient instance
+        // itself, but a transient read failure on the verify re-fetch is
+        // indistinguishable from "instance gone", so the fetch only informs
+        // LOGGING and never gates cleanup. The delete ALWAYS runs: it is
+        // idempotent/harmless against an already-reaped instance, and
+        // _deviceSwapCleanup swallows + logs its own failure -- skipping the
+        // delete on a misread is the only way to leak an instance untraced.
+        def instanceGone = false
+        try {
+            _rmFetchConfigJson(appId, "mainPage")
+        } catch (Exception e) {
+            instanceGone = true
+            mcpLog("warn", "device-swap", "post-click verify fetch threw ${e.class.simpleName}: ${e.message} -- treating instance as present for cleanup (the delete is harmless if it already self-removed)")
+        }
+        _deviceSwapCleanup(appId)
+
+        def afterCount = _deviceSwapDependentCount(fromId)
+        if (beforeCount != null && afterCount != null && beforeCount > 0 && afterCount >= beforeCount) {
+            return [success: false,
+                    error: "Swap action was clicked but ${afterCount} app(s) still reference device ${fromId} (was ${beforeCount}).",
+                    note: "The hub accepted the click but the dependents count did not drop. Inspect with hub_list_device_dependents(deviceId=${fromId}) before retrying -- some references may not be swappable."]
+        }
+        mcpLog("info", "device-swap", "Swap ${fromId} -> ${toId} complete; dependents ${beforeCount} -> ${afterCount}; transient instance ${instanceGone ? 'self-removed (verify fetch threw)' : 'survived the click'}; cleanup delete issued either way")
+        def result = [success: true,
+                      swapped: [from: fromId, to: toId],
+                      verified: (beforeCount != null && afterCount != null),
+                      note: "Every app that referenced ${fromId} now uses ${toId}. Verify with hub_list_device_dependents(deviceId=${toId}) and spot-check the most critical automations."]
+        if (beforeCount != null) result.appsRewired = beforeCount
+        if (afterCount != null) result.remainingDependents = afterCount
+        if (beforeCount == null || afterCount == null) {
+            result.note += " Before/after dependent counts could not be read from /device/fullJson, so the count verification is degraded."
+        }
+        return result
+    } catch (Exception e) {
+        mcpLogError("device-swap", "hub_call_device_swap ${fromId} -> ${toId} failed", e)
+        _deviceSwapCleanup(appId)
+        return [success: false,
+                error: "Device swap failed: ${e.message}",
+                note: "The swap may not have committed -- verify with hub_list_device_dependents(deviceId=${fromId}). The transient Swap Device instance was closed."]
+    }
+}
+
+/**
+ * Count of apps referencing a device, from the same /device/fullJson surface
+ * hub_list_device_dependents reads. Best-effort: returns null when the count
+ * cannot be read, so a verification blip degrades the report instead of
+ * failing a swap that already committed.
+ */
+private Integer _deviceSwapDependentCount(String deviceId) {
+    try {
+        def responseText = hubInternalGet("/device/fullJson/${deviceId}")
+        if (!responseText) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        if (!(parsed instanceof Map)) return null
+        def appsUsing = (parsed.appsUsing instanceof List) ? parsed.appsUsing : []
+        try {
+            return (parsed.appsUsingCount != null) ? (parsed.appsUsingCount as Integer) : appsUsing.size()
+        } catch (NumberFormatException ignored) {
+            return appsUsing.size()
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "device-swap", "dependent-count read failed for device ${deviceId} (${e.message}) -- before/after verification degraded")
+        return null
+    }
+}
+
+// Raw input descriptor lookup on a configure/json page. _rmCollectInputSchema
+// drops `options`, which the compatibility check needs.
+private Map _deviceSwapFindInput(Map cfg, String name) {
+    for (s in (cfg?.configPage?.sections ?: [])) {
+        for (i in (s?.input ?: [])) {
+            if (i instanceof Map && i.name?.toString() == name) return i
+        }
+    }
+    return null
+}
+
+// Normalize an enum input's options to [[id, label], ...]. The hub renders
+// device options as a list of single-entry maps ([{<deviceId>: <label>}, ...]);
+// tolerate a plain map too in case firmware flattens the shape.
+private List _deviceSwapEnumOptions(Map input) {
+    def out = []
+    def opts = input?.options
+    if (opts instanceof Map) {
+        opts.each { k, v -> out << [id: k?.toString(), label: v?.toString()] }
+    } else if (opts instanceof List) {
+        for (opt in opts) {
+            if (opt instanceof Map) {
+                opt.each { k, v -> out << [id: k?.toString(), label: v?.toString()] }
+            }
+        }
+    }
+    return out
+}
+
+// All type:button inputs on the page except the Cancel button (closeApp).
+// After both pickers are set the hub reveals exactly one swap-action button.
+private List _deviceSwapActionButtons(Map cfg) {
+    def names = []
+    for (s in (cfg?.configPage?.sections ?: [])) {
+        for (i in (s?.input ?: [])) {
+            if (i instanceof Map && i.type?.toString() == "button" && i.name && i.name.toString() != "closeApp") {
+                names << i.name.toString()
+            }
+        }
+    }
+    return names
+}
+
+// Remove the transient Swap Device instance. The Cancel button (closeApp) does NOT
+// reap a pending (installed:false) instance -- verified live on fw 2.5.0.143; only
+// /installedapp/delete/<id> does. Never throws: cleanup runs on failure paths where
+// the original error must win.
+private void _deviceSwapCleanup(Integer appId) {
+    try {
+        hubInternalGetRaw("/installedapp/delete/${appId}")
+        mcpLog("info", "device-swap", "Transient Swap Device instance ${appId} deleted")
+    } catch (Exception e) {
+        // error (not warn) so the orphan-leak case is queryable at the default
+        // error-only MCP log level.
+        mcpLogError("device-swap", "Delete of Swap Device instance ${appId} failed -- a leftover transient instance is harmless but can be removed from the hub's Apps list", e)
     }
 }
 
@@ -28788,6 +29242,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 **hub_list_device_events:**
 - Default: most-recent events for a device (deviceId + limit)
 - Add hoursBack for up to 7 days of history; omit deviceId for location-level events (mode/HSM/hub variable)
+- appId (mutually exclusive with deviceId) returns the events an installed app/rule emitted; rows are {name, value, description, date}
 - Use the attribute filter to reduce data volume''',
 
         builtin_app_tools: '''## Installed-App & Native-Rule Tools
@@ -28810,6 +29265,7 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ar
 
 - **hub_get_app_config** — read an installed app's configuration page (Read master required)
   - Returns app identity (label, type, disabled), config page sections/inputs/values, and child apps
+  - summary=true is a fast identity-only mode: the hub's thin app record (id, name, type, disabled, user) with no config-page render -- use it for existence/identity checks on expensive apps
   - Multi-page apps expose sub-pages via pageName. For HPM: use pageName="prefPkgUninstall" for the FULL installed-package list; pageName="prefPkgModify" returns only the subset with optional components; pageName="prefOptions" is the main-menu navigation (no package data). RM 5.x and Room Lighting use a single mainPage (no pageName needed). Call hub_list_app_pages first to discover available page names for any multi-page app.
   - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
   - Workflow: hub_list_apps (scope='instances'; or hub_list_rules for RM rules specifically -- note that hub_get_custom_rule handles only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then hub_get_app_config to inspect. For multi-page apps, consider hub_list_app_pages first.

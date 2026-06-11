@@ -637,7 +637,7 @@ def _getAllToolDefinitions_partVisualRules() {
         ],
         [
             name: "hub_set_visual_rule",
-            description: "Create or update a Visual Rules Builder rule -- the EASIEST native automation to author (one JSON write; no wizard). PREFER this for simple device automations (motion lights, contact alerts, schedules); fall back to hub_set_rule (Rule Machine) for branching logic, loops, variables, or arbitrary device commands. Omit appId to create (name + definition required). Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').[[FLAT_TRIM]] With appId: definition replaces wholesale, name renames, paused pauses/resumes; the definition format must match the rule's existing format (see hub_get_visual_rule).[[/FLAT_TRIM]]",
+            description: "Create or update a Visual Rules Builder rule -- the EASIEST native automation to author[[FLAT_TRIM]] (one JSON write; no wizard)[[/FLAT_TRIM]]. PREFER this for simple device automations (motion lights, contact alerts, schedules); fall back to hub_set_rule (Rule Machine) for branching logic, loops, variables, or arbitrary device commands. Omit appId to create (name + definition required). Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').[[FLAT_TRIM]] With appId: definition replaces wholesale, name renames, paused pauses/resumes; the definition format must match the rule's existing format (see hub_get_visual_rule).[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [

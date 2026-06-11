@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 97 tools (30 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, HPM package state introspection, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 98 tools (30 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, HPM package state introspection, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -32,7 +32,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 97 tools (30 on tools/list + gateways)  │  │
+│  │  - 98 tools (30 on tools/list + gateways)  │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -93,12 +93,12 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 97 items to 30. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 98 items to 30. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
 
 **Architecture:**
 - `getGatewayConfig()` — defines 19 gateways, each with a description, tools list, and summaries map
 - `getToolDefinitions()` — returns 11 core tools + 19 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 97 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getAllToolDefinitions()` — returns all 98 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
@@ -126,7 +126,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 | `hub_manage_rooms` | 5 | Room CRUD |
 | `hub_manage_destructive_ops` | 3 | Hub reboot, shutdown, device deletion (write) |
 | `hub_manage_code` | 11 | Install/update apps+drivers+libraries, install/delete/export HPM-style bundles, delete item (app/driver/library), restore backup (write) |
-| `hub_manage_devices` | 6 | Device command/update (write) + list/get devices, attributes, events (reads) |
+| `hub_manage_devices` | 7 | Device command/swap/update (writes) + list/get devices, attributes, events (reads) |
 | `hub_manage_logs` | 6 | Logs, performance stats, hub jobs, debug tools (read + clear/set-level write) |
 | `hub_manage_diagnostics` | 8 | Diagnostics, state capture/delete, radio details (zwave/zigbee), zwave repair, memory history, metrics, GC |
 | `hub_manage_files` | 4 | File Manager CRUD |
@@ -138,7 +138,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 
 **Flat (top-level) tools (11):** `hub_manage_virtual_device` (action enum: "create", "delete"), `hub_get_info` (comprehensive: hardware, health — memory, temp, DB size — and MCP stats always available; PII/location data — name, IP, timezone, coordinates, zip — included whenever the Read master is ON, which is the default, and excluded only when Read is explicitly OFF), `hub_list_modes`, `hub_set_mode`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`, `hub_get_tool_guide`, `hub_search_tools` (BM25 natural language search across all tools).
 
-Device tools (`hub_list_devices` with `filter='virtual'` to list only MCP-managed virtual devices, `hub_get_device`, `hub_get_device_attribute` — pass `expectedValue`/`expectedValues` to block-poll the attribute until it matches or times out; `timeoutMs` in MILLISECONDS, default 5000ms = 5 seconds, max 60000ms; polling BLOCKS the MCP request, use sparingly, prefer event-driven flows — `hub_call_device_command`, `hub_update_device`, and `hub_list_device_events` with `hoursBack` for a window up to 7 days of device or location event history; omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events) live in the `hub_read_devices` / `hub_manage_devices` gateways. The MCP custom rule engine tools (`hub_get_custom_rule` — omit `ruleId` to list all custom-engine rules, `detailed=true` for comprehensive diagnostics on one rule — `hub_create_custom_rule`, `hub_update_custom_rule`) live in the `hub_read_rules` / `hub_manage_custom_rules` gateways; this engine is distinct from native Rule Machine, whose authoring lives in the `hub_manage_rule_machine` gateway via `hub_set_rule`, while the other classic apps (Room Lighting, Button Controllers, Basic Rules, etc.) plus delete and health are in the `hub_manage_native_rules_and_apps` gateway via `hub_set_native_app` / `hub_delete_native_app` / `hub_get_rule_health`. Visual Rules Builder rules (Vue-JSON apps, the simplest native engine) are read/written via `hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule` in the `hub_manage_rule_machine` gateway (the read is also in `hub_read_rules`).
+Device tools (`hub_list_devices` with `filter='virtual'` to list only MCP-managed virtual devices, `hub_get_device`, `hub_get_device_attribute` — pass `expectedValue`/`expectedValues` to block-poll the attribute until it matches or times out; `timeoutMs` in MILLISECONDS, default 5000ms = 5 seconds, max 60000ms; polling BLOCKS the MCP request, use sparingly, prefer event-driven flows — `hub_call_device_command`, `hub_update_device`, and `hub_list_device_events` with `hoursBack` for a window up to 7 days of device or location event history; omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events) live in the `hub_read_devices` / `hub_manage_devices` gateways; `hub_call_device_swap` (replace a device across ALL apps/rules that reference it, via the hub's built-in Swap Device tool) is a write and lives only in `hub_manage_devices`. The MCP custom rule engine tools (`hub_get_custom_rule` — omit `ruleId` to list all custom-engine rules, `detailed=true` for comprehensive diagnostics on one rule — `hub_create_custom_rule`, `hub_update_custom_rule`) live in the `hub_read_rules` / `hub_manage_custom_rules` gateways; this engine is distinct from native Rule Machine, whose authoring lives in the `hub_manage_rule_machine` gateway via `hub_set_rule`, while the other classic apps (Room Lighting, Button Controllers, Basic Rules, etc.) plus delete and health are in the `hub_manage_native_rules_and_apps` gateway via `hub_set_native_app` / `hub_delete_native_app` / `hub_get_rule_health`. Visual Rules Builder rules (Vue-JSON apps, the simplest native engine) are read/written via `hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule` in the `hub_manage_rule_machine` gateway (the read is also in `hub_read_rules`).
 
 **Safety gates are preserved:** The Read/Write master gate runs centrally at the top of `executeTool()` (the dispatch chokepoint), and the destructive-tier `confirm`+backup check (`requireDestructiveConfirm(args.confirm)`) runs in the handlers of the destructive write tools. A gateway name routes back through `executeTool()`, which re-applies the master gate per sub-tool before the handler runs. No safety check is bypassed.
 
