@@ -731,21 +731,29 @@ class TestRunner:
 
         dev_id = str(target["id"])
 
-        # Turn on
+        # A fresh Virtual Switch is born with switch=null and event processing can
+        # lag on a busy hub, so block-poll the attribute instead of the old fixed
+        # sleep + single read (which flaked as "Expected switch=on, got None").
         self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "on"})
-        time.sleep(0.5)
-        detail = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
-        attrs = detail.get("attributes", detail.get("currentStates", []))
-        switch_val = _find_attr(attrs, "switch")
-        assert switch_val == "on", f"Expected switch=on, got {switch_val}"
+        result = self.client.call_tool("hub_get_device_attribute", {
+            "deviceId": dev_id,
+            "attribute": "switch",
+            "expectedValue": "on",
+            "timeoutMs": 10000,
+        })
+        assert result.get("timedOut") is False and result.get("finalValue") == "on", \
+            f"Expected switch=on within 10s, got: {result}"
 
         # Turn off
         self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
-        time.sleep(0.5)
-        detail = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
-        attrs = detail.get("attributes", detail.get("currentStates", []))
-        switch_val = _find_attr(attrs, "switch")
-        assert switch_val == "off", f"Expected switch=off, got {switch_val}"
+        result = self.client.call_tool("hub_get_device_attribute", {
+            "deviceId": dev_id,
+            "attribute": "switch",
+            "expectedValue": "off",
+            "timeoutMs": 10000,
+        })
+        assert result.get("timedOut") is False and result.get("finalValue") == "off", \
+            f"Expected switch=off within 10s, got: {result}"
 
     @test("virtual_device_lifecycle")
     def test_list_virtual_devices(self) -> None:
