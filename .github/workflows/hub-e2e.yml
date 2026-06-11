@@ -52,6 +52,14 @@ on:
         description: 'true = read-only hub inventory probe instead of the e2e suite (diagnose hub state)'
         required: false
         default: 'false'
+      reboot_first:
+        description: 'probe_only: true = reboot the test hub before probing (clears a stuck per-app load throttle / LimitExceededException)'
+        required: false
+        default: 'false'
+      disable_app_id:
+        description: 'probe_only: installed-app id to DISABLE (red-X, not delete) after the probe, via the watchdog hub_set_app_disabled'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -111,8 +119,53 @@ jobs:
               echo "::add-mask::$TOKEN"
             fi
           done
+      - name: Reboot test hub first (reboot_first=true)
+        if: inputs.reboot_first == 'true'
+        # Clears the platform's sticky per-app load throttle (LimitExceededException "generates
+        # excessive hub load") -- community-confirmed to reset only on reboot. Fired through the
+        # normal destructive-ops gateway; the probe below then captures the post-reboot state.
+        run: |
+          set -euo pipefail
+          echo "Sending hub_reboot to the test hub..."
+          RESP=$(curl -sS --max-time 60 -X POST "$MCP_URL" -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"hub_manage_destructive_ops","arguments":{"tool":"hub_reboot","args":{"confirm":true}}}}' || true)
+          echo "reboot response head: $(printf '%s' "$RESP" | head -c 300 | tr '\n' ' ')"
+          if printf '%s' "$RESP" | grep -qiE "SAFETY CHECK|BACKUP REQUIRED|Write tools are disabled"; then
+            echo "::error::hub_reboot was REFUSED by the destructive-ops gate -- see response above."
+            exit 1
+          fi
+          echo "Waiting 60s for the hub to go down, then polling for recovery (up to ~8 min)..."
+          sleep 60
+          attempt=1
+          until curl -sS --fail --max-time 20 -X POST "$MCP_URL" -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' \
+              | jq -e '.result.content[0].text' >/dev/null 2>&1; do
+            if [ "$attempt" -ge 32 ]; then
+              echo "::error::Test hub did not come back within ~8 min of the reboot."
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep 15
+          done
+          echo "Hub is back after reboot (poll attempt ${attempt})."
       - name: Probe hub inventory
         run: bash .github/scripts/mcp_probe_hub.sh
+      - name: Disable installed app (disable_app_id set)
+        if: inputs.disable_app_id != ''
+        # Parks an app via its disabled flag (the admin UI red-X) WITHOUT deleting it, through the
+        # watchdog's hub_set_app_disabled (POST /installedapp/disable + read-back verification).
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "${{ inputs.disable_app_id }}" | grep -qE '^[0-9]+$'; then
+            echo "::error::disable_app_id must be numeric"; exit 1
+          fi
+          RPC=$(jq -nc --arg id "${{ inputs.disable_app_id }}" \
+            '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_set_app_disabled",arguments:{appId:$id,disable:true,confirm:true}}}')
+          RESP=$(curl -sS --max-time 60 -X POST "$WATCHDOG_URL" -H "Content-Type: application/json" --data-binary "$RPC")
+          TEXT=$(printf '%s' "$RESP" | jq -r '.result.content[0].text // empty')
+          echo "disable result: $TEXT"
+          printf '%s' "$TEXT" | jq -e '.success == true' >/dev/null || {
+            echo "::error::hub_set_app_disabled did not verify the flip -- see result above."; exit 1; }
 
   e2e:
     needs: [approve]
@@ -252,6 +305,15 @@ jobs:
       - name: Acquire test hub lease
         if: steps.gate.outputs.available == 'true'
         run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
+
+      - name: Pre-run hub status probe
+        if: steps.gate.outputs.available == 'true'
+        # Standard since the 2026-06-11 LimitExceededException hunt: capture the hub's exact
+        # pre-run state (memory, jobs, error logs, devices, app instances, live command check)
+        # inside our lease window, so a degraded starting state is visible in every run's log.
+        # Diagnostic only -- must never fail the run.
+        continue-on-error: true
+        run: bash .github/scripts/mcp_probe_hub.sh
 
       - name: Configure test environment (capture pre-state + enable toggles)
         if: steps.gate.outputs.available == 'true'
@@ -434,6 +496,15 @@ jobs:
         # failure before capture doesn't propagate here. Runs after the disarm so
         # MCP_URL points at restored main, not a possibly-broken PR app.
         run: bash .github/scripts/mcp_restore_env.sh
+
+      - name: Post-run hub status probe
+        if: always() && steps.gate.outputs.available == 'true'
+        # The pre-run probe's counterpart: capture what the run LEFT BEHIND (stranded artifacts,
+        # load-limiter trips in the error log, memory descent, watchdog flag state) while we still
+        # hold the lease. Runs after the cleanup step's restore-completion gate, so the hub is
+        # quiet. Diagnostic only -- must never fail the run.
+        continue-on-error: true
+        run: bash .github/scripts/mcp_probe_hub.sh
 
       - name: Release test hub lease
         if: always() && steps.gate.outputs.available == 'true'

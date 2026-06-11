@@ -153,6 +153,33 @@ def deadmanKick() { checkDeadman() }
 // polls). BOTH triggers retry up to a 5-tick cap before latching "failed" (a transient miss must not
 // latch the restore failed); a success stamps restoreFor=runId so it runs at most once per run.
 private void actAndRecord(Map flag, String trigger) {
+    // SINGLE-FLIGHT LATCH. restoreFor is only stamped at the END of a restore, but a restore takes
+    // 3-4 minutes and checkDeadman fires every minute (plus the adminWriteFile kick) -- without this
+    // latch each tick starts ANOTHER full restore and they run CONCURRENTLY (seen live: three
+    // overlapping "disarm complete" at 193/210/235s). Each restore is a bundle install + every
+    // library + two app recompiles, so the overlap is a hub-load spike big enough to trip the
+    // platform's per-app load limiter (LimitExceededException), which then blocks device commands
+    // hub-wide until a reboot. atomicState narrows the duplicate window from minutes to
+    // milliseconds; the 10-minute staleness escape keeps a crashed restore from wedging the latch.
+    long nowMs = now()
+    Long inFlightAt = null
+    try { inFlightAt = atomicState.restoreInFlightAt as Long } catch (Exception ignore) { inFlightAt = null }
+    if (atomicState.restoreInFlightFor?.toString() == flag.runId?.toString()
+            && inFlightAt != null && (nowMs - inFlightAt) < 600000L) {
+        logInfo "restore for run ${flag.runId} already in flight (${((nowMs - inFlightAt) / 1000) as long}s, trigger=${trigger}) -- skipping duplicate tick"
+        return
+    }
+    atomicState.restoreInFlightFor = flag.runId
+    atomicState.restoreInFlightAt = nowMs
+    try {
+        actAndRecordLocked(flag, trigger)
+    } finally {
+        atomicState.restoreInFlightFor = null
+        atomicState.restoreInFlightAt = null
+    }
+}
+
+private void actAndRecordLocked(Map flag, String trigger) {
     Map res = restorePackage(flag)
     if (res.ok) {
         flag.armed = false
@@ -673,6 +700,7 @@ def executeAdminTool(String toolName, Map args) {
         case "hub_update_library":  return adminUpdateLibrary(args)
         case "hub_delete_item":     return adminDeleteItem(args)
         case "hub_force_delete_app": return adminForceDeleteInstalledApp(args)
+        case "hub_set_app_disabled": return adminSetAppDisabled(args)
         case "hub_install_bundle":  return adminInstallBundle(args)
         case "hub_list_bundles":    return adminListBundles(args)
         case "hub_delete_bundle":   return adminDeleteBundle(args)
@@ -1145,6 +1173,39 @@ def adminForceDeleteInstalledApp(args) {
         return [success: true, message: "Force-deleted installed app ${id} (HTTP ${st}; verified gone).", id: id]
     }
     return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the gone-check could not read /installedapp/json (status=${cst ?: 'none'}) -- keep the id and re-delete to be safe.", id: id]
+}
+
+// hub_set_app_disabled: toggle an installed app's disabled flag (the admin UI's red-X) via
+// POST /installedapp/disable {id, disable} -- the documented Vue wire format (vue-hub2.min.js:
+// `const e={id:this.appId,disable:!0};postJsonAndCallback(...)`). Remote-management aid for the
+// test hub (e.g. parking the legacy v1 watchdog without deleting it). Verified via the
+// /installedapp/json/<id> read-back: only an observed flag flip reports success.
+def adminSetAppDisabled(args) {
+    requireConfirm(args)
+    def id = (args.appId != null) ? args.appId : args.id
+    if (id == null || !id.toString().isInteger() || id.toString().toInteger() <= 0) {
+        throw new IllegalArgumentException("appId must be a positive integer (got: '${id}')")
+    }
+    boolean disable = (args.disable == true || args.disable?.toString() == "true")
+    mcpAdminLog "Setting installed app ${id} disabled=${disable} (/installedapp/disable)"
+    def body = groovy.json.JsonOutput.toJson([id: id.toString().toInteger(), disable: disable])
+    Map resp = hubPostJson("/installedapp/disable", body)
+    Integer st = (resp?.status != null) ? (resp.status as Integer) : null
+    if (st == null || st >= 400) {
+        return [success: false, error: "POST /installedapp/disable returned status=${st ?: 'none'} for app ${id}.", appId: id]
+    }
+    // Read back the flag -- a 200 alone is not proof the flip landed.
+    def check = hubGetStatus("/installedapp/json/${id}", [:])
+    def observed = null
+    try {
+        def parsed = new groovy.json.JsonSlurper().parseText(check?.data?.toString() ?: "")
+        if (parsed instanceof Map) observed = (parsed.disabled == true)
+    } catch (Exception ignore) { observed = null }
+    if (observed == disable) {
+        return [success: true, appId: id, disabled: disable, message: "App ${id} disabled flag verified ${disable}."]
+    }
+    return [success: false, appId: id, disabled: observed,
+            error: "POST accepted (HTTP ${st}) but the read-back shows disabled=${observed} (wanted ${disable})."]
 }
 
 // hub_install_bundle: copied from toolInstallBundle + _firmwareAtLeast + _bundleResponseSucceeded
@@ -1630,6 +1691,8 @@ def getAdminToolDefinitions() {
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
         [name: "hub_force_delete_app", description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. confirm:true required.",
          inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
+        [name: "hub_set_app_disabled", description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
+         inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
         [name: "hub_install_bundle", description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
          inputSchema: [type: "object", properties: [importUrl: [type: "string"], primary: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
         [name: "hub_list_bundles", description: "List installed code bundle containers (id/name/namespace). Read-only.",

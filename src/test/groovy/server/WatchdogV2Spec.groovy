@@ -181,6 +181,60 @@ class WatchdogV2Spec extends Specification {
         uploaded['mcp-main-deployed-sha.txt'] == 'abc123'
     }
 
+    def "a tick landing during an in-flight restore is skipped (single-flight latch)"() {
+        given:
+        // A restore takes 3-4 minutes and checkDeadman fires every minute, so without the latch
+        // each tick starts ANOTHER full concurrent restore (seen live: three overlapping
+        // "disarm complete" per teardown -- a load spike that trips the hub's per-app limiter).
+        int restores = 0
+        script.metaClass.restoreApp = { String c, String f -> restores++; true }
+        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7',
+                                          manifest: [app: [classId: '178', file: 'f'], libraries: []]] }
+        script.metaClass.writeFlag = { Map fl -> true }
+        script.atomicState.restoreInFlightFor = '7'
+        script.atomicState.restoreInFlightAt = System.currentTimeMillis() - 30_000L
+
+        when:
+        script.checkDeadman()
+
+        then: 'the duplicate tick does not start a second restore'
+        restores == 0
+    }
+
+    def "a STALE in-flight latch (crashed restore) does not block the next restore"() {
+        given:
+        int restores = 0
+        script.metaClass.restoreApp = { String c, String f -> restores++; true }
+        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7',
+                                          manifest: [app: [classId: '178', file: 'f'], libraries: []]] }
+        script.metaClass.writeFlag = { Map fl -> true }
+        script.atomicState.restoreInFlightFor = '7'
+        script.atomicState.restoreInFlightAt = System.currentTimeMillis() - 700_000L   // > 10-min escape
+
+        when:
+        script.checkDeadman()
+
+        then: 'the stale latch is overridden and the restore runs'
+        restores == 1
+    }
+
+    def "the in-flight latch is cleared after the restore completes"() {
+        given:
+        script.metaClass.restoreApp = { String c, String f -> true }
+        script.metaClass.restoreLibrary = { String i, String f -> true }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '8',
+                                          manifest: [app: [classId: '178', file: 'f'], libraries: []]] }
+        script.metaClass.writeFlag = { Map fl -> true }
+
+        when:
+        script.checkDeadman()
+
+        then: 'a finished restore releases the latch for the next run'
+        script.atomicState.restoreInFlightFor == null
+    }
+
     def "no marker is stamped when the flag has no canonicalMainSha or the restore fails (#scenario)"() {
         given:
         Map uploaded = [:]
@@ -324,6 +378,41 @@ class WatchdogV2Spec extends Specification {
         then:
         r.success == false
         r.error?.contains("did not confirm")
+    }
+
+    @Unroll
+    def "adminSetAppDisabled posts the Vue wire format and trusts only the read-back (#scenario)"() {
+        given:
+        // POST /installedapp/disable {id, disable} (vue-hub2.min.js wire format); a 200 alone is
+        // not proof -- only the /installedapp/json read-back showing the flipped flag is success.
+        String postedPath = null
+        String postedBody = null
+        script.metaClass.hubPostJson = { String path, String body ->
+            postedPath = path; postedBody = body; [status: postStatus, data: '']
+        }
+        script.metaClass.hubGetStatus = { String path, Map q -> [status: 200, location: null, data: readBack] }
+
+        when:
+        def r = script.adminSetAppDisabled([appId: "5506", disable: true, confirm: true])
+
+        then:
+        r.success == expected
+        postedPath == "/installedapp/disable"
+        postedBody.contains('"id":5506') && postedBody.contains('"disable":true')
+
+        where:
+        scenario                          | postStatus | readBack                       || expected
+        'flip verified'                   | 200        | '{"id":5506,"disabled":true}'  || true
+        'POST ok but flag did not flip'   | 200        | '{"id":5506,"disabled":false}' || false
+        'unreadable read-back'            | 200        | '<html>login</html>'           || false
+    }
+
+    def "adminSetAppDisabled reports failure when the POST itself fails"() {
+        given:
+        script.metaClass.hubPostJson = { String path, String body -> [status: 500, data: ''] }
+
+        expect:
+        script.adminSetAppDisabled([appId: "5506", disable: true, confirm: true]).success == false
     }
 
     @Unroll
