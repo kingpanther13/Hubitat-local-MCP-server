@@ -459,6 +459,11 @@ class TestRunner:
             self._record(name, group, "skip", message=str(exc), duration=elapsed)
         except Exception as exc:
             elapsed = time.monotonic() - t0
+            # The summary table stays readable with a 200-char message, but the FULL
+            # failure goes to the run log here -- a truncated structured response
+            # (error/repairHints/settingsSkipped all cut off) has repeatedly forced an
+            # extra run just to learn why a test failed.
+            print(f"    FULL-FAILURE {name}: {exc}")
             self._record(name, group, "fail", message=str(exc)[:200], duration=elapsed)
 
     # -- Rule helper: create, verify, delete ---------------------------------

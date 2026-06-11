@@ -54,10 +54,20 @@ gw_rpc() { # $1 gateway, $2 sub-tool, $3 args json
 }
 
 echo "######## HUB PROBE: read-only inventory ########"
-section "hub_get_info" "$MCP_URL" "$(tool_rpc hub_get_info '{}')"
-section "hub_get_jobs (uptime / scheduled / RUNNING jobs / hub actions)" "$MCP_URL" "$(gw_rpc hub_manage_logs hub_get_jobs '{}')"
-section "hub_get_metrics (free memory + the hub's own health alerts)" "$MCP_URL" "$(gw_rpc hub_manage_diagnostics hub_get_metrics '{}')"
-section "hub_get_memory_history (last 60 entries)" "$MCP_URL" "$(gw_rpc hub_manage_diagnostics hub_get_memory_history '{"limit":60}')"
+# Metrics / logs / app-inventory sections go through the WATCHDOG endpoint: it is a separate
+# always-alive app, so the probe reads hub health even while the main server is recompiling or
+# throttled (these sections used to 504 against a busy main app). Sections that are main-DOMAIN
+# (devices, RM/VRB rules, variables, files) or that deliberately exercise the main app (the live
+# wedge matrix) stay on MCP_URL.
+section "hub_get_info (MAIN server -- also proves the app under test answers)" "$MCP_URL" "$(tool_rpc hub_get_info '{}')"
+section "hub_get_jobs via watchdog (uptime / scheduled / RUNNING jobs)" "$WATCHDOG_URL" "$(tool_rpc hub_get_jobs '{}')"
+section "hub_get_metrics via watchdog (free memory + the hub's own health alerts)" "$WATCHDOG_URL" "$(tool_rpc hub_get_metrics '{}')"
+section "hub_get_memory_history via watchdog (last 60 entries)" "$WATCHDOG_URL" "$(tool_rpc hub_get_memory_history '{"limit":60}')"
+section "hub system logs via watchdog: ERRORS (newest 60)" "$WATCHDOG_URL" "$(tool_rpc hub_get_hub_logs '{"level":"error","limit":60}')"
+section "hub system logs via watchdog: WARNINGS (newest 40)" "$WATCHDOG_URL" "$(tool_rpc hub_get_hub_logs '{"level":"warn","limit":40}')"
+section "hub_list_apps via watchdog (ALL running app instances)" "$WATCHDOG_URL" "$(tool_rpc hub_list_apps '{}')"
+section "hub_list_libraries via watchdog (duplicate name+namespace = the #include hazard)" "$WATCHDOG_URL" "$(tool_rpc hub_list_libraries '{}')"
+section "hub_list_bundles via watchdog (stale bundle containers)" "$WATCHDOG_URL" "$(tool_rpc hub_list_bundles '{}')"
 
 # Device list, paginated via hasMore/nextOffset so NOTHING is silently dropped. Also
 # kept in $ALL_DEVICES for the BAT deep-dive + scaffold lookup below.
@@ -77,12 +87,9 @@ echo ""
 
 section "hub_list_rules (RM rules via RMUtils)" "$MCP_URL" "$(gw_rpc hub_manage_rule_machine hub_list_rules '{}')"
 section "hub_get_visual_rule (Visual Rules list)" "$MCP_URL" "$(gw_rpc hub_read_rules hub_get_visual_rule '{}')"
-section "hub_list_apps (ALL running app instances: RM/Basic/Button/VRB/Notifier/everything)" "$MCP_URL" "$(gw_rpc hub_read_apps_code hub_list_apps '{"scope":"instances"}')"
 section "hub_list_variables (hub + rule-engine)" "$MCP_URL" "$(gw_rpc hub_manage_variables hub_list_variables '{}')"
 section "hub_list_files (File Manager)" "$MCP_URL" "$(gw_rpc hub_read_files hub_list_files '{}')"
 section "location events (lowMemory / systemStart / mode / HSM, last 24h)" "$MCP_URL" "$(tool_rpc hub_list_device_events '{"limit":50}')"
-section "hub system logs: ERRORS, last 6h" "$MCP_URL" "$(gw_rpc hub_manage_logs hub_get_logs '{"level":"error","since":"6h","limit":60}')"
-section "hub system logs: WARNINGS, last 2h" "$MCP_URL" "$(gw_rpc hub_manage_logs hub_get_logs '{"level":"warn","since":"2h","limit":40}')"
 
 echo "######## BAT_E2E_ device deep-dive (events + subscribers) ########"
 BAT_IDS=$(printf '%s' "$ALL_DEVICES" | jq -r '.[] | select((.label // .name // "") | contains("BAT_E2E_")) | "\(.id)\t\(.label // .name)"' 2>/dev/null)

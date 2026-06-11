@@ -514,6 +514,105 @@ class WatchdogV2Spec extends Specification {
         script.restoreLibrary('119', 'mcp-source-library-119.groovy') == true
     }
 
+    def "restorePackage with a cached bundle installs it from the LOCAL url and never touches per-library restore"() {
+        given:
+        // The bundle-driven path: ONE adminInstallBundle from the hub's own /local/ URL delivers every
+        // library (the HPM way). The legacy per-library loop -- which POSTed each library's source and
+        // recompiled the ~1.8MB dependent app per write, the load profile that tripped the platform's
+        // per-app limiter -- must NOT run when the manifest carries a cached bundle.
+        def bundleUrls = []
+        int libRestores = 0
+        script.metaClass.adminInstallBundle = { Map a -> bundleUrls << a.importUrl; [success: true] }
+        script.metaClass.restoreLibrary = { String i, String f -> libRestores++; true }
+        script.metaClass.restoreApp = { String c, String f -> true }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '9',
+                                          manifest: [app: [classId: '178', file: 'f'],
+                                                     libraries: [[id: '119', namespace: 'mcp', name: 'McpSmokeTestLib']],
+                                                     bundles: [[namespace: 'mcp', name: 'mcp_libraries', cacheFile: 'mcp-main-bundle-mcp_libraries.zip']]]] }
+        script.metaClass.writeFlag = { Map fl -> true }
+        // reconcile steps list bundles/libraries -- give them benign hub state
+        script.metaClass.adminListBundles = { Map a -> [source: "hub_api", bundles: []] }
+        script.metaClass.adminListLibraries = { Map a -> [source: "hub_api", libraries: []] }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        bundleUrls == ['http://127.0.0.1:8080/local/mcp-main-bundle-mcp_libraries.zip']
+        libRestores == 0
+    }
+
+    def "restorePackage falls back to the legacy per-library restore when the manifest has no cached bundle"() {
+        given:
+        int libRestores = 0
+        script.metaClass.adminInstallBundle = { Map a -> throw new IllegalStateException("must not be called") }
+        script.metaClass.restoreLibrary = { String i, String f -> libRestores++; true }
+        script.metaClass.restoreApp = { String c, String f -> true }
+        script.metaClass.resolveLibraryId = { String ns, String nm, String fallback -> fallback }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '10',
+                                          manifest: [app: [classId: '178', file: 'f'],
+                                                     libraries: [[id: '119', file: 'lf', namespace: 'mcp', name: 'McpSmokeTestLib']],
+                                                     bundles: [[namespace: 'mcp', name: 'mcp_libraries']]]] }
+        script.metaClass.writeFlag = { Map fl -> true }
+        script.metaClass.adminListBundles = { Map a -> [source: "hub_api", bundles: []] }
+        script.metaClass.adminListLibraries = { Map a -> [source: "hub_api", libraries: []] }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        libRestores == 1
+    }
+
+    def "adminGetHubLogs parses tab-delimited rows newest-first with a level filter"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q, int t = 30 ->
+            '["app|1|x\\tWARN\\told warn\\t10:00\\t","app|2|y\\tERROR\\tboom\\t10:01\\t","app|3|z\\tINFO\\tnoise\\t10:02\\t"]'
+        }
+
+        when:
+        def r = script.adminGetHubLogs([level: 'error', limit: 10])
+
+        then:
+        r.count == 1
+        r.logs[0].message == 'boom'
+        r.totalParsed == 3
+    }
+
+    def "adminListAppInstances flattens the /hub2/appsList tree with parentId"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q ->
+            '{"apps":[{"data":{"id":5,"name":"Parent","type":"T","disabled":false,"user":true},"children":[{"data":{"id":7,"name":"Child","type":"C","disabled":true,"user":false},"children":[]}]}]}'
+        }
+
+        when:
+        def r = script.adminListAppInstances([:])
+
+        then:
+        r.count == 2
+        r.apps[0].id == 5 && r.apps[0].parentId == null && r.apps[0].childCount == 1
+        r.apps[1].id == 7 && r.apps[1].parentId == 5 && r.apps[1].disabled == true
+    }
+
+    def "adminGetMemoryHistory parses rows, skips headers, applies the tail limit"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q ->
+            "Date,Free OS,5m CPU\n01-01 00:00,100,0.5\n01-01 00:05,200,0.6,331392,1000,50\n01-01 00:10,300,0.7"
+        }
+
+        when:
+        def r = script.adminGetMemoryHistory([limit: 2])
+
+        then:
+        r.entries.size() == 2
+        r.entries[0].freeMemoryKB == 200
+        r.entries[0].totalJavaKB == 331392
+        r.entries[1].freeMemoryKB == 300
+        r.summary.totalEntries == 3
+        r.summary.minMemoryKB == 200      // min over the RETURNED window
+        r.summary.currentMemoryKB == 300
+    }
+
     def "restorePackage drops the PR's stale bundle + library, keeps main's and untouched namespaces"() {
         given:
         def deletedBundles = []

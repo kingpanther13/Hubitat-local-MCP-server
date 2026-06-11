@@ -246,18 +246,35 @@ private Map restorePackage(Map flag) {
     // the restore below re-creates them; if it does NOT cascade, step (3) deletes the PR-only libraries.
     detail << reconcileStaleBundles(m)
 
-    // (1) Libraries -- restore each to main's cached source. restoreLibrary self-heals a bundle-managed
-    // or cascade-removed library (delete+recreate / create). Libraries first so the app's #include
-    // directives resolve on recompile. This IS the restore guarantee -- a failure aborts.
-    def libs = (m.libraries instanceof List) ? m.libraries : []
-    for (lib in libs) {
-        // Re-resolve the library's CURRENT id from its namespace.name: the deploy may have deleted +
-        // recreated a bundle-managed library, giving it a new id the arm-time manifest doesn't know.
-        // Falls back to the manifest id if the lookup fails, so it never makes a restore worse.
-        String curId = resolveLibraryId(lib?.namespace?.toString(), lib?.name?.toString(), lib?.id?.toString())
-        boolean ok = restoreLibrary(curId, lib?.file?.toString())
-        detail << "lib ${lib?.name ?: lib?.id}(${curId})=${ok}"
-        if (!ok) return [ok: false, detail: "library ${lib?.name ?: lib?.id} restore failed [${detail.join('; ')}]"]
+    // (1) Libraries -- delivered the HPM way: install canonical main's CACHED bundle .zip from the
+    // hub's OWN File Manager URL (one operation; the hub unpacks and compiles every library inside,
+    // exactly like a user's HPM update -- no per-library writes, no per-library dependent recompiles).
+    // The zip was cached at arm time (hub_cache_url_to_file), so the dead-man still fires offline.
+    // Falls back to the LEGACY per-library source restore for an older flag whose manifest has no
+    // cached bundle -- that path POSTs each library individually and recompiles the ~1.8MB dependent
+    // app per write, the load profile that tripped the platform's per-app limiter.
+    def cachedBundles = (m.bundles instanceof List) ? m.bundles.findAll { it?.cacheFile } : []
+    if (!cachedBundles.isEmpty()) {
+        for (b in cachedBundles) {
+            String localUrl = "http://127.0.0.1:8080/local/${b.cacheFile}"
+            def r = null
+            try { r = adminInstallBundle([importUrl: localUrl, confirm: true]) }
+            catch (Exception e) { r = [success: false, error: e.message] }
+            boolean ok = (r?.success == true)
+            detail << "bundle ${b?.name ?: '?'}(cache=${b.cacheFile})=${ok}"
+            if (!ok) return [ok: false, detail: "cached-bundle ${b?.name} restore failed: ${r?.error} [${detail.join('; ')}]"]
+        }
+    } else {
+        def libs = (m.libraries instanceof List) ? m.libraries.findAll { it?.file } : []
+        for (lib in libs) {
+            // Re-resolve the library's CURRENT id from its namespace.name: the deploy may have deleted +
+            // recreated a bundle-managed library, giving it a new id the arm-time manifest doesn't know.
+            // Falls back to the manifest id if the lookup fails, so it never makes a restore worse.
+            String curId = resolveLibraryId(lib?.namespace?.toString(), lib?.name?.toString(), lib?.id?.toString())
+            boolean ok = restoreLibrary(curId, lib?.file?.toString())
+            detail << "lib ${lib?.name ?: lib?.id}(${curId})=${ok}"
+            if (!ok) return [ok: false, detail: "library ${lib?.name ?: lib?.id} restore failed [${detail.join('; ')}]"]
+        }
     }
     // (2) App(s). manifest.app is a single {classId,file}; manifest.apps an optional list.
     def apps = (m.apps instanceof List) ? m.apps : (m.app ? [m.app] : [])
@@ -701,6 +718,11 @@ def executeAdminTool(String toolName, Map args) {
         case "hub_delete_item":     return adminDeleteItem(args)
         case "hub_force_delete_app": return adminForceDeleteInstalledApp(args)
         case "hub_set_app_disabled": return adminSetAppDisabled(args)
+        case "hub_cache_url_to_file": return adminCacheUrlToFile(args)
+        case "hub_get_metrics":      return adminGetMetrics(args)
+        case "hub_get_memory_history": return adminGetMemoryHistory(args)
+        case "hub_get_hub_logs":     return adminGetHubLogs(args)
+        case "hub_list_apps":        return adminListAppInstances(args)
         case "hub_install_bundle":  return adminInstallBundle(args)
         case "hub_list_bundles":    return adminListBundles(args)
         case "hub_delete_bundle":   return adminDeleteBundle(args)
@@ -1208,6 +1230,138 @@ def adminSetAppDisabled(args) {
             error: "POST accepted (HTTP ${st}) but the read-back shows disabled=${observed} (wanted ${disable})."]
 }
 
+// hub_cache_url_to_file: have the HUB fetch a URL (binary-safe) and store the bytes in File Manager.
+// The arm step uses it to cache canonical main's bundle .zip locally so the dead-man restore can
+// re-install it from the hub's own /local/ URL with no network dependency at fire time.
+def adminCacheUrlToFile(args) {
+    requireConfirm(args)
+    def url = args.url?.toString()?.trim()
+    if (!url || !(url.toLowerCase().startsWith("http://") || url.toLowerCase().startsWith("https://"))) {
+        throw new IllegalArgumentException("url (http/https) is required")
+    }
+    if (!(args.fileName ==~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/)) {
+        throw new IllegalArgumentException("Invalid fileName '${args.fileName}'.")
+    }
+    byte[] payload = null
+    try {
+        httpGet([uri: url, contentType: "application/octet-stream", timeout: 120, ignoreSSLIssues: true]) { resp ->
+            payload = resp?.data?.bytes
+        }
+    } catch (Exception e) {
+        return [success: false, error: "fetch of ${url} failed: ${e.message}"]
+    }
+    if (payload == null || payload.length == 0) {
+        return [success: false, error: "fetch of ${url} returned no bytes"]
+    }
+    try {
+        uploadHubFile(args.fileName.toString(), payload)
+    } catch (Exception e) {
+        return [success: false, error: "File Manager write of '${args.fileName}' failed: ${e.message}"]
+    }
+    return [success: true, fileName: args.fileName, byteLength: payload.length]
+}
+
+// hub_get_metrics: probe-grade current metrics + the hub's own health alerts. Mirrors the main
+// server's toolGetHubPerformance current block (/hub/advanced/* reads) and _healthAlertsFromHub2
+// (/hub2/hubData), WITHOUT the CSV trend history (that stays main's). Exists so the e2e status probe
+// reads hub health through THIS always-alive endpoint instead of 504ing against a busy main app.
+def adminGetMetrics(args) {
+    def current = [:]
+    try { current.freeMemoryKB = hubGet("/hub/advanced/freeOSMemory", [:])?.trim() } catch (Exception e) { current.freeMemoryKB = "unavailable" }
+    try { current.internalTempC = hubGet("/hub/advanced/internalTempCelsius", [:])?.trim() } catch (Exception e) { current.internalTempC = "unavailable" }
+    try { current.databaseSizeKB = hubGet("/hub/advanced/databaseSize", [:])?.trim() } catch (Exception e) { current.databaseSizeKB = "unavailable" }
+    try { current.uptimeSeconds = location.hub?.uptime } catch (Exception e) { current.uptimeSeconds = "unavailable" }
+    def healthAlerts = null
+    try {
+        def raw = hubGet("/hub2/hubData", [:])
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        if (parsed instanceof Map) {
+            def alerts = (parsed.alerts instanceof Map) ? ([:] + parsed.alerts) : [:]
+            alerts.remove("platformUpdateAvailable"); alerts.remove("platformUpdateVersion")
+            healthAlerts = [safeMode: parsed.safeMode == true,
+                            active: alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort(),
+                            details: alerts]
+        }
+    } catch (Exception e) { logDebug "adminGetMetrics hubData: ${e.message}" }
+    return [current: current, healthAlerts: healthAlerts]
+}
+
+// hub_get_memory_history: /hub/advanced/freeOSMemoryHistory parse, mirroring the main server's
+// toolGetMemoryHistory row shape (timestamp, freeMemoryKB, cpuLoad5min, Java heap columns).
+def adminGetMemoryHistory(args) {
+    int limit = (args?.limit != null) ? (args.limit as int) : 60
+    String raw = hubGet("/hub/advanced/freeOSMemoryHistory", [:])
+    if (!raw) return [entries: [], summary: [message: "No memory history data available"]]
+    def entries = []
+    for (line in raw.trim().split("\n")) {
+        def parts = line?.trim()?.split(",", -1)
+        if (parts == null || parts.size() < 3) continue
+        Integer memKB = null
+        try { memKB = parts[1]?.trim() as Integer } catch (Exception e) { continue }
+        def entry = [timestamp: parts[0]?.trim(), freeMemoryKB: memKB, cpuLoad5min: parts[2]?.trim()]
+        if (parts.size() >= 6) {
+            try { entry.totalJavaKB = parts[3]?.trim() as Integer } catch (Exception ignore) { }
+            try { entry.freeJavaKB = parts[4]?.trim() as Integer } catch (Exception ignore) { }
+            try { entry.directJavaKB = parts[5]?.trim() as Integer } catch (Exception ignore) { }
+        }
+        entries << entry
+    }
+    int total = entries.size()
+    if (limit > 0 && total > limit) entries = entries.subList(total - limit, total)
+    def mems = entries.collect { it.freeMemoryKB }.findAll { it != null }
+    return [entries: entries,
+            summary: [totalEntries: total,
+                      currentMemoryKB: mems ? mems[-1] : null,
+                      minMemoryKB: mems ? mems.min() : null,
+                      maxMemoryKB: mems ? mems.max() : null]]
+}
+
+// hub_get_hub_logs: most-recent hub system log entries with a level filter. Mirrors the main
+// server's /logs/past/json parse (JSON array of tab-delimited strings, oldest-first -> reversed)
+// without the since/TZ machinery -- the probe wants "newest N errors/warnings", nothing more.
+def adminGetHubLogs(args) {
+    String level = args?.level?.toString()?.toLowerCase()
+    int limit = (args?.limit != null) ? (args.limit as int) : 50
+    String raw = hubGet("/logs/past/json", [:], 30)
+    if (!raw) return [logs: [], count: 0, message: "No log data returned from hub"]
+    def arr
+    try { arr = new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return [logs: [], count: 0, error: "unparseable /logs/past/json: ${e.message}"] }
+    if (!(arr instanceof List)) return [logs: [], count: 0, error: "unexpected log format"]
+    def out = []
+    for (entry in arr.reverse()) {
+        def parts = entry?.toString()?.split("\t", -1)
+        if (parts == null || parts.size() < 3) continue
+        String entLevel = parts[1]?.toString()?.toLowerCase()
+        if (level && entLevel != level) continue
+        out << [name: parts[0], level: parts[1], message: parts.size() > 2 ? parts[2] : "",
+                time: parts.size() > 3 ? parts[3] : "", type: parts.size() > 4 ? parts[4] : ""]
+        if (out.size() >= limit) break
+    }
+    return [logs: out, count: out.size(), totalParsed: arr.size(), appliedFilters: [level: level, limit: limit]]
+}
+
+// hub_list_apps: every running app instance, flattened from /hub2/appsList with parentId --
+// mirrors the main server's instances mapping (id/name/type/disabled/user/parentId). The full
+// inventory the probe needs (RM rules, Basic Rules, Button Controllers/Rules, Visual Rules,
+// watchdogs -- every app type), readable while the main app is busy.
+def adminListAppInstances(args) {
+    String raw = hubGet("/hub2/appsList", [:])
+    if (!raw) return [success: false, error: "empty response from /hub2/appsList"]
+    def parsed
+    try { parsed = new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}"] }
+    def flat = []
+    def recurse
+    recurse = { Map node, parentId ->
+        def d = node?.data ?: [:]
+        flat << [id: d.id, name: d.name, type: d.type, disabled: d.disabled == true,
+                 user: d.user == true, parentId: parentId,
+                 childCount: node?.children?.size() ?: 0]
+        node?.children?.each { c -> recurse(c, d.id) }
+    }
+    (parsed?.apps ?: []).each { a -> recurse(a, null) }
+    return [apps: flat, count: flat.size()]
+}
+
 // hub_install_bundle: copied from toolInstallBundle + _firmwareAtLeast + _bundleResponseSucceeded
 // (hubitat-mcp-server.groovy 13548-13643), incl. the NUMERIC firmware gate at 2.3.8.108 and the
 // /bundle2 vs /bundle/uploadZipFromUrl split. Adapted to hubGet/hubPostJson.
@@ -1693,6 +1847,14 @@ def getAdminToolDefinitions() {
          inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
         [name: "hub_set_app_disabled", description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
+        [name: "hub_cache_url_to_file", description: "Hub fetches a URL (binary-safe) and stores the bytes in File Manager (arm-time bundle caching for the offline dead-man restore). confirm:true required.",
+         inputSchema: [type: "object", properties: [url: [type: "string"], fileName: [type: "string"], confirm: [type: "boolean"]], required: ["url", "fileName", "confirm"]]],
+        [name: "hub_get_metrics", description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
+        [name: "hub_get_memory_history", description: "Free-memory / CPU-load history rows from the hub. Args: limit (default 60). Read-only.",
+         inputSchema: [type: "object", properties: [limit: [type: "integer"]]]],
+        [name: "hub_get_hub_logs", description: "Most-recent hub system log entries. Args: level (error/warn/info), limit (default 50). Read-only.",
+         inputSchema: [type: "object", properties: [level: [type: "string"], limit: [type: "integer"]]]],
+        [name: "hub_list_apps", description: "Every running app instance (flattened /hub2/appsList with parentId) -- the full app inventory. Read-only."],
         [name: "hub_install_bundle", description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
          inputSchema: [type: "object", properties: [importUrl: [type: "string"], primary: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
         [name: "hub_list_bundles", description: "List installed code bundle containers (id/name/namespace). Read-only.",

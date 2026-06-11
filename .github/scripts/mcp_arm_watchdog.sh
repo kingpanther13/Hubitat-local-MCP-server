@@ -196,7 +196,24 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
           B_NS="$(printf '%s\n' "$B_INSTALL_TXT" | sed -n '1p' | tr -d '[:space:]')"
           B_NM="$(printf '%s\n' "$B_INSTALL_TXT" | sed -n '2p' | tr -d '[:space:]')"
           if [ -n "$B_NS" ] && [ -n "$B_NM" ]; then
-            MAIN_BUNDLES_JSON="$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -c --arg ns "$B_NS" --arg nm "$B_NM" '. + [{namespace:$ns, name:$nm}]')"
+            # Cache the zip ON the hub (hub_cache_url_to_file: the hub fetches the bytes itself) so the
+            # dead-man restore re-installs the libraries from the LOCAL /local/ URL in ONE bundle op --
+            # no per-library writes (each of those recompiled the ~1.8MB dependent app), no network
+            # dependency at fire time. cacheFile in the manifest is what flips restorePackage onto the
+            # bundle-driven path.
+            B_CACHE_FILE="mcp-main-bundle-${B_NM}.zip"
+            CACHE_RPC=$(jq -nc --arg url "$BURL" --arg fn "$B_CACHE_FILE" \
+              '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_cache_url_to_file",arguments:{url:$url,fileName:$fn,confirm:true}}}')
+            if ! CACHE_TEXT=$(mcp_tool_call_text "hub_cache_url_to_file (cache main bundle ${BREL})" "$CACHE_RPC"); then
+              echo "::error::e2e HALT: could not cache main's bundle zip on the hub (non-JSON ${RPC_ATTEMPTS} times). The restore needs the cached zip. Re-run."
+              exit 1
+            fi
+            if [ "$(printf '%s' "$CACHE_TEXT" | jq -r '.success // false' 2>/dev/null)" != "true" ]; then
+              echo "::error::e2e HALT: hub_cache_url_to_file did not report success for ${BREL}: $(printf '%s' "$CACHE_TEXT" | head -c 300). The restore needs the cached zip."
+              exit 1
+            fi
+            echo "Cached main bundle zip on-hub as ${B_CACHE_FILE} ($(printf '%s' "$CACHE_TEXT" | jq -r '.byteLength') bytes)."
+            MAIN_BUNDLES_JSON="$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -c --arg ns "$B_NS" --arg nm "$B_NM" --arg cf "$B_CACHE_FILE" '. + [{namespace:$ns, name:$nm, cacheFile:$cf}]')"
             echo "Recorded main bundle identity ${B_NS}/${B_NM} (from ${BREL} install.txt)."
           else
             # The bundle was just installed (the install above HALTs on failure), so we MUST record its
@@ -427,11 +444,16 @@ if [ "${#INCLUDE_TOKENS[@]}" -gt 0 ]; then
   fi
 fi
 
-# 3d) Back up each #include'd library: cache it via hub_get_source(library,id), then assert the cache
-# file landed. Three-way: a >64KB library auto-saves to .sourceFile; a <=64KB library comes back inline
-# with NO auto-save, so we write the cache file explicitly via hub_write_file; a >64KB library that did
-# NOT auto-save (can't cache in one inline read) is a HALT.
-LIB_MANIFEST_JSON="[]"   # JSON array of {id,file} accumulated for the manifest
+# 3d) Record each #include'd library for the manifest. Since the restore is BUNDLE-driven (the
+# cached main zip from 2c-i delivers every library in one install), the arm no longer caches each
+# library's SOURCE individually -- that was 1-2 extra calls + a File-Manager write per library per
+# run, and the per-library restore it fed recompiled the ~1.8MB dependent app once per write (the
+# load profile that tripped the platform's per-app limiter). The manifest still records id +
+# namespace + name: the keep-set for the stale-library reconcile, and the id re-resolution for the
+# legacy fallback. Source caching (file:) happens ONLY when no bundle cache exists (a main with
+# #includes but no bundle), where the legacy per-library restore is still the only path.
+HAVE_BUNDLE_CACHE=$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -r 'map(select(.cacheFile)) | length > 0')
+LIB_MANIFEST_JSON="[]"   # JSON array of {id,namespace,name[,file]} accumulated for the manifest
 for TOKEN in "${INCLUDE_TOKENS[@]:-}"; do
   [ -z "$TOKEN" ] && continue
   NS="${TOKEN%%.*}"
@@ -443,10 +465,18 @@ for TOKEN in "${INCLUDE_TOKENS[@]:-}"; do
     echo "::error::e2e HALT: the app #includes '$TOKEN' but no installed library matches namespace=$NS name=$NM (hub_list_libraries). Cannot back up the package; refusing to arm."
     exit 1
   fi
+  if [ "$HAVE_BUNDLE_CACHE" = "true" ]; then
+    echo "Library $TOKEN (id=$LIB_ID) recorded for the manifest (restored via the cached main bundle; no per-library source cache)."
+    LIB_MANIFEST_JSON=$(jq -nc \
+      --argjson acc "$LIB_MANIFEST_JSON" \
+      --arg id "$LIB_ID" --arg ns "$NS" --arg name "$NM" \
+      '$acc + [{id:$id, namespace:$ns, name:$name}]')
+    continue
+  fi
+  # No cached bundle (main with #includes but no bundle) -- the legacy per-library restore is the only
+  # path, so cache the library SOURCE the old way.
   LIB_RESTORE_FILE="mcp-source-library-${LIB_ID}.groovy"
   echo "Backing up library $TOKEN (id=$LIB_ID): watchdog hub_get_source(type=library, id=$LIB_ID)..."
-  # Read the library source inline. Small libraries (<=64KB) come back in .source with NO File-Manager
-  # auto-save, so we write the cache file explicitly; large ones (>64KB) auto-save to .sourceFile.
   LIB_SRC_RPC=$(jq -nc --arg id "$LIB_ID" \
     '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"library",id:$id,offset:0,length:64000}}}')
   if ! LIB_SRC_TEXT=$(mcp_tool_call_text "hub_get_source (backup library $LIB_ID)" "$LIB_SRC_RPC"); then
@@ -466,8 +496,6 @@ for TOKEN in "${INCLUDE_TOKENS[@]:-}"; do
     echo "::error::e2e HALT: library $LIB_ID is >64KB (totalLength=$LIB_TOTLEN) but did not auto-save and the inline read caps at 64000 -- cannot cache it in one call. Refusing to arm."
     exit 1
   else
-    # Small library: not auto-saved. Write the inline source to the cache file so the watchdog's
-    # restoreLibrary has a file to read. (This is the fix for libraries below the 64KB auto-save floor.)
     LIB_SRC_BODY=$(echo "$LIB_SRC_TEXT" | jq -r '.source // ""')
     WRITE_LIB_RPC=$(jq -nc --arg fn "$LIB_RESTORE_FILE" --arg c "$LIB_SRC_BODY" \
       '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:$c,confirm:true}}}')
@@ -481,21 +509,6 @@ for TOKEN in "${INCLUDE_TOKENS[@]:-}"; do
     fi
     echo "Library $LIB_ID is small; cached to '$LIB_RESTORE_FILE' via hub_write_file (${LIB_TOTLEN} chars)."
   fi
-  # Confirm the cache actually exists and is non-trivial (>20 chars is the watchdog restore floor).
-  READ_LIB_RPC=$(jq -nc --arg fn "$LIB_RESTORE_FILE" \
-    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')
-  if ! LIB_BACKUP_TEXT=$(mcp_tool_call_text "hub_read_file (library backup existence check)" "$READ_LIB_RPC"); then
-    echo "::error::hub_read_file('$LIB_RESTORE_FILE') returned non-JSON $RPC_ATTEMPTS times -- transient relay/timeout. Re-run the job."
-    exit 1
-  fi
-  LIB_BACKUP_LEN=$(echo "$LIB_BACKUP_TEXT" | jq -r '.totalLength // 0')
-  if ! [ "$LIB_BACKUP_LEN" -gt 20 ] 2>/dev/null; then
-    echo "::error::e2e HALT: library backup '$LIB_RESTORE_FILE' is missing or too small (totalLength=$LIB_BACKUP_LEN, need >20). Refusing to arm against an unrestorable library."
-    exit 1
-  fi
-  echo "Library backup '$LIB_RESTORE_FILE' present (totalLength=$LIB_BACKUP_LEN bytes)."
-  # Carry namespace+name so restorePackage can re-resolve the library's CURRENT id from live hub state
-  # (the deploy may delete+recreate a bundle-managed library, changing its id out from under this manifest).
   LIB_MANIFEST_JSON=$(jq -nc \
     --argjson acc "$LIB_MANIFEST_JSON" \
     --arg id "$LIB_ID" \
