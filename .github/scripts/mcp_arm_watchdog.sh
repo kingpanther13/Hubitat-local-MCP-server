@@ -230,32 +230,13 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
           echo "::error::e2e HALT: could not parse install.txt namespace/name from ${BREL} -- the restore keep-set would be incomplete. Re-run."
           exit 1
         fi
-        B_CACHE_FILE="mcp-main-bundle-${B_NM}.zip"
-
-        # Cache-only (no arm-time install): when the cache marker matches MAIN_SHA and the cached zip
-        # is present, there is nothing to do. Otherwise the hub fetches the zip itself
-        # (hub_cache_url_to_file) so the dead-man restore can install the libraries from the LOCAL
-        # /local/ URL in ONE bundle op -- no per-library writes, no network dependency at fire time.
-        CACHE_LEN=$(mcp_tool_call_text "hub_read_file (cached bundle existence check)" \
-          "$(jq -nc --arg fn "$B_CACHE_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn,offset:0,length:1}}}')" 2>/dev/null \
-          | jq -r '.totalLength // 0' 2>/dev/null || echo 0)
-        if [ "$CACHE_FRESH" = "true" ] && [ "${CACHE_LEN:-0}" -gt 1000 ] 2>/dev/null; then
-          echo "Main bundle ${B_NS}/${B_NM}: cache '${B_CACHE_FILE}' fresh at ${MAIN_SHA:0:12} (${CACHE_LEN} bytes) -- nothing to do."
-        else
-          CACHE_RPC=$(jq -nc --arg url "$BURL" --arg fn "$B_CACHE_FILE" \
-            '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_cache_url_to_file",arguments:{url:$url,fileName:$fn,confirm:true}}}')
-          if ! CACHE_TEXT=$(mcp_tool_call_text "hub_cache_url_to_file (cache main bundle ${BREL})" "$CACHE_RPC"); then
-            echo "::error::e2e HALT: could not cache main's bundle zip on the hub (non-JSON ${RPC_ATTEMPTS} times). The restore needs the cached zip. Re-run."
-            exit 1
-          fi
-          if [ "$(printf '%s' "$CACHE_TEXT" | jq -r '.success // false' 2>/dev/null)" != "true" ]; then
-            echo "::error::e2e HALT: hub_cache_url_to_file did not report success for ${BREL}: $(printf '%s' "$CACHE_TEXT" | head -c 300). The restore needs the cached zip."
-            exit 1
-          fi
-          echo "Cached main bundle zip on-hub as ${B_CACHE_FILE} ($(printf '%s' "$CACHE_TEXT" | jq -r '.byteLength') bytes)."
-        fi
-        MAIN_BUNDLES_JSON="$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -c --arg ns "$B_NS" --arg nm "$B_NM" --arg cf "$B_CACHE_FILE" '. + [{namespace:$ns, name:$nm, cacheFile:$cf}]')"
-        echo "Recorded main bundle identity ${B_NS}/${B_NM} (from ${BREL} install.txt)."
+        # Record the bundle identity + its CANONICAL https URL at MAIN_SHA. No zip caching, no
+        # arm-time install: the restore installs straight from this URL -- the exact HPM repair
+        # path. (A hub-local /local/ URL was tried and is BANNED: registering the hub's own
+        # loopback URL as a bundle source is off the platform's tested path and coincided with
+        # /hub2/userLibraries wedging hub-wide.)
+        MAIN_BUNDLES_JSON="$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -c --arg ns "$B_NS" --arg nm "$B_NM" --arg url "$BURL" '. + [{namespace:$ns, name:$nm, url:$url}]')"
+        echo "Recorded main bundle ${B_NS}/${B_NM} -> restore installs from ${BURL}"
       done <<< "$MAIN_BUNDLE_RELS"
     else
       echo "::notice::main packageManifest.json declares no bundles -- app-only canonical main (no bundle to refresh)."
@@ -396,7 +377,7 @@ fi
 # namespace + name: the keep-set for the stale-library reconcile, and the id re-resolution for the
 # legacy fallback. Source caching (file:) happens ONLY when no bundle cache exists (a main with
 # #includes but no bundle), where the legacy per-library restore is still the only path.
-HAVE_BUNDLE_CACHE=$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -r 'map(select(.cacheFile)) | length > 0')
+HAVE_BUNDLE_CACHE=$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -r 'map(select(.url)) | length > 0')
 LIB_MANIFEST_JSON="[]"   # JSON array of {id,namespace,name[,file]} accumulated for the manifest
 for TOKEN in "${INCLUDE_TOKENS[@]:-}"; do
   [ -z "$TOKEN" ] && continue

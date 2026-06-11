@@ -514,7 +514,7 @@ class WatchdogV2Spec extends Specification {
         script.restoreLibrary('119', 'mcp-source-library-119.groovy') == true
     }
 
-    def "restorePackage with a cached bundle installs it from the LOCAL url and never touches per-library restore"() {
+    def "restorePackage with a manifest bundle url installs from the CANONICAL https URL and never touches per-library restore"() {
         given:
         // The bundle-driven path: ONE adminInstallBundle from the hub's own /local/ URL delivers every
         // library (the HPM way). The legacy per-library loop -- which POSTed each library's source and
@@ -528,7 +528,7 @@ class WatchdogV2Spec extends Specification {
         script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '9',
                                           manifest: [app: [classId: '178', file: 'f'],
                                                      libraries: [[id: '119', namespace: 'mcp', name: 'McpSmokeTestLib']],
-                                                     bundles: [[namespace: 'mcp', name: 'mcp_libraries', cacheFile: 'mcp-main-bundle-mcp_libraries.zip']]]] }
+                                                     bundles: [[namespace: 'mcp', name: 'mcp_libraries', url: 'https://raw.example/main/bundles/mcp-libraries.zip']]]] }
         script.metaClass.writeFlag = { Map fl -> true }
         // reconcile steps list bundles/libraries -- give them benign hub state
         script.metaClass.adminListBundles = { Map a -> [source: "hub_api", bundles: []] }
@@ -538,7 +538,7 @@ class WatchdogV2Spec extends Specification {
         script.checkDeadman()
 
         then:
-        bundleUrls == ['http://127.0.0.1:8080/local/mcp-main-bundle-mcp_libraries.zip']
+        bundleUrls == ['https://raw.example/main/bundles/mcp-libraries.zip']
         libRestores == 0
     }
 
@@ -555,7 +555,7 @@ class WatchdogV2Spec extends Specification {
         script.metaClass.readHubFileText = { String fn -> marker }
         script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '11',
                                           manifest: [app: [classId: '178', file: 'f'], libraries: [],
-                                                     bundles: [[namespace: 'mcp', name: 'mcp_libraries', cacheFile: 'mcp-main-bundle-mcp_libraries.zip']]]] }
+                                                     bundles: [[namespace: 'mcp', name: 'mcp_libraries', url: 'https://raw.example/main/bundles/mcp-libraries.zip']]]] }
         script.metaClass.writeFlag = { Map fl -> true }
         script.metaClass.adminListBundles = { Map a -> [source: "hub_api", bundles: []] }
         script.metaClass.adminListLibraries = { Map a -> [source: "hub_api", libraries: []] }

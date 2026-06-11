@@ -246,14 +246,15 @@ private Map restorePackage(Map flag) {
     // the restore below re-creates them; if it does NOT cascade, step (3) deletes the PR-only libraries.
     detail << reconcileStaleBundles(m)
 
-    // (1) Libraries -- delivered the HPM way: install canonical main's CACHED bundle .zip from the
-    // hub's OWN File Manager URL (one operation; the hub unpacks and compiles every library inside,
-    // exactly like a user's HPM update -- no per-library writes, no per-library dependent recompiles).
-    // The zip was cached at arm time (hub_cache_url_to_file), so the dead-man still fires offline.
-    // Falls back to the LEGACY per-library source restore for an older flag whose manifest has no
-    // cached bundle -- that path POSTs each library individually and recompiles the ~1.8MB dependent
-    // app per write, the load profile that tripped the platform's per-app limiter.
-    def cachedBundles = (m.bundles instanceof List) ? m.bundles.findAll { it?.cacheFile } : []
+    // (1) Libraries -- delivered the HPM way: install canonical main's bundle from the CANONICAL
+    // https URL the arm recorded in the manifest (one operation; the hub fetches, unpacks and
+    // compiles every library inside, exactly like a user's HPM update -- no per-library writes, no
+    // per-library dependent recompiles). Requires GitHub reachability at fire time -- acceptable,
+    // the whole e2e pipeline depends on GitHub anyway. Falls back to the LEGACY per-library source
+    // restore for an older flag whose manifest has no bundle url -- that path POSTs each library
+    // individually and recompiles the ~1.8MB dependent app per write, the load profile that
+    // tripped the platform's per-app limiter.
+    def cachedBundles = (m.bundles instanceof List) ? m.bundles.findAll { it?.url } : []
     // Run-scoped skip: the deploy stamps "<runId>:unchanged" when the PR's bundle was byte-identical
     // to main's (deterministic build), meaning the libraries never left main's bytes this run --
     // reinstalling the cached bundle would only fire a redundant dependent-recompile wave. Anything
@@ -268,13 +269,21 @@ private Map restorePackage(Map flag) {
         detail << "bundle-skip:pr-identical-to-main(run ${flag.runId})"
     } else if (!cachedBundles.isEmpty()) {
         for (b in cachedBundles) {
-            String localUrl = "http://127.0.0.1:8080/local/${b.cacheFile}"
+            // Install from the CANONICAL https URL the arm recorded -- the exact HPM path. NEVER a
+            // hub-local /local/ URL: registering the hub's own loopback URL as a bundle source is
+            // off the platform's tested path (the UI uses uploadZip+processUploadedZip for local
+            // files) and coincided with /hub2/userLibraries wedging hub-wide.
+            String srcUrl = b.url?.toString()
+            if (!srcUrl) {
+                detail << "bundle ${b?.name ?: '?'}: no url in manifest -- falling to legacy"
+                continue
+            }
             def r = null
-            try { r = adminInstallBundle([importUrl: localUrl, confirm: true]) }
+            try { r = adminInstallBundle([importUrl: srcUrl, confirm: true]) }
             catch (Exception e) { r = [success: false, error: e.message] }
             boolean ok = (r?.success == true)
-            detail << "bundle ${b?.name ?: '?'}(cache=${b.cacheFile})=${ok}"
-            if (!ok) return [ok: false, detail: "cached-bundle ${b?.name} restore failed: ${r?.error} [${detail.join('; ')}]"]
+            detail << "bundle ${b?.name ?: '?'}(url)=${ok}"
+            if (!ok) return [ok: false, detail: "bundle ${b?.name} restore failed: ${r?.error} [${detail.join('; ')}]"]
         }
     } else {
         def libs = (m.libraries instanceof List) ? m.libraries.findAll { it?.file } : []
@@ -332,9 +341,13 @@ private String reconcileStaleBundles(Map m) {
     return "bundle-cleanup:removed=${removed}${failed ? " failed=${failed}" : ''}"
 }
 
-// Delete any mcp-namespace LIBRARY not in the manifest's main library set. Best-effort. Scoped to
-// namespace "mcp"; runs AFTER the app restore so a still-#included main library is never removed.
-// SKIPPED when the manifest lists no main libraries (defensive -- don't blind-delete every mcp library).
+// Delete any mcp-namespace LIBRARY not in the manifest's main library set -- INCLUDING same-name
+// DUPLICATE rows whose id differs from the manifest's (name-only matching kept every duplicate
+// forever; 36 accumulated and wedged /hub2/userLibraries hub-wide). A row is kept only when BOTH
+// its namespace.name AND its id match a manifest entry. Best-effort. Scoped to namespace "mcp";
+// runs AFTER the app restore so a still-#included main library is never removed -- note the hub
+// itself also refuses deleting the row an installed app's #include binds ("Library is in use"),
+// a second guard under this one.
 private String reconcileStaleLibraries(Map m) {
     def mainLibs = (m?.libraries instanceof List) ? m.libraries : []
     if (mainLibs.isEmpty()) return "lib-cleanup:skipped(no main library set in manifest)"
@@ -346,13 +359,15 @@ private String reconcileStaleLibraries(Map m) {
         if (lib?.namespace?.toString() != "mcp") continue
         if (lib?.id == null) continue
         boolean keep = mainLibs.any {
-            (it?.namespace?.toString() == lib.namespace?.toString()) && (it?.name?.toString() == lib.name?.toString())
+            (it?.namespace?.toString() == lib.namespace?.toString()) &&
+            (it?.name?.toString() == lib.name?.toString()) &&
+            (it?.id?.toString() == lib.id?.toString())
         }
         if (keep) continue
         try {
             def r = adminDeleteItem([type: "library", id: lib.id.toString(), confirm: true])
-            if (r?.success == true) removed << lib.name else failed << lib.name
-        } catch (Exception e) { logDebug "reconcileStaleLibraries ${lib?.name}: ${e.message}"; failed << lib?.name }
+            if (r?.success == true) removed << "${lib.name}(${lib.id})" else failed << "${lib.name}(${lib.id})"
+        } catch (Exception e) { logDebug "reconcileStaleLibraries ${lib?.name}: ${e.message}"; failed << "${lib?.name}(${lib?.id})" }
     }
     return "lib-cleanup:removed=${removed}${failed ? " failed=${failed}" : ''}"
 }
@@ -433,9 +448,21 @@ boolean restoreLibrary(String libId, String fileName) {
     if (_restoreLibraryInPlace(libId, source, curVer)) return true
     // Not confirmed -- self-heal by delete+recreate from the SAME cached source (a bundle-managed library
     // may reject an in-place update; deleting frees it, then create re-installs it). Local only.
-    log.warn "restoreLibrary ${libId}: in-place update not confirmed -- deleting + recreating from cache (the library may be bundle-managed)."
-    try { hubGet("/library/edit/deleteJson/${libId}", [:]) }
-    catch (Exception e) { logDebug "restoreLibrary ${libId}: delete threw (continuing to recreate): ${e.message}" }
+    // THE DELETE MUST BE VERIFIED before the create: the hub refuses deleting an in-use library with a
+    // 200 {"success":false,"message":"Library is in use"}, and creating while the old row survives mints
+    // a DUPLICATE name+namespace row at a new id. That exact unchecked-delete-then-create minted 36
+    // orphan duplicates over days of e2e runs and eventually wedged /hub2/userLibraries hub-wide.
+    log.warn "restoreLibrary ${libId}: in-place update not confirmed -- attempting delete + recreate from cache (the library may be bundle-managed)."
+    boolean deleted = false
+    try {
+        String resp = hubGet("/library/edit/deleteJson/${libId}", [:])
+        def parsed = resp ? new groovy.json.JsonSlurper().parseText(resp) : null
+        deleted = (parsed instanceof Map) && (parsed.success == true)
+        if (!deleted) log.error "restoreLibrary ${libId}: delete did not confirm (${resp?.take(120)}) -- NOT creating (would mint a duplicate row)."
+    } catch (Exception e) {
+        log.error "restoreLibrary ${libId}: delete threw (${e.message}) -- NOT creating (would mint a duplicate row)."
+    }
+    if (!deleted) return false
     return _createLibraryFromSource(source)
 }
 
