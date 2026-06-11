@@ -13,7 +13,8 @@ import support.PermissiveLog
  * Hub-less coverage of the v2 dead-man watchdog (e2e-deadman-watchdog-v2.groovy) -- the second MCP
  * server that drives the e2e install + restore. Locks the review-hardened failure contracts a green
  * Spock matrix must keep, so a future edit can't silently regress them:
- *   - restoreApp / restoreLibrary no-op requires BYTE-IDENTICAL live source (not a length match);
+ *   - restorePackage installs main's bundle via adminInstallBundle(importUrl) + each app via
+ *     adminUpdateApp(importUrl) from the manifest's canonical https URLs, with a mainChars landing assert;
  *   - adminUpdateLibrary fails CLOSED on a dropped/invalid POST (a null response is NOT success);
  *   - adminGetSource's noSave gate (the deploy probes pass noSave so they don't auto-save the live PR
  *     source over the dead-man restore cache -- the critical cache-poisoning fix);
@@ -94,8 +95,9 @@ class WatchdogV2Spec extends Specification {
 
     def "checkDeadman tolerates a non-numeric deadline (fires the restore, never throws)"() {
         given:
-        // restorePackage is private (metaClass can't intercept it), so stub the PUBLIC leaf restoreApp/
-        // restoreLibrary the real restorePackage calls, and capture the flag actAndRecord writes back.
+        // restorePackage is private (metaClass can't intercept it), so stub the PUBLIC leaf adminUpdateApp
+        // the real restorePackage calls (this flag's manifest has no bundles, so adminInstallBundle is not
+        // reached), and capture the flag actAndRecord writes back.
         boolean appRestored = false
         Map written = null
         script.metaClass.adminUpdateApp = { Map a -> appRestored = true; [success: true] }
@@ -423,10 +425,9 @@ class WatchdogV2Spec extends Specification {
 
     def "restorePackage installs the bundle from the manifest CANONICAL https URL"() {
         given:
-        // The bundle-driven path: ONE adminInstallBundle from the hub's own /local/ URL delivers every
-        // library (the HPM way). The legacy per-library loop -- which POSTed each library's source and
-        // recompiled the ~1.8MB dependent app per write, the load profile that tripped the platform's
-        // per-app limiter -- must NOT run when the manifest carries a cached bundle.
+        // The bundle-driven path: ONE adminInstallBundle from the manifest's canonical https URL delivers
+        // every library (the HPM way). No per-library source POSTs (the load profile that tripped the
+        // platform's per-app limiter); the bundle install is the only library-side operation.
         def bundleUrls = []
         script.metaClass.adminInstallBundle = { Map a -> bundleUrls << a.importUrl; [success: true] }
         script.metaClass.adminUpdateApp = { Map a -> [success: true] }
@@ -450,9 +451,13 @@ class WatchdogV2Spec extends Specification {
         given:
         // No local cache exists anymore; bundle entries without a url cannot be restored -- the
         // operator must re-arm. The watchdog endpoint itself stays reachable (the safety floor).
-        script.metaClass.adminInstallBundle = { Map a -> throw new IllegalStateException("must not be called") }
+        // A urlless bundle must fail BEFORE any install, so adminInstallBundle must never be called.
+        // restorePackage wraps adminInstallBundle in a try/catch (a throw would be swallowed into a
+        // failed restore that this test's restoreResult assertion can't distinguish from the no-url
+        // path), so a thrown guard alone proves nothing -- count the calls and assert it stayed 0.
+        int bundleInstalls = 0
+        script.metaClass.adminInstallBundle = { Map a -> bundleInstalls++; [success: true] }
         script.metaClass.adminUpdateApp = { Map a -> [success: true] }
-        script.metaClass.adminInstallBundle = { Map a -> [success: true] }
         script.metaClass.adminListBundles = { Map a -> [source: "hub_api", bundles: []] }
         script.metaClass.adminListLibraries = { Map a -> [source: "hub_api", libraries: []] }
         Map written = null
@@ -468,6 +473,7 @@ class WatchdogV2Spec extends Specification {
         then:
         written?.restoreResult != 'restored'
         written?.restoreDetail?.contains('no url')
+        bundleInstalls == 0     // a urlless bundle must fail loudly, never reach an install
     }
 
     @Unroll
@@ -500,6 +506,111 @@ class WatchdogV2Spec extends Specification {
         'stale runId -> install'            | '999:unchanged'   || 1
         'changed -> install'                | '11:changed'      || 1
         'missing marker -> install'         | null              || 1
+    }
+
+    @Unroll
+    def "restorePackage app source-length cross-check: #scenario"() {
+        given:
+        // After adminUpdateApp the restore re-reads the live source (/app/ajax/code) and compares its
+        // length to the manifest's mainChars. A mismatch must FAIL the restore loudly (a truncated/wrong
+        // install landing silently green is the dangerous case); a match must let it succeed. Lock the
+        // comparison direction so a future inversion or wrong-field parse can't pass.
+        Map written = null
+        script.metaClass.adminUpdateApp = { Map a -> [success: true] }
+        script.metaClass.hubGet = { String p, Map q -> '{"source":"' + ('x' * liveLen) + '"}' }
+        script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: []] }
+        script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: []] }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '21',
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy', mainChars: '500'],
+                                                     libraries: []]] }
+        script.metaClass.writeFlag = { Map fl -> written = fl; true }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        (written?.restoreResult == 'restored') == expectRestored
+        expectRestored || written?.restoreDetail?.contains('landed source length')
+
+        where:
+        scenario                        | liveLen || expectRestored
+        'length matches mainChars'      | 500     || true
+        'length differs from mainChars' | 499     || false
+    }
+
+    def "restorePackage aborts loudly when a bundle install fails mid-restore (does not continue to the app)"() {
+        given:
+        // Every other restore test stubs adminInstallBundle as success. Drive the FAILURE: a bundle
+        // install returning success:false must abort restorePackage BEFORE the app step, so the restore
+        // reports a non-restored result naming the bundle and the app is never touched.
+        boolean appTouched = false
+        Map written = null
+        script.metaClass.adminInstallBundle = { Map a -> [success: false, error: 'hub refused'] }
+        script.metaClass.adminUpdateApp = { Map a -> appTouched = true; [success: true] }
+        script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: []] }
+        script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: []] }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '22',
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'],
+                                                     libraries: [],
+                                                     bundles: [[namespace: 'mcp', name: 'mcp_libraries', url: 'https://raw.example/main/bundles/mcp-libraries.zip']]]] }
+        script.metaClass.writeFlag = { Map fl -> written = fl; true }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        written?.restoreResult != 'restored'
+        written?.restoreDetail?.contains('mcp_libraries')
+        !appTouched     // a bundle abort must NOT fall through to the app install
+    }
+
+    @Unroll
+    def "restore retry-cap escalation: #scenario"() {
+        given:
+        // A failed restore increments fireAttempts and retries while attempts < 5 WITHOUT latching, then
+        // terminally latches restoreResult='failed' + armed=false at the 5th attempt (fireAttempts 4 in).
+        // Below the cap the restore must stay unlatched (still retrying); at the cap it must latch failed.
+        Map written = null
+        script.metaClass.adminUpdateApp = { Map a -> [success: false, error: 'hub refused'] }
+        script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: []] }
+        script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: []] }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '23', fireAttempts: priorAttempts,
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
+        script.metaClass.writeFlag = { Map fl -> written = fl; true }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        written?.fireAttempts == priorAttempts + 1
+        written?.restoreResult == expectedResult     // null below the cap (still retrying), 'failed' at the cap
+        written?.armed == expectedArmed
+
+        where:
+        scenario                          | priorAttempts || expectedResult | expectedArmed
+        'below cap -> retry, no latch'    | 2             || null           | false
+        'at cap (5th) -> latch failed'    | 4             || 'failed'       | false
+    }
+
+    def "a STALE in-flight latch for a DIFFERENT run does not block the current run's restore"() {
+        given:
+        // The latch is PER-RUN: it skips only when restoreInFlightFor == flag.runId (a same-run duplicate
+        // tick). A prior run's leftover latch (different runId), even with a RECENT timestamp the 10-min
+        // staleness escape would not yet clear, must NOT block THIS run -- the runId-inequality branch
+        // runs the restore regardless of the time check.
+        int restores = 0
+        script.metaClass.adminUpdateApp = { Map a -> restores++; [success: true] }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7',
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
+        script.metaClass.writeFlag = { Map fl -> true }
+        atomicStateMap.restoreInFlightFor = '6'                                    // a DIFFERENT run holds the latch
+        atomicStateMap.restoreInFlightAt = System.currentTimeMillis() - 30_000L    // recent -> staleness escape does NOT apply
+
+        when:
+        script.checkDeadman()
+
+        then: 'a different run\'s latch is ignored and the restore still runs'
+        restores == 1
     }
 
     def "adminGetHubLogs parses tab-delimited rows newest-first with a level filter"() {

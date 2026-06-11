@@ -3,16 +3,19 @@
 # FIRE-AND-FORGET its clean-finish restore of main.
 #
 # v2's disarm is not just "stop the timer": the watchdog treats intent=disarm as a request to restore
-# the whole MCP package from the cache ONCE per runId (it stamps restoreFor=runId so it never repeats).
-# This step writes {armed:false, intent:"disarm", runId, ...manifest...} (carrying the SAME manifest +
-# canonicalMainSha the arm flag holds, so the watchdog knows what to restore and how to stamp the
-# canonical-main marker), reads the flag back to assert armed=false landed, reaps deferred native-rule
-# fixtures, and EXITS. CI does NOT wait for the restore: the watchdog runs it asynchronously (its
-# adminWriteFile kick fires checkDeadman ~2s after the flag write) and stamps the canonical-main SHA
-# marker itself on success. Restore-to-main fidelity is deliberately not a CI gate -- the next run's
-# arm refreshes main when the marker is missing/stale, and its PR install is a full HPM-style repair
-# that overwrites whatever is on the hub anyway. What MUST be deleted (BAT fixtures) is handled by the
-# deferred sweep below plus the separate fail-closed --cleanup-only step.
+# the whole MCP package from the canonical main install URLs in the flag manifest ONCE per runId (it
+# stamps restoreFor=runId so it never repeats). This step writes {armed:false, intent:"disarm", runId,
+# ...manifest...} (carrying the SAME manifest + canonicalMainSha the arm flag holds, so the watchdog
+# knows what to install and how to stamp the canonical-main marker), reads the flag back to assert
+# armed=false + intent=disarm landed AND that the restore-critical manifest survived the write, reaps
+# deferred native-rule fixtures, and EXITS. CI does NOT wait for the restore: the watchdog runs it
+# asynchronously (its adminWriteFile kick fires checkDeadman ~2s after the flag write) -- it installs
+# main's bundle + every app from the canonical https URLs in the manifest and stamps the canonical-main
+# SHA marker itself on success. Restore-to-main fidelity is deliberately not a CI gate -- the next run's
+# PR install is a full HPM-style repair that unconditionally overwrites the parent + child apps on the
+# hub. If a restore install fails the watchdog endpoint itself stays reachable as the recovery path.
+# What MUST be deleted (BAT fixtures) is handled by the deferred sweep below plus the separate
+# fail-closed --cleanup-only step.
 #
 # CRITICAL: every hub I/O here goes through the WATCHDOG's own MCP endpoint ($WATCHDOG_URL, from the
 # WATCHDOG_MCP_URL secret), NOT the main server's $MCP_URL -- the watchdog is the driver of the restore
@@ -77,8 +80,8 @@ MANIFEST_JSON=$(printf '%s' "$CUR_CONTENT" | jq -c '.manifest // empty' 2>/dev/n
 ARM_PR_SHA=$(printf '%s' "$CUR_CONTENT" | jq -r '.armPrSha // .mainSha // ""' 2>/dev/null || echo "")
 # The canonical-main SHA the hub was confirmed on at arm. Forwarded into the disarm flag so the
 # WATCHDOG can stamp the on-hub marker after ITS restore succeeds (CI no longer waits for the restore);
-# a failed restore leaves the marker cleared (by the install) and the next run's arm refreshes
-# canonical main instead of skipping on a stale marker.
+# a failed restore leaves the marker cleared (by the install), and the next run's full-repair PR install
+# overwrites the apps on the hub regardless of the marker.
 CANONICAL_MAIN_SHA=$(printf '%s' "$CUR_CONTENT" | jq -r '.canonicalMainSha // ""' 2>/dev/null || echo "")
 FLAG_RUN_ID=$(printf '%s' "$CUR_CONTENT" | jq -r '.runId // ""' 2>/dev/null || echo "")
 if [ -z "$MANIFEST_JSON" ] || [ "$MANIFEST_JSON" = "null" ]; then
@@ -86,8 +89,8 @@ if [ -z "$MANIFEST_JSON" ] || [ "$MANIFEST_JSON" = "null" ]; then
   exit 1
 fi
 # Defense-in-depth: the flag we are about to reuse should belong to THIS run (the lease serializes runs,
-# so a mismatch means arm didn't run this run or a stale flag survived). The manifest still points at a
-# known-good main cache, so we proceed (restoring SOME main beats failing the teardown), but flag it.
+# so a mismatch means arm didn't run this run or a stale flag survived). The manifest still points at the
+# canonical main install URLs, so we proceed (restoring SOME main beats failing the teardown), but flag it.
 if [ -n "$FLAG_RUN_ID" ] && [ "$FLAG_RUN_ID" != "$GITHUB_RUN_ID" ]; then
   echo "::warning::Disarm: the flag's runId ($FLAG_RUN_ID) != this run ($GITHUB_RUN_ID). Reusing its manifest to restore main anyway, but arm may not have run this run -- investigate if this recurs."
 fi
@@ -121,6 +124,17 @@ RB_ARMED=$(echo "$READBACK_TEXT" | jq -r '.content | fromjson | .armed' 2>/dev/n
 RB_INTENT=$(echo "$READBACK_TEXT" | jq -r '.content | fromjson | .intent' 2>/dev/null || echo "")
 if [ "$RB_ARMED" != "false" ] || [ "$RB_INTENT" != "disarm" ]; then
   echo "::error::Disarm did NOT land: flag read back armed=$RB_ARMED intent=$RB_INTENT (expected armed=false intent=disarm). The write may have silently no-opped, leaving the watchdog ARMED to fire (~35 min). Response: $(printf '%s' "$READBACK_TEXT" | head -c 600)"
+  exit 1
+fi
+# CI no longer polls for restore completion, so this read-back is the ONLY pre-restore verification. The
+# async restore consumes manifest.app.classId (restorePackage fails with "no manifest"/"app entry missing
+# classId" without it), so a 504 that flipped armed:false but dropped the manifest would leave a flag the
+# watchdog cannot restore from -- and that surfaces only in the watchdog log, which CI never reads. Assert
+# the restore-critical field round-tripped, mirroring the arm's own classId read-back.
+EXPECT_CLASS=$(printf '%s' "$MANIFEST_JSON" | jq -r '.app.classId // empty' 2>/dev/null || echo "")
+RB_CLASS=$(echo "$READBACK_TEXT" | jq -r '.content | fromjson | .manifest.app.classId' 2>/dev/null || echo "")
+if [ -z "$RB_CLASS" ] || [ "$RB_CLASS" = "null" ] || { [ -n "$EXPECT_CLASS" ] && [ "$RB_CLASS" != "$EXPECT_CLASS" ]; }; then
+  echo "::error::Disarm read-back: the restore-critical manifest did NOT survive the write (manifest.app.classId read back '$RB_CLASS', expected '${EXPECT_CLASS:-<any non-empty>}'). The watchdog has no usable restore target -- the disarm write likely no-opped the manifest. Investigate / re-run. Response: $(printf '%s' "$READBACK_TEXT" | head -c 600)"
   exit 1
 fi
 
@@ -184,11 +198,13 @@ else
 fi
 
 # --- 3) Fire-and-forget: the watchdog restores main asynchronously --------------------------------
-# The flag write above already KICKED a one-shot checkDeadman (~2s); the watchdog restores the package
-# from cache, stamps restoreResult/restoreFor into the flag, and on success writes the canonical-main
-# SHA marker itself. CI deliberately does NOT wait: restore-to-main fidelity is not a gate here -- the
-# next run's arm refreshes main when the marker is missing, and its PR install is a full HPM-style
-# repair that overwrites whatever is on the hub regardless. A dead watchdog surfaces loudly next run
-# (the arm's health check + main refresh), not by burning minutes in every teardown.
-echo "WATCHDOG_DISARMED runId=$GITHUB_RUN_ID (restore fired asynchronously; not polling -- the watchdog stamps the canonical-main marker on success, and the next run self-heals if it doesn't)."
+# The flag write above already KICKED a one-shot checkDeadman (~2s); the watchdog installs main's bundle
+# + every app from the canonical https URLs in the flag manifest, stamps restoreResult/restoreFor into
+# the flag, and on success writes the canonical-main SHA marker itself. CI deliberately does NOT wait:
+# restore-to-main fidelity is not a gate here -- the next run's PR install is a full HPM-style repair
+# that unconditionally overwrites the parent + child apps on the hub regardless of the marker (the
+# bundle is re-established only when the PR bundle differs from main, so a byte-identical-to-main bundle
+# stranded on the hub is the one residual gap). A dead watchdog surfaces loudly next run (the arm's
+# health check), not by burning minutes in every teardown.
+echo "WATCHDOG_DISARMED runId=$GITHUB_RUN_ID (restore fired asynchronously; not polling -- the watchdog stamps the canonical-main marker on success, and the next run's full-repair install overwrites the apps regardless)."
 exit 0

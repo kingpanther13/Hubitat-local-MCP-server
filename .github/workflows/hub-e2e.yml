@@ -38,7 +38,6 @@ on:
       - '.github/scripts/mcp_validate_package_tool.sh'
       - '.github/scripts/mcp_watchdog_lib.sh'
       - '.github/scripts/mcp_watchdog_deploy.sh'
-      - '.github/scripts/mcp_watchdog_self_update.sh'
       - '.github/scripts/mcp_arm_watchdog.sh'
       - '.github/scripts/mcp_disarm_watchdog.sh'
       - 'libraries/**'
@@ -401,17 +400,11 @@ jobs:
           echo "MAIN_CHARS=$MAIN_CHARS" >> "$GITHUB_ENV"
           echo "::notice::canonical main: $MAIN_URL (${MAIN_CHARS} chars)"
 
-      # Self-update the dead-man watchdog to THIS PR's version BEFORE it is used to arm/install, so e2e
-      # always exercises the watchdog the PR ships (not whatever level99 first imported). ALWAYS deploys
-      # (a length-preserving edit must not leave the old watchdog live) and confirms via a fresh
-      # lastSelfDeploy; brick-safe (a compile error keeps the old watchdog). level99 never has to
-      # re-import. Blocking: a rejected/unconfirmed or broken-transport watchdog must fail the run.
-      - name: Self-update watchdog to PR version
-        if: steps.gate.outputs.available == 'true'
-        env:
-          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
-          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
-        run: bash .github/scripts/mcp_watchdog_self_update.sh
+      # The dead-man watchdog is NOT deployed by e2e: the maintainer manages the watchdog app on the
+      # test hub out-of-band (direct hub access). e2e never writes to the watchdog app -- it only drives
+      # the standing watchdog's endpoint to arm/install/restore. A PR that changes the watchdog source
+      # (e2e-deadman-watchdog-v2.groovy) is validated by WatchdogV2Spec plus that out-of-band deploy,
+      # not by an in-run self-update.
 
       # Backup the known-good MCP server source and ARM the standing v2 dead-man watchdog for THIS
       # run, both driven over the watchdog's own endpoint ($WATCHDOG_URL). The arm script captures a
@@ -474,10 +467,12 @@ jobs:
       # both the old disarm AND the old "Restore previous app source" step). It runs FIRST in teardown,
       # BEFORE the MCP_URL-based cleanup/settings-restore below, on purpose: if the PR compiled but broke
       # the main MCP runtime, those MCP_URL steps would fail against the broken PR app -- restoring main
-      # first means they operate on a healthy server. It reads the flag back and asserts armed==false +
-      # restoreResult==restored, AND that the live app source length is back to the arm-stamped MAIN
-      # baseline (not this PR's), failing loudly otherwise -- a silently-failed/poisoned restore is the
-      # dangerous case. A clean disarm also prevents handing the next run an armed flag.
+      # first means they operate on a healthy server. The disarm is FIRE-AND-FORGET: it writes
+      # {armed:false,intent:disarm}, reads the flag back and asserts that landed (armed==false +
+      # intent==disarm), reaps the deferred native-rule fixtures, and exits. The watchdog restores main
+      # asynchronously from the canonical install URLs in the flag manifest; CI does not wait for the
+      # restore or assert restoreResult/source-length here. A clean disarm also prevents handing the
+      # next run an armed flag.
       - name: Disarm dead-man watchdog (restore main)
         if: always() && steps.gate.outputs.available == 'true'
         run: bash .github/scripts/mcp_disarm_watchdog.sh

@@ -72,8 +72,8 @@ fi
 # ---------------------------------------------------------------------------
 # Shared watchdog JSON-RPC + deploy-confirmation helpers (mcp_call / call_tool [surfaces JSON-RPC
 # errors] / call_tool_retry / ok_of / err_of / resolve_class_id / app_total_length [noSave probe] /
-# deploy_app_via_watchdog [confirms via fresh lastSelfDeploy]). One source of truth so the deploy, arm,
-# and self-update scripts cannot drift.
+# deploy_app_via_watchdog [confirms via fresh lastSelfDeploy]). One source of truth so the deploy and
+# arm scripts cannot drift.
 source "$(dirname "$0")/mcp_watchdog_lib.sh"
 
 # ---------------------------------------------------------------------------
@@ -160,8 +160,12 @@ else
   BUNDLE_STATE=$([ "$ANY_BUNDLE_DIFFERS" = "true" ] && echo "changed" || echo "unchanged")
   MARKER_RPC=$(jq -nc --arg c "${GITHUB_RUN_ID:-unknown}:${BUNDLE_STATE}" \
     '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:"e2e-pr-bundle-state.txt",content:$c,confirm:true}}}')
-  call_tool "$MARKER_RPC" >/dev/null \
-    || echo "::warning::could not write the bundle-state marker; the restore will reinstall the cached bundle (safe, just slower)."
+  # call_tool returns rc 0 even on a JSON-RPC error (signalled by empty stdout), so `|| warn` would never
+  # fire -- check the result explicitly instead.
+  MARKER_TEXT=$(call_tool "$MARKER_RPC")
+  if [ "$(ok_of "$MARKER_TEXT")" != "true" ]; then
+    echo "::warning::could not write the bundle-state marker; the restore will reinstall the cached bundle (safe, just slower)."
+  fi
   echo "Bundle state marker: ${GITHUB_RUN_ID:-unknown}:${BUNDLE_STATE}"
 fi
 
@@ -194,7 +198,12 @@ fi
 # stale marker (closing the contaminated-hub-after-failed-restore gap). The disarm rewrites the marker
 # only after a CONFIRMED restore. Best-effort -- the marker is a skip optimization, not a safety gate.
 echo "Clearing the canonical-main SHA marker (about to deploy PR code -- hub no longer guaranteed canonical main)..."
-call_tool "$(jq -nc '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:"mcp-main-deployed-sha.txt",content:"",confirm:true}}}')" >/dev/null || true
+# call_tool returns rc 0 even on a JSON-RPC error (empty stdout), so a trailing `|| true` would swallow a
+# real failure silently -- check the result and warn so a stranded stale marker is at least visible in the log.
+SHA_CLEAR_TEXT=$(call_tool "$(jq -nc '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:"mcp-main-deployed-sha.txt",content:"",confirm:true}}}')")
+if [ "$(ok_of "$SHA_CLEAR_TEXT")" != "true" ]; then
+  echo "::warning::could not clear the canonical-main SHA marker; a stale marker may let the next arm skip a needed main refresh."
+fi
 
 DEPLOYED_APPS=0
 while IFS=$'\t' read -r A_NS A_NAME A_LOC; do
@@ -267,6 +276,34 @@ else
       exit 1
     fi
     echo "Load-throttle bounce complete: app ${SERVER_APP_ID} disable->enable verified."
+
+    # Post-enable readiness: prove the server's /mcp endpoint actually ANSWERS before handing off to
+    # the tests. The first request after an enable absorbs any lazy-recompile/warmup latency here
+    # instead of inside the first test, and a bounce that somehow left the endpoint dead fails THIS
+    # step with a precise message rather than 100 tests with a misleading one. The bounce itself
+    # already cannot race a compile: it only runs after every app deploy above was CONFIRMED landed
+    # (fresh lastSelfDeploy + live-length cross-check), so the saves' compiles are complete.
+    if [ -n "${HUBITAT_HUB_URL:-}" ] && [ -n "${HUBITAT_ACCESS_TOKEN:-}" ]; then
+      MAIN_MCP_URL="${HUBITAT_HUB_URL}/apps/${SERVER_APP_ID}/mcp?access_token=${HUBITAT_ACCESS_TOKEN}"
+      READY="false"
+      for ATTEMPT in 1 2 3 4 5 6 7 8 9; do
+        INIT_RESP=$(curl -sS --max-time 30 -X POST "$MAIN_MCP_URL" -H "Content-Type: application/json" \
+          --data-binary '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"e2e-deploy-readiness","version":"1"}}}' 2>/dev/null || true)
+        if printf '%s' "$INIT_RESP" | jq -e '.result.protocolVersion // empty' >/dev/null 2>&1; then
+          READY="true"
+          echo "Server endpoint answered initialize on readiness attempt ${ATTEMPT} -- app ${SERVER_APP_ID} is serving."
+          break
+        fi
+        echo "  ...readiness attempt ${ATTEMPT}/9: endpoint not answering yet; retrying in 10s..."
+        sleep 10
+      done
+      if [ "$READY" != "true" ]; then
+        echo "::error::Server app ${SERVER_APP_ID} is ENABLED but its /mcp endpoint never answered initialize within ~90s after the throttle bounce. Investigate before the tests bury this signal."
+        exit 1
+      fi
+    else
+      echo "::warning::HUBITAT_HUB_URL/HUBITAT_ACCESS_TOKEN not set -- skipping the post-bounce endpoint readiness check (the test runner's own connectivity check still gates)."
+    fi
   fi
 fi
 

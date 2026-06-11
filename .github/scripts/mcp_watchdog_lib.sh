@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Shared helpers for the watchdog-driven e2e scripts (deploy / arm / self-update). Source it:
+# Shared helpers for the watchdog-driven e2e scripts (deploy / arm). Source it:
 #   source "$(dirname "$0")/mcp_watchdog_lib.sh"
 # Every call targets $WATCHDOG_URL (the watchdog's own /mcp endpoint), never the main $MCP_URL.
 #
-# Single source of truth for the JSON-RPC plumbing + the deploy CONFIRMATION, so the three callers
+# Single source of truth for the JSON-RPC plumbing + the deploy CONFIRMATION, so the callers
 # cannot drift. call_tool surfaces a JSON-RPC error envelope loudly (a tool/protocol error must not be
 # mistaken for an empty relay drop). deploy_app_via_watchdog confirms a deploy LANDED via a FRESH
 # lastSelfDeploy success -- the only signal that works for a relay-dropped response AND a same-length
@@ -12,8 +12,16 @@
 mcp_call() { curl -sS --max-time 120 -X POST "$WATCHDOG_URL" -H "Content-Type: application/json" --data-binary "$1"; }
 
 # Echo the inner tool-result text, or empty. A JSON-RPC ERROR envelope ({"error":...}, no .result) is a
-# real hub/protocol failure: surface it loudly and return empty so the caller's empty-check fails -- it
-# must NOT look like a (recoverable) dropped response.
+# real hub/protocol failure: log it loudly to stderr and return empty so the caller's empty-check fails --
+# it must NOT look like a (recoverable) dropped response.
+#
+# RETURN CONTRACT: call_tool ALWAYS returns rc 0 -- on success, on an empty relay drop, AND on a JSON-RPC
+# error envelope (the error is signalled by EMPTY STDOUT, never by exit status). This is deliberate: every
+# caller runs under `set -e` and consumes the output via `VAR=$(call_tool ...)`, so a non-zero return would
+# hard-kill the script before its own tailored error message could run. Consequence for callers: NEVER
+# trust call_tool's exit status to detect failure -- a caller that ignores stdout (e.g. `call_tool ...
+# >/dev/null || warn`) will see rc 0 even on a JSON-RPC error, so its `||` branch never fires. Such a
+# caller MUST check the response explicitly (ok_of / non-empty stdout) instead of relying on `||`.
 call_tool() {
   local resp err
   resp=$(mcp_call "$1" || true)

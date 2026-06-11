@@ -7,9 +7,11 @@
 # Rules, Button Controllers/Rules, Visual Rules, Notifiers, Room Lighting -- every app
 # type, as one parent/child tree), hub variables, File Manager contents, location
 # events (lowMemory/systemStart/mode/HSM), per-BAT-device events/subscribers, and the
-# watchdog's flag/marker files. Probes the MAIN MCP server ($MCP_URL) directly -- the
-# watchdog endpoint lacks the device-reading tools -- with watchdog reads only for its
-# own state files. NOTHING IS TRUNCATED: sections print their full tool response (each
+# watchdog's flag/marker files. Device/rule/variable/file reads and the live wedge check
+# go through the MAIN server ($MCP_URL); hub-health reads (info-jobs / metrics / memory /
+# logs / app-instances / libraries / bundles) and the watchdog's own state files go
+# through the always-alive WATCHDOG endpoint, so the probe reads hub health even while the
+# main server is recompiling or throttled. NOTHING IS TRUNCATED: sections print their full tool response (each
 # is already bounded by the server's ~120KB response cap), so one probe run carries the
 # whole picture. Every call was validated 1:1 against a live hub before this landed.
 #

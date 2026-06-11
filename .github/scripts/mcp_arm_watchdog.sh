@@ -3,23 +3,25 @@
 #
 # v2 is a STANDALONE on-hub app that doubles as a small MCP server: its dead-man timer auto-restores
 # the WHOLE MCP package (the MCP Rule Server app + the child MCP Rule app + every library the server
-# #includes) from a known-good File Manager cache if an e2e session bricks the hub and can't disarm.
-# Full HPM repair redeploys EVERY manifest app, so the cache must include the child app too. This script
-# (1) ensures the v2 watchdog is installed AND has a live runEvery1Minute schedule, (2) BACKS UP main by
-# reading each app class + each #include'd library through the WATCHDOG's own hub_get_source (whose
-# File-Manager auto-save side effect writes the cache files), assembling the restore manifest, (3) asserts
-# the server-app cache is real (>1MB) -- if main is not cached, e2e HALTS -- then (4) writes the manifest-shaped
-# armed flag with the ARM_WINDOW_MS deadline (35 min). The matching "Disarm dead-man watchdog (final)"
-# always() step flips it to {armed:false, intent:"disarm"}; if a run crashes before that, the watchdog
-# fires and restores the package on its own.
+# #includes) if an e2e session bricks the hub and can't disarm. Full HPM repair redeploys EVERY manifest
+# app, so the restore manifest must include the child app too. NOTHING IS BACKED UP OR CACHED ON THE
+# HUB. This script (1) ensures the v2 watchdog is installed AND has a live runEvery1Minute schedule,
+# (2) RECORDS canonical main's install URLs -- the bundle zip + parent app + each child app, as raw
+# https URLs at MAIN_SHA -- plus each app's expected char count and each #include'd library's id, into
+# the restore manifest, then (3) writes the manifest-shaped armed flag with the ARM_WINDOW_MS deadline
+# (35 min). The matching "Disarm dead-man watchdog (final)" always() step flips it to
+# {armed:false, intent:"disarm"}; if a run crashes before that, the watchdog fires and restores the
+# package on its own -- by downloading and installing main from those canonical URLs at fire time
+# (GET /bundle2/uploadZipFromUrl for the bundle, POST /app/ajax/update for each app), so GitHub
+# reachability is required when the restore runs.
 #
 # CRITICAL: every hub I/O here goes through the WATCHDOG's own MCP endpoint ($WATCHDOG_URL, from the
 # WATCHDOG_MCP_URL secret), NOT the main server's $MCP_URL. The watchdog is the second driver of the
-# same loopback restore plumbing, so arming/backing-up through it keeps the dead-man path independent
-# of the (possibly bricked) main server. Every flag write is READ BACK and asserted -- a cloud 504 can
-# no-op a write while returning ambiguously, so we never trust a write we didn't verify. We refuse to
-# arm against a missing/truncated app backup (arming with no good restore target is worse than not
-# arming at all).
+# same restore plumbing, so arming through it keeps the dead-man path independent of the (possibly
+# bricked) main server. Every flag write is READ BACK and asserted -- a cloud 504 can no-op a write
+# while returning ambiguously, so we never trust a write we didn't verify; the read-back asserts the
+# armed flag AND that the restore-critical manifest (the app class id) round-tripped, since a flag
+# with no usable restore target is worse than not arming at all.
 #
 # Env:  WATCHDOG_URL          -- full cloud OAuth URL for the WATCHDOG's /mcp endpoint (WATCHDOG_MCP_URL secret)
 #       PR_RAW_BASE           -- https://raw.githubusercontent.com/<owner>/<repo>
@@ -156,28 +158,22 @@ else
   echo "::warning::Could not confirm a live 'checkDeadman' scheduled job via hub_get_jobs (the /hub/scheduledJobs/json shape may differ on this firmware). Proceeding to arm -- the disarm-restore poll will surface a genuinely-dead timer. If the dead-man never fires, re-check the watchdog's runEvery1Minute schedule."
 fi
 
-# --- 2c) Refresh the hub to CANONICAL main if main changed or the hub drifted -----------------------
-# The cache we take below must be canonical main, NOT whatever happens to be live (a prior run could
-# have left PR/broken code, or main may have advanced on GitHub). Compare the hub to the BASE repo's
-# main on TWO axes: length (did the hub drift?) and SHA (did main change? -- catches a same-length edit
-# a length check would miss). If either differs, deploy canonical main through the watchdog (importUrl,
-# same as the install) and CONFIRM via a fresh lastSelfDeploy success (works even for a same-length
-# change a length poll can't see), then record main's SHA so an UNCHANGED main is skipped next run (no
-# needless 1.6MB redeploy -- the cache-and-skip design). MAIN_* absent (older workflow) -> skip silently.
+# --- 2c) Record canonical-main install URLs + identities into the restore manifest (no hub install) ---
+# The restore must reinstall canonical main, NOT whatever happens to be live (a prior run could have left
+# PR/broken code, or main may have advanced on GitHub). The arm DOES NOT deploy or refresh the hub here:
+# it records the canonical-main install URLs the teardown restore will install from -- main's BUNDLE
+# zip(s) and every manifest app (parent + child), as raw https URLs at MAIN_SHA -- plus each app's
+# expected char count and each #include'd library's id. MAIN_* absent (older workflow) -> HALT (nothing
+# to record means the dead-man would have no restore source).
 #
-# SCOPE: full-package canonical main (PR #247). Before the app drift-check below, this reinstalls main's
-# BUNDLE (from main's packageManifest.json at MAIN_SHA) so the #include'd libraries are refreshed to
-# canonical main too -- not just the app. That closes the stale-library gap: a main change touching only
-# a library is caught (the app would otherwise recompile against stale libs on a coupled change), and the
-# cache taken below is the whole canonical-main package. The server APP is then redeployed when it drifted
-# (the 1.6MB redeploy stays gated on the length+SHA check), and the CHILD app(s) are refreshed alongside it
-# -- full repair: EVERY manifest app must track canonical main, not just the server, so the cache can never
-# capture a stale child. MAIN_* absent (older workflow) -> skip.
-# main's BUNDLE set (namespace+name as the hub registers them) for the restore-time orphan cleanup + the
-# disarm no-stale assertion. Derived from each main bundle .zip's own install.txt (line 1 = namespace,
-# line 2 = name) -- the authoritative hub-registered identity -- NOT from listing the hub (a prior run's
-# leftover bundle still on the hub would otherwise be misrecorded as "main's" and never cleaned up). "[]"
-# when MAIN_* is absent or the manifest/zip can't be read -> the restore cleanup + assertion skip (safe).
+# SCOPE: full-package canonical main (PR #247). The recorded URLs cover main's BUNDLE (the #include'd
+# libraries are delivered by the bundle install at restore time -- nothing is installed per-library) and
+# EVERY manifest app, so the restore can reinstall the whole canonical-main package, never a stale child.
+# main's BUNDLE identity (namespace+name as the hub registers them) is recorded for the restore-time
+# orphan cleanup. Derived from each main bundle .zip's own install.txt (line 1 = namespace, line 2 =
+# name) -- the authoritative hub-registered identity -- NOT from listing the hub (a prior run's leftover
+# bundle still on the hub would otherwise be misrecorded as "main's" and never cleaned up). "[]" when
+# MAIN_* is absent or the manifest/zip can't be read -> the restore cleanup skips (safe).
 MAIN_BUNDLES_JSON="[]"
 if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA:-}" ]; then
   # THE ARM NEVER INSTALLS OR CACHES ANYTHING (maintainer's final flow): no local backup exists on
@@ -226,13 +222,13 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
         echo "Recorded main bundle ${B_NS}/${B_NM} -> restore installs from ${BURL}"
       done <<< "$MAIN_BUNDLE_RELS"
     else
-      echo "::notice::main packageManifest.json declares no bundles -- app-only canonical main (no bundle to refresh)."
+      echo "::notice::main packageManifest.json declares no bundles -- app-only canonical main (no bundle to record)."
     fi
   else
-    # The restore manifest's canonical-main bundle/library set (and the disarm no-stale gate) depend on
-    # this fetch; arming app-only here would cache a possibly-stale library baseline. main's
-    # packageManifest.json was just reachable (the workflow resolved MAIN_SOURCE_URL from the same repo),
-    # so a failure is a transient blip -- HALT and re-run rather than arm a polluted baseline.
+    # The restore manifest's canonical-main bundle/library set depends on this fetch; arming app-only here
+    # would record a possibly-stale library baseline. main's packageManifest.json was just reachable (the
+    # workflow resolved MAIN_SOURCE_URL from the same repo), so a failure is a transient blip -- HALT and
+    # re-run rather than arm a polluted baseline.
     echo "::error::e2e HALT: could not fetch main's packageManifest.json from ${MAIN_RAW_PREFIX} -- cannot establish the canonical-main bundle/library baseline. Refusing to arm a possibly-polluted baseline; re-run."
     exit 1
   fi
@@ -290,9 +286,10 @@ if [ -z "$APP_SRC_CHUNK" ]; then
 fi
 
 
-# 3c) Parse the app's #include directives (namespace.Name) so we back up exactly the libraries main
-# depends on. #include directives live at the TOP of the file (before/around the definition block),
-# so the ~64000-char head fetched in 3a (APP_SRC_CHUNK) carries all of them -- no full-file read needed.
+# 3c) Parse the app's #include directives (namespace.Name) so we record exactly the libraries main
+# depends on (their ids, for the restore-time reconcile -- nothing is backed up; the bundle delivers
+# them at restore time). #include directives live at the TOP of the file (before/around the definition
+# block), so the ~64000-char head fetched in 3a (APP_SRC_CHUNK) carries all of them -- no full-file read.
 echo "Parsing #include directives from the app source head..."
 APP_FULL_SRC="$APP_SRC_CHUNK"
 # tokens like:  #include mcp.McpSomeLib   -> "mcp.McpSomeLib"

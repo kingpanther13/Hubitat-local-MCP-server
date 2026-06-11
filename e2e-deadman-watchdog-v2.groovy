@@ -5,12 +5,14 @@
  * installed but ORPHANED: e2e only arms THIS app (its own Apps Code class + its own flag
  * file e2e-deadman-v2.json), so v1 sees no flag of its own and sits idle/harmless.
  *
- * What v2 does: it restores the WHOLE main package -- every #include'd library FIRST
- * (POST /library/saveOrUpdateJson), then the app(s) (POST /app/ajax/update) -- from LOCAL
- * File Manager cache files that CI populated from main at the healthy START of the run
- * (importUrl + hub_get_source). It restores on BOTH a clean disarm (intent=disarm) and a
- * missed-deadline fire, and writes restoreResult/restoreFor back into the flag so CI can
- * confirm the reinstall landed.
+ * What v2 does: it restores the WHOLE main package by installing main's BUNDLE (which delivers
+ * every #include'd library) and then every app, from the CANONICAL raw.githubusercontent.com
+ * URLs the arm recorded in the flag manifest at MAIN_SHA -- the HPM-repair path
+ * (adminInstallBundle(importUrl) -> GET /bundle2/uploadZipFromUrl for the bundle,
+ * adminUpdateApp(importUrl) -> POST /app/ajax/update for each app). NOTHING is cached locally,
+ * so GitHub reachability is required at fire time. It restores on BOTH a clean disarm
+ * (intent=disarm) and a missed-deadline fire, and writes restoreResult/restoreFor back into the
+ * flag so CI can confirm the reinstall landed.
  *
  * SECOND DRIVER (this revision): v2 is now also a SMALL second MCP server -- a deploy
  * controller. It exposes a token-gated cloud /mcp endpoint (Hubitat OAuth) carrying ONLY
@@ -226,13 +228,12 @@ private void actAndRecordLocked(Map flag, String trigger) {
     log.warn "E2E Dead-Man Watchdog v2 ${trigger} complete: ${flag.restoreResult}."
 }
 
-// ---- restore the whole package from the cache manifest: drop the PR's stale bundle, restore main's
-// LIBRARIES, restore the APP, then drop the PR's stale libraries. Leaves the hub carrying ONLY main's
-// bundles + libraries + app -- no leftover from the PR install (the user's "overwrite with main without
-// any stale bundles/libraries"). Every step is LOCAL (cached source + loopback deletes), so the dead-man
-// still fires when GitHub is unreachable; orphan cleanup is best-effort (it never fails the restore --
-// restoring main's libs+app is the guarantee), and the disarm step independently ASSERTS no stale
-// mcp-namespace bundle/library remains.
+// ---- restore the whole package from the manifest's canonical install URLs: drop the PR's stale bundle,
+// install main's BUNDLE (delivers every library), install the APP(s), then drop the PR's stale libraries.
+// Leaves the hub carrying ONLY main's bundles + libraries + app -- no leftover from the PR install (the
+// user's "overwrite with main without any stale bundles/libraries"). The bundle + app installs fetch from
+// the canonical https URLs the arm recorded, so GitHub MUST be reachable at fire time. Orphan cleanup is
+// best-effort (it never fails the restore -- installing main's bundle+app is the guarantee).
 private Map restorePackage(Map flag) {
     def m = flag.manifest
     if (!(m instanceof Map)) return [ok: false, detail: "no manifest in flag"]
@@ -250,10 +251,9 @@ private Map restorePackage(Map flag) {
     // https URL the arm recorded in the manifest (one operation; the hub fetches, unpacks and
     // compiles every library inside, exactly like a user's HPM update -- no per-library writes, no
     // per-library dependent recompiles). Requires GitHub reachability at fire time -- acceptable,
-    // the whole e2e pipeline depends on GitHub anyway. Falls back to the LEGACY per-library source
-    // restore for an older flag whose manifest has no bundle url -- that path POSTs each library
-    // individually and recompiles the ~1.8MB dependent app per write, the load profile that
-    // tripped the platform's per-app limiter.
+    // the whole e2e pipeline depends on GitHub anyway. An old-format flag whose manifest bundles
+    // carry no url has no install source (nothing is cached locally) and fails loudly below so the
+    // operator re-arms -- there is no per-library fallback path.
     def cachedBundles = (m.bundles instanceof List) ? m.bundles.findAll { it?.url } : []
     // Run-scoped skip: the deploy stamps "<runId>:unchanged" when the PR's bundle was byte-identical
     // to main's (deterministic build), meaning the libraries never left main's bytes this run --
@@ -272,12 +272,9 @@ private Map restorePackage(Map flag) {
             // Install from the CANONICAL https URL the arm recorded -- the exact HPM path. NEVER a
             // hub-local /local/ URL: registering the hub's own loopback URL as a bundle source is
             // off the platform's tested path (the UI uses uploadZip+processUploadedZip for local
-            // files) and coincided with /hub2/userLibraries wedging hub-wide.
+            // files) and coincided with /hub2/userLibraries wedging hub-wide. cachedBundles is
+            // pre-filtered to entries WITH a url (the no-url old-format case is handled below).
             String srcUrl = b.url?.toString()
-            if (!srcUrl) {
-                detail << "bundle ${b?.name ?: '?'}: no url in manifest -- falling to legacy"
-                continue
-            }
             def r = null
             try { r = adminInstallBundle([importUrl: srcUrl, confirm: true]) }
             catch (Exception e) { r = [success: false, error: e.message] }
@@ -1181,7 +1178,7 @@ def adminGetHubLogs(args) {
     return [logs: out, count: out.size(), totalParsed: arr.size(), appliedFilters: [level: level, limit: limit]]
 }
 
-// hub_list_apps: every running app instance, flattened from /hub2/appsList with parentId --
+// hub_list_app_instances: every running app instance, flattened from /hub2/appsList with parentId --
 // mirrors the main server's instances mapping (id/name/type/disabled/user/parentId). The full
 // inventory the probe needs (RM rules, Basic Rules, Button Controllers/Rules, Visual Rules,
 // watchdogs -- every app type), readable while the main app is busy.
