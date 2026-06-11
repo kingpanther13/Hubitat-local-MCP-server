@@ -58,8 +58,11 @@ mcp_call() {
 # empty -> the caller's .success / existence gate decides). A JSON-RPC ERROR envelope ({"error":...},
 # no .result) is a real hub/protocol failure: surface it loudly and return 1 (do NOT pass it off as
 # empty-success text). A non-JSON body (the ~10s cloud-gateway timeout) is retried up to RPC_ATTEMPTS.
-RPC_ATTEMPTS=5
-RPC_RETRY_SLEEP=6
+# 12x10s (~2+ min of retry window): the arm is PRE-test, off the suite's critical path, and a
+# post-teardown async-recompile blackout can swallow 60-130s mid-arm (observed live) -- a healthy
+# hub answers on attempt 1, so the extra patience costs nothing when things are fine.
+RPC_ATTEMPTS=12
+RPC_RETRY_SLEEP=10
 mcp_tool_call_text() {
   local label="$1" rpc="$2" attempt=1 resp text err
   while [ "$attempt" -le "$RPC_ATTEMPTS" ]; do
@@ -80,6 +83,29 @@ mcp_tool_call_text() {
   done
   return 1
 }
+
+# --- 0) Hub-readiness gate ------------------------------------------------------------------------
+# Back-to-back runs can land the arm inside a post-teardown blackout: the previous run's bundle
+# restore queues ASYNC dependent-recompile work that can briefly stop the hub answering anything
+# (observed live: ~70+s of 'No response from hub' starting minutes after the restore marker matched,
+# swallowing the arm's 5x6s retry budget). One cheap poll on a healthy hub; ride out a blackout
+# otherwise. HALT only if the hub stays dark for ~5 minutes -- that is a real outage, not settling.
+echo "Hub-readiness gate: polling the watchdog before the arm's hub work..."
+READY=""
+for attempt in $(seq 1 30); do
+  if mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' 2>/dev/null \
+      | jq -e '.result.content[0].text // empty' >/dev/null 2>&1; then
+    READY="yes"
+    echo "  Watchdog responsive (attempt ${attempt})."
+    break
+  fi
+  echo "  ...hub not answering (attempt ${attempt}/30); waiting 10s (post-teardown recompile settling)"
+  sleep 10
+done
+if [ -z "$READY" ]; then
+  echo "::error::e2e HALT: the watchdog endpoint stayed unresponsive for ~5 minutes -- a real outage, not post-teardown settling. Investigate."
+  exit 1
+fi
 
 # --- 1) Resolve the MCP server Apps Code class id (namespace+name match) -------------------------
 echo "Looking up Apps Code class ID for $APP_NAMESPACE:$APP_NAME via watchdog hub_list_apps(scope=types)..."
