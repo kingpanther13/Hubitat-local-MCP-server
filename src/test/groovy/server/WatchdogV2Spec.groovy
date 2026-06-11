@@ -242,12 +242,18 @@ class WatchdogV2Spec extends Specification {
 
     // ---- defer-native-deletes: force-delete an installed-app instance (RM rule) for the disarm sweep ----
 
-    def "adminForceDeleteInstalledApp GETs /installedapp/forcedelete/<id>/quiet (instance, not code class)"() {
+    def "adminForceDeleteInstalledApp GETs /installedapp/forcedelete/<id>/quiet then verifies gone via /installedapp/json"() {
         given:
         // The forcedelete endpoint answers SUCCESS with a 302 redirect to the apps list; hubGetStatus
         // captures that status off the thrown response (followRedirects:false), so the tool sees a 3xx.
-        String calledPath = null
-        script.metaClass.hubGetStatus = { String path, Map q -> calledPath = path; [status: 302, location: "/installedapp/list", data: null] }
+        // The 302 alone is not trusted: a follow-up /installedapp/json existence read (404 = gone)
+        // must confirm, because the disarm sweep fires these mid-recompile where commits strand.
+        def paths = []
+        script.metaClass.hubGetStatus = { String path, Map q ->
+            paths << path
+            path.startsWith("/installedapp/forcedelete/") ? [status: 302, location: "/installedapp/list", data: null]
+                                                          : [status: 404, location: null, data: null]
+        }
 
         when:
         def r = script.adminForceDeleteInstalledApp([id: "123", confirm: true])
@@ -255,13 +261,18 @@ class WatchdogV2Spec extends Specification {
         then:
         r.success == true
         r.id == "123"
-        calledPath == "/installedapp/forcedelete/123/quiet"     // NOT /app/edit/deleteJsonSafe (code class)
+        paths == ["/installedapp/forcedelete/123/quiet",        // NOT /app/edit/deleteJsonSafe (code class)
+                  "/installedapp/json/123"]                     // the gone-check
     }
 
     @Unroll
-    def "adminForceDeleteInstalledApp treats #status as #expected (302 redirect + 2xx = success)"() {
+    def "adminForceDeleteInstalledApp treats forcedelete status #status as #expected (302 redirect + 2xx = success)"() {
         given:
-        script.metaClass.hubGetStatus = { String path, Map q -> [status: status, location: null, data: null] }
+        // The gone-check answers "absent" (404) so the table isolates the FIRST call's status handling.
+        script.metaClass.hubGetStatus = { String path, Map q ->
+            path.startsWith("/installedapp/json/") ? [status: 404, location: null, data: null]
+                                                   : [status: status, location: null, data: null]
+        }
 
         expect:
         script.adminForceDeleteInstalledApp([id: "123", confirm: true]).success == expected
@@ -272,6 +283,33 @@ class WatchdogV2Spec extends Specification {
         200    || true       // plain OK (some firmwares)
         404    || false      // instance already gone / bad id -> real failure, sweep keeps its list
         500    || false      // hub error
+    }
+
+    @Unroll
+    def "adminForceDeleteInstalledApp gone-check: #scenario"() {
+        given:
+        // forcedelete 302s, but only a verified-absent app may report success -- a late/stranded
+        // commit (app still readable) or an unreadable check keeps the id on the sweep's recovery
+        // list, where the idempotent re-delete is a harmless no-op.
+        script.metaClass.hubGetStatus = { String path, Map q ->
+            path.startsWith("/installedapp/json/") ? checkResp
+                                                   : [status: 302, location: "/installedapp/list", data: null]
+        }
+
+        when:
+        def r = script.adminForceDeleteInstalledApp([id: "123", confirm: true])
+
+        then:
+        r.success == expected
+        expected || r.error?.contains("keep the id")
+
+        where:
+        scenario                                  | checkResp                                                          || expected
+        'app still exists -> stranded commit'     | [status: 200, location: null, data: '{"id":123,"name":"BAT_X"}']   || false
+        'empty 200 body -> gone'                  | [status: 200, location: null, data: '']                            || true
+        'parseable non-app body -> gone'          | [status: 200, location: null, data: '{"success":false}']           || true
+        'unparseable 200 body -> cannot prove'    | [status: 200, location: null, data: '<html>login</html>']          || false
+        'check unreachable -> cannot prove gone'  | [status: null, location: null, data: null]                         || false
     }
 
     def "adminForceDeleteInstalledApp reports success:false when the request never reaches the hub (status null)"() {

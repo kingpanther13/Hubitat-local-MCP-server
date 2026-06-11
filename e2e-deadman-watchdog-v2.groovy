@@ -1117,10 +1117,34 @@ def adminForceDeleteInstalledApp(args) {
     // The forcedelete endpoint answers SUCCESS with a 302 redirect to the apps list (a plain 2xx is
     // also fine). >=400 -- or no status at all, meaning the request never reached the hub
     // (auth/transport) -- is a real failure: report it so the disarm sweep warns + keeps its id list.
-    if (st != null && st < 400) {
-        return [success: true, message: "Force-deleted installed app ${id} (HTTP ${st}).", id: id]
+    if (st == null || st >= 400) {
+        return [success: false, error: "Force-delete of installed app ${id} did not confirm (status=${st ?: 'none'}) -- endpoint error, auth failure, or the request never reached the hub.", id: id]
     }
-    return [success: false, error: "Force-delete of installed app ${id} did not confirm (status=${st ?: 'none'}) -- endpoint error, auth failure, or the request never reached the hub.", id: id]
+    // The 302 alone is NOT proof the delete committed: the disarm sweep fires these while the hub is
+    // recompiling the restored main app, a window where admin-endpoint writes are known to commit
+    // late or strand on this firmware. Verify gone-ness via /installedapp/json/<id> (the same
+    // existence read the server's VRB delete uses: {id,...} while installed, 404/empty once gone).
+    // Only a definite "absent" confirms; "still found" or an unreadable check reports success:false
+    // so the caller keeps the id on its recovery list -- re-deleting a gone app is a harmless no-op.
+    def check = hubGetStatus("/installedapp/json/${id}", [:])
+    Integer cst = (check?.status != null) ? (check.status as Integer) : null
+    if (cst == 404 || (cst != null && cst < 400 && !(check.data?.toString()?.trim()))) {
+        return [success: true, message: "Force-deleted installed app ${id} (HTTP ${st}; verified gone).", id: id]
+    }
+    if (cst != null && cst < 400) {
+        def parsed = null
+        try {
+            parsed = new groovy.json.JsonSlurper().parseText(check.data.toString())
+        } catch (Exception ignore) {
+            // An unparseable 200 (e.g. a login page) is NOT proof of absence -- fall through to keep-the-id.
+            return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the gone-check body was unparseable (auth/login page?) -- keep the id and re-delete to be safe.", id: id]
+        }
+        if ((parsed instanceof Map) && parsed.id != null) {
+            return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the app still exists (late/stranded commit) -- keep the id and re-delete.", id: id]
+        }
+        return [success: true, message: "Force-deleted installed app ${id} (HTTP ${st}; verified gone).", id: id]
+    }
+    return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the gone-check could not read /installedapp/json (status=${cst ?: 'none'}) -- keep the id and re-delete to be safe.", id: id]
 }
 
 // hub_install_bundle: copied from toolInstallBundle + _firmwareAtLeast + _bundleResponseSucceeded

@@ -1,7 +1,6 @@
 """pytest unit tests for pure helper functions in tests/e2e_test.py
 
-Scanned e2e_test.py for testable pure helpers; found two:
-  - _find_attr(attrs, name): extracts an attribute value from dict or list shapes
+Scanned e2e_test.py for testable pure helpers; found one:
   - _inject_device_id(obj, dev_id): replaces 'PLACEHOLDER' device IDs in a rule dict
 
 All other code in e2e_test.py requires a live Hubitat hub (HubitatMcpClient,
@@ -23,74 +22,6 @@ import pytest
 requests = pytest.importorskip("requests", reason="'requests' not installed; skipping e2e helpers")
 
 import e2e_test as et  # noqa: E402 -- must follow the importorskip above (e2e_test imports requests at module level)
-
-# ---------------------------------------------------------------------------
-# _find_attr
-# ---------------------------------------------------------------------------
-
-def test_find_attr_dict_found():
-    """Returns value when attrs is a dict and key is present."""
-    assert et._find_attr({"switch": "on", "level": "80"}, "switch") == "on"
-
-
-def test_find_attr_dict_missing_returns_none():
-    """Returns None when the attribute key is absent from the dict."""
-    assert et._find_attr({"level": "80"}, "switch") is None
-
-
-def test_find_attr_list_name_key():
-    """Finds the value from a list of {name, currentValue} dicts."""
-    attrs = [
-        {"name": "switch", "currentValue": "off"},
-        {"name": "level", "currentValue": "50"},
-    ]
-    assert et._find_attr(attrs, "switch") == "off"
-
-
-def test_find_attr_list_attribute_key():
-    """Finds the value from a list using the 'attribute' key variant."""
-    attrs = [
-        {"attribute": "switch", "value": "on"},
-        {"attribute": "level", "value": "70"},
-    ]
-    assert et._find_attr(attrs, "switch") == "on"
-
-
-def test_find_attr_list_not_found_returns_none():
-    """Returns None when the attribute name is not in the list."""
-    attrs = [{"name": "level", "currentValue": "50"}]
-    assert et._find_attr(attrs, "switch") is None
-
-
-def test_find_attr_empty_list_returns_none():
-    """Returns None for an empty list."""
-    assert et._find_attr([], "switch") is None
-
-
-def test_find_attr_empty_dict_returns_none():
-    """Returns None for an empty dict."""
-    assert et._find_attr({}, "switch") is None
-
-
-def test_find_attr_none_returns_none():
-    """Returns None when attrs is None (not a dict or list)."""
-    assert et._find_attr(None, "switch") is None
-
-
-def test_find_attr_list_skips_non_dict_entries():
-    """Non-dict entries in the list are silently skipped."""
-    attrs = ["not a dict", {"name": "switch", "currentValue": "on"}]
-    assert et._find_attr(attrs, "switch") == "on"
-
-
-def test_find_attr_returns_first_match():
-    """Returns the first matching entry when duplicates exist."""
-    attrs = [
-        {"name": "switch", "currentValue": "on"},
-        {"name": "switch", "currentValue": "off"},
-    ]
-    assert et._find_attr(attrs, "switch") == "on"
-
 
 # ---------------------------------------------------------------------------
 # _inject_device_id

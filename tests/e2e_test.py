@@ -741,16 +741,48 @@ class TestRunner:
                     return result
             return result
 
-        self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "on"})
+        def _switch_diagnostics() -> str:
+            # On a poll timeout the bare result can't distinguish "the command never
+            # processed" (a wedged hub) from "something instantly reverted it" (a rule
+            # stranded by a prior run, still subscribed to this persistent device).
+            # The event history shows which one happened -- a revert leaves an on->off
+            # pair with the producing app in the description -- and the dependents
+            # list names any app still subscribed. Best-effort: diagnostics must
+            # never mask the original failure.
+            parts = []
+            try:
+                ev = self.client.call_tool("hub_list_device_events", {
+                    "deviceId": dev_id, "limit": 12,
+                })
+                rows = ev.get("events", []) if isinstance(ev, dict) else []
+                parts.append("recent events: " + json.dumps([
+                    {k: r.get(k) for k in ("name", "value", "description", "date")}
+                    for r in rows if isinstance(r, dict)]))
+            except Exception as exc:
+                parts.append(f"event-history fetch failed: {exc}")
+            try:
+                deps = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_list_device_dependents", "args": {"deviceId": dev_id},
+                })
+                parts.append(f"apps using this device: {json.dumps(deps)[:800]}")
+            except Exception as exc:
+                parts.append(f"dependents fetch failed: {exc}")
+            return " | ".join(parts)
+
+        cmd = self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "on"})
+        assert not (isinstance(cmd, dict) and cmd.get("success") is False), \
+            f"'on' command reported failure: {cmd}"
         result = _poll_switch("on")
         assert result.get("timedOut") is False and result.get("finalValue") == "on", \
-            f"Expected switch=on within the poll budget, got: {result}"
+            f"Expected switch=on within the poll budget, got: {result}\n    DIAG {_switch_diagnostics()}"
 
         # Turn off
-        self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
+        cmd = self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": "off"})
+        assert not (isinstance(cmd, dict) and cmd.get("success") is False), \
+            f"'off' command reported failure: {cmd}"
         result = _poll_switch("off")
         assert result.get("timedOut") is False and result.get("finalValue") == "off", \
-            f"Expected switch=off within the poll budget, got: {result}"
+            f"Expected switch=off within the poll budget, got: {result}\n    DIAG {_switch_diagnostics()}"
 
     @test("virtual_device_lifecycle")
     def test_list_virtual_devices(self) -> None:
@@ -1583,14 +1615,24 @@ class TestRunner:
 
     def _vrb_definition(self, fmt: str, switch_id: int, switch_event: str) -> dict:
         """Equivalent VRB definition in either wire format: when the test switch
-        fires `switch_event`, turn it off. The firmware (not the caller) decides
-        which format newly-created rules speak, so the lifecycle test needs the
-        same semantic rule expressible both ways."""
+        fires `switch_event`, re-assert that same state. The firmware (not the
+        caller) decides which format newly-created rules speak, so the lifecycle
+        test needs the same semantic rule expressible both ways.
+
+        HARMLESS-STRAND INVARIANT: the action always MATCHES the trigger event
+        ('Turns off' -> turnOff, 'Turns on' -> turnOn). These fixtures live on the
+        shared hub until their delete commits, and a delete can silently strand
+        (the disarm force-delete trusts an HTTP 302; admin-endpoint writes are
+        known to commit late on this firmware). A stranded copy of a matched rule
+        can only re-assert the state the switch already reached -- it can never
+        revert a test command. An OPPOSING action ('Turns on' -> turnOff) stranded
+        across runs instantly reverts every 'on' the switch-command test sends."""
+        action = "turnOff" if switch_event == "Turns off" else "turnOn"
         if fmt == "classic":
             return {
                 "whenNodes": [{"triggerType": "switch", "switches": [switch_id], "deviceIds": [switch_id],
                                "switchEvent": switch_event, "index": 0, "type": "when"}],
-                "thenNodes": [{"actionType": "turnOff", "switches": [switch_id], "deviceIds": [switch_id],
+                "thenNodes": [{"actionType": action, "switches": [switch_id], "deviceIds": [switch_id],
                                "index": 0, "type": "then"}],
                 "elseNodes": [],
             }
@@ -1599,7 +1641,7 @@ class TestRunner:
             "nodes": [
                 {"id": "t1", "type": "trigger", "triggerCondition": "trigger", "triggerType": "switch",
                  "switches": [switch_id], "deviceIds": [switch_id], "switchEvent": switch_event},
-                {"id": "a1", "type": "action", "actionType": "turnOff",
+                {"id": "a1", "type": "action", "actionType": action,
                  "switches": [switch_id], "deviceIds": [switch_id]},
             ],
             "edges": [{"from": "t1", "to": "a1", "port": "next"}],
@@ -3932,20 +3974,39 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         print("--- Cleanup complete ---\n")
 
     def verify_native_rules_clean(self) -> list[str] | None:
-        """Re-list native RM rules and return the BAT_E2E_ ones still present (empty list = clean).
-        Returns None if the hub could not be listed after retries -- the caller treats that as
+        """Re-list native RM rules AND Visual Rules and return the BAT_E2E_ ones still present
+        (empty list = clean). hub_list_rules sees RM rules only, so without the VRB list a
+        stranded Visual Rule -- still subscribed to the persistent test switch -- passes this
+        gate invisibly and sabotages the next run's device-command tests. Returns None if
+        either listing could not be fetched after retries -- the caller treats that as
         'cannot prove cleanup' and fails closed. Retries ride out a transient transport blip."""
+        leftovers: list[str] | None = None
         for attempt in range(1, 4):
             try:
                 nrules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
                 rlist = nrules if isinstance(nrules, list) else nrules.get("rules", [])
-                return [
+                leftovers = [
                     f"{r.get('name') or r.get('label')} (id={r.get('id', r.get('appId'))})"
                     for r in rlist
                     if PREFIX in (r.get("name") or r.get("label") or "")
                 ]
+                break
             except Exception as exc:
                 print(f"  [WARN] verify_native_rules_clean: list attempt {attempt}/3 failed: {exc}")
+                time.sleep(2)
+        if leftovers is None:
+            return None
+        for attempt in range(1, 4):
+            try:
+                vlisted = self._get_visual_rule()
+                leftovers += [
+                    f"{r.get('name')} (visual, id={r.get('appId')})"
+                    for r in (vlisted.get("rules", []) if isinstance(vlisted, dict) else [])
+                    if str(r.get("name") or "").startswith(PREFIX)
+                ]
+                return leftovers
+            except Exception as exc:
+                print(f"  [WARN] verify_native_rules_clean: VRB list attempt {attempt}/3 failed: {exc}")
                 time.sleep(2)
         return None
 
@@ -4075,19 +4136,6 @@ class SkipTest(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _find_attr(attrs: Any, name: str) -> str | None:
-    """Extract an attribute value from various response shapes."""
-    if isinstance(attrs, dict):
-        return attrs.get(name)
-    if isinstance(attrs, list):
-        for a in attrs:
-            if isinstance(a, dict):
-                attr_name = a.get("name", a.get("attribute", ""))
-                if attr_name == name:
-                    return a.get("currentValue", a.get("value"))
-    return None
-
-
 def _inject_device_id(obj: dict, dev_id: str) -> dict:
     """Replace 'PLACEHOLDER' device IDs in a dict (shallow copy)."""
     result = dict(obj)
@@ -4166,6 +4214,23 @@ def main() -> None:
     runner = TestRunner(client, verbose=args.verbose)
 
     if args.cleanup_only:
+        # The disarm step fires the watchdog's restore-to-main asynchronously, so this
+        # step usually starts while the hub is recompiling the ~1.8MB main app -- a
+        # window where every MCP call 504s through the cloud relay. Sweeping into that
+        # window silently disables most cleanup layers (they are warn-only), so wait
+        # for the server to answer a cheap read before sweeping. On exhaustion fall
+        # through anyway: the fail-closed verify below still decides the outcome.
+        print("Waiting for the MCP server to answer (the async restore-to-main recompile 504s every call)...")
+        for attempt in range(1, 37):
+            try:
+                runner.client.call_tool("hub_get_info", {})
+                print(f"  Server is responsive (attempt {attempt}).")
+                break
+            except Exception:
+                if attempt == 36:
+                    print("  [WARN] server still not answering after ~6 min; sweeping anyway.")
+                else:
+                    time.sleep(10)
         runner.cleanup()
         # Gating verification: cleanup() and the disarm-time deferred sweep are otherwise all
         # best-effort (warn-only), so a silently-failed native-rule cleanup could leave BAT_E2E_ RM
