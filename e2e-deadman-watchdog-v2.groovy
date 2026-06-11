@@ -254,7 +254,19 @@ private Map restorePackage(Map flag) {
     // cached bundle -- that path POSTs each library individually and recompiles the ~1.8MB dependent
     // app per write, the load profile that tripped the platform's per-app limiter.
     def cachedBundles = (m.bundles instanceof List) ? m.bundles.findAll { it?.cacheFile } : []
-    if (!cachedBundles.isEmpty()) {
+    // Run-scoped skip: the deploy stamps "<runId>:unchanged" when the PR's bundle was byte-identical
+    // to main's (deterministic build), meaning the libraries never left main's bytes this run --
+    // reinstalling the cached bundle would only fire a redundant dependent-recompile wave. Anything
+    // but a verified THIS-run "unchanged" (stale runId from a crashed run, "changed", unreadable
+    // marker) falls through to the install: fail-safe in the direction of restoring.
+    boolean bundleUnchangedThisRun = false
+    try {
+        def marker = readHubFileText("e2e-pr-bundle-state.txt")?.trim()
+        bundleUnchangedThisRun = (marker == "${flag.runId}:unchanged".toString())
+    } catch (Exception ignore) { bundleUnchangedThisRun = false }
+    if (bundleUnchangedThisRun && !cachedBundles.isEmpty()) {
+        detail << "bundle-skip:pr-identical-to-main(run ${flag.runId})"
+    } else if (!cachedBundles.isEmpty()) {
         for (b in cachedBundles) {
             String localUrl = "http://127.0.0.1:8080/local/${b.cacheFile}"
             def r = null
@@ -722,7 +734,7 @@ def executeAdminTool(String toolName, Map args) {
         case "hub_get_metrics":      return adminGetMetrics(args)
         case "hub_get_memory_history": return adminGetMemoryHistory(args)
         case "hub_get_hub_logs":     return adminGetHubLogs(args)
-        case "hub_list_apps":        return adminListAppInstances(args)
+        case "hub_list_app_instances": return adminListAppInstances(args)
         case "hub_install_bundle":  return adminInstallBundle(args)
         case "hub_list_bundles":    return adminListBundles(args)
         case "hub_delete_bundle":   return adminDeleteBundle(args)
@@ -1854,7 +1866,7 @@ def getAdminToolDefinitions() {
          inputSchema: [type: "object", properties: [limit: [type: "integer"]]]],
         [name: "hub_get_hub_logs", description: "Most-recent hub system log entries. Args: level (error/warn/info), limit (default 50). Read-only.",
          inputSchema: [type: "object", properties: [level: [type: "string"], limit: [type: "integer"]]]],
-        [name: "hub_list_apps", description: "Every running app instance (flattened /hub2/appsList with parentId) -- the full app inventory. Read-only."],
+        [name: "hub_list_app_instances", description: "Every running app INSTANCE (flattened /hub2/appsList with parentId) -- the full app inventory. DISTINCT from hub_list_apps (Apps Code CLASSES, which resolve_class_id depends on). Read-only."],
         [name: "hub_install_bundle", description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
          inputSchema: [type: "object", properties: [importUrl: [type: "string"], primary: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
         [name: "hub_list_bundles", description: "List installed code bundle containers (id/name/namespace). Read-only.",

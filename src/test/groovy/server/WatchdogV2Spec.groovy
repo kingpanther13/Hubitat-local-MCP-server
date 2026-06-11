@@ -542,6 +542,38 @@ class WatchdogV2Spec extends Specification {
         libRestores == 0
     }
 
+    @Unroll
+    def "restorePackage honors the run-scoped bundle-state marker (#scenario)"() {
+        given:
+        // The deploy stamps "<runId>:unchanged" when the PR's bundle is byte-identical to main's --
+        // the libraries never left main's bytes, so reinstalling the cached bundle is a redundant
+        // recompile wave. ONLY a verified this-run marker may skip; a stale runId (crashed prior run)
+        // or "changed" must install: fail-safe toward restoring.
+        int bundleInstalls = 0
+        script.metaClass.adminInstallBundle = { Map a -> bundleInstalls++; [success: true] }
+        script.metaClass.restoreApp = { String c, String f -> true }
+        script.metaClass.readHubFileText = { String fn -> marker }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '11',
+                                          manifest: [app: [classId: '178', file: 'f'], libraries: [],
+                                                     bundles: [[namespace: 'mcp', name: 'mcp_libraries', cacheFile: 'mcp-main-bundle-mcp_libraries.zip']]]] }
+        script.metaClass.writeFlag = { Map fl -> true }
+        script.metaClass.adminListBundles = { Map a -> [source: "hub_api", bundles: []] }
+        script.metaClass.adminListLibraries = { Map a -> [source: "hub_api", libraries: []] }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        bundleInstalls == expectedInstalls
+
+        where:
+        scenario                            | marker            || expectedInstalls
+        'this-run unchanged -> skip'        | '11:unchanged'    || 0
+        'stale runId -> install'            | '999:unchanged'   || 1
+        'changed -> install'                | '11:changed'      || 1
+        'missing marker -> install'         | null              || 1
+    }
+
     def "restorePackage falls back to the legacy per-library restore when the manifest has no cached bundle"() {
         given:
         int libRestores = 0

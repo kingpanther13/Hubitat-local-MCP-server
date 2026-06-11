@@ -114,6 +114,13 @@ echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- deli
 if [ -z "$BUNDLE_RELS" ]; then
   echo "packageManifest.json declares no bundles -- skipping the bundle step (clean no-op)."
 else
+  # The bundle build is DETERMINISTIC (tools/build-bundle.py pins create_system), so byte-equality
+  # against canonical main proves the PR ships the same libraries. When equal, installing the PR's
+  # bundle is a pure waste -- the hub already carries those exact library bytes (the arm/restore keep
+  # them at main) and the install would only fire a dependent-recompile wave of the ~1.8MB app. The
+  # outcome is recorded run-scoped on the hub so the dead-man restore can skip its mirror reinstall
+  # for the same reason; anything but a verified this-run "unchanged" makes the restore install.
+  ANY_BUNDLE_DIFFERS="false"
   while IFS= read -r BUNDLE_REL; do
     [ -z "$BUNDLE_REL" ] && continue
     BUNDLE_PATH="$(dirname "$APP_FILE")/${BUNDLE_REL}"
@@ -121,6 +128,20 @@ else
       echo "::error::packageManifest.json declares bundle '${BUNDLE_REL}' but it is not in the checkout ($BUNDLE_PATH). Manifest/repo drift -- CI cannot prove HPM bundle delivery. Failing instead of passing as 'no bundle'."
       exit 1
     fi
+    BUNDLE_SAME="false"
+    if [ -n "${MAIN_SOURCE_URL:-}" ]; then
+      MAIN_ZIP_TMP="$(mktemp)"
+      if curl -fsSL "${MAIN_SOURCE_URL%/*}/${BUNDLE_REL}" -o "$MAIN_ZIP_TMP" 2>/dev/null \
+         && cmp -s "$BUNDLE_PATH" "$MAIN_ZIP_TMP"; then
+        BUNDLE_SAME="true"
+      fi
+      rm -f "$MAIN_ZIP_TMP"
+    fi
+    if [ "$BUNDLE_SAME" = "true" ]; then
+      echo "Bundle '${BUNDLE_REL}' is byte-identical to canonical main's -- skipping the install (hub already carries these exact library bytes; no recompile wave)."
+      continue
+    fi
+    ANY_BUNDLE_DIFFERS="true"
     BUNDLE_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/${BUNDLE_REL}"
     echo "Installing package bundle '${BUNDLE_REL}' from ${BUNDLE_URL} via hub_install_bundle ..."
     BUN_RPC=$(jq -nc --arg url "$BUNDLE_URL" \
@@ -132,6 +153,16 @@ else
     fi
     echo "Bundle '${BUNDLE_REL}' installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint,message}' 2>/dev/null || true)"
   done <<< "$BUNDLE_RELS"
+  # Run-scoped bundle-state marker for the dead-man restore: "<runId>:unchanged" lets restorePackage
+  # skip reinstalling main's cached bundle (the libraries never left main's bytes this run). Any other
+  # content -- different runId (stale marker from a crashed run), "changed", or a failed write -- makes
+  # the restore do the install: fail-safe in the direction of restoring.
+  BUNDLE_STATE=$([ "$ANY_BUNDLE_DIFFERS" = "true" ] && echo "changed" || echo "unchanged")
+  MARKER_RPC=$(jq -nc --arg c "${GITHUB_RUN_ID:-unknown}:${BUNDLE_STATE}" \
+    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:"e2e-pr-bundle-state.txt",content:$c,confirm:true}}}')
+  call_tool "$MARKER_RPC" >/dev/null \
+    || echo "::warning::could not write the bundle-state marker; the restore will reinstall the cached bundle (safe, just slower)."
+  echo "Bundle state marker: ${GITHUB_RUN_ID:-unknown}:${BUNDLE_STATE}"
 fi
 
 # ===========================================================================

@@ -65,7 +65,7 @@ section "hub_get_metrics via watchdog (free memory + the hub's own health alerts
 section "hub_get_memory_history via watchdog (last 60 entries)" "$WATCHDOG_URL" "$(tool_rpc hub_get_memory_history '{"limit":60}')"
 section "hub system logs via watchdog: ERRORS (newest 60)" "$WATCHDOG_URL" "$(tool_rpc hub_get_hub_logs '{"level":"error","limit":60}')"
 section "hub system logs via watchdog: WARNINGS (newest 40)" "$WATCHDOG_URL" "$(tool_rpc hub_get_hub_logs '{"level":"warn","limit":40}')"
-section "hub_list_apps via watchdog (ALL running app instances)" "$WATCHDOG_URL" "$(tool_rpc hub_list_apps '{}')"
+section "hub_list_app_instances via watchdog (ALL running app instances)" "$WATCHDOG_URL" "$(tool_rpc hub_list_app_instances '{}')"
 section "hub_list_libraries via watchdog (duplicate name+namespace = the #include hazard)" "$WATCHDOG_URL" "$(tool_rpc hub_list_libraries '{}')"
 section "hub_list_bundles via watchdog (stale bundle containers)" "$WATCHDOG_URL" "$(tool_rpc hub_list_bundles '{}')"
 
