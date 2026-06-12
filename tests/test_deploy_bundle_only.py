@@ -38,3 +38,37 @@ def test_deploy_guards_includes_without_a_bundle():
         f"{SCRIPT.name} dropped the bundle-coverage guard: an app that #includes libraries while the "
         "manifest declares no bundle must fail loudly, not deploy an app whose #includes can't resolve."
     )
+
+
+def test_deploy_builds_the_bundle_in_ci_instead_of_fetching_the_committed_zip():
+    """PRs no longer commit bundles/*.zip (rebuild-bundle.yml owns it on main post-merge), so the
+    deploy MUST build the PR's zip from the checkout and stage it through the watchdog -- a raw
+    URL fetch of the bundle at the PR SHA would install a STALE zip and e2e would silently test
+    outdated library code."""
+    text = SCRIPT.read_text()
+    assert "python3 tools/build-bundle.py" in text, (
+        f"{SCRIPT.name} no longer builds the bundle zip from the PR checkout -- without the in-CI "
+        "build, e2e installs whatever stale zip is committed at the PR SHA."
+    )
+    assert "/bundle-artifacts/shas/" in text, (
+        f"{SCRIPT.name} no longer resolves the bundle from the bundle-artifacts branch -- without "
+        "it, a library-touching PR has no URL serving its fresh zip (PRs do not commit the zip)."
+    )
+    for stale_fetch in ('BUNDLE_URL="${PR_RAW_BASE}', "BUNDLE_URL=\"$PR_RAW_BASE"):
+        assert stale_fetch not in text, (
+            f"{SCRIPT.name} builds the bundle URL from PR_RAW_BASE again -- that fetches the zip "
+            "COMMITTED at the PR SHA, which PRs no longer rebuild (stale library code)."
+        )
+
+
+def test_deploy_verifies_landed_libraries_after_the_bundle_step():
+    """Run 27322480301: hub_install_bundle reported success while leaving pre-existing
+    libraries STALE -- the deploy must re-verify every #include'd library (one copy per
+    namespace+name, on-hub length equals the PR file) so that failure class can never
+    pass silently again. Pin the verification's load-bearing pieces."""
+    text = SCRIPT.read_text()
+    for marker in ('"hub_list_libraries"', 'name:"hub_get_source"', "totalLength", "is STALE on the hub"):
+        assert marker in text, (
+            f"{SCRIPT.name} dropped the post-install library verification piece {marker!r} -- without "
+            "it a success-but-stale bundle install only surfaces as a runtime MissingMethodException."
+        )

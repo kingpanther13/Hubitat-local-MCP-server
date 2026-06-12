@@ -1,0 +1,845 @@
+library(name: "McpSystemLib", namespace: "mcp", author: "kingpanther13", description: "Hub system tool implementations (hub info/modes/HSM/backup/reboot/shutdown/update-status) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+
+// /hub2/hubData is the data the modern hub UI computes server-side. It carries the hub's OWN
+// authoritative health alerts plus the pending-platform-update flag (what the UI "bell" reads) --
+// neither is in hub.data or any /hub/advanced/* metric. The availability check is cloud-driven
+// (cloud.hubitat.com); the hub caches the result here so it is readable locally. Defensive: returns
+// null on any fetch/parse failure so callers degrade gracefully (older firmware may not serve it).
+def _getHub2HubData() {
+    try {
+        def raw = hubInternalGet("/hub2/hubData")
+        if (!raw) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        return (parsed instanceof Map) ? parsed : null
+    } catch (Exception e) {
+        // warn, not debug: the default log threshold is "error", so a debug line would be invisible --
+        // and a /hub2/hubData fetch/parse failure (transient 5xx, auth hiccup, or a firmware that
+        // changed the JSON shape) is exactly the cause an operator needs when platformUpdate degrades.
+        mcpLog("warn", "server", "_getHub2HubData read/parse failed: ${e.message}")
+        return null
+    }
+}
+
+// platformUpdate block: the pending HUB FIRMWARE update. Distinct from hub_get_update_status's
+// MCP-server-app version check. currentVersion is the hub firmware string; available +
+// availableVersion come from /hub2/hubData.alerts (platformUpdateAvailable / platformUpdateVersion).
+def _platformUpdateFromHub2(hub2) {
+    def fw = null
+    try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception e) { }
+    def hubVer = (hub2 instanceof Map) ? hub2.version?.toString() : null
+    // available:null is the schema's documented "unreadable" signal -- honor it for BOTH a missing
+    // /hub2/hubData AND a present-but-unrecognized shape (alerts not a Map, or a non-Boolean
+    // platformUpdateAvailable), so a malformed/changed payload can never masquerade as a confident
+    // "no update available".
+    def alerts = (hub2 instanceof Map && hub2.alerts instanceof Map) ? hub2.alerts : null
+    def pa = alerts?.platformUpdateAvailable
+    if (alerts == null || (pa != null && !(pa instanceof Boolean))) {
+        return [available: null, currentVersion: fw ?: hubVer,
+                note: "Pending-firmware status unreadable (/hub2/hubData missing, or its alerts block has an unrecognized shape)."]
+    }
+    boolean avail = (pa == true)
+    def out = [available: avail, currentVersion: fw ?: hubVer]
+    if (avail) out.availableVersion = alerts.platformUpdateVersion?.toString()
+    return out
+}
+
+// healthAlerts block: the hub's own active health determinations from /hub2/hubData -- complementary
+// to, NOT duplicating, the locally-derived memory/temp/DB warnings. `active` lists the currently-
+// firing alert flags; `details` is the full alert map (every flag + the hub's message strings). The
+// platform-update fields are surfaced separately (platformUpdate), so they are dropped here.
+def _healthAlertsFromHub2(hub2) {
+    if (!(hub2 instanceof Map)) return null
+    def alerts = (hub2.alerts instanceof Map) ? ([:] + hub2.alerts) : [:]
+    alerts.remove("platformUpdateAvailable"); alerts.remove("platformUpdateVersion")
+    def active = alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort()
+    return [safeMode: hub2.safeMode == true, active: active, details: alerts]
+}
+
+def toolGetHubInfo(args = null) {
+    def hub = location.hub
+    def info = [
+        temperatureScale: location.temperatureScale
+    ]
+
+    // Hub hardware and radio info (always available)
+    try { info.model = hub?.hardwareID } catch (Exception e) { info.model = "unavailable" }
+    try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = "unavailable" }
+    try { info.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { info.zigbeeChannel = "unavailable" }
+    try { info.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { info.zwaveVersion = "unavailable" }
+    try { info.zigbeeId = hub?.zigbeeId } catch (Exception e) { info.zigbeeId = "unavailable" }
+    try { info.type = hub?.type } catch (Exception e) { info.type = "unavailable" }
+
+    // Uptime (always available)
+    try {
+        def uptimeSec = hub?.uptime
+        if (uptimeSec && uptimeSec instanceof Number) {
+            def days = (uptimeSec / 86400).toInteger()
+            def hours = ((uptimeSec % 86400) / 3600).toInteger()
+            def mins = ((uptimeSec % 3600) / 60).toInteger()
+            info.uptimeSeconds = uptimeSec
+            info.uptimeFormatted = "${days}d ${hours}h ${mins}m"
+        }
+    } catch (Exception e) { info.uptimeSeconds = "unavailable" }
+
+    // Health data (always available — uses internal API)
+    try {
+        def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
+        if (freeMemory) {
+            info.freeMemoryKB = freeMemory.trim()
+            try {
+                def memKB = freeMemory.trim() as Integer
+                if (memKB < 50000) {
+                    info.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
+                } else if (memKB < 100000) {
+                    info.memoryNote = "Memory is moderate: ${memKB}KB free."
+                }
+            } catch (NumberFormatException nfe) { /* non-numeric */ }
+        }
+    } catch (Exception e) { info.freeMemoryKB = "unavailable" }
+
+    try {
+        def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
+        if (tempC) {
+            info.internalTempCelsius = tempC.trim()
+            try {
+                def temp = tempC.trim() as Double
+                if (temp > 70) {
+                    info.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
+                } else if (temp > 60) {
+                    info.temperatureNote = "Temperature is warm: ${temp}°C."
+                }
+            } catch (NumberFormatException nfe) { /* non-numeric */ }
+        }
+    } catch (Exception e) { info.internalTempCelsius = "unavailable" }
+
+    try {
+        def dbSize = hubInternalGet("/hub/advanced/databaseSize")
+        if (dbSize) {
+            info.databaseSizeKB = dbSize.trim()
+            try {
+                def dbKB = dbSize.trim() as Integer
+                if (dbKB > 500000) {
+                    info.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
+                }
+            } catch (NumberFormatException nfe) { /* non-numeric */ }
+        }
+    } catch (Exception e) { info.databaseSizeKB = "unavailable" }
+
+    // MCP-specific stats (always available)
+    info.mcpServerVersion = currentVersion()
+    info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
+    info.mcpRuleCount = getChildApps()?.size() ?: 0
+    info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
+    info.mcpCapturedStates = atomicState.capturedDeviceStates?.size() ?: 0
+    // Last hub_create_backup epoch (millis): lets a client decide whether a fresh backup is
+    // actually needed (the destructive-confirm gate's 24h window reads this same state key) --
+    // e2e uses it to skip per-run backups, a hub-heavy op the platform's load limiter punishes.
+    info.lastBackupEpoch = state.lastBackupTimestamp ?: null
+
+    // Settings visibility (always available)
+    info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
+    info.readEnabled = settings.enableRead != false
+    info.writeEnabled = settings.enableWrite != false
+    info.customRuleEngineEnabled = settings.enableCustomRuleEngine == true
+    info.developerModeEnabled = settings.enableDeveloperMode ?: false
+    // issue #209 #include smoke test: this method is supplied by the McpSmokeTestLib library via
+    // `#include mcp.McpSmokeTestLib` at the top of the file. Its presence here -- returning
+    // "smoke-ok-v1" rather than throwing MissingMethodException -- proves the include resolved and
+    // the library loaded. Throwaway canary; removed once the modularization split is validated.
+    info.smokeTestMarker = mcpSmokeTestMarker()
+
+    // Last self-deploy outcome (issue #237): hub_update_app on the MCP server's own app can't return
+    // its result on the call (success reloads the app; a big-file compile failure 504s), so it records
+    // the hub's verbatim outcome here for a follow-up read to recover -- e.g. CI surfacing the real
+    // compile error after a failed self-deploy. Null until the first self-update.
+    //
+    // STALENESS (important for any consumer, e.g. the e2e recover step): this record lives in
+    // atomicState and PERSISTS across app code reloads/restores -- it is NOT cleared on an app update.
+    // So a read can return a record left by an EARLIER deploy (even a prior session) and be mistaken
+    // for the latest outcome. Two freshness aids: `ageMs` (now - at) is added here so age is visible at
+    // a glance, and a consumer comparing across its own deploy should baseline `at` first and require it
+    // to advance (see .github/scripts/test_self_deploy_recovery.sh recover_self_deploy_error).
+    if (atomicState.lastSelfDeploy != null) {
+        def lsd = [:] + atomicState.lastSelfDeploy
+        if (lsd.at instanceof Number) lsd.ageMs = now() - (lsd.at as long)
+        info.lastSelfDeploy = lsd
+    }
+
+    // PII/location data requires the Read master (default ON)
+    if (settings.enableRead != false) {
+        info.name = hub?.name
+        info.localIP = hub?.localIP
+        info.timeZone = location.timeZone?.ID
+        info.latitude = location.latitude
+        info.longitude = location.longitude
+        info.zipCode = location.zipCode
+        try { info.hubData = hub?.data } catch (Exception e) { info.hubData = null }
+    } else {
+        info.readDisabledNote = "The Read master is OFF. The following personally identifiable data is excluded: hub name, local IP, time zone, latitude, longitude, zip code, and hub data. Enable 'Read Tools' in MCP Rule Server app settings to include this data."
+    }
+
+    if (args?.identifyHub == true) {
+        try {
+            hubInternalGet("/hub/advanced/blinkLED")
+            info.identifyHubTriggered = true
+        } catch (Exception e) {
+            def msg = e.message ?: e.toString()
+            info.identifyHubTriggered = false
+            info.identifyHubError = msg
+            mcpLog("warn", "server", "identifyHub blinkLED request failed [${e.class.simpleName}]: ${msg}")
+        }
+    }
+
+    // Pending hub firmware update + hub health alerts from /hub2/hubData (one fetch; not PII-gated --
+    // these are hub-health, not location data). platformUpdate + safeMode always; the full alerts
+    // block only when asked (it is the diagnostics surface, lives in full on hub_get_metrics too).
+    def hub2 = _getHub2HubData()
+    info.platformUpdate = _platformUpdateFromHub2(hub2)
+    if (hub2 instanceof Map) info.safeMode = (hub2.safeMode == true)
+    if (args?.includeHealthAlerts == true) {
+        def ha = _healthAlertsFromHub2(hub2)
+        if (ha != null) info.healthAlerts = ha
+    }
+
+    return info
+}
+
+def toolGetModes() {
+    def modes = location.modes?.collect { [id: it.id.toString(), name: it.name] }
+    return [
+        currentMode: location.mode,
+        modes: modes
+    ]
+}
+
+def toolSetMode(modeName) {
+    def mode = location.modes?.find { it.name.equalsIgnoreCase(modeName) }
+    if (!mode) {
+        def available = location.modes?.collect { it.name }
+        throw new IllegalArgumentException("Mode '${modeName}' not found. Available: ${available}")
+    }
+
+    // Capture current mode BEFORE changing it
+    def previousMode = location.mode
+    location.setMode(mode.name)
+
+    return [
+        success: true,
+        previousMode: previousMode,
+        newMode: mode.name
+    ]
+}
+
+def toolGetHsmStatus() {
+    def hsmStatus = location.hsmStatus
+    def hsmAlerts = location.hsmAlert
+
+    return [
+        status: hsmStatus,
+        // Interpret a null/empty status so callers don't see a bare null (HSM may
+        // be disabled, or hasn't reported a status yet). Known values: disarmed,
+        // armedAway, armedHome, armedNight.
+        statusText: hsmStatus ?: "unknown — HSM may be disabled or has not reported a status yet",
+        alert: hsmAlerts,
+        // Renamed from the overloaded `modes`: these are the HSM ARM commands for
+        // hub_set_hsm, NOT hub Day/Night/Away location modes (a separate concept).
+        armCommands: ["disarm", "armAway", "armHome", "armNight"]
+    ]
+}
+
+def toolSetHsm(mode) {
+    def validModes = ["armAway", "armHome", "armNight", "disarm"]
+    if (!validModes.contains(mode)) {
+        throw new IllegalArgumentException("Invalid HSM mode: ${mode}. Valid modes: ${validModes}")
+    }
+
+    // Capture current status BEFORE sending the change event
+    def previousStatus = location.hsmStatus
+    sendLocationEvent(name: "hsmSetArm", value: mode)
+
+    return [
+        success: true,
+        previousStatus: previousStatus,
+        newMode: mode
+    ]
+}
+
+def toolCreateHubBackup(args) {
+    // The Write master is enforced centrally in executeTool; this tool creates the
+    // backup itself, so it cannot require a pre-existing recent one (no requireDestructiveConfirm).
+    if (!args.confirm) {
+        throw new IllegalArgumentException("You must set confirm=true to create a backup.")
+    }
+
+    if (args.mock == true) {
+        // Test-hub lever (maintainer-directed): stamp ONLY the destructive-confirm gate record
+        // without performing any real backup -- the hub backup is a heavy operation the platform's
+        // load limiter punishes, and e2e needs the GATED tools tested, not the backup itself.
+        // Developer-mode-gated so a production client can't silently satisfy the gate with a lie.
+        if (settings.enableDeveloperMode != true) {
+            throw new IllegalArgumentException("hub_create_backup mock=true requires Developer Mode (it satisfies the destructive-confirm gate WITHOUT a real backup -- test environments only).")
+        }
+        def backupTime = now()
+        state.lastBackupTimestamp = backupTime
+        mcpLog("warn", "hub-admin", "MOCK backup recorded (no real backup performed; developer mode)")
+        return [
+            success: true,
+            mocked: true,
+            message: "MOCK backup recorded: the destructive-confirm gate is satisfied but NO real backup was created.",
+            backupTimestamp: formatTimestamp(backupTime),
+            backupTimestampEpoch: backupTime,
+            note: "Test environments only. Create a real backup before relying on restore."
+        ]
+    }
+
+    mcpLog("info", "hub-admin", "Creating hub backup (async trigger; the backup file is never downloaded through this app)...")
+
+    try {
+        // GET /hub/backupDB?fileName=latest makes the hub CREATE a fresh backup and stream the
+        // .lzf back. The old implementation read that multi-MB binary through this app's
+        // execution just to confirm success -- a one-off load spike the platform's per-app
+        // limiter punishes with a STICKY device-dispatch block ~13 minutes later (verified A/B
+        // on fw 2.5.0.157: every slurping backup wedged the hub; async-triggered backups never
+        // did). So: fire the request asynchronously (the hub still creates the backup; the
+        // async client's truncated body is discarded) and confirm completion via the hub's own
+        // /hub/backup/statusJson instead of the binary response.
+        def asyncParams = [uri: hubBaseUri(), path: "/hub/backupDB", query: [fileName: "latest"], timeout: 300]
+        def cookie = getHubSecurityCookie()
+        if (cookie) asyncParams.headers = [Cookie: cookie]
+        asynchttpGet("backupResponseSink", asyncParams)
+
+        // Confirm via statusJson: wait for an in-progress backup to finish (small JSON reads).
+        // A small-DB backup can finish before the first poll, so backupInProgress=false is
+        // treated as completion rather than requiring an observed true->false transition.
+        def confirmed = false
+        for (int i = 0; i < 12; i++) {
+            pauseExecution(3000)
+            def statusText = null
+            try { statusText = hubInternalGet("/hub/backup/statusJson", null, 15) } catch (Exception ignored) { }
+            def parsed = null
+            try { parsed = statusText ? new groovy.json.JsonSlurper().parseText(statusText) : null } catch (Exception ignored) { }
+            if (parsed instanceof Map && parsed.backupInProgress == false && parsed.cloudBackupInProgress != true) {
+                confirmed = true
+                break
+            }
+            if (parsed == null && i >= 2) break   // status endpoint unreadable; stop burning time
+        }
+
+        def backupTime = now()
+        state.lastBackupTimestamp = backupTime
+
+        mcpLog("info", "hub-admin", "Hub backup ${confirmed ? 'completed' : 'triggered (completion unconfirmed)'} at ${formatTimestamp(backupTime)}")
+        return [
+            success: true,
+            confirmed: confirmed,
+            message: confirmed ? "Hub backup created successfully"
+                               : "Hub backup triggered; completion could not be confirmed via /hub/backup/statusJson (best-effort).",
+            backupTimestamp: formatTimestamp(backupTime),
+            backupTimestampEpoch: backupTime,
+            note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore."
+        ]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "Hub backup FAILED", e)
+        return [
+            success: false,
+            error: "Backup failed: ${e.message}",
+            note: "The backup could not be created. Do NOT proceed with any Write master operations. " +
+                  "Check Hub Security credentials if Hub Security is enabled, or try creating a backup manually from the Hubitat web UI."
+        ]
+    }
+}
+
+// asynchttpGet completion sink for the backup trigger: the .lzf body is deliberately never
+// read into this app (see toolCreateHubBackup -- the whole point of the async trigger).
+def backupResponseSink(response, data) {
+    try { mcpLog("debug", "hub-admin", "backup async response status=${response?.status}") } catch (Exception ignored) { }
+}
+
+def toolRebootHub(args) {
+    requireDestructiveConfirm(args.confirm)
+
+    if (args.updatePlatform == true) {
+        // Install the hub's PENDING platform update instead of a plain reboot -- the admin UI's own
+        // path (/hub/cloud/updatePlatform downloads + installs; the hub reboots itself when done).
+        // Folded into hub_reboot rather than a new tool: the operation IS a reboot with the update
+        // taken on the way down, and it inherits the same destructive gate. Status/progress is the
+        // existing read tool hub_get_update_status.
+        mcpLog("warn", "hub-admin", "Hub platform update initiated by MCP (install + self-reboot)")
+        try {
+            def check = hubInternalGet("/hub/cloud/checkForUpdate", null, 60)
+            def responseText = hubInternalGet("/hub/cloud/updatePlatform", null, 60)
+            return [
+                success: true,
+                message: "Platform update initiated. The hub downloads and installs the pending update, then reboots itself (5-10 minutes total).",
+                checkForUpdate: check?.take(500),
+                lastBackup: formatTimestamp(state.lastBackupTimestamp),
+                warning: "All automations and device communications stop during the install and reboot. Confirm the new version afterwards via hub_get_update_status or hub_get_info.",
+                response: responseText?.take(500)
+            ]
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "Hub platform update failed", e)
+            return [
+                success: false,
+                error: "Platform update failed: ${e.message}",
+                note: "The update command could not be sent. Check Hub Security credentials or apply the update from the hub UI."
+            ]
+        }
+    }
+
+    mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP")
+
+    try {
+        def responseText = hubInternalPost("/hub/reboot")
+        return [
+            success: true,
+            message: "Hub reboot initiated. The hub will be unreachable for 1-3 minutes.",
+            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            warning: "All automations and device communications will stop during reboot. The hub will restart automatically.",
+            response: responseText?.take(500)
+        ]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "Hub reboot failed", e)
+        return [
+            success: false,
+            error: "Reboot failed: ${e.message}",
+            note: "The reboot command could not be sent. Check Hub Security credentials or try rebooting manually from the Hubitat web UI at Settings → Reboot Hub."
+        ]
+    }
+}
+
+def toolShutdownHub(args) {
+    requireDestructiveConfirm(args.confirm)
+
+    mcpLog("warn", "hub-admin", "Hub SHUTDOWN initiated by MCP -- hub will NOT restart automatically")
+
+    try {
+        def responseText = hubInternalPost("/hub/shutdown")
+        return [
+            success: true,
+            message: "Hub shutdown initiated. The hub will power off and will NOT restart automatically.",
+            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            warning: "The hub is powering down. To restart, you must physically unplug and replug the hub power cable. ALL smart home functionality will stop until the hub is manually restarted.",
+            response: responseText?.take(500)
+        ]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "Hub shutdown failed", e)
+        return [
+            success: false,
+            error: "Shutdown failed: ${e.message}",
+            note: "The shutdown command could not be sent. Check Hub Security credentials or try shutting down manually from the Hubitat web UI."
+        ]
+    }
+}
+
+def isNewerVersion(String remote, String local) {
+    // Null guard: callers may pass null when the remote manifest fetch
+    // returns no version field. Treat as "not newer" so update prompts
+    // are suppressed rather than NPE-crashing the version-check path.
+    if (remote == null || local == null) return false
+    // Strict semver only. Non-numeric or suffixed versions (e.g., "0.10.0-rc1",
+    // "v0.10.0", whitespace) would otherwise throw NumberFormatException inside
+    // the tokenize/collect below -- caught but silently returning false, which
+    // means users stop getting update prompts without knowing why.
+    def semverPattern = ~/^\d+\.\d+\.\d+$/
+    if (!(remote ==~ semverPattern)) {
+        mcpLog("warn", "server", "Remote version not strict semver: '${remote}' -- skipping comparison")
+        return false
+    }
+    if (!(local ==~ semverPattern)) {
+        mcpLog("warn", "server", "Local version not strict semver: '${local}' -- skipping comparison")
+        return false
+    }
+    try {
+        def remoteParts = remote.tokenize('.').collect { it as int }
+        def localParts = local.tokenize('.').collect { it as int }
+        def maxLen = Math.max(remoteParts.size(), localParts.size())
+        for (int i = 0; i < maxLen; i++) {
+            def r = i < remoteParts.size() ? remoteParts[i] : 0
+            def l = i < localParts.size() ? localParts[i] : 0
+            if (r > l) return true
+            if (r < l) return false
+        }
+        return false
+    } catch (Exception e) {
+        mcpLog("warn", "server", "Version comparison failed: ${e.message}")
+        return false
+    }
+}
+
+def checkForUpdate() {
+    try {
+        // Skip if checked within last 24 hours (unless forced)
+        if (state.updateCheck?.checkedAt) {
+            def msSinceCheck = now() - state.updateCheck.checkedAt
+            if (msSinceCheck < 24 * 60 * 60 * 1000) {
+                def hoursSinceCheck = (int)(msSinceCheck / (1000 * 60 * 60))
+                logDebug("Version check skipped - last checked ${hoursSinceCheck} hours ago")
+                return
+            }
+        }
+        doUpdateCheck()
+    } catch (Exception e) {
+        mcpLog("warn", "server", "Version update check failed: ${e.message}")
+    }
+}
+
+def doUpdateCheck() {
+    try {
+        def params = [
+            uri: "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/packageManifest.json",
+            contentType: "application/json",
+            timeout: 30
+        ]
+        asynchttpGet("handleUpdateCheckResponse", params)
+    } catch (Exception e) {
+        mcpLog("warn", "server", "Failed to initiate version check: ${e.message}")
+    }
+}
+
+def handleUpdateCheckResponse(resp, data) {
+    try {
+        if (resp.status != 200) {
+            mcpLog("warn", "server", "Version check HTTP error: ${resp.status}")
+            // Merge checkedAt + lastError onto the existing record (do NOT replace it)
+            // so the first-install gate in initialize() flips and the 24h guard engages
+            // even when the check never succeeds (e.g. a hub that can't reach GitHub),
+            // WITHOUT clobbering a previously-known latestVersion/updateAvailable -- a
+            // transient failure must not silently drop an already-surfaced update banner.
+            state.updateCheck = (state.updateCheck ?: [:]) + [checkedAt: now(), lastError: "http ${resp.status}"]
+            return
+        }
+        def json = new groovy.json.JsonSlurper().parseText(resp.data)
+        def latestVersion = json.version
+        if (!latestVersion) {
+            mcpLog("warn", "server", "Version check: no version field in response")
+            state.updateCheck = (state.updateCheck ?: [:]) + [checkedAt: now(), lastError: "no version field"]
+            return
+        }
+        def installed = currentVersion()
+        def updateAvailable = isNewerVersion(latestVersion, installed)
+        state.updateCheck = [
+            latestVersion: latestVersion,
+            checkedAt: now(),
+            updateAvailable: updateAvailable
+        ]
+        if (updateAvailable) {
+            log.info "MCP Rule Server update available: v${latestVersion} (installed: v${installed})"
+        } else {
+            logDebug("MCP Rule Server is up to date (v${installed})")
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "server", "Version check response parsing failed: ${e.message}")
+        state.updateCheck = (state.updateCheck ?: [:]) + [checkedAt: now(), lastError: e.message]
+    }
+}
+
+def toolCheckForUpdate(args) {
+    try {
+        // Force check by clearing the checkedAt timestamp
+        if (state.updateCheck) {
+            state.updateCheck.checkedAt = null
+        }
+        doUpdateCheck()
+        // Return current state (async call may not have completed yet)
+        def installed = currentVersion()
+        def updateInfo = state.updateCheck ?: [:]
+        return [
+            success: true,
+            installedVersion: installed,
+            latestVersion: updateInfo.latestVersion ?: "unknown (check in progress)",
+            updateAvailable: updateInfo.updateAvailable ?: false,
+            lastChecked: updateInfo.checkedAt ? formatTimestamp(updateInfo.checkedAt) : "checking now",
+            platformUpdate: _platformUpdateFromHub2(_getHub2HubData()),
+            note: "Two distinct updates here. installedVersion/latestVersion/updateAvailable track the MCP Rule Server APP on GitHub (asynchronous -- if latestVersion is 'unknown', call again in a few seconds). platformUpdate is the SEPARATE pending HUBITAT FIRMWARE/platform update on the hub itself (from /hub2/hubData)."
+        ]
+    } catch (Exception e) {
+        return [
+            success: false,
+            error: "Version check failed: ${e.message}",
+            installedVersion: currentVersion()
+        ]
+    }
+}
+
+def _getAllToolDefinitions_partSystem() {
+    return [
+        // System Tools
+        [
+            name: "hub_get_info",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, free memory, internal temperature, database size, MCP server stats, and current security/toggle settings. Also surfaces the pending hub firmware/platform update (platformUpdate) + Safe Mode (safeMode).[[FLAT_TRIM]] Pass includeHealthAlerts=true for the hub's full health-alerts block from /hub2/hubData (radio offline, backup failures, low memory, DB bloat, weak mesh). Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Read master is enabled; otherwise they are omitted.[[/FLAT_TRIM]]",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
+                    includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block (default false).[[FLAT_TRIM]] Every /hub2/hubData alert flag + messages under healthAlerts; platformUpdate and safeMode are returned regardless.[[/FLAT_TRIM]]", default: false]
+                ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    temperatureScale: [type: "string", description: "Hub temperature scale (F/C)"],
+                    model: [type: "string", description: "Hardware ID/model"],
+                    firmwareVersion: [type: "string", description: "Firmware version string"],
+                    zigbeeChannel: [type: "string", description: "Zigbee radio channel"],
+                    zwaveVersion: [type: "string", description: "Z-Wave firmware version"],
+                    zigbeeId: [type: "string", description: "Zigbee ID"],
+                    type: [type: "string", description: "Hub type"],
+                    uptimeSeconds: [description: "Uptime in seconds (or 'unavailable' if the SDK lookup failed)"],
+                    uptimeFormatted: [type: "string", description: "Human-readable uptime"],
+                    freeMemoryKB: [type: "string", description: "Free OS memory in KB"],
+                    memoryWarning: [type: "string", description: "Present when memory is low"],
+                    memoryNote: [type: "string", description: "Present when memory is moderate"],
+                    internalTempCelsius: [type: "string", description: "Internal temperature in Celsius"],
+                    temperatureWarning: [type: "string", description: "Present when temperature is high"],
+                    temperatureNote: [type: "string", description: "Present when temperature is warm"],
+                    databaseSizeKB: [type: "string", description: "Database size in KB"],
+                    databaseWarning: [type: "string", description: "Present when database is large"],
+                    mcpServerVersion: [type: "string", description: "Installed MCP server version"],
+                    lastBackupEpoch: [type: "integer", description: "Epoch millis of the last hub_create_backup via this app; null if never. The destructive-confirm 24h gate reads the same record."],
+                    mcpDeviceCount: [type: "integer", description: "Selected device count"],
+                    mcpRuleCount: [type: "integer", description: "MCP rule child-app count"],
+                    mcpLogEntries: [type: "integer", description: "Buffered MCP log entry count"],
+                    mcpCapturedStates: [type: "integer", description: "Captured device state count"],
+                    hubSecurityConfigured: [type: "boolean", description: "Whether hub security is configured"],
+                    readEnabled: [type: "boolean", description: "Read master toggle state (default ON)"],
+                    writeEnabled: [type: "boolean", description: "Write master toggle state (default ON)"],
+                    customRuleEngineEnabled: [type: "boolean", description: "Custom rule engine toggle state"],
+                    developerModeEnabled: [type: "boolean", description: "Developer Mode toggle state"],
+                    smokeTestMarker: [type: "string", description: "issue #209 #include canary -- 'smoke-ok-v1' from the McpSmokeTestLib library; throwaway, removed after the modularization split is validated"],
+                    lastSelfDeploy: [type: "object", description: "issue #237: outcome of the last hub_update_app self-update (the MCP server updating its own app). Recovers the result that can't return on the deploy call (success reloads the app; a big-file compile failure 504s). Keys: success (bool), error (hub's verbatim message or null), sourceMode, importUrl, sourceLength, at (epoch ms), ageMs (ms since `at`, computed at read). PERSISTS in atomicState across app reloads -- it is NOT cleared on update, so a read can return a STALE record from an earlier deploy; check ageMs (or baseline `at` across your own deploy) for freshness before trusting it. Absent until the first self-update."],
+                    name: [type: "string", description: "Hub name (Read master only)"],
+                    localIP: [type: "string", description: "Hub local IP (Read master only)"],
+                    timeZone: [type: "string", description: "Time zone ID (Read master only)"],
+                    latitude: [type: "number", description: "Latitude (Read master only)"],
+                    longitude: [type: "number", description: "Longitude (Read master only)"],
+                    zipCode: [type: "string", description: "Zip code (Read master only)"],
+                    hubData: [type: "object", description: "Hub data map (Read master only)"],
+                    readDisabledNote: [type: "string", description: "Present when the Read master is disabled; PII excluded"],
+                    identifyHubTriggered: [type: "boolean", description: "Present when identifyHub requested; LED blink result"],
+                    identifyHubError: [type: "string", description: "Present when identifyHub blink failed"],
+                    platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available), note (only when available=null)}. Distinct from hub_get_update_status's MCP-server-app check; available=null means /hub2/hubData was unreadable/unrecognized and the note explains why."],
+                    safeMode: [type: "boolean", description: "Whether the hub is running in Safe Mode (from /hub2/hubData). Absent if /hub2/hubData was unreadable."],
+                    healthAlerts: [type: "object", description: "Present only when includeHealthAlerts=true: the hub's health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags), details (full alert map + message strings)}."]
+                ]
+            ]
+        ],
+        [
+            name: "hub_list_modes",
+            description: "List the hub's available location modes and report the current one. Use this before hub_set_mode to discover valid mode names (they are hub-specific, e.g. Day/Night/Away).",
+            inputSchema: [type: "object", properties: [:]],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    currentMode: [type: "string", description: "Current location mode name"],
+                    modes: [type: "array", description: "Available modes", items: [type: "object", properties: [
+                        id: [type: "string", description: "Mode ID"],
+                        name: [type: "string", description: "Mode name"]
+                    ]]]
+                ],
+                required: ["currentMode", "modes"]
+            ]
+        ],
+        [
+            name: "hub_set_mode",
+            description: "Set the location mode. Valid mode names are hub-specific — get them from hub_list_modes first. Always verify the mode changed after.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    mode: [type: "string", description: "Mode name"]
+                ],
+                required: ["mode"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the mode was set"],
+                    previousMode: [type: "string", description: "Mode before the change"],
+                    newMode: [type: "string", description: "Mode after the change"]
+                ],
+                required: ["success", "previousMode", "newMode"]
+            ]
+        ],
+        [
+            name: "hub_get_hsm_status",
+            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands. Use this to check the security-system state or to confirm a change made via hub_set_hsm.",
+            inputSchema: [type: "object", properties: [:]],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    status: [type: "string", description: "Current HSM status (disarmed/armedAway/armedHome/armedNight); may be null if HSM is disabled or hasn't reported yet"],
+                    statusText: [type: "string", description: "Human-readable status; interprets a null/empty status"],
+                    alert: [type: "string", description: "Current HSM alert, if any"],
+                    armCommands: [type: "array", description: "Valid arm commands for hub_set_hsm (NOT hub Day/Night/Away location modes)", items: [type: "string"]]
+                ],
+                required: ["status", "statusText", "armCommands"]
+            ]
+        ],
+        [
+            name: "hub_set_hsm",
+            description: "Set HSM mode (armAway, armHome, armNight, disarm). Always verify HSM changed after.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    mode: [type: "string", description: "HSM mode: armAway, armHome, armNight, disarm"]
+                ],
+                required: ["mode"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the HSM arm event was sent"],
+                    previousStatus: [type: "string", description: "HSM status before the change"],
+                    newMode: [type: "string", description: "Requested HSM mode"]
+                ],
+                required: ["success", "previousStatus", "newMode"]
+            ]
+        ],
+        [
+            name: "hub_create_backup",
+            description: """Create a full hub backup. REQUIRED before any Write master operation (24h validity).
+
+Requires Write master + confirm. This is the only write tool that doesn't require a prior backup.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    confirm: [type: "boolean", description: "Must be true to confirm you want to create a backup"],
+                    mock: [type: "boolean", description: "Developer Mode only: stamp the 24h gate record; NO real backup (test envs)."]
+                ],
+                required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the backup was created"],
+                    confirmed: [type: "boolean", description: "Whether completion was confirmed via the hub's backup status (false = best-effort trigger)"],
+                    mocked: [type: "boolean", description: "true when mock=true stamped the gate record without a real backup"],
+                    message: [type: "string", description: "Human-readable result"],
+                    backupTimestamp: [type: "string", description: "Formatted backup time"],
+                    backupTimestampEpoch: [type: "integer", description: "Backup time in epoch millis"],
+                    note: [type: "string", description: "Where to download the backup"]
+                ],
+                required: ["success"]
+            ]
+        ],
+        [
+            name: "hub_reboot",
+            description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop).
+updatePlatform=true installs the pending platform update instead (install + self-reboot, 5-10 min); versions via hub_get_update_status.
+
+PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true
+Requires Write master.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
+                    updatePlatform: [type: "boolean", description: "true = install the pending platform update instead (hub self-reboots after install)."]
+                ],
+                required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the reboot was initiated"],
+                    message: [type: "string", description: "Human-readable result"],
+                    checkForUpdate: [type: "string", description: "Hub's checkForUpdate response (updatePlatform mode only)"],
+                    lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
+                    warning: [type: "string", description: "Downtime warning"],
+                    response: [type: "string", description: "Truncated hub response body"]
+                ],
+                required: ["success"]
+            ]
+        ],
+        [
+            name: "hub_shutdown",
+            description: """⚠️ EXTREME: Powers OFF the hub (requires physical restart). NOT a reboot.
+
+PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automatically 3) Get explicit confirmation 4) Set confirm=true
+Requires Write master.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the shutdown."]
+                ],
+                required: ["confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the shutdown was initiated"],
+                    message: [type: "string", description: "Human-readable result"],
+                    lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
+                    warning: [type: "string", description: "Power-off warning; hub will not auto-restart"],
+                    response: [type: "string", description: "Truncated hub response body"]
+                ],
+                required: ["success"]
+            ]
+        ],
+        [
+            name: "hub_get_update_status",
+            description: "Check for available updates: the MCP Rule Server APP version on GitHub (installedVersion/latestVersion/updateAvailable) AND, separately, platformUpdate -- the pending Hubitat FIRMWARE update on the hub.[[FLAT_TRIM]] The app check is asynchronous: the first call usually returns latestVersion='unknown (check in progress)', so call again in a few seconds. platformUpdate comes from /hub2/hubData. The two are unrelated; do not conflate the app update with the firmware update.[[/FLAT_TRIM]]",
+            inputSchema: [
+                type: "object",
+                properties: [:]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the check ran"],
+                    installedVersion: [type: "string", description: "Currently installed MCP Rule Server APP version"],
+                    latestVersion: [type: "string", description: "Latest MCP server app version on GitHub; 'unknown' while async check pending"],
+                    updateAvailable: [type: "boolean", description: "Whether a newer MCP server app version is available"],
+                    lastChecked: [type: "string", description: "When the app-version check last completed"],
+                    platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available), note (only when available=null)}. Separate from the MCP server app check above; available=null when /hub2/hubData was unreadable/unrecognized and the note explains why."],
+                    note: [type: "string", description: "Guidance distinguishing the two update types + async-check hint"]
+                ],
+                required: ["success", "installedVersion"]
+            ]
+        ],
+    ]
+}
+
+def _readOnlyToolNames_partSystem() {
+    // Read-only classification membership for this library's tools, contributed to the
+    // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
+    // the tool). A tool absent from every part list is write+destructive by default.
+    return [
+        // Hub state reads
+        "hub_get_info", "hub_list_modes", "hub_get_hsm_status", "hub_get_update_status"
+    ]
+}
+
+def _idempotentWriteToolNames_partSystem() {
+    // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
+    // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
+    return [
+        // Hub state
+        "hub_set_mode", "hub_set_hsm"
+    ]
+}
+
+def _openWorldToolNames_partSystem() {
+    // Tools in this library that reach BEYOND the hub to the open internet (MCP
+    // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
+    return [
+        "hub_get_update_status"
+    ]
+}
+
+def _toolDisplayMeta_partSystem() {
+    // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
+    // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
+    return [
+        // Hub state + modes
+        hub_get_info: [title: "Get Hub Info", summary: "Comprehensive hub info: hardware, health, network, and MCP stats."],
+        hub_list_modes: [title: "List Modes", summary: "List the hub's location modes and which one is active."],
+        hub_set_mode: [title: "Set Mode", summary: "Change the hub's location mode (Home, Away, Night, etc.)."],
+        hub_get_hsm_status: [title: "Get HSM Status", summary: "Get the current Hubitat Safety Monitor arm status."],
+        hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
+        // Hub utilities
+        hub_create_backup: [title: "Create Hub Backup", summary: "Create a full hub backup (required before destructive writes)."],
+        hub_get_update_status: [title: "Check for Updates", summary: "Check for newer MCP server versions and any pending hub firmware update."],
+        // Destructive hub ops
+        hub_reboot: [title: "Reboot Hub", summary: "Reboot the hub (1-3 minutes of downtime), optionally installing the pending platform update first."],
+        hub_shutdown: [title: "Shut Down Hub", summary: "Power the hub off; a physical restart is required afterwards."]
+    ]
+}

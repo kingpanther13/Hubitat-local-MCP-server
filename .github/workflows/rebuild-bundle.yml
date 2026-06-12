@@ -1,0 +1,62 @@
+name: Rebuild library bundle
+# Post-merge owner of bundles/mcp-libraries.zip (issue #209). PRs do NOT commit the
+# bundle zip anymore -- every-PR binary rebuilds made any two library-touching PRs
+# conflict on the zip. Instead this workflow rebuilds the deterministic zip from
+# libraries/*.groovy after each merge to main and commits it when it drifted, so the
+# stable raw-main URL in packageManifest.json bundles[].location always serves a zip
+# that matches main's library source. PR e2e does not depend on the committed zip
+# either: mcp_watchdog_deploy.sh builds the PR's zip in CI and stages it onto the hub
+# through the watchdog (base64 chunks -> File Manager -> local-URL bundle install).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'libraries/**'
+      - 'tools/build-bundle.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Serialize against the release bot (same group as release.yml) so the two
+# post-merge committers never race a push against each other.
+concurrency:
+  group: post-merge
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - name: Rebuild and commit the bundle zip if drifted
+        run: |
+          set -euo pipefail
+          python tools/build-bundle.py
+          if git diff --quiet -- bundles/; then
+            echo "Bundle zip already matches main's library source -- nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bundles/
+          git commit -m "chore: rebuild library bundle zip from main's library source"
+          # The default GITHUB_TOKEN push does not retrigger workflows (GitHub suppresses
+          # recursion), and the post-merge concurrency group serializes us against the
+          # release bot -- but a release commit may still have landed between our checkout
+          # and push, so retry on a rejected push.
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              echo "Bundle commit pushed (attempt $attempt)."
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt) -- rebasing onto current main and retrying."
+            git pull --rebase origin main
+          done
+          echo "::error::Could not push the rebuilt bundle zip after 3 attempts."
+          exit 1

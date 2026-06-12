@@ -171,6 +171,40 @@ class IncludeResolverSpec extends Specification {
         !out.contains('library(name: "McpVisualRulesLib"')
     }
 
+    def "resolving against the REAL repo libraries dir inlines #libName (impl + defs + metadata parts)"() {
+        given: 'every domain library of the #209 full split resolves with impls, def chunk, and display-meta part'
+        def realLibs = new File('libraries')
+        assert realLibs.isDirectory(), "expected the repo 'libraries' dir relative to cwd ${new File('.').absolutePath} -- run from the repo root"
+        def src = "#include mcp.${libName}\n"
+
+        when:
+        def out = IncludeResolver.resolve(src, realLibs)
+
+        then:
+        out.contains("def ${markerImpl}")
+        out.contains("def _getAllToolDefinitions_part${part}")
+        out.contains("def _toolDisplayMeta_part${part}")
+        !(out =~ /(?m)^\s*#include\b/)
+        !out.contains("library(name: \"${libName}\"")
+
+        where:
+        libName                 | markerImpl                | part
+        'McpFilesLib'           | 'toolListFiles'           | 'Files'
+        'McpItemBackupsLib'     | 'toolListItemBackups'     | 'ItemBackups'
+        'McpDebugLoggingLib'    | 'toolGetDebugLogs'        | 'DebugLogging'
+        'McpDiagnosticsLib'     | 'toolGetHubLogs'          | 'Diagnostics'
+        'McpSystemLib'          | 'toolGetHubInfo'          | 'System'
+        'McpDevicesLib'         | 'toolListDevices'         | 'Devices'
+        'McpVirtualDevicesLib'  | 'toolManageVirtualDevice' | 'VirtualDevices'
+        'McpVariablesLib'       | 'toolListVariables'       | 'Variables'
+        'McpCustomRulesLib'     | 'toolCreateRule'          | 'CustomRules'
+        'McpCodeManagementLib'  | 'toolInstallApp'          | 'CodeManagement'
+        'McpHpmLib'             | 'toolListHpmPackages'     | 'Hpm'
+        'McpSelfAdminLib'       | 'toolUpdatePackage'       | 'SelfAdmin'
+        'McpAppClonerLib'       | 'toolCloneNativeApp'      | 'AppCloner'
+        'McpDiscoveryLib'       | 'toolSearchTools'         | 'Discovery'
+    }
+
     def "indexLibraries matches name/namespace even when a description ) appears BEFORE the keys"() {
         given: 'regression for the old [^)]* index regex, which a ) in an earlier field truncated'
         def libs = libsDir()

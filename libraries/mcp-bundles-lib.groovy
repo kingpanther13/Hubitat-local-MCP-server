@@ -483,3 +483,42 @@ def _getAllToolDefinitions_partBundles() {
         ]
     ]
 }
+
+def _readOnlyToolNames_partBundles() {
+    // Read-only classification membership for this library's tools, contributed to the
+    // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
+    // the tool). A tool absent from every part list is write+destructive by default.
+    return [
+        // Apps/drivers (read)
+        "hub_list_bundles"
+    ]
+}
+
+def _idempotentWriteToolNames_partBundles() {
+    // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
+    // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
+    return [
+        // Code (apps/drivers/libraries/bundles/backups)
+        "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"
+    ]
+}
+
+def _openWorldToolNames_partBundles() {
+    // Tools in this library that reach BEYOND the hub to the open internet (MCP
+    // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
+    return [
+        "hub_install_bundle"
+    ]
+}
+
+def _toolDisplayMeta_partBundles() {
+    // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
+    // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
+    return [
+        // Bundles
+        hub_list_bundles: [title: "List Bundles", summary: "List installed code bundles and what they contain."],
+        hub_install_bundle: [title: "Install Bundle", summary: "Install a code bundle (.zip) from a URL."],
+        hub_delete_bundle: [title: "Delete Bundle", summary: "Delete an installed code bundle."],
+        hub_export_bundle: [title: "Export Bundle", summary: "Export an installed bundle's zip to the File Manager."]
+    ]
+}

@@ -358,8 +358,10 @@ class TestRunner:
         self.throttle_bounces = 0
         self._soft_passes: list[str] = []
         # Inter-test pacing (see _run_one): optional client-side breathing room per test.
-        # Default 0 -- the load-limiter trips traced to real per-run hub backups (now mocked
-        # away on the test hub), not test cadence. The knob stays for diagnostics.
+        # Default 0 -- the load-limiter trips traced to byte volume pushed through the server
+        # app generally: real per-run hub backups (now mocked away on the test hub) AND large
+        # accumulated wizard pages (now kept small by the per-concern rule tests), not test
+        # cadence. The knob stays for diagnostics.
         self.pace_seconds = float(os.environ.get("E2E_PACE_SECONDS", "0"))
 
         self._current_test = ""

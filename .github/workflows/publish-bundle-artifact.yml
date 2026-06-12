@@ -1,0 +1,94 @@
+name: Publish bundle artifact
+# Builds the production bundle zip on every library-touching push and stores it on the
+# bot-only `bundle-artifacts` branch, keyed by branch name AND full commit SHA:
+#
+#   branches/<branch>/mcp-libraries.zip (+ .size marker)
+#   shas/<full-sha>/mcp-libraries.zip   (+ .size marker)
+#
+# This is what lets hub_update_package install an UNMERGED ref's libraries commit by
+# commit: PRs no longer commit bundles/*.zip (per-PR binary rebuilds made any two
+# library-touching PRs conflict on it -- rebuild-bundle.yml owns the committed zip on
+# main post-merge), so the tool's bundle leg resolves artifact-first from this branch
+# and falls back to the zip committed at the ref. The zip keeps its production basename
+# inside each keyed directory: the hub appears to key the bundle entity on the zip
+# filename, so a renamed zip would import as a SECOND bundle entity (duplicate
+# libraries) instead of updating the existing one. The .size marker is the cheap
+# existence/integrity probe (the tool reads ~10 bytes instead of the ~1MB zip).
+#
+# Nobody rebases bundle-artifacts, so it has zero merge-conflict surface; identical
+# zips across commits dedupe to one git blob.
+on:
+  push:
+    branches-ignore: [bundle-artifacts]
+    paths:
+      - 'libraries/**'
+      - 'tools/build-bundle.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bundle-artifacts
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - name: Build and publish the keyed bundle zip
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python tools/build-bundle.py
+          ZIP=bundles/mcp-libraries.zip
+          BYTES=$(wc -c < "$ZIP" | tr -d '[:space:]')
+          BASENAME=$(basename "$ZIP")
+
+          git fetch origin bundle-artifacts || true
+          if git show-ref --verify --quiet refs/remotes/origin/bundle-artifacts; then
+            git worktree add ../artifacts origin/bundle-artifacts
+          else
+            # First run: bootstrap the orphan branch in a detached worktree.
+            git worktree add --detach ../artifacts
+            git -C ../artifacts checkout --orphan bundle-artifacts
+            git -C ../artifacts rm -rfq . 2>/dev/null || true
+          fi
+
+          for KEY in "branches/${REF_NAME}" "shas/${HEAD_SHA}"; do
+            mkdir -p "../artifacts/${KEY}"
+            cp "$ZIP" "../artifacts/${KEY}/${BASENAME}"
+            printf '%s' "$BYTES" > "../artifacts/${KEY}/${BASENAME}.size"
+          done
+
+          cd ../artifacts
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Artifact already current for ${REF_NAME} @ ${HEAD_SHA} -- nothing to publish."
+            exit 0
+          fi
+          git commit -m "bundle artifact: ${REF_NAME} @ ${HEAD_SHA}"
+          # Default-token pushes don't retrigger workflows; the retry covers a concurrent
+          # publish from another branch's push landing between our fetch and push.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:bundle-artifacts; then
+              echo "Published bundle artifact for ${REF_NAME} @ ${HEAD_SHA} (${BYTES} bytes, attempt $attempt)."
+              exit 0
+            fi
+            # A failed rebase must not leave a half-finished rebase for the next attempt to
+            # trip over (and then mis-report as a push failure) -- abort it and retry clean.
+            if ! git pull --rebase origin bundle-artifacts; then
+              echo "::warning::rebase onto bundle-artifacts failed on attempt $attempt -- aborting the rebase and retrying."
+              git rebase --abort 2>/dev/null || true
+            fi
+          done
+          echo "::error::Could not push the bundle artifact after 3 attempts."
+          exit 1

@@ -405,3 +405,35 @@ Requires Write master.""",
         ]
     ]
 }
+
+def _readOnlyToolNames_partRooms() {
+    // Read-only classification membership for this library's tools, contributed to the
+    // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
+    // the tool). A tool absent from every part list is write+destructive by default.
+    return [
+        // Rooms (read)
+        "hub_list_rooms", "hub_get_room"
+    ]
+}
+
+def _idempotentWriteToolNames_partRooms() {
+    // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
+    // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
+    return [
+        // Rooms
+        "hub_update_room", "hub_delete_room"
+    ]
+}
+
+def _toolDisplayMeta_partRooms() {
+    // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
+    // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
+    return [
+        // Rooms
+        hub_list_rooms: [title: "List Rooms", summary: "List all rooms with IDs, names, and device counts."],
+        hub_get_room: [title: "Get Room Details", summary: "Get one room's details with its assigned devices."],
+        hub_create_room: [title: "Create Room", summary: "Create a new room, optionally assigning devices."],
+        hub_delete_room: [title: "Delete Room", summary: "Permanently delete a room."],
+        hub_update_room: [title: "Rename Room", summary: "Rename an existing room."]
+    ]
+}

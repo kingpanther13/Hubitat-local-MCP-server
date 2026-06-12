@@ -25,9 +25,11 @@ the declared namespace + name, making each resolvable via its `#include`
 
 Hosting: this repo serves the bundle from a stable raw-main URL (see
 packageManifest.json `bundles[]`), exactly as it already serves the app .groovy
-files, so the ZIP IS committed to git. The build is deterministic (fixed DOS
-epoch, stored entries) so a rebuild yields byte-identical output and the
-sandbox-lint drift check can diff it.
+files. The committed ZIP on main is owned by the post-merge rebuild-bundle.yml
+workflow; PRs do NOT rebuild or commit it, and per-push zips for unmerged refs
+are published to the bundle-artifacts branch by publish-bundle-artifact.yml.
+The build is deterministic (fixed DOS epoch, stored entries) so any two builds
+of the same library source are byte-identical and can be compared directly.
 
 Run:  python3 tools/build-bundle.py
 """
@@ -63,10 +65,66 @@ LIBS = [
         "source": LIB_DIR / "mcp-visual-rules-lib.groovy",
         "dest": f"{NAMESPACE}.McpVisualRulesLib.groovy",
     },
+    {
+        "source": LIB_DIR / "mcp-files-lib.groovy",
+        "dest": f"{NAMESPACE}.McpFilesLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-item-backups-lib.groovy",
+        "dest": f"{NAMESPACE}.McpItemBackupsLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-debug-logging-lib.groovy",
+        "dest": f"{NAMESPACE}.McpDebugLoggingLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-diagnostics-lib.groovy",
+        "dest": f"{NAMESPACE}.McpDiagnosticsLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-system-lib.groovy",
+        "dest": f"{NAMESPACE}.McpSystemLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-devices-lib.groovy",
+        "dest": f"{NAMESPACE}.McpDevicesLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-virtual-devices-lib.groovy",
+        "dest": f"{NAMESPACE}.McpVirtualDevicesLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-variables-lib.groovy",
+        "dest": f"{NAMESPACE}.McpVariablesLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-custom-rules-lib.groovy",
+        "dest": f"{NAMESPACE}.McpCustomRulesLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-code-management-lib.groovy",
+        "dest": f"{NAMESPACE}.McpCodeManagementLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-hpm-lib.groovy",
+        "dest": f"{NAMESPACE}.McpHpmLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-self-admin-lib.groovy",
+        "dest": f"{NAMESPACE}.McpSelfAdminLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-app-cloner-lib.groovy",
+        "dest": f"{NAMESPACE}.McpAppClonerLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-discovery-lib.groovy",
+        "dest": f"{NAMESPACE}.McpDiscoveryLib.groovy",
+    },
 ]
 
 # Fixed DOS-epoch timestamp + stored (uncompressed) entries make rebuilds
-# byte-identical, so the committed ZIP has a stable hash.
+# byte-identical, so builds of the same source compare equal byte-for-byte.
 _FIXED_DT = (1980, 1, 1, 0, 0, 0)
 
 
@@ -76,7 +134,7 @@ def _add(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
     info.external_attr = 0o644 << 16
     # ZipInfo defaults create_system from the running platform (0 on Windows,
     # 3 elsewhere) -- pin it so a zip built on Windows is byte-identical to the
-    # CI drift gate's Linux rebuild.
+    # rebuild on any other machine (CI workflows, the e2e deploy).
     info.create_system = 3
     zf.writestr(info, data)
 
