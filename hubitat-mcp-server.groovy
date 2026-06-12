@@ -2394,6 +2394,7 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
                     health: [type: "object", description: "Rule health summary"],
                     subscriptionSettle: [type: "string", description: "Subscription settle note"],
                     removedIndex: [type: "integer", description: "removeAction/removeTrigger result index"],
+                    reclicked: [type: "boolean", description: "removeAction/removeTrigger: true when the first delete click silently no-oped and the in-tool verified re-click landed the removal"],
                     beforeIndices: [type: "array", description: "Indices before edit", items: [type: "integer"]],
                     afterIndices: [type: "array", description: "Indices after edit", items: [type: "integer"]],
                     index: [type: "integer", description: "moveAction index"],
