@@ -48,7 +48,11 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
     private static String manifest(List bundles, List apps) {
         groovy.json.JsonOutput.toJson([packageName: 'MCP Rule Server', bundles: bundles, apps: apps])
     }
+    // Unified-delivery manifest shape: the bundle lives on the bundle-artifacts branch.
     private static final List BUNDLE_LIBS =
+        [[name: 'MCP Rule Server Libraries', namespace: 'mcp', location: "${RAW}/bundle-artifacts/branches/main/mcp-libraries.zip".toString(), required: true]]
+    // Legacy (pre-unification) manifest shape: in-tree committed zip -- old refs still carry this.
+    private static final List BUNDLE_LIBS_LEGACY =
         [[name: 'MCP Rule Server Libraries', namespace: 'mcp', location: "${RAW}/main/bundles/mcp-libraries.zip".toString(), required: true]]
     private static final List APPS_BOTH = [
         [name: 'MCP Rule Server', namespace: 'mcp', location: "${RAW}/main/hubitat-mcp-server.groovy".toString(), required: true, primary: true],
@@ -200,9 +204,10 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.ref == 'feat/x'
         result.includes == ['mcp.McpSmokeTestLib']
 
-        and: 'one bundle, re-anchored to the deploy ref'
+        and: 'one bundle: no per-ref artifact in this stub world, so the plan falls back to the manifest-current branches/main zip'
         result.plannedBundles.size() == 1
-        result.plannedBundles[0].url.endsWith('/feat/x/bundles/mcp-libraries.zip')
+        result.plannedBundles[0].url == "${RAW}/bundle-artifacts/branches/main/mcp-libraries.zip".toString()
+        result.plannedBundles[0].source == 'manifest-current'
 
         and: 'both apps planned, class ids resolved, self flagged, urls re-anchored to the ref'
         result.plannedApps.size() == 2
@@ -227,8 +232,8 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         when: 'baseUrl has a trailing slash that must be normalized away'
         def result = script.toolUpdatePackage([ref: 'main', dryRun: true, baseUrl: 'https://example.com/raw/'])
 
-        then: 'the manifest is read from the override; bundle + app URLs re-anchor to it'
-        result.plannedBundles[0].url == 'https://example.com/raw/main/bundles/mcp-libraries.zip'
+        then: 'the manifest is read from the override; APP urls re-anchor to it, while the artifact-shaped bundle keeps the manifest LITERAL location (the authoritative user-facing URL)'
+        result.plannedBundles[0].url == "${RAW}/bundle-artifacts/branches/main/mcp-libraries.zip".toString()
         result.plannedApps.find { it.isSelf }.url == 'https://example.com/raw/main/hubitat-mcp-server.groovy'
         result.plannedApps.find { !it.isSelf }.url == 'https://example.com/raw/main/hubitat-mcp-rule.groovy'
     }
@@ -395,8 +400,8 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         then: 'bundle -> child (230) -> self (228) last'
         calls == ['bundle', 'app:230', 'app:228']
 
-        and: 'bundle installed by re-anchored URL, with confirm'
-        bundleArgs.importUrl.endsWith('/main/bundles/mcp-libraries.zip')
+        and: 'bundle installed from the manifest-current branches/main URL, with confirm'
+        bundleArgs.importUrl.endsWith('/bundle-artifacts/branches/main/mcp-libraries.zip')
         bundleArgs.confirm == true
 
         and:
@@ -700,7 +705,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.bundleFreshnessWarning == null
     }
 
-    def "bundle leg falls back to the committed-at-ref zip and warns on a non-main ref"() {
+    def "bundle leg falls back to current main's manifest zip and warns on a non-main ref"() {
         given:
         enableDev()
         registerAppTypes()
@@ -713,16 +718,35 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
 
         then:
         result.success == true
+        result.bundles[0].source == 'manifest-current'
+        result.bundles[0].url.endsWith('/bundle-artifacts/branches/main/mcp-libraries.zip')
+        result.bundleFreshnessWarning?.contains("CURRENT MAIN's bundle")
+    }
+
+    def "a LEGACY-manifest ref falls back to its committed-at-ref zip with the legacy warning"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        nextManifestBody = manifest(BUNDLE_LIBS_LEGACY, APPS_BOTH)
+        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> [success: true] }
+        script.metaClass._bundleArtifactExists = { String u -> false }
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'feat/x', confirm: true])
+
+        then: 'old refs keep the old behaviour: zip committed AT the ref, reanchored'
+        result.success == true
         result.bundles[0].source == 'committed-at-ref'
         result.bundles[0].url.endsWith('/feat/x/bundles/mcp-libraries.zip')
         result.bundleFreshnessWarning?.contains('COMMITTED at the ref')
     }
 
-    def "a committed-zip fallback at ref=main still surfaces a (softer) freshness warning"() {
+    def "a manifest-current fallback at ref=main surfaces the probe-failure note"() {
         given:
-        // The committed main zip is bot-owned but has a real staleness window between a
-        // library PR merging and the post-merge rebuild committing -- a silent fallback
-        // here installed-stale with no signal (review finding on the v1 gate).
+        // For ref=main the manifest's branches/main zip IS the correct current bundle; the
+        // note exists because the artifact probe failing may indicate a transient raw
+        // outage worth knowing about.
         enableDev()
         registerAppTypes()
         script.metaClass.toolInstallBundle = { a -> [success: true] }
@@ -734,9 +758,9 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
 
         then:
         result.success == true
-        result.bundles[0].source == 'committed-at-ref'
-        result.bundleFreshnessWarning?.contains('COMMITTED on main')
-        result.bundleFreshnessWarning?.contains('post-merge rebuild')
+        result.bundles[0].source == 'manifest-current'
+        result.bundleFreshnessWarning?.contains('branches/main zip directly')
+        result.bundleFreshnessWarning?.contains('correct, current bundle')
     }
 
     // -------- dispatch happy path --------

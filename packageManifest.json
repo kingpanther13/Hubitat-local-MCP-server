@@ -33,7 +33,7 @@
             "id": "7e3c1a8f-2b94-4d6e-9a51-2095099012ab",
             "name": "MCP Rule Server Libraries",
             "namespace": "mcp",
-            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/bundles/mcp-libraries.zip",
+            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/mcp-libraries.zip",
             "required": true
         }
     ]

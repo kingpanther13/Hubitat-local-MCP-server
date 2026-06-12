@@ -151,3 +151,29 @@ deploy_app_via_watchdog() {
   echo "::error::[$label] deploy did not confirm within 420s (no FRESH lastSelfDeploy success for class ${class_id}, at > ${pre_at}). Re-run; if it persists, check the watchdog app logs." >&2
   exit 1
 }
+
+# ---------------------------------------------------------------------------
+# resolve_main_bundle_artifact_url <zip-basename>
+# Echo the canonical-main bundle URL on the bundle-artifacts branch: prefer the
+# SHA-pinned entry for MAIN_SHA (immutable -- a mid-run merge to main cannot shift
+# what the restore installs), fall back to branches/main (always-current; covers
+# SHAs predating the publish-on-every-push change). Returns 1 when neither
+# resolves -- the caller decides severity. Uses the .size markers (~10 bytes)
+# as the existence probe. Requires MAIN_SOURCE_URL + MAIN_SHA in the env (the
+# workflow's canonical-main resolution), independent of PR_RAW_BASE so fork PRs
+# still resolve against the BASE repo.
+resolve_main_bundle_artifact_url() {
+  local zip_basename="$1"
+  local repo_base="${MAIN_SOURCE_URL%/*/*}"   # strip /<sha>/<file> -> https://raw.githubusercontent.com/<owner>/<repo>
+  local sha_url="${repo_base}/bundle-artifacts/shas/${MAIN_SHA}/${zip_basename}"
+  local branch_url="${repo_base}/bundle-artifacts/branches/main/${zip_basename}"
+  if curl -fsSL --max-time 30 -o /dev/null "${sha_url}.size" 2>/dev/null; then
+    printf '%s' "$sha_url"
+    return 0
+  fi
+  if curl -fsSL --max-time 30 -o /dev/null "${branch_url}.size" 2>/dev/null; then
+    printf '%s' "$branch_url"
+    return 0
+  fi
+  return 1
+}

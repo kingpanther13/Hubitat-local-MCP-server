@@ -189,13 +189,26 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
   MAIN_RAW_PREFIX="${MAIN_SOURCE_URL%/*}"
   MAIN_PKG_MANIFEST=$(curl -fsSL "${MAIN_RAW_PREFIX}/packageManifest.json" 2>/dev/null || true)
   if [ -n "$MAIN_PKG_MANIFEST" ]; then
-    MAIN_BUNDLE_RELS=$(printf '%s' "$MAIN_PKG_MANIFEST" | jq -r '.bundles[]?.location // empty' 2>/dev/null \
-      | sed -E 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+/##')
-    if [ -n "$MAIN_BUNDLE_RELS" ]; then
-      while IFS= read -r BREL; do
-        [ -z "$BREL" ] && continue
-        BURL="${MAIN_RAW_PREFIX}/${BREL}"
-        echo "Refreshing main's bundle onto the hub (canonical-main libraries): ${BURL} ..."
+    MAIN_BUNDLE_LOCS=$(printf '%s' "$MAIN_PKG_MANIFEST" | jq -r '.bundles[]?.location // empty' 2>/dev/null)
+    if [ -n "$MAIN_BUNDLE_LOCS" ]; then
+      while IFS= read -r BLOC; do
+        [ -z "$BLOC" ] && continue
+        if printf '%s' "$BLOC" | grep -q "/bundle-artifacts/"; then
+          # Unified delivery: the manifest points at the bundle-artifacts branch. Pin the
+          # restore to the SHA-keyed entry for MAIN_SHA (immutable -- a mid-run merge to main
+          # cannot shift the restore bytes), falling back to branches/main for SHAs that
+          # predate publish-on-every-push. Same resolver the deploy's skip-compare uses.
+          if ! BURL=$(resolve_main_bundle_artifact_url "$(basename "$BLOC")"); then
+            echo "::error::e2e HALT: no bundle-artifacts entry resolves for canonical main (tried shas/${MAIN_SHA} and branches/main for $(basename "$BLOC")) -- the restore would have no bundle source. Check the publish-bundle-artifact workflow; re-run."
+            exit 1
+          fi
+        else
+          # Legacy in-tree location (pre-unification manifest at this MAIN_SHA): re-anchor the
+          # repo-relative path to MAIN_SHA -- the committed zip exists at that SHA forever.
+          BREL=$(printf '%s' "$BLOC" | sed -E 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+/##')
+          BURL="${MAIN_RAW_PREFIX}/${BREL}"
+        fi
+        echo "Resolving main's bundle identity (canonical-main libraries): ${BURL} ..."
         # Identity first (CI-side download; no hub impact): the zip's own install.txt (line 1 =
         # namespace, line 2 = name) is exactly what the hub registers in /hub2/userBundles -- the
         # restore KEEPS this identity and deletes everything else. Reading the hub list instead would
@@ -210,7 +223,7 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
         B_NM="$(printf '%s\n' "$B_INSTALL_TXT" | sed -n '2p' | tr -d '[:space:]')"
         rm -f "$ZIP_TMP"
         if [ -z "$B_NS" ] || [ -z "$B_NM" ]; then
-          echo "::error::e2e HALT: could not parse install.txt namespace/name from ${BREL} -- the restore keep-set would be incomplete. Re-run."
+          echo "::error::e2e HALT: could not parse install.txt namespace/name from ${BURL} -- the restore keep-set would be incomplete. Re-run."
           exit 1
         fi
         # Record the bundle identity + its CANONICAL https URL at MAIN_SHA. No zip caching, no
@@ -220,7 +233,7 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
         # /hub2/userLibraries wedging hub-wide.)
         MAIN_BUNDLES_JSON="$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -c --arg ns "$B_NS" --arg nm "$B_NM" --arg url "$BURL" '. + [{namespace:$ns, name:$nm, url:$url}]')"
         echo "Recorded main bundle ${B_NS}/${B_NM} -> restore installs from ${BURL}"
-      done <<< "$MAIN_BUNDLE_RELS"
+      done <<< "$MAIN_BUNDLE_LOCS"
     else
       echo "::notice::main packageManifest.json declares no bundles -- app-only canonical main (no bundle to record)."
     fi

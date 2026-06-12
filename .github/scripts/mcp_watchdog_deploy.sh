@@ -42,8 +42,8 @@
 #
 # The app's importUrl points the hub at the PR branch's raw source so the ~1.5MB
 # blob never has to cross the MCP transport as an inline argument (importUrl
-# deploy, issue #228); the bundle importUrl is built from PR_RAW_BASE +
-# the resolved head SHA + the repo-relative path.
+# deploy, issue #228); the bundle importUrl is the PR's bundle-artifacts entry
+# (shas/<head-sha>/), byte-verified against the CI build before install.
 set -euo pipefail
 
 : "${WATCHDOG_URL:?WATCHDOG_URL env var required (full watchdog MCP endpoint URL with access_token; from secret WATCHDOG_MCP_URL)}"
@@ -56,17 +56,17 @@ if [ ! -f "$APP_FILE" ]; then
   exit 1
 fi
 
-# The package's bundle .zip(s), DERIVED from packageManifest.json -- never hardcoded. The bundle
-# name changes with the #209 modularization, and a hardcoded name would silently stop proving HPM
-# delivery once it drifts. Each manifest bundles[].location is a full raw URL; strip the
-# host/owner/repo/ref prefix to the repo-relative path. The deploy installs every manifest bundle and
-# FAILS if the manifest declares one whose file is missing from the checkout (a real drift, not a
-# "no bundle" no-op).
+# The package's bundle zip BASENAMES, DERIVED from packageManifest.json -- never hardcoded. The
+# bundle name changes with the #209 modularization, and a hardcoded name would silently stop
+# proving HPM delivery once it drifts. Since the unified-delivery change the manifest location
+# points at the bundle-artifacts branch (not an in-tree path), so the only thing the deploy
+# takes from it is the zip's basename: the deploy BUILDS that zip from the checkout's
+# libraries/ (tools/build-bundle.py writes bundles/<basename>) and installs the PR's
+# bundle-artifacts entry after byte-verifying it against the build.
 MANIFEST_FILE="$(dirname "$APP_FILE")/packageManifest.json"
-BUNDLE_RELS=""
+BUNDLE_BASENAMES=""
 if [ -f "$MANIFEST_FILE" ]; then
-  BUNDLE_RELS=$(jq -r '.bundles[]?.location // empty' "$MANIFEST_FILE" \
-    | sed -E 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+/##')
+  BUNDLE_BASENAMES=$(jq -r '.bundles[]?.location // empty' "$MANIFEST_FILE" | sed -E 's#.*/##')
 fi
 
 # ---------------------------------------------------------------------------
@@ -95,7 +95,7 @@ mapfile -t INCLUDES < <(
   grep -hoE '^[[:space:]]*#include[[:space:]]+[A-Za-z0-9_]+\.[A-Za-z0-9_]+' "$APP_FILE" \
     | sed -E 's/^[[:space:]]*#include[[:space:]]+//' | sort -u || true
 )
-if [ "${#INCLUDES[@]}" -gt 0 ] && [ -z "$BUNDLE_RELS" ]; then
+if [ "${#INCLUDES[@]}" -gt 0 ] && [ -z "$BUNDLE_BASENAMES" ]; then
   echo "::error::App #includes ${#INCLUDES[@]} library(ies) (${INCLUDES[*]}) but packageManifest.json declares NO bundle to deliver them. A bundle-only install would leave the #include directives unresolved and the app would not compile. Add the libraries' bundle to the manifest."
   exit 1
 fi
@@ -103,11 +103,13 @@ echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- deli
 
 # ===========================================================================
 # 2) BUNDLE -- build the PR's bundle zip IN CI, then install it the HPM way
-#    (HPM "install bundles", run BEFORE "install apps"). PRs no longer commit
-#    bundles/*.zip (per-PR binary rebuilds made any two library-touching PRs
-#    conflict on the zip; rebuild-bundle.yml owns the committed zip on main
-#    post-merge), so a raw fetch of the zip COMMITTED at the PR SHA would
-#    install STALE library code. Resolution order, lightest first:
+#    (HPM "install bundles", run BEFORE "install apps"). Delivery is UNIFIED on
+#    the bundle-artifacts branch: the manifest's bundles[].location points at
+#    branches/main/ (what HPM users fetch), publish-bundle-artifact.yml feeds it
+#    on every push, and this deploy installs the PR's shas/<sha>/ entry -- the
+#    SAME mechanism, branch, and filename users ride, with bytes that are
+#    deterministic-build-identical to what branches/main/ will serve once the
+#    PR merges. There is no committed zip. Resolution order, lightest first:
 #      a. SKIP -- the built zip is byte-identical to canonical main's (the
 #         libraries never leave main's bytes; no install, no recompile wave).
 #      b. bundle-artifacts -- the publish-bundle-artifact workflow stored this
@@ -121,7 +123,7 @@ echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- deli
 #    the bundle entity on the zip filename, so a renamed zip can import as a
 #    SECOND entity (duplicate libraries) instead of updating the existing one.
 # ===========================================================================
-if [ -z "$BUNDLE_RELS" ]; then
+if [ -z "$BUNDLE_BASENAMES" ]; then
   echo "packageManifest.json declares no bundles -- skipping the bundle step (clean no-op)."
 else
   REPO_DIR="$(dirname "$APP_FILE")"
@@ -132,34 +134,36 @@ else
   echo "Building the PR's bundle zip from the checkout's libraries/ ..."
   ( cd "$REPO_DIR" && python3 tools/build-bundle.py )
   ANY_BUNDLE_DIFFERS="false"
-  while IFS= read -r BUNDLE_REL; do
-    [ -z "$BUNDLE_REL" ] && continue
-    BUNDLE_PATH="$REPO_DIR/${BUNDLE_REL}"
+  while IFS= read -r BASENAME; do
+    [ -z "$BASENAME" ] && continue
+    BUNDLE_PATH="$REPO_DIR/bundles/${BASENAME}"
     if [ ! -f "$BUNDLE_PATH" ]; then
-      echo "::error::packageManifest.json declares bundle '${BUNDLE_REL}' but the builder did not produce it ($BUNDLE_PATH). Manifest/builder drift -- CI cannot prove HPM bundle delivery. Failing instead of passing as 'no bundle'."
+      echo "::error::packageManifest.json declares bundle '${BASENAME}' but the builder did not produce bundles/${BASENAME}. Manifest/builder drift -- CI cannot prove HPM bundle delivery. Failing instead of passing as 'no bundle'."
       exit 1
     fi
     # (a) The bundle build is DETERMINISTIC (tools/build-bundle.py pins create_system), so
-    # byte-equality of the BUILT zip against canonical main proves the PR ships the same
-    # libraries. When equal, installing is a pure waste -- the hub already carries those exact
-    # library bytes and the install would only fire a dependent-recompile wave of the ~1.8MB
-    # app. Recorded run-scoped on the hub (marker below) so the dead-man restore can skip its
-    # mirror reinstall for the same reason.
+    # byte-equality of the BUILT zip against canonical main's bundle-artifacts entry proves
+    # the PR ships the same libraries users already have. When equal, installing is a pure
+    # waste -- the hub already carries those exact library bytes and the install would only
+    # fire a dependent-recompile wave of the ~1.8MB app. Recorded run-scoped on the hub
+    # (marker below) so the dead-man restore can skip its mirror reinstall for the same
+    # reason. A resolver miss falls through to the install path -- fail-safe toward
+    # installing + verifying, never toward a false skip.
     BUNDLE_SAME="false"
-    if [ -n "${MAIN_SOURCE_URL:-}" ]; then
+    if [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA:-}" ] \
+       && MAIN_BUNDLE_URL=$(resolve_main_bundle_artifact_url "$BASENAME"); then
       MAIN_ZIP_TMP="$(mktemp)"
-      if curl -fsSL "${MAIN_SOURCE_URL%/*}/${BUNDLE_REL}" -o "$MAIN_ZIP_TMP" 2>/dev/null \
+      if curl -fsSL "$MAIN_BUNDLE_URL" -o "$MAIN_ZIP_TMP" 2>/dev/null \
          && cmp -s "$BUNDLE_PATH" "$MAIN_ZIP_TMP"; then
         BUNDLE_SAME="true"
       fi
       rm -f "$MAIN_ZIP_TMP"
     fi
     if [ "$BUNDLE_SAME" = "true" ]; then
-      echo "Bundle '${BUNDLE_REL}' is byte-identical to canonical main's -- skipping the install (hub already carries these exact library bytes; no recompile wave)."
+      echo "Bundle '${BASENAME}' is byte-identical to canonical main's -- skipping the install (hub already carries these exact library bytes; no recompile wave)."
       continue
     fi
     ANY_BUNDLE_DIFFERS="true"
-    BASENAME=$(basename "$BUNDLE_REL")
 
     # (b) bundle-artifacts: published by this SHA's push; runner-verified byte-identical to the
     # CI build before the hub is pointed at it.
@@ -168,7 +172,7 @@ else
     ART_TMP="$(mktemp)"
     if curl -fsSL "$ART_URL" -o "$ART_TMP" 2>/dev/null && cmp -s "$BUNDLE_PATH" "$ART_TMP"; then
       BUNDLE_URL="$ART_URL"
-      echo "Bundle '${BUNDLE_REL}': using the bundle-artifacts zip for this SHA (byte-verified against the CI build)."
+      echo "Bundle '${BASENAME}': using the bundle-artifacts zip for this SHA (byte-verified against the CI build)."
     fi
     rm -f "$ART_TMP"
 
@@ -182,16 +186,16 @@ else
       exit 1
     fi
 
-    echo "Installing package bundle '${BUNDLE_REL}' from ${BUNDLE_URL} via hub_install_bundle ..."
+    echo "Installing package bundle '${BASENAME}' from ${BUNDLE_URL} via hub_install_bundle ..."
     BUN_RPC=$(jq -nc --arg url "$BUNDLE_URL" \
       '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_install_bundle",arguments:{importUrl:$url,confirm:true}}}')
     BUN_TEXT=$(call_tool "$BUN_RPC")
     if [ "$(ok_of "$BUN_TEXT")" != "true" ]; then
-      echo "::error::hub_install_bundle did not report success for '${BUNDLE_REL}' -- HPM would fail to deliver this package's bundle. Hub verbatim: $(err_of "$BUN_TEXT") -- full: $(printf '%s' "$BUN_TEXT" | jq -c '{success,error,endpoint,rawResponse}' 2>/dev/null || printf '%s' "$BUN_TEXT" | head -c 400)"
+      echo "::error::hub_install_bundle did not report success for '${BASENAME}' -- HPM would fail to deliver this package's bundle. Hub verbatim: $(err_of "$BUN_TEXT") -- full: $(printf '%s' "$BUN_TEXT" | jq -c '{success,error,endpoint,rawResponse}' 2>/dev/null || printf '%s' "$BUN_TEXT" | head -c 400)"
       exit 1
     fi
-    echo "Bundle '${BUNDLE_REL}' installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint,message}' 2>/dev/null || true)"
-  done <<< "$BUNDLE_RELS"
+    echo "Bundle '${BASENAME}' installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint,message}' 2>/dev/null || true)"
+  done <<< "$BUNDLE_BASENAMES"
   # Run-scoped bundle-state marker for the dead-man restore: "<runId>:unchanged" lets restorePackage
   # skip reinstalling main's cached bundle (the libraries never left main's bytes this run). Any other
   # content -- different runId (stale marker from a crashed run), "changed", or a failed write -- makes

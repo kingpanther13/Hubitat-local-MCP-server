@@ -299,23 +299,33 @@ def toolUpdatePackage(args) {
     }
 
     // Plan the bundle leg: prefer the bot-published per-ref artifact (fresh for any
-    // same-repo ref -- see _bundleArtifactUrlForRef), falling back to the zip committed
-    // at the ref. The fallback is CORRECT whenever the ref did not change libraries/
-    // relative to its base (the committed zip then matches the ref's library source);
-    // it is only possibly stale for a library-touching ref with no artifact (fork PRs,
-    // pre-workflow history) -- surfaced via bundleFreshnessWarning below.
+    // same-repo ref -- see _bundleArtifactUrlForRef). The fallback depends on the
+    // MANIFEST SHAPE AT THE REF, which is what keeps old refs working unchanged:
+    //   * unified-delivery manifests (location on the bundle-artifacts branch) fall
+    //     back to that location AS-IS -- the branches/main zip, exactly what HPM users
+    //     currently install; correct whenever the ref's libraries match current main,
+    //     surfaced via bundleFreshnessWarning otherwise.
+    //   * legacy manifests (in-tree location) fall back to the zip COMMITTED at the
+    //     ref via _reanchorToRef -- correct whenever the ref did not change libraries/
+    //     relative to its base.
     def manifestBundles = (manifest.bundles instanceof List) ? manifest.bundles : []
     def plannedBundles = []
     for (b in manifestBundles) {
-        def url = _reanchorToRef(b?.location, base, ref)
-        if (!url) {
-            return [
-                success: false, aborted: true, abortReason: "bundle_location_unusable", ref: ref,
-                error: "Bundle '${b?.name ?: b?.id ?: '?'}' in packageManifest.json has an unusable location '${b?.location}' (expected a scheme://host/owner/repo/ref/<path> raw URL). Nothing was changed."
-            ]
+        def loc = (b?.location instanceof String) ? b.location.trim() : null
+        def entry
+        if (loc && loc.contains("/bundle-artifacts/")) {
+            entry = [name: (b?.name ?: b?.id), url: loc, source: "manifest-current"]
+        } else {
+            def url = _reanchorToRef(loc, base, ref)
+            if (!url) {
+                return [
+                    success: false, aborted: true, abortReason: "bundle_location_unusable", ref: ref,
+                    error: "Bundle '${b?.name ?: b?.id ?: '?'}' in packageManifest.json has an unusable location '${b?.location}' (expected a scheme://host/owner/repo/ref/<path> raw URL or a bundle-artifacts URL). Nothing was changed."
+                ]
+            }
+            entry = [name: (b?.name ?: b?.id), url: url, source: "committed-at-ref"]
         }
-        def entry = [name: (b?.name ?: b?.id), url: url, source: "committed-at-ref"]
-        def artifactUrl = _bundleArtifactUrlForRef(b?.location, base, ref)
+        def artifactUrl = _bundleArtifactUrlForRef(loc, base, ref)
         if (artifactUrl && _bundleArtifactExists(artifactUrl)) {
             entry.url = artifactUrl
             entry.source = "bundle-artifacts"
@@ -462,21 +472,22 @@ def toolUpdatePackage(args) {
         success: true, ref: ref, includes: includeTokens, bundles: bundleResults, apps: appResults,
         message: "Package repaired to ref ${ref}: ${bundleResults.size()} bundle(s) + ${appResults.size()} app(s) deployed (self app last)."
     ]
-    // PRs no longer rebuild bundles/*.zip, so a ref's COMMITTED zip can lag its
-    // libraries/*.groovy. The artifact-first resolution above normally covers that (the
-    // publish workflow stores a fresh zip per library-touching push); whenever a bundle
-    // actually FELL BACK to the committed zip, say so -- even at ref=main, where the
-    // committed zip is bot-owned but has a real staleness window between a library PR
-    // merging and the post-merge rebuild-bundle.yml commit landing. (A fallback on a ref
-    // that never touched libraries/ is still correct -- the zip matches that ref's source.)
-    if (bundleResults.any { it.source == "committed-at-ref" }) {
+    // Whenever a bundle leg FELL BACK from the per-ref artifact, say so. The wording keys
+    // on what was actually installed: "manifest-current" = the manifest's bundle-artifacts
+    // branches/main zip (exactly what HPM users install; only wrong if this ref's libraries
+    // differ from current main); "committed-at-ref" = a legacy ref's in-tree zip (only
+    // wrong if the ref changed library code relative to its base).
+    if (bundleResults.any { it.source == "manifest-current" }) {
         if (ref == "main") {
-            result.bundleFreshnessWarning = "No bundle-artifacts zip was reachable for main, so the bundle leg installed the zip COMMITTED on main. That zip is bot-maintained and normally current; it is only stale in the window between a library-touching PR merging and the post-merge rebuild committing. If the app fails to compile after this deploy, re-run in a few minutes."
-            mcpLog("warn", "developer-mode", "hub_update_package: ref=main fell back to the committed bundle zip (artifact unreachable) -- stale only within the post-merge rebuild window")
+            result.bundleFreshnessWarning = "The per-ref artifact probe failed, so the bundle leg installed the manifest's branches/main zip directly -- for ref=main that is the correct, current bundle (the same bytes HPM users install). Noted only because the probe failing may indicate a transient raw.githubusercontent issue."
+            mcpLog("warn", "developer-mode", "hub_update_package: ref=main artifact probe failed; installed the manifest's branches/main zip directly (correct bytes for main)")
         } else {
-            result.bundleFreshnessWarning = "Ref '${ref}': no bundle-artifacts zip was found for this ref, so the bundle leg installed the zip COMMITTED at the ref. That is only stale if this ref CHANGED library code (PRs do not rebuild the committed zip). If it did, push the ref to this repo (the publish-bundle-artifact workflow stores a fresh zip per library-touching push, keyed by branch and full SHA) and re-run."
-            mcpLog("warn", "developer-mode", "hub_update_package: non-main ref '${ref}' fell back to the committed bundle zip -- stale if the ref changed library code")
+            result.bundleFreshnessWarning = "Ref '${ref}': no bundle-artifacts zip was found for this ref, so the bundle leg installed CURRENT MAIN's bundle (the manifest's branches/main zip). That is only correct if this ref's libraries match current main. If this ref changed library code, push it to this repo (publish-bundle-artifact stores a fresh zip per push, keyed by branch and full SHA) and re-run."
+            mcpLog("warn", "developer-mode", "hub_update_package: non-main ref '${ref}' fell back to current main's bundle -- wrong if the ref changed library code")
         }
+    } else if (bundleResults.any { it.source == "committed-at-ref" }) {
+        result.bundleFreshnessWarning = "Ref '${ref}' (legacy manifest): no bundle-artifacts zip was found for this ref, so the bundle leg installed the zip COMMITTED at the ref. That is only stale if this ref CHANGED library code without rebuilding the zip."
+        mcpLog("warn", "developer-mode", "hub_update_package: legacy ref '${ref}' fell back to the committed bundle zip -- stale if the ref changed library code")
     }
     return result
 }

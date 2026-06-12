@@ -7,7 +7,6 @@ on:
       - 'packageManifest.json'
       - 'tests/sandbox_lint.py'
       - 'libraries/**'
-      - 'bundles/**'
       - 'tools/build-bundle.py'
 
 permissions:
@@ -23,10 +22,9 @@ jobs:
           python-version: '3.x'
       - name: Sandbox-lint scan
         run: python tests/sandbox_lint.py
-      # Bundle build smoke (issue #209): PRs do not commit bundles/mcp-libraries.zip -- the
-      # rebuild-bundle.yml workflow regenerates and commits it on main post-merge, which is
-      # what keeps the raw-main URL in packageManifest.json fresh without every library-touching
-      # PR conflicting on the binary zip. This step only proves the builder still RUNS against
-      # the PR's libraries/ (a broken LIBS entry or unreadable library fails here, in-PR).
+      # Bundle build smoke (issue #209): nothing under bundles/ is committed -- delivery is
+      # the bundle-artifacts branch, fed by publish-bundle-artifact.yml on every push. This
+      # step only proves the builder still RUNS against the PR's libraries/ (a broken LIBS
+      # entry or unreadable library fails here, in-PR).
       - name: Bundle builder runs against the PR's libraries
         run: python tools/build-bundle.py
