@@ -649,6 +649,8 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         'branch ref'               | 'https://raw.githubusercontent.com/o/r/main/bundles/mcp-libraries.zip' | 'feat/x'   || 'https://b/bundle-artifacts/branches/feat/x/mcp-libraries.zip'
         'full-sha ref'             | 'https://raw.githubusercontent.com/o/r/main/bundles/mcp-libraries.zip' | ('a' * 40) || "https://b/bundle-artifacts/shas/${'a' * 40}/mcp-libraries.zip".toString()
         'short sha = branch path'  | 'https://raw.githubusercontent.com/o/r/main/bundles/mcp-libraries.zip' | 'deadbee'  || 'https://b/bundle-artifacts/branches/deadbee/mcp-libraries.zip'
+        '40 chars but NOT hex = branch path (predicate is hex-aware, not length-only)' \
+                                   | 'https://raw.githubusercontent.com/o/r/main/bundles/mcp-libraries.zip' | ('g' * 40) || "https://b/bundle-artifacts/branches/${'g' * 40}/mcp-libraries.zip".toString()
         'unusable location'        | 'not-a-real-url'                                                        | 'feat/x'   || null
     }
 
@@ -669,6 +671,11 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         when: 'a 200 with a non-integer body (HTML error page, mis-routed content)'
         nextHttpThrow = null
         nextHttpBody = '<html>nope</html>'
+        then:
+        !script._bundleArtifactExists('https://b/bundle-artifacts/branches/x/mcp-libraries.zip')
+
+        when: 'a 200 with an EMPTY body (zero-length/truncated .size marker)'
+        nextHttpBody = ''
         then:
         !script._bundleArtifactExists('https://b/bundle-artifacts/branches/x/mcp-libraries.zip')
     }
@@ -711,8 +718,11 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.bundleFreshnessWarning?.contains('COMMITTED at the ref')
     }
 
-    def "no freshness warning at ref=main even when the bundle fell back to the committed zip"() {
+    def "a committed-zip fallback at ref=main still surfaces a (softer) freshness warning"() {
         given:
+        // The committed main zip is bot-owned but has a real staleness window between a
+        // library PR merging and the post-merge rebuild committing -- a silent fallback
+        // here installed-stale with no signal (review finding on the v1 gate).
         enableDev()
         registerAppTypes()
         script.metaClass.toolInstallBundle = { a -> [success: true] }
@@ -725,7 +735,8 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         then:
         result.success == true
         result.bundles[0].source == 'committed-at-ref'
-        result.bundleFreshnessWarning == null
+        result.bundleFreshnessWarning?.contains('COMMITTED on main')
+        result.bundleFreshnessWarning?.contains('post-merge rebuild')
     }
 
     // -------- dispatch happy path --------

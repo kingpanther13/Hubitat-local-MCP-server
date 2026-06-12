@@ -59,3 +59,16 @@ def test_deploy_builds_the_bundle_in_ci_instead_of_fetching_the_committed_zip():
             f"{SCRIPT.name} builds the bundle URL from PR_RAW_BASE again -- that fetches the zip "
             "COMMITTED at the PR SHA, which PRs no longer rebuild (stale library code)."
         )
+
+
+def test_deploy_verifies_landed_libraries_after_the_bundle_step():
+    """Run 27322480301: hub_install_bundle reported success while leaving pre-existing
+    libraries STALE -- the deploy must re-verify every #include'd library (one copy per
+    namespace+name, on-hub length equals the PR file) so that failure class can never
+    pass silently again. Pin the verification's load-bearing pieces."""
+    text = SCRIPT.read_text()
+    for marker in ('"hub_list_libraries"', 'name:"hub_get_source"', "totalLength", "is STALE on the hub"):
+        assert marker in text, (
+            f"{SCRIPT.name} dropped the post-install library verification piece {marker!r} -- without "
+            "it a success-but-stale bundle install only surfaces as a runtime MissingMethodException."
+        )

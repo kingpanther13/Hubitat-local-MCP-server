@@ -18,13 +18,7 @@ Before you push a PR:
 - **Build**: Gradle 9.5 via the wrapper (`./gradlew test`); no global install needed.
 - **Test framework**: Spock 2.3 on Groovy 3.0, riding [eighty20results/hubitat_ci](https://github.com/eighty20results/hubitat_ci) for the sandbox harness. The pinned tag lives in `build.gradle` and is bumped by `.github/workflows/hubitat-ci-version-check.yml`.
 - **Sandbox lint**: `python tests/sandbox_lint.py` (Python 3); structural checks on Groovy sandbox patterns, CI runs the same lint on every PR.
-- **Bundle rebuild hook (recommended)**: the libraries under `libraries/` ship to hubs as one HPM bundle (`bundles/mcp-libraries.zip`), which must stay in sync. Enable the repo-tracked pre-commit hook once per clone so it rebuilds + stages the zip automatically whenever you commit a library change:
-
-  ```bash
-  git config core.hooksPath .githooks
-  ```
-
-  It's optional — CI's `sandbox-lint` drift gate fails the PR if the committed zip is stale either way — but with the hook on you never have to remember `python tools/build-bundle.py`.
+- **Bundle zip — hands off**: the libraries under `libraries/` ship to hubs as one HPM bundle (`bundles/mcp-libraries.zip`), but PRs must NOT rebuild or commit it. The post-merge `rebuild-bundle.yml` workflow regenerates the committed zip on main, and `publish-bundle-artifact.yml` publishes per-push zips for unmerged refs on the `bundle-artifacts` branch. Run `python tools/build-bundle.py` locally only to check the builder accepts your `LIBS` entry (CI runs the same build smoke).
 
 Useful commands:
 

@@ -83,7 +83,12 @@ jobs:
               echo "Published bundle artifact for ${REF_NAME} @ ${HEAD_SHA} (${BYTES} bytes, attempt $attempt)."
               exit 0
             fi
-            git pull --rebase origin bundle-artifacts || true
+            # A failed rebase must not leave a half-finished rebase for the next attempt to
+            # trip over (and then mis-report as a push failure) -- abort it and retry clean.
+            if ! git pull --rebase origin bundle-artifacts; then
+              echo "::warning::rebase onto bundle-artifacts failed on attempt $attempt -- aborting the rebase and retrying."
+              git rebase --abort 2>/dev/null || true
+            fi
           done
           echo "::error::Could not push the bundle artifact after 3 attempts."
           exit 1

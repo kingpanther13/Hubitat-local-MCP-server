@@ -187,6 +187,10 @@ def _bundleArtifactExists(String artifactUrl) {
         def r = _httpFetchUrl("${artifactUrl}.size")
         return ((r?.status as Integer) == 200) && (r?.body?.toString()?.trim() ==~ /\d+/)
     } catch (Exception e) {
+        // A legitimate miss (404) and a transient probe failure (rate limit, network blip) both
+        // land here; log so a fallback caused by a TRANSIENT failure is at least diagnosable
+        // instead of silently indistinguishable from "no artifact published for this ref".
+        mcpLog("warn", "developer-mode", "_bundleArtifactExists: probe of ${artifactUrl}.size failed (${e.toString()}) -- treating as no artifact; the bundle leg falls back to the committed zip")
         return false
     }
 }
@@ -458,15 +462,21 @@ def toolUpdatePackage(args) {
         success: true, ref: ref, includes: includeTokens, bundles: bundleResults, apps: appResults,
         message: "Package repaired to ref ${ref}: ${bundleResults.size()} bundle(s) + ${appResults.size()} app(s) deployed (self app last)."
     ]
-    // PRs no longer rebuild bundles/*.zip, so a non-main ref's COMMITTED zip can lag its
+    // PRs no longer rebuild bundles/*.zip, so a ref's COMMITTED zip can lag its
     // libraries/*.groovy. The artifact-first resolution above normally covers that (the
-    // publish workflow stores a fresh zip per library-touching push); warn only when a
-    // bundle actually FELL BACK to the committed zip on a non-main ref -- fork PRs, short
-    // SHAs, or refs predating the publish workflow. (A fallback on a ref that never
-    // touched libraries/ is still correct -- the committed zip matches that ref's source.)
-    if (ref != "main" && bundleResults.any { it.source == "committed-at-ref" }) {
-        result.bundleFreshnessWarning = "Ref '${ref}': no bundle-artifacts zip was found for this ref, so the bundle leg installed the zip COMMITTED at the ref. That is only stale if this ref CHANGED library code (PRs do not rebuild the committed zip). If it did, push the ref to this repo (the publish-bundle-artifact workflow stores a fresh zip per library-touching push, keyed by branch and full SHA) and re-run."
-        mcpLog("warn", "developer-mode", "hub_update_package: non-main ref '${ref}' fell back to the committed bundle zip -- stale if the ref changed library code")
+    // publish workflow stores a fresh zip per library-touching push); whenever a bundle
+    // actually FELL BACK to the committed zip, say so -- even at ref=main, where the
+    // committed zip is bot-owned but has a real staleness window between a library PR
+    // merging and the post-merge rebuild-bundle.yml commit landing. (A fallback on a ref
+    // that never touched libraries/ is still correct -- the zip matches that ref's source.)
+    if (bundleResults.any { it.source == "committed-at-ref" }) {
+        if (ref == "main") {
+            result.bundleFreshnessWarning = "No bundle-artifacts zip was reachable for main, so the bundle leg installed the zip COMMITTED on main. That zip is bot-maintained and normally current; it is only stale in the window between a library-touching PR merging and the post-merge rebuild committing. If the app fails to compile after this deploy, re-run in a few minutes."
+            mcpLog("warn", "developer-mode", "hub_update_package: ref=main fell back to the committed bundle zip (artifact unreachable) -- stale only within the post-merge rebuild window")
+        } else {
+            result.bundleFreshnessWarning = "Ref '${ref}': no bundle-artifacts zip was found for this ref, so the bundle leg installed the zip COMMITTED at the ref. That is only stale if this ref CHANGED library code (PRs do not rebuild the committed zip). If it did, push the ref to this repo (the publish-bundle-artifact workflow stores a fresh zip per library-touching push, keyed by branch and full SHA) and re-run."
+            mcpLog("warn", "developer-mode", "hub_update_package: non-main ref '${ref}' fell back to the committed bundle zip -- stale if the ref changed library code")
+        }
     }
     return result
 }

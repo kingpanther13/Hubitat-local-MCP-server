@@ -562,48 +562,6 @@ def initialize() {
     _refreshHubVarInUseRegistrations()
 }
 
-/**
- * Issue #96 gap 1: walk every child rule's serialized ruleData, collect
- * hub-variable names that appear in it (via the same heuristic
- * hub_delete_variable's safety scan uses), then add/remove the in-use
- * registration so Hubitat's UI surfaces a warning before a user can
- * delete/rename a variable a rule depends on.
- *
- * Pure parent-side bookkeeping — does not modify any child app code or
- * data. Tracks the previously-registered set in atomicState.inUseHubVars
- * so subsequent calls can diff and removeInUseGlobalVar for vars that
- * stopped being referenced.
- */
-
-/**
- * Issue #92: subscribe to every existing hub variable so location events
- * land in handleHubVariableEvent and accumulate in atomicState.variableHistory.
- *
- * Called from initialize() (so installed/updated re-wire) and from
- * toolCreateVariable / renameVariable (so newly-created or renamed vars
- * become observable without requiring an updated() round-trip).
- */
-
-/**
- * Hubitat fires this app callback when a hub variable is renamed via the
- * Settings UI. Issue #92: rewrite history entries to the new name and
- * re-subscribe (the old "variable:OLD" subscription is now stale).
- */
-
-/**
- * Issue #92: location-event handler for "variable:*" events. Each event
- * shape (per Hubitat docs): evt.name is the event name with the "variable:"
- * prefix; evt.value is the new value. We strip the prefix so callers see
- * the bare variable name and append a {name, value, timestamp} entry to
- * atomicState.variableHistory (cap 200; oldest dropped).
- */
-
-/**
- * hub_list_variable_changes: return a window of recent hub-variable changes,
- * optionally filtered by name and a since-timestamp. Issue #92: lets the
- * AI catch up on "what variables changed since I last looked" without
- * polling each one by name.
- */
 
 // ==================== MCP REQUEST HANDLERS ====================
 
@@ -2840,172 +2798,14 @@ def executeTool(toolName, args) {
 }
 
 
-// ==================== DEVICE TOOLS ====================
-
-
-/**
- * Check if a device is disabled. Hubitat's device object exposes several property names
- * across firmware versions; try the most common ones and fall back to false.
- */
-
-/**
- * Safely fetch device.deviceNetworkId — some virtual devices or mid-transition states can throw.
- */
-
-/**
- * Safely fetch device.parentDeviceId — direct property access, not a hub call.
- * Cheap enough to include in the summary response. Consumers can derive child
- * counts client-side by grouping the devices list on this field, avoiding the
- * per-device getChildDevices() call that childCount required in earlier versions.
- */
-
-/**
- * Safely fetch device.getLastActivity() — returns Date or null. Some drivers don't set this.
- */
-
-/**
- * Format a Date as ISO 8601 string, or null if the Date is null.
- */
-
-
-/**
- * Normalize command parameters to a flat List of properly typed values.
- *
- * Hubitat's JSON parser handles simple parameter arrays like ["75"] fine (returns List [75]),
- * but chokes on nested JSON objects like ["{"hue":0,"sat":100}"] — the inner quotes break
- * the parser and it falls back to a raw String with unescaped quotes. This function handles
- * both cases: proper Lists pass through element conversion, and String fallbacks get the
- * embedded JSON object extracted by brace-matching.
- */
-
-/**
- * Convert a List of raw parameter values to proper Groovy types.
- * Numbers become Integer/Double, JSON strings become Maps/Lists, everything else passes through.
- */
-
-
-/**
- * Block-polls a device attribute until it matches the expected value(s) or the
- * timeout elapses. Uses pauseExecution() for inter-poll delays -- the only
- * synchronous sleep available in the Hubitat app sandbox.
- *
- * Internal helper for the hub_get_device_attribute tool's poll mode: executeTool
- * routes here when ANY poll arg is supplied (expectedValue/expectedValues OR
- * timeoutMs/pollIntervalMs), and to toolGetAttribute for a one-shot read otherwise.
- * Routing on the timeout/interval too is deliberate: a timeout without an expected
- * value reaches here and is rejected ("at least one of expectedValue/expectedValues")
- * rather than silently read once. The poll path BLOCKS up to timeoutMs (max 60s),
- * so the hub_get_device_attribute description flags the cost; a bare call (no poll
- * arg) stays a sub-second read.
- */
-
 // ==================== RULE TOOLS (Child App Based) ====================
 
 
 // toolEnableRule/toolDisableRule/toolToggleRule removed in v0.8.1 (dead code since v0.8.0 merged into hub_update_custom_rule)
 
 
-// ==================== RULE HELPERS ====================
-
-/**
- * Best-effort check: given a numeric id that was not found as an MCP child-app rule, look it up
- * in the hub's installed-app list (/hub2/appsList). If the id belongs to a known rule-like
- * built-in (Rule Machine, Room Lighting, Basic Rules, Visual Rules Builder), return a
- * verb-appropriate redirect hint string. Returns null on any failure (fetch error, parse error,
- * id not present, app not rule-like) so callers always get graceful fallback.
- *
- * Rule-like detection uses the human-readable type string from the app's instance data
- * (e.g. "Rule-5.1", "Room Lights", "Visual Rule Builder"). Fragment matching is case-insensitive
- * substring: any type string containing a fragment from ruleTypeFragments is considered rule-like.
- * The test verb additionally checks RM-specific fragments to gate the hub_call_rule pointer
- * (RMUtils is RM-only and does not work for Room Lighting / Basic Rules / Visual Rules instances).
- *
- * @param ruleId  the ID to look up (String or numeric)
- * @param verb    controls hint phrasing: "read" (get/export; clone routes through export so it also uses read),
- *                "write" (update -- catch-all for any future write verbs),
- *                "delete" (delete), "test" (test -- RM-only hub_call_rule pointer; non-RM falls back to inspection)
- * @return        redirect hint String, or null if no redirect applies
- */
-
-/**
- * Build a portable rule export object from rule data (excludes runtime state like id, lastTriggered, executionCount).
- */
-
-// ==================== RULE EXPORT/IMPORT/CLONE TOOLS ====================
-
-
-// ==================== EXPORT/IMPORT HELPERS ====================
-
-/**
- * Scan rule data for all device ID references and build a manifest.
- * Looks in triggers, conditions, and actions (including nested if_then_else).
- */
-
-/**
- * Recursively collect device IDs from a rule component (trigger, condition, or action).
- */
-
-/**
- * Recursively apply device ID mapping to rule data structures.
- * Returns a deep copy with mapped device IDs.
- */
-
-// ==================== SYSTEM TOOLS ====================
-
 // ===== /hub2/hubData diagnostics: pending platform update + hub health alerts =====
 
-
-/**
- * Discover and cache the installed-app id for the system "Hub Variables"
- * app (namespace=hubitat, classLocation=hubVariables, exactly one instance,
- * always installed on every hub). The id varies per hub, so we discover
- * once on first need and cache in atomicState.
- *
- * Resolution order (matches the inline Stage labels below):
- *   Stage 1. atomicState.hubVarsAppId cache.
- *   Stage 2. /installedapp/direct/hubVariables redirect chain (_resolveDirectAppId).
- *      The alias is name-addressed by the hub itself, so the resolved id
- *      needs no verify fetch; hubVariables is a singleton system app, so
- *      the chain's get-or-create hop always lands on the existing instance.
- *   Stage 3. /hub2/appsList walk -- fallback for firmware where the direct alias
- *      misbehaves. Note the feed omits hidden system apps on at least some
- *      firmware versions (verified on 2.5.0.126: Hub Variables reachable at
- *      /installedapp/configure/json/<id> but absent from /hub2/appsList --
- *      same gap that hides it from hub_list_apps (scope='instances')),
- *      which is why the direct chain is tried first.
- *
- * Used by hub_create_variable, hub_delete_variable's hub-namespace branch, and
- * hub_create_connector -- all of which drive that app's wizard via
- * hub_set_rule's settings/button POST machinery.
- */
-
-
-/**
- * hub_create_variable: drive the Hub Variables system app's wizard to create a
- * new hub variable. Sequence (probed on firmware 2.5.0.126):
- *   1. btn moreVar (stateAttribute=moreVar) on page hubVar -- opens wizard
- *   2. set hbVar  = name      -- wizard advances; varType field appears
- *   3. set varType = type      -- wizard advances; varValue field appears
- *   4. set varValue = initial  -- wizard auto-commits, var enters the table
- *
- * Hubitat does NOT expose creation via the public app API
- * (setGlobalVar can only modify existing vars, not create), so this tool
- * fills the gap by automating the same UI flow the user would perform
- * manually under Settings > Hub Variables.
- */
-
-/**
- * hub_create_connector: bind a virtual device to an existing hub variable so
- * apps that only consume devices can read/write it. Wizard sequence:
- *   1. btn <varName> with stateAttribute=createCon on page hubVar
- *   2. For Number/Decimal vars, page renders a `capab` enum chooser
- *      (ColorTemp/Dimmer/Humidity/Illuminance/Volume/Variable). Write
- *      `capab` to commit. For String/Boolean/DateTime vars, single
- *      click suffices (no chooser).
- *
- * Optional args.connectorType selects the chooser option when present.
- * Defaults to "Variable" (the neutral option that exists for every type).
- */
 
 /**
  * hub_delete_connector: delete the connector device that backs a hub variable.
@@ -3038,9 +2838,6 @@ def setRuleVariable(name, value) {
     if (!state.ruleVariables) state.ruleVariables = [:]
     state.ruleVariables[name] = value
 }
-
-
-// ==================== CAPTURED STATE TOOLS ====================
 
 
 // ==================== VALIDATION FUNCTIONS ====================
@@ -3975,43 +3772,6 @@ private Map _httpFetchUrl(String url) {
     return [status: status, body: body, contentType: contentType]
 }
 
-/**
- * Create a running user-app instance from already-installed code and COMMIT the
- * install, replicating the hub UI's "Add user app -> select code -> Done" flow.
- *
- * Two HTTP steps, because the hub splits the flow exactly as the UI does:
- *   1. GET /installedapp/create/<codeId> creates a PENDING instance shell and
- *      302-redirects to /installedapp/configure/<newId>/<firstPage>. This step
- *      alone does NOT fire installed()/initialize() -- the instance stays an
- *      inert, uninstalled shell (no schedules/subscriptions). The Vue add-app
- *      wrapper just loads that config page in an iframe and waits for "Done".
- *   2. POST /installedapp/update/json with _action_update=Done commits the
- *      install, which is what actually fires installed()->initialize() (e.g.
- *      registering runEvery* schedules). Without step 2 the instance is dead.
- *
- * Required first-page inputs with no default would block the auto-"Done" the
- * same way they block the UI; this path targets apps whose first page installs
- * with defaults (the common case for standalone utility apps).
- *
- * Returns a structured envelope on every input. Caller (toolInstallApp) is
- * responsible for range-checking codeAppId before this is called.
- */
-
-/**
- * Commit a freshly-created user-app instance's install by submitting its first
- * config page's "Done" -- POST /installedapp/update/json with _action_update=Done.
- * This is the step that fires installed()->initialize(); the GET that produced
- * the instance only made a pending shell.
- *
- * Mirrors the wire format _rmSubmitMainPageDone uses (proven live), but
- * parameterized by the instance's actual first page: a standalone app's first
- * page may be named anything (e.g. "p"), not always "mainPage". Reuses the
- * shared config/settings primitives (not the RM-specific flow handlers).
- *
- * Returns [success, scheduledJobCount, eventSubscriptionCount, error?]. The
- * counts are read back from statusJson after the commit as evidence that
- * initialize() ran (e.g. a runEvery* schedule registering).
- */
 
 /**
  * Make an authenticated POST request to the hub's internal API.
@@ -4155,50 +3915,8 @@ def backupItemSource(String type, String id) {
     return entry
 }
 
-// ==================== ITEM BACKUP TOOLS ====================
-
-/**
- * Lists all item backups stored in the hub's local File Manager.
- * Metadata is in atomicState.itemBackupManifest; actual source files are in File Manager.
- * Does not require Read master/Write — always available.
- */
-
-/**
- * Retrieves the full source code from a specific item backup.
- * Reads the file from the hub's local File Manager using downloadHubFile().
- * Does not require Read master/Write.
- */
-
-/**
- * Restores an app or driver to its backed-up source code.
- * Reads the backup from File Manager and calls hub_update_app or hub_update_driver.
- * Both the read (downloadHubFile) and write (hubInternalPostForm) are local — no cloud involvement.
- * Requires Write master access.
- */
-
 // ==================== FILE MANAGER TOOLS ====================
 
-/**
- * Lists all files in the hub's local File Manager.
- * Uses the hub internal API to query the file list.
- */
-
-/**
- * Reads the contents of a file from the hub's local File Manager.
- * Uses downloadHubFile() — fully local, no cloud involvement.
- */
-
-/**
- * Writes or creates a file in the hub's local File Manager.
- * If the file already exists, automatically creates a backup copy first.
- * Requires Write master access.
- */
-
-/**
- * Deletes a file from the hub's local File Manager.
- * Automatically creates a backup copy before deletion.
- * Requires Write master access.
- */
 
 /**
  * Formats an epoch timestamp into a human-readable age string (e.g., "5 minutes ago").
@@ -4344,189 +4062,6 @@ def mcpLogError(String component, String message, Exception e = null, String rul
     mcpLog("error", component, message, ruleId, extraData)
 }
 
-// ==================== DEBUG TOOL IMPLEMENTATIONS ====================
-
-
-/**
- * Recognizes log lines that are benign Rule-Machine-internal noise (RM's own
- * code logging against the rule app, non-fatal, NOT an MCP-tool failure) so our
- * log-consuming tools can annotate them instead of mis-surfacing them as errors.
- *
- * Currently matches: RM 5.1's `periodic` page method (ruleApp51) logging an
- * unguarded NullPointerException on params.n while RM RENDERS the periodic
- * sub-page during a periodic-trigger build. Verified live 2026-06-03: logged
- * against the rule app (not app 194/MCP) and non-fatal — the trigger bakes
- * cleanly. Our POSTs already carry n; the noise is on RM's own render path.
- */
-
-
-// ==================== HUB ADMIN READ TOOL IMPLEMENTATIONS ====================
-
-
-// ==================== MONITORING TOOL IMPLEMENTATIONS ====================
-
-
-// ==================== HUB ADMIN WRITE TOOL IMPLEMENTATIONS ====================
-
-
-// ==================== HUB ADMIN APP/DRIVER MANAGEMENT ====================
-
-
-/**
- * Strip HTML tags from a string (Hubitat frequently embeds color spans in app labels
- * and page titles). Null-safe. Does not try to be a real HTML parser — SDK-generated
- * tags are predictable (<span>, <b>, <i>) and this is adequate.
- */
-
-/**
- * Walk an input's options structure and strip HTML from any label values. Hubitat's
- * SDK emits options in two shapes depending on input type:
- *   - List of single-entry maps: [{"<value>": "<label>"}, ...]  (enum)
- *   - Map of value-to-label: {"<value>": "<label>"}  (some capability inputs)
- * Both can contain color-span HTML on labels (e.g. state badges). Leaves unknown
- * shapes alone rather than guessing wrong and breaking them.
- */
-
-/**
- * Extract clickable affordances from raw paragraph HTML into structured data.
- *
- * Background: RM 5.1 (and several other classic SmartApps with multi-step
- * wizards — Room Lighting button-rule editors, Basic Rules condition editor,
- * HPM repository drill-downs, etc.) embed action buttons inside paragraph
- * HTML rather than emitting them as `input.type=button` schema entries.
- * Without extraction, paragraphs like "Create New Trigger Event" appear as
- * stripped plain text in hub_get_app_config — a tool-only LLM has no way to
- * discover the button name (`true`) or the stateAttribute (`moreCond`) it
- * needs to pass to hub_set_rule, so the entire trigger/action wizard
- * is undriveable from tools alone.
- *
- * Pattern (verified live on firmware 2.5.0.123):
- *   Each clickable affordance is a `<div class='submitOnChange'>` carrying
- *   `title='<HUMAN>'` and optionally `data-stateAttribute='<STATE>'`, with
- *   a paired `<input type='hidden' name='<NAME>.type' value='button'>` in
- *   the same form group. The `<NAME>` prefix on the hidden input is the
- *   button name to POST as `name=<NAME>` against /installedapp/btn (which
- *   is what hub_set_rule does when given button=<NAME>).
- *
- * Returns a list of maps:
- *   [{name: "true", title: "Create New Trigger", stateAttribute: "moreCond"},
- *    {name: "1",    title: "Edit Trigger",       stateAttribute: "editCond",
- *                   description: "BAT-RM Switch 1, ... any turns on"}, ...]
- *
- * Pairing strategy: collect all hidden button-type inputs in document order,
- * collect all submitOnChange divs in document order, and pair by index. RM
- * always emits them 1:1 for every clickable, so ordinal pairing is reliable.
- * If the counts diverge (a future firmware shape we haven't verified),
- * pairs that exist on both sides still resolve correctly; extras drop.
- */
-
-/**
- * Read an installed app's configuration via the hub's SDK-level rendering endpoint
- * /installedapp/configure/json/<appId>[/<pageName>]. Returns a normalized structure
- * covering app identity, page sections, inputs, and optionally the raw settings map.
- * summary=true instead reads /installedapp/json/<appId> -- the thin identity record
- * the admin UI's app list consumes -- and skips the config-page render entirely.
- *
- * This endpoint is what the Hubitat Web UI itself consumes to render each app's
- * config page. The top-level shape {configPage, app, settings, childApps} is SDK-level
- * and consistent across every legacy SmartApp (Rule Machine, Room Lighting, Basic
- * Rules, HPM, Mode Manager, etc.). The runtime fingerprint check below asserts the
- * shape invariants; if Hubitat firmware drifts the contract, callers see a clear
- * error rather than malformed data.
- */
-
-/**
- * List known page names for a multi-page installed app.
- *
- * Combines live introspection of the primary page (one hub API call) with a
- * curated directory of known sub-page names for well-known app types (HPM,
- * Rule Machine, Room Lighting, Mode Manager). For unknown app types the
- * response contains only the primary page and a note about finding additional
- * pages via the app source or Web UI navigation.
- *
- * Gate: Read master (central) -- read-only, reads app metadata.
- * Args: appId (required, numeric string or integer)
- */
-
-
-/**
- * Shared implementation for deleting apps and drivers.
- * Backs up source code before deletion, then deletes and verifies.
- */
-
-// ==================== HUB ADMIN LIBRARY MANAGEMENT ====================
-
-/**
- * Backs up a library's current source to File Manager, recording metadata in
- * atomicState.itemBackupManifest. Throws on empty or unparseable hub response,
- * matching backupItemSource semantics for apps and drivers. Respects the 1-hour
- * dedup window to preserve the pre-edit baseline through rapid successive updates.
- * Returns the manifest entry on success.
- */
-
-/**
- * Get library Groovy source. Supports chunked reading (offset/length).
- * Large files are auto-saved to File Manager for use with hub_update_library sourceFile mode.
- * Hub endpoint: GET /library/list/single/data/<id> returns [{id, source, version, ...}]
- */
-
-/**
- * Install a new Groovy library from inline source or a File Manager file.
- * Hub endpoint: POST /library/saveOrUpdateJson with {id: null, source, version: null}
- * Returns: {success, message, id, version}
- */
-
-/**
- * Update an existing library's source code.
- * Hub endpoint: POST /library/saveOrUpdateJson with {id, source, version}
- * Three modes: source (direct), sourceFile (from File Manager), resave (re-save current).
- * Backs up current source before modifying.
- */
-
-// ==================== hub_update_package (Developer Mode package deploy) ====================
-//
-// One-call dev deploy: push the whole MCP package (app + every #include'd library)
-// at a git ref, the way hub_update_app(importUrl) pushes only the app today. The
-// design is built around ONE guarantee (issue #209): a package failure must never
-// cost the main app its ability to update.
-//
-//   1. hub_update_app is untouched -- this tool is pure orchestration ON TOP of it,
-//      so the plain app-update escape hatch is always independently available.
-//   2. Libraries are installed FIRST, the app saved LAST -- the app (which #includes
-//      the libraries) is only saved once every library it needs is confirmed present,
-//      so it is never saved while referencing a missing library.
-//   3. ANY failure (source fetch, unmapped include, library write) aborts BEFORE the
-//      app save -- the parent app is left exactly as it was, last-good and updatable.
-//   4. Fail-closed on every unknown (can't resolve self, can't list libraries, empty
-//      fetch) -- refuse and write nothing.
-//   5. The app leg reuses hub_update_app's exact update path (auto-backup + post-save
-//      verify). Self-modification is gated by this tool's own enableDeveloperMode check
-//      at the top -- NOT by hub_update_app's self-update guard, which keys on the running
-//      INSTANCE id while this tool deploys by Apps Code CLASS id, so that guard never fires
-//      here. The dev-mode gate is what keeps a self-deploy from running unauthenticated.
-
-
-/**
- * Delete a library from the hub.
- * Backs up source to File Manager before deletion via backupLibrarySource().
- * Hub endpoint: GET /library/edit/deleteJson/<id>
- * Returns: {success, message: null}
- */
-
-// ==================== DEVICE ADMIN TOOL IMPLEMENTATIONS ====================
-
-
-// ==================== VIRTUAL DEVICE MANAGEMENT TOOL IMPLEMENTATIONS ====================
-
-
-/**
- * Resolves [namespace, typeName, displayType] from either the built-in deviceType path
- * or the customDriver path. Validates and throws IllegalArgumentException on bad input.
- * Single source of truth for driver-spec extraction so toolCreateVirtualDevice stays
- * focused on orchestration rather than input parsing.
- */
-
-
 // ==================== ROOM MANAGEMENT ====================
 // Tool implementations (toolListRooms / toolGetRoom / toolCreateRoom / toolDeleteRoom /
 // toolRenameRoom) live in the McpRoomsLib library (libraries/mcp-rooms-lib.groovy),
@@ -4534,85 +4069,8 @@ def mcpLogError(String component, String message, Exception e = null, String rul
 // and the executeTool dispatch cases stay here in the app; the tool definitions
 // (_getAllToolDefinitions_partRooms) live alongside the impl in the library.
 
-// ==================== INSTALLED APPS & RULE MACHINE INTEGRATION ====================
-
-/**
- * List all installed apps on the hub (built-in + user), flattened with parent/child relationships.
- * Backed by /hub2/appsList -- returns the same flattened app list the Hubitat web UI renders on
- * the Apps page. Includes built-in and user apps, parent/child hierarchy, disabled state, and
- * installed-package metadata.
- */
-
-/**
- * List all apps that reference a specific device.
- * Backed by /device/fullJson/<id> which exposes appsUsing — the same data the Hubitat device page shows.
- */
-
-// ==================== DEVICE SWAP (built-in Swap Device system app) ====================
-
-/**
- * Replace one device with another across every app/rule that references it,
- * by driving the hub's built-in Swap Device tool through the classic-wizard
- * machinery (oldDev eligibility pre-check -> write oldDev -> compatibility
- * check -> write newDev -> click the revealed swap-action button).
- *
- * The direct/swapDevice alias creates a FRESH TRANSIENT app instance on every
- * resolve, so every exit path after the resolve closes that instance via
- * _deviceSwapCleanup (/installedapp/delete) — UNCONDITIONALLY after the click,
- * because the delete is idempotent/harmless when the swap action already
- * removed the instance, whereas skipping it on a misread verify leaks an
- * orphaned Swap Device entry in the hub's Apps list with zero trace.
- */
-
-/**
- * Count of apps referencing a device, from the same /device/fullJson surface
- * hub_list_device_dependents reads. Best-effort: returns null when the count
- * cannot be read, so a verification blip degrades the report instead of
- * failing a swap that already committed.
- */
-
-
 // ==================== HPM PACKAGE STATE TOOL IMPLEMENTATIONS ====================
 
-/**
- * Fetch and parse the /hub2/appsList response. Single source of truth for the
- * apps instance tree used by both HPM auto-discovery and explicit-ID validation.
- * Throws IllegalArgumentException on transport or parse failure.
- */
-
-/**
- * Auto-discover HPM's installed-app ID by walking the apps[] tree from /hub2/appsList
- * and matching the installed-instance node whose data.type == "Hubitat Package Manager".
- * The type field on installed instances is the canonical identifier -- userAppTypes[]
- * has no namespace field on real hubs and cannot be used for matching.
- * Returns the appId as a String, or throws IllegalArgumentException if not found.
- */
-
-/**
- * Validate that an explicitly-supplied appId belongs to an installed HPM instance.
- * Walks the apps[] tree from /hub2/appsList; throws IllegalArgumentException when the id
- * is not found or when its data.type is not "Hubitat Package Manager".
- * Only called on the explicit-hpmAppId path -- auto-discovery already filters on type.
- */
-
-/**
- * Fetch and double-decode the 'manifests' state entry from HPM's statusJson.
- * Returns the parsed manifests Map (manifestUrl -> manifest Map), or an empty Map if
- * HPM has no tracked packages yet. Throws IllegalArgumentException on transport or
- * parse failure.
- */
-
-/**
- * Project HPM's tracked packages into a normalized list.
- * Gate: Read master (central) -- reads internal app state via statusJson.
- */
-
-/**
- * Cross-reference HPM-tracked packages against the hub's Apps Code and Drivers Code registries.
- * Surfaces missing-required components (required=true with heID null) and orphan signals
- * (heID present but code definition absent from the registry). Covers both apps and drivers.
- * Gate: Read master (central) -- reads internal app state + Apps Code + Drivers Code registries.
- */
 
 /**
  * List all Rule Machine rules via the official hubitat.helper.RMUtils API.
@@ -5575,48 +5033,6 @@ def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = 
     return resp
 }
 
-/**
- * High-level structured trigger creation for Rule Machine 5.1.
- *
- * Replaces the 6-8 wizard calls (open editor → set capability → set device
- * → set state-or-comparator → optional modifiers → hasAll → finalize) with
- * one orchestrated call. Discovers the next trigger index from existing
- * settings, opens the wizard, walks the schema-aware writes, commits via
- * hasAll, and the auto-finalize on hub_set_rule's path closes the
- * residual isCondTrig prompt.
- *
- * Capability-family field mapping:
- *   - Device-state (Switch / Motion / Contact / Lock / Garage / Door /
- *     Valve / Window Shade / Presence / Power source / etc.):
- *       capability + deviceIds + state
- *   - Numeric (Temperature / Humidity / Battery / Illuminance / Power /
- *     Energy / CO2 / Dimmer / Thermostat setpoints):
- *       capability + deviceIds + comparator + value
- *   - Button: capability='Button' + deviceIds + buttonNumber + state
- *   - Custom Attribute: capability='Custom Attribute' + deviceIds +
- *       attribute + comparator + value
- *   - Time: capability='Certain Time (and optional date)' + time
- *       (specific/Sunrise/Sunset) + atTime (ISO 8601; auto-normalized
- *       to 'YYYY-MM-DDTHH:mm:ss.SSS+HHMM' -- see _rmNormalizeAtTime)
- *       + offset (mins)
- *
- * Optional modifiers on any spec:
- *   allOfThese (multi-device "all of these")
- *   andStays { hours, minutes, seconds }
- *   conditional (sets isCondTrig.<N>=true; condition wizard not driven)
- *   rawSettings { fieldName: value, ... } — escape hatch
- *
- * Single-trigger path (hub_set_rule addTrigger={}): the wrapper
- * auto-fires updateRule after a successful commit so subscriptions
- * populate immediately. No manual updateRule needed for single calls.
- *
- * Bulk/batch paths (addTriggers[], patches, hub_set_rule triggers[]):
- * the wrapper fires updateRule ONCE at the end of the batch, not per
- * item. _rmAddTrigger itself does NOT fire updateRule, so callers that
- * issue multiple sequential _rmAddTrigger calls avoid N redundant inits.
- *
- * Returns: [success, triggerIndex, settingsApplied, configPageError]
- */
 
 /**
  * Normalize an atTime string to the form RM 5.1 expects:
@@ -8385,21 +7801,6 @@ private Map _rmSubmitMainPageDone(Integer appId) {
 }
 
 /**
- * Write a single field on a sub-page. Posts settings[key]=value with
- * pageBreadcrumbs=[] and NO `_action_href_*` markers — re-firing the
- * navigation marker on a write resets RM's in-flight wizard state and
- * produces "**Broken Condition**" on STPage. When hrefParams carries non-null values (e.g. periodic
- * schedule's state.n), the helper navigates first to set state in scope,
- * then writes.
- *
- * Returns a Map describing whether the write persisted:
- *   [persisted, schemaShifted, valueLanded, renderShifted,
- *    verifyFetchFailed, verifyError, afterKeys]
- * Callers route into applied vs skipped lists based on persisted; when
- * verifyFetchFailed is true the post-write fetch errored and persistence
- * cannot be confirmed (route to skipped with reason="verification_fetch_failed").
- */
-/**
  * Strip dynamic substrings from a configPage's serialized sections so the
  * render-shift hash compares only the structural content. RM 5.1 renders
  * "Last activity: <timestamp>", "fired N times", and ISO timestamps in
@@ -8549,14 +7950,6 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     return [persisted: persisted, schemaShifted: schemaShifted, valueLanded: valueLanded, renderShifted: renderShifted, settingsLanded: settingsLanded, verifyFetchFailed: false, afterKeys: afterKeys.toList().sort()]
 }
 
-/**
- * Initialize state.actNdx by firing the selectActions page hook via an
- * empty POST. Required after rule creation BEFORE the first N click on
- * an empty rule — without it, doActPage errors with "Cannot invoke method
- * startsWith() on null object" because actNdx is null. Verified live on
- * firmware 2.5.0.123 (curl probe, 2026-04-25). Idempotent — safe to call
- * before every addAction.
- */
 /**
  * Resolve a collection of mode keys (Integer IDs OR String names like "Day"/
  * "Away") into a List of mode IDs as Strings, in insertion order. Used by
@@ -11951,15 +11344,6 @@ private Map _rmForceDeleteApp(Integer appId) {
     return resp
 }
 
-/**
- * Best-effort teardown of a temporary appCloner instance. _appClonerInit spins up
- * a fresh "Export/Import/Clone" system app per call; left installed, every export/
- * clone/import strands a hidden cloner and they accumulate. Force-delete it (no
- * child apps/devices, so forcedelete is safe) and swallow failures -- a stranded
- * cloner is cosmetic clutter, not worth failing the user's operation over. Returns
- * true if the delete call succeeded. Callers invoke this in a finally so the cloner
- * is reaped on both the success and error paths.
- */
 
 /**
  * Soft delete via /installedapp/delete/<id>. Refuses if the app has
@@ -15743,87 +15127,12 @@ def toolCheckRuleHealth(args) {
 // carries the full form state — without it the cloner's state machine
 // stalls. Confirmed via Chrome XHR sniffing on firmware 2.5.0.x.
 
-/**
- * Initialize a fresh appCloner instance for a given source rule. Hits
- * /installedapp/sysAppApi/appCloner/app/<sourceId> which returns 302 with
- * Location pointing at the new cloner instance. Returns the cloner's appId.
- *
- * Two Location shapes seen across firmwares:
- *   /apps/api/<clonerId>/app/<sourceId>?access_token=...   (current)
- *   /installedapp/configure/<clonerId>                      (older)
- */
-
-/**
- * Submit a form-refresh POST to the cloner's /installedapp/update/json with
- * `formAction=update, currentPage=<page>` plus optional extra form fields.
- * Mirrors the form refresh the UI fires automatically after every click —
- * required to advance the cloner's server-side state machine.
- */
-
-/**
- * Drive the appCloner's importRule sub-page commit (steps 3-5: navigate to
- * importRule, optionally write newName, click importNow). Shared by clone +
- * import — they converge here once the initial state-setting click has
- * happened (cloneRuleButton for clone, ruleUpload write for import).
- *
- * sourceAppId is the id used in the dynamic `newName<id>` field. For clone
- * it's the source rule's id; for import it's the original source id from
- * the JSON's `appReplacements` map.
- */
-
-
-/**
- * Discover the new app id created by the cloner. Diffs the parent app's
- * children before vs after the commit. Tiebreaks on the cloner's "<label> clone"
- * / "<label> import" naming convention if multiple new children appeared.
- */
-
-/**
- * hub_clone_native_app — wraps the appCloner's Clone path.
- */
-
-/**
- * hub_export_native_app — wraps the appCloner's Export path. JSON is captured
- * from the form-refresh response body of the click POST itself; see
- * `_appClonerExtractJsonFromResponse` for why settings/HTML scraping doesn't
- * work (the filecontent is session-keyed, only present in the same request).
- */
-
-/**
- * Internal: pull the exported JSON out of the form-refresh POST response
- * body. The cloner renders the export content into configPage.sections[]
- * .input[].filecontent (and .body[].filecontent) on the post-click render —
- * but only within the same request/session as the click. A subsequent fetch
- * sees the bare 3-button view because Hubitat's post-click rendering is
- * session-keyed and our groovy helpers don't share a cookie jar.
- *
- * So we extract from the response body of the form-refresh POST itself.
- */
-
-/**
- * hub_import_native_app — wraps the appCloner's Import path.
- *
- * Stages the JSON via settings[ruleUpload]= (urlencoded, NOT multipart),
- * then drives the same importRule -> importNow commit as clone.
- */
-
-/**
- * Internal: replay an RM rule snapshot. Called by the unified
- * hub_restore_backup tool when entry.type == "rm-rule". Two paths:
- *   - Rule still exists: settings re-applied in place (no new rule created).
- *   - Rule was deleted: a fresh empty rule is created and the saved
- *     settings are replayed onto it. The new rule has a different id;
- *     the original id stays gone.
- */
 
 // ==================== VERSION UPDATE CHECK ====================
 
 def currentVersion() {
     return "2.2.2"
 }
-
-
-// ==================== TOOL SEARCH (BM25) ====================
 
 
 // ==================== TOOL GUIDE ====================

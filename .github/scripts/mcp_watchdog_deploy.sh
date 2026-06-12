@@ -117,9 +117,9 @@ echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- deli
 #         a stale/raced artifact can never be installed.
 #      c. no artifact (fork PRs / publish race) -- HARD error with the remedy;
 #         the hub only ever installs a bundle by fetching a URL, the HPM way.
-#    Every path keeps the zip's production basename -- the hub keys the bundle
-#    entity on the zip filename, so a renamed zip imports as a SECOND entity
-#    (duplicate libraries) instead of updating the existing one.
+#    Every path keeps the zip's production basename -- the hub appears to key
+#    the bundle entity on the zip filename, so a renamed zip can import as a
+#    SECOND entity (duplicate libraries) instead of updating the existing one.
 # ===========================================================================
 if [ -z "$BUNDLE_RELS" ]; then
   echo "packageManifest.json declares no bundles -- skipping the bundle step (clean no-op)."
@@ -160,7 +160,6 @@ else
     fi
     ANY_BUNDLE_DIFFERS="true"
     BASENAME=$(basename "$BUNDLE_REL")
-    BUNDLE_BYTES=$(wc -c < "$BUNDLE_PATH" | tr -d '[:space:]')
 
     # (b) bundle-artifacts: published by this SHA's push; runner-verified byte-identical to the
     # CI build before the hub is pointed at it.
@@ -221,11 +220,17 @@ else
   # -------------------------------------------------------------------------
   if [ "${#INCLUDES[@]}" -gt 0 ]; then
     echo "Verifying all ${#INCLUDES[@]} #include'd libraries are current on the hub (single copy, exact length) ..."
-    LIBLIST_TEXT=$(call_tool '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}')
+    # Idempotent read via call_tool_retry, then an explicit empty-guard: a relay drop must
+    # surface as "could not read the list", never masquerade as "library not on hub".
+    LIBLIST_TEXT=$(call_tool_retry '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}')
+    if [ -z "$LIBLIST_TEXT" ]; then
+      echo "::error::could not read hub_list_libraries to verify the #include'd libraries (relay drop after retries) -- re-run the job."
+      exit 1
+    fi
     for TOKEN in "${INCLUDES[@]}"; do
       NS="${TOKEN%%.*}"; NAME="${TOKEN#*.}"
       IDS=$(printf '%s' "$LIBLIST_TEXT" | jq -r --arg ns "$NS" --arg nm "$NAME" \
-        '.libraries[]? | select(.namespace == $ns and .name == $nm) | .id')
+        '.libraries[]? | select(.namespace == $ns and .name == $nm) | .id' 2>/dev/null || true)
       N_IDS=$(printf '%s' "$IDS" | grep -c . || true)
       if [ "$N_IDS" -eq 0 ]; then
         echo "::error::library ${TOKEN} is NOT on the hub after the bundle step -- the app's #include cannot resolve."
@@ -244,8 +249,8 @@ else
       EXPECTED_CHARS=$(LC_ALL=C.UTF-8 wc -m < "$LIB_FILE" | tr -d '[:space:]')
       SRC_RPC=$(jq -nc --arg id "$LIB_ID" \
         '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"library",id:($id|tonumber),length:1,noSave:true}}}')
-      SRC_TEXT=$(call_tool "$SRC_RPC")
-      HUB_CHARS=$(printf '%s' "$SRC_TEXT" | jq -r '.totalLength // empty')
+      SRC_TEXT=$(call_tool_retry "$SRC_RPC")
+      HUB_CHARS=$(printf '%s' "$SRC_TEXT" | jq -r '.totalLength // empty' 2>/dev/null || true)
       if [ "$HUB_CHARS" != "$EXPECTED_CHARS" ]; then
         echo "::error::library ${TOKEN} (id ${LIB_ID}) is STALE on the hub: ${HUB_CHARS:-unknown} chars vs the PR file's ${EXPECTED_CHARS} ($(basename "$LIB_FILE")). The bundle step did not land this library -- the app would compile against old library code."
         exit 1

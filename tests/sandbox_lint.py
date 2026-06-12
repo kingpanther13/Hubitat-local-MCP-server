@@ -789,6 +789,19 @@ def _extract_canonical_counts() -> dict | None:
         r"def (?:getDeveloperModeOnlyToolNames|_developerModeOnlyToolNames_part\w+)\(\) \{(.*?)^}",
         src, re.DOTALL | re.MULTILINE,
     )
+    # Format-drift guard: a part method that is declared but no longer matched by the body
+    # regex would silently drop out of the union, under-counting dev_only_top_level and
+    # over-counting core while the invariant stays self-consistent. Fail the extraction
+    # (None -> check_tool_counts emits a loud TOOL_COUNT finding) instead of drifting.
+    dev_declared = len(set(re.findall(r"def (_developerModeOnlyToolNames_part\w+)\s*\(", src)))
+    dev_parsed = len(re.findall(r"def _developerModeOnlyToolNames_part\w+\(\) \{(?:.*?)^}", src, re.DOTALL | re.MULTILINE))
+    if dev_declared != dev_parsed:
+        print(
+            f"sandbox_lint: canonical-count extraction failed -- {dev_declared} "
+            f"_developerModeOnlyToolNames_part* declared but {dev_parsed} parsed (format drift)",
+            file=sys.stderr,
+        )
+        return None
     for body in dev_bodies:
         dev_only_names |= set(re.findall(r"['\"]([a-z0-9_]+)['\"]", body))
     dev_only_top_level = dev_only_names - proxied_names
@@ -2087,10 +2100,21 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
             "read-write-split-no-readonly-list",
             "Could not locate getReadOnlyToolNames() return literal -- has the function shape changed?",
         )
-    ro_bodies = [
-        ro_match.group(1),
-        *re.findall(r"^def _readOnlyToolNames_part\w+\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE),
-    ]
+    part_bodies = re.findall(
+        r"^def _readOnlyToolNames_part\w+\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE,
+    )
+    # Format-drift guard: if part methods are MENTIONED (declared or called in the
+    # aggregator) but the body regex parses fewer, the read set would silently
+    # under-count and the split check would quietly stop enforcing -- fail loud instead.
+    declared = len(set(re.findall(r"def (_readOnlyToolNames_part\w+)\s*\(", src)))
+    if declared != len(part_bodies):
+        return _fail(
+            "read-write-split-part-format-drift",
+            f"{declared} _readOnlyToolNames_part* method(s) declared but {len(part_bodies)} parsed -- "
+            "the part-method body regex no longer matches the declaration format; the read-only set "
+            "would silently under-count. Align the declaration shape or update the regex.",
+        )
+    ro_bodies = [ro_match.group(1), *part_bodies]
     read_only: set[str] = set()
     for body in ro_bodies:
         read_only |= set(re.findall(r'"([a-z_]+)"', re.sub(r"//[^\n]*", "", body)))
@@ -2280,6 +2304,16 @@ READ_WRITE_SPLIT_SELF_TEST_CASES = [
             ["hub_list_files", "hub_delete_file"],
         ) + '\ndef _readOnlyToolNames_partFiles() {\n    return ["hub_list_files"]\n}\n',
         {"read-write-split-stranded-read"},
+    ),
+    (
+        "part method declared in a drifted format the body regex misses -- flags drift, not a silent under-count (must-catch)",
+        _build_read_write_split_corpus(
+            {"hub_read_files": ["hub_list_files"],
+             "hub_manage_files": ["hub_list_files", "hub_delete_file"]},
+            ["hub_get_info"],
+            ["hub_list_files", "hub_delete_file", "hub_get_info"],
+        ) + '\ndef _readOnlyToolNames_partFiles(){\n    return ["hub_list_files"]\n}\n',  # no space before { -- body regex misses it
+        {"read-write-split-part-format-drift"},
     ),
     # --- Mirror invariant (B): no write tool inside a hub_read_* gateway ---
     (
