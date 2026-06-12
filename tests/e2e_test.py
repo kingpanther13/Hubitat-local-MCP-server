@@ -964,6 +964,33 @@ class TestRunner:
             if (result.get("timedOut") is not False or result.get("finalValue") != first) \
                     and self._clear_load_throttle(f"'{first}' on fresh device {dev_id} never landed: {result}"):
                 result = _drive(first)
+                if result.get("timedOut") is not False or result.get("finalValue") != first:
+                    # Post-bounce dispatch is verifiably alive, yet THIS device still won't
+                    # process: a device CREATED inside the blocked window never ran its
+                    # installed() (the platform threw LimitExceededException in the device
+                    # context) -- it is broken hardware, not a command-pipeline verdict.
+                    # Recreate the throwaway once and re-drive.
+                    print(f"    [THROTTLE] fresh device {dev_id} appears stillborn (created inside "
+                          "the blocked window) -- recreating the throwaway once")
+                    try:
+                        if cmd_dni:
+                            self.client.call_tool("hub_manage_virtual_device", {
+                                "action": "delete", "deviceNetworkId": cmd_dni, "confirm": True,
+                            })
+                            if cmd_dni in self.created_device_dnis:
+                                self.created_device_dnis.remove(cmd_dni)
+                    except Exception as exc:
+                        print(f"    [THROTTLE] stillborn-device delete failed (cleanup sweep will reap): {exc}")
+                    dev_id = self._create_virtual_switch_device(f"{PREFIX}CmdRoundtrip")
+                    assert dev_id, "Failed to recreate the command round-trip throwaway switch"
+                    cmd_dni = ""
+                    vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}CmdRoundtrip"})
+                    for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                        cmd_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                        if cmd_dni:
+                            self.created_device_dnis.append(cmd_dni)
+                            break
+                    result = _drive(first)
             assert result.get("timedOut") is False and result.get("finalValue") == first, \
                 f"Expected switch={first} (from {start!r}) within the poll budget, " \
                 f"got: {result}\n    DIAG {_switch_diagnostics()}"
