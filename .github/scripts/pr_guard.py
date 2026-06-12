@@ -161,9 +161,52 @@ def check_agents_claude_sync() -> list[str]:
     return errors
 
 
+def check_workflow_main_push_credentials() -> list[str]:
+    """Any workflow that pushes to MAIN must check out with the release deploy key.
+
+    Run 27445202166 (post-#269): rebuild-bundle.yml pushed to main with the default
+    GITHUB_TOKEN and was rejected by main's ruleset (GH013, required status checks),
+    leaving main's committed bundle zip stale against the app's #includes until a
+    hotfix. The incompatibility is knowable statically -- release.yml documents that
+    a GITHUB_TOKEN push to main is rejected and pushes via secrets.RELEASE_DEPLOY_KEY
+    -- so this REQUIRED check fails the PR that wires such a workflow, instead of
+    letting it fail on its first post-merge run. (Static limit: this proves the
+    credential is WIRED, not that the key works -- release.yml proves the key on
+    every release.)
+    """
+    errors: list[str] = []
+    push_to_main = re.compile(r"git push\b[^\n|&;]*\borigin\b[^\n|&;]*\b(?:HEAD:)?main\b")
+    deploy_key = "ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}"
+    workflows = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    matched: list[str] = []
+    for wf in workflows:
+        text = wf.read_text(encoding="utf-8")
+        if not push_to_main.search(text):
+            continue
+        matched.append(wf.name)
+        if deploy_key not in text:
+            errors.append(
+                f".github/workflows/{wf.name} pushes to main without checking out via "
+                f"'{deploy_key}'. main's ruleset rejects a GITHUB_TOKEN push (GH013, run "
+                "27445202166) -- the push will fail on its first post-merge run. Add the "
+                "deploy-key checkout the way release.yml and rebuild-bundle.yml do."
+            )
+    # Self-check against a vacuous pattern: the known main-pushers must match, or the
+    # regex has drifted and this guard is silently checking nothing.
+    for known in ("release.yml", "rebuild-bundle.yml"):
+        if (ROOT / ".github" / "workflows" / known).exists() and known not in matched:
+            errors.append(
+                f"pr_guard self-check: {known} no longer matches the push-to-main pattern -- "
+                "either its push changed shape (update the pattern in "
+                "check_workflow_main_push_credentials) or it stopped pushing to main "
+                "(update the known-pushers list)."
+            )
+    return errors
+
+
 def main() -> int:
     base_ref = os.environ.get("BASE_REF", "origin/main")
-    errors = check_bookkeeping(base_ref) + check_agents_claude_sync()
+    errors = check_bookkeeping(base_ref) + check_agents_claude_sync() + check_workflow_main_push_credentials()
     for e in errors:
         print(f"::error::{e}")
     if errors:

@@ -27,10 +27,16 @@ concurrency:
 jobs:
   rebuild:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
         with:
           ref: main
+          # Push via the release deploy key: main's ruleset (required status checks)
+          # rejects a GITHUB_TOKEN push (GH013 -- proven by run 27445202166), exactly
+          # as release.yml documents for its own bookkeeping push.
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
@@ -46,10 +52,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add bundles/
           git commit -m "chore: rebuild library bundle zip from main's library source"
-          # The default GITHUB_TOKEN push does not retrigger workflows (GitHub suppresses
-          # recursion), and the post-merge concurrency group serializes us against the
-          # release bot -- but a release commit may still have landed between our checkout
-          # and push, so retry on a rejected push.
+          # The deploy-key push DOES retrigger push workflows (unlike GITHUB_TOKEN):
+          # release.yml skips bot-authored pushes via its recursion guard, and this
+          # workflow + publish-bundle-artifact filter on libraries/** which a bundles/-only
+          # commit never matches. The post-merge concurrency group serializes us against
+          # the release bot, but a release commit may still land between our checkout and
+          # push, so retry on a rejected push.
           for attempt in 1 2 3; do
             if git push origin main; then
               echo "Bundle commit pushed (attempt $attempt)."
