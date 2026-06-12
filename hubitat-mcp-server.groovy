@@ -2754,6 +2754,7 @@ Verify rule after creation.""",
                     databaseSizeKB: [type: "string", description: "Database size in KB"],
                     databaseWarning: [type: "string", description: "Present when database is large"],
                     mcpServerVersion: [type: "string", description: "Installed MCP server version"],
+                    lastBackupEpoch: [type: "integer", description: "Epoch millis of the last hub_create_backup via this app; null if never. The destructive-confirm 24h gate reads the same record."],
                     mcpDeviceCount: [type: "integer", description: "Selected device count"],
                     mcpRuleCount: [type: "integer", description: "MCP rule child-app count"],
                     mcpLogEntries: [type: "integer", description: "Buffered MCP log entry count"],
@@ -7421,6 +7422,10 @@ def toolGetHubInfo(args = null) {
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
     info.mcpCapturedStates = atomicState.capturedDeviceStates?.size() ?: 0
+    // Last hub_create_backup epoch (millis): lets a client decide whether a fresh backup is
+    // actually needed (the destructive-confirm gate's 24h window reads this same state key) --
+    // e2e uses it to skip per-run backups, a hub-heavy op the platform's load limiter punishes.
+    info.lastBackupEpoch = state.lastBackupTimestamp ?: null
 
     // Settings visibility (always available)
     info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false

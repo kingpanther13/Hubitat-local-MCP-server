@@ -4714,14 +4714,32 @@ def main() -> None:
     if os.environ.get("E2E_SKIP_BACKUP") == "1":
         print("Skipping hub backup (E2E_SKIP_BACKUP=1) -- destructive-confirm tests may fail without a recent backup.\n")
     else:
-        print("Creating hub backup (required by safety checks)...")
+        # The backup is a hub-heavy operation the platform's load limiter punishes (empirically:
+        # every dispatch-block episode followed a per-run backup; backup-free runs never tripped).
+        # The destructive-confirm gate only needs ONE backup per 24h, and its record persists in
+        # app state across runs -- so back up only when that record is stale (>20h), making every
+        # other run backup-free.
+        fresh_backup = False
         try:
-            backup_result = client.call_tool("hub_create_backup", {"confirm": True})
-            msg = backup_result.get("message", backup_result) if isinstance(backup_result, dict) else backup_result
-            print(f"  Backup: {msg}\n")
-        except Exception as exc:
-            print(f"  [WARN] Backup failed: {exc}")
-            print("  Tests requiring backup may fail.\n")
+            hub_info = client.call_tool("hub_get_info")
+            last_epoch = hub_info.get("lastBackupEpoch") if isinstance(hub_info, dict) else None
+            if last_epoch:
+                age_h = (time.time() * 1000 - float(last_epoch)) / 3600000.0
+                fresh_backup = age_h < 20.0
+                if fresh_backup:
+                    print(f"Hub backup is fresh ({age_h:.1f}h old) -- skipping the per-run backup "
+                          "(the destructive-confirm 24h gate is already satisfied).\n")
+        except Exception:
+            pass
+        if not fresh_backup:
+            print("Creating hub backup (required by safety checks; last one stale or unknown)...")
+            try:
+                backup_result = client.call_tool("hub_create_backup", {"confirm": True})
+                msg = backup_result.get("message", backup_result) if isinstance(backup_result, dict) else backup_result
+                print(f"  Backup: {msg}\n")
+            except Exception as exc:
+                print(f"  [WARN] Backup failed: {exc}")
+                print("  Tests requiring backup may fail.\n")
 
     all_passed = runner.run(filter_group=args.group, filter_test=args.test)
     sys.exit(0 if all_passed else 1)
