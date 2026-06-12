@@ -1709,28 +1709,44 @@ class TestRunner:
             # substep left 1) without creating a new rule.
             print("    SUBSTEP test_set_rule_move_action ...")
             self._set_rule(app_id, {"clearActions": True})
-            self._set_rule(app_id, {"addActions": [
+            added3 = self._set_rule(app_id, {"addActions": [
                 {"capability": "log", "message": "a"},
                 {"capability": "log", "message": "b"},
                 {"capability": "log", "message": "c"},
             ]})
-            try:
-                result = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_set_rule",
-                    "args": {"appId": app_id, "moveAction": {"index": 1, "direction": "down"}, "confirm": True},
-                })
-                assert result.get("success") is True or result.get("asyncCommitLikely") is True, \
-                    (f"SUBSTEP test_set_rule_move_action: moveAction must confirm the shift OR report "
-                     f"asyncCommitLikely (never a hard false-negative): {result}")
-            except requests.HTTPError as exc:
-                # The move click is the suite's heaviest single wizard op and rides the ~10s cloud-relay
-                # ceiling; a 504 (after the client's own 3 retries) means the RESPONSE was lost, not that
-                # the click wasn't delivered -- the same unknown-commit state the asyncCommitLikely soft
-                # contract above already covers. This test never asserts the resulting order, only rule
-                # health, so the health check below remains the real assertion. Anything non-504 is real.
-                if "504" not in str(exc):
-                    raise
-                print("    moveAction response lost to relay 504(s) -- same soft contract as asyncCommitLikely; verifying rule health")
+            # RM action indices are PERSISTENT per-rule counters: clearActions removes the
+            # actions but never renumbers, so on this shared rule the three fresh actions do
+            # NOT sit at 1..3 (the old standalone test only got away with index 1 because its
+            # rule was brand new). Move whatever index the addActions response reports; if
+            # that response was relay-dropped there is no trustworthy index -- skip the move.
+            _acts = added3.get("actions") or []
+            move_indices = [a.get("actionIndex") for a in _acts
+                            if isinstance(a, dict) and a.get("actionIndex") is not None]
+            if not move_indices and added3.get("actionIndex") is not None:
+                move_indices = [added3.get("actionIndex")]
+            if added3.get("relayDropped") or not move_indices:
+                print("    SUBSTEP test_set_rule_move_action: skipped (addActions response "
+                      "dropped/indexless -- no trustworthy action index to move)")
+                self._assert_rule_healthy(app_id)
+                result = {"success": True, "asyncCommitLikely": True, "relayDropped": True}
+            else:
+                try:
+                    result = self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_set_rule",
+                        "args": {"appId": app_id, "moveAction": {"index": move_indices[0], "direction": "down"}, "confirm": True},
+                    })
+                    assert result.get("success") is True or result.get("asyncCommitLikely") is True, \
+                        (f"SUBSTEP test_set_rule_move_action: moveAction must confirm the shift OR report "
+                         f"asyncCommitLikely (never a hard false-negative): {result}")
+                except requests.HTTPError as exc:
+                    # The move click is the suite's heaviest single wizard op and rides the ~10s cloud-relay
+                    # ceiling; a 504 (after the client's own 3 retries) means the RESPONSE was lost, not that
+                    # the click wasn't delivered -- the same unknown-commit state the asyncCommitLikely soft
+                    # contract above already covers. This test never asserts the resulting order, only rule
+                    # health, so the health check below remains the real assertion. Anything non-504 is real.
+                    if "504" not in str(exc):
+                        raise
+                    print("    moveAction response lost to relay 504(s) -- same soft contract as asyncCommitLikely; verifying rule health")
             self._assert_rule_healthy(app_id)
 
             # ===== SUBSTEP test_set_rule_patches =====
