@@ -1426,8 +1426,8 @@ class TestRunner:
             if "504" not in str(exc):
                 raise
             print(f"    hub_set_rule({list(extra)}) response lost to relay 504 -- "
-                  "soft contract: verifying rule health instead of hard-failing")
-            self._assert_rule_healthy(app_id)
+                  "soft contract: verifying the rule still renders instead of hard-failing")
+            self._assert_rule_renders(app_id)
             return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
         assert result.get("success") is not False, f"hub_set_rule({list(extra)}) reported failure: {result}"
         return result
@@ -1449,8 +1449,19 @@ class TestRunner:
                 raise
             print(f"    hub_set_rule(appId={args.get('appId')}) response lost to relay 504 -- "
                   "soft contract: verifying rule health instead of hard-failing")
-            self._assert_rule_healthy(args.get("appId"))
+            self._assert_rule_renders(args.get("appId"))
             return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
+
+    def _assert_rule_renders(self, app_id: Any) -> None:
+        """Lenient health check for relay-504 soft paths: a dropped response may have committed
+        a block OPENER (IF/Repeat), leaving the rule structurally unbalanced -- which the health
+        tool itself documents as EXPECTED mid-build. Broken markers, page errors, and flag poison
+        still fail; structural imbalance alone does not (the caller's reset/closer handles it)."""
+        h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
+        assert not h.get("configPageError") and not h.get("brokenMarkers") and not h.get("multipleFlagPoison"),             f"rule is genuinely broken after the dropped response (not just mid-build imbalance): {h}"
+        if h.get("ok") is False:
+            print(f"    rule {app_id} renders with structural imbalance after the dropped response "
+                  "(expected mid-build state; a reset/closer follows)")
 
     def _assert_rule_healthy(self, app_id: Any) -> None:
         h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
