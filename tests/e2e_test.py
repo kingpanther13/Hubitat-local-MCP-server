@@ -1365,12 +1365,32 @@ class TestRunner:
     # ---- shared helpers for the native-authoring coverage below ----
 
     def _create_native_rule(self, suffix: str) -> Any:
-        """Create an empty native RM rule via hub_set_rule (no appId), track it."""
-        created = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule", "args": {"name": f"{PREFIX}{suffix}", "confirm": True},
-        })
-        app_id = created.get("appId")
-        assert app_id, f"hub_set_rule create did not return appId: {created}"
+        """Create an empty native RM rule via hub_set_rule (no appId), track it.
+
+        Verify-after-504: writes are never transport-replayed (duplicate-commit risk), so a
+        relay 504 here means the CREATE may or may not have committed. Look the rule up by
+        its unique label: found -> adopt it; not found -> the create truly failed."""
+        label = f"{PREFIX}{suffix}"
+        try:
+            created = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule", "args": {"name": label, "confirm": True},
+            })
+            app_id = created.get("appId")
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            print(f"    create '{label}' response lost to relay 504 -- verifying by label lookup")
+            time.sleep(3.0)
+            app_id = None
+            listed = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_list_rules", "args": {},
+            })
+            for r in (listed.get("rules") or []):
+                if r.get("label") == label or r.get("name") == label:
+                    app_id = r.get("id")
+                    print(f"    create committed despite the dropped response -- adopting appId {app_id}")
+                    break
+        assert app_id, f"hub_set_rule create did not yield an appId for '{label}'"
         self.created_native_app_ids.append(str(app_id))
         return app_id
 
