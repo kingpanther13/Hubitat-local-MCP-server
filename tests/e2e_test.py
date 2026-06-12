@@ -137,6 +137,18 @@ class HubitatMcpClient:
         # contracts (verify-first, never blind-retry) handle the unknown-commit state.
         _pj = json.dumps(payload)
         replay_safe = '"confirm": true' not in _pj and '"confirm":true' not in _pj
+        # Idempotent-write exception: settings assignment yields the same state on re-delivery,
+        # so transport replay is safe for it (unlike wizard writes, where replay double-commits).
+        if "hub_update_mcp_settings" in _pj:
+            replay_safe = True
+
+        # Chaos mode (E2E_CHAOS_504=<0..1>): after a WRITE completes, discard its response and
+        # raise the exact relay-504 error with probability <rate>. This reproduces on demand the
+        # cloud relay's worst behavior -- the op COMMITTED but the response was lost -- so every
+        # verify-first soft contract can be exercised deterministically in a local run instead of
+        # waiting for relay weather. Never active unless explicitly set; never affects reads.
+        chaos_rate = float(os.environ.get("E2E_CHAOS_504", "0") or 0)
+        chaos_fire = (not replay_safe) and chaos_rate > 0 and random.random() < chaos_rate
 
         last_exc: Exception | None = None
         data: dict | None = None
@@ -193,6 +205,9 @@ class HubitatMcpClient:
         # Reaching here means the loop broke on a successful decode (the for-else
         # above always raises on exhaustion), so data is a dict.
         assert data is not None
+        if chaos_fire:
+            print(f"    [CHAOS] dropping the response of this {method} write (op committed hub-side)")
+            raise requests.HTTPError(f"relay 504 timeout injected on {method}")
         self._log(f"<< {json.dumps(data)[:500]}")
 
         if "error" in data:
@@ -343,9 +358,11 @@ class TestRunner:
         self.watchdog_url = os.environ.get("WATCHDOG_URL", "")
         self.server_app_id = os.environ.get("HUBITAT_APP_ID", "")
         self.throttle_bounces = 0
-        # Inter-test pacing (see _run_one): default 1.5s of client-side breathing room per
-        # test caps the server app's short-window duty cycle without adding any hub load.
-        self.pace_seconds = float(os.environ.get("E2E_PACE_SECONDS", "1.5"))
+        self._soft_passes: list[str] = []
+        # Inter-test pacing (see _run_one): optional client-side breathing room per test.
+        # Default 0 -- the load-limiter trips traced to real per-run hub backups (now mocked
+        # away on the test hub), not test cadence. The knob stays for diagnostics.
+        self.pace_seconds = float(os.environ.get("E2E_PACE_SECONDS", "0"))
 
         # Dispatch canary (see _canary_loop): a background thread toggles a dedicated
         # throwaway switch through the server app every ~20s and reads the state back,
@@ -523,17 +540,27 @@ class TestRunner:
         return self._test_switch_id
 
     def _create_virtual_switch_device(self, label: str) -> str:
-        """Create a Virtual Switch and return its device id ('' on failure)."""
-        result = self.client.call_tool("hub_manage_virtual_device", {
-            "action": "create",
-            "deviceType": "Virtual Switch",
-            "deviceLabel": label,
-            "confirm": True,
-        })
+        """Create a Virtual Switch and return its device id ('' on failure).
+
+        A relay 504 drops the response but the create may still commit; fall through
+        to the same look-it-up-by-label path the no-id-in-response case already uses."""
+        try:
+            result = self.client.call_tool("hub_manage_virtual_device", {
+                "action": "create",
+                "deviceType": "Virtual Switch",
+                "deviceLabel": label,
+                "confirm": True,
+            })
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            print(f"    create virtual switch '{label}' response lost to relay 504 -- verifying by label lookup")
+            time.sleep(3.0)
+            result = {}
         dev_obj = result.get("device") if isinstance(result, dict) else None
         dev_id = (dev_obj or {}).get("id") or result.get("id", result.get("deviceId", ""))
 
-        # Response may not include ID directly — look it up
+        # Response may not include ID directly (or was dropped by a 504) — look it up
         if not dev_id:
             time.sleep(0.3)
             vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
@@ -572,12 +599,19 @@ class TestRunner:
         for want in labels:
             if want in found:
                 continue
-            result = self.client.call_tool("hub_manage_virtual_device", {
-                "action": "create",
-                "deviceType": "Virtual Temperature Sensor",
-                "deviceLabel": want,
-                "confirm": True,
-            })
+            try:
+                result = self.client.call_tool("hub_manage_virtual_device", {
+                    "action": "create",
+                    "deviceType": "Virtual Temperature Sensor",
+                    "deviceLabel": want,
+                    "confirm": True,
+                })
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                if "504" not in str(exc):
+                    raise
+                print(f"    create temp sensor '{want}' response lost to relay 504 -- verifying by label lookup")
+                time.sleep(3.0)
+                result = {}
             dev_id = result.get("id", result.get("deviceId", ""))
             if not dev_id:
                 time.sleep(0.3)
@@ -611,21 +645,42 @@ class TestRunner:
         method = getattr(self, method_name)
         self._current_test = f"{group}/{name}"
         t0 = time.monotonic()
-        try:
-            method()
-            elapsed = time.monotonic() - t0
-            self._record(name, group, "pass", duration=elapsed)
-        except SkipTest as exc:
-            elapsed = time.monotonic() - t0
-            self._record(name, group, "skip", message=str(exc), duration=elapsed)
-        except Exception as exc:
-            elapsed = time.monotonic() - t0
-            # The summary table stays readable with a 200-char message, but the FULL
-            # failure goes to the run log here -- a truncated structured response
-            # (error/repairHints/settingsSkipped all cut off) has repeatedly forced an
-            # extra run just to learn why a test failed.
-            print(f"    FULL-FAILURE {name}: {exc}")
-            self._record(name, group, "fail", message=str(exc)[:200], duration=elapsed)
+        # Maintainer policy: a 504-caused failure (or 504-reasoned abort) gets ONE full
+        # test re-run before being declared failed -- the test re-creates its own fixtures
+        # and the verify-by-label helpers adopt anything the first attempt committed. A
+        # second 504-caused failure is then an honest red.
+        for attempt in (1, 2):
+            try:
+                method()
+                elapsed = time.monotonic() - t0
+                msg = "(passed on retry after relay 504)" if attempt == 2 else ""
+                if attempt == 2:
+                    self._soft_passes.append(f"{group}/{name}: passed on retry after relay 504")
+                self._record(name, group, "pass", message=msg, duration=elapsed)
+                return
+            except SkipTest as exc:
+                elapsed = time.monotonic() - t0
+                if "504" in str(exc) and attempt == 1:
+                    print(f"    [RETRY] {name} aborted by relay 504 -- re-running the test once")
+                    continue
+                if "504" in str(exc):
+                    print(f"    FULL-FAILURE {name}: persistent relay 504 across retry: {exc}")
+                    self._record(name, group, "fail", message=f"persistent relay 504: {exc}"[:200], duration=elapsed)
+                else:
+                    self._record(name, group, "skip", message=str(exc), duration=elapsed)
+                return
+            except Exception as exc:
+                elapsed = time.monotonic() - t0
+                if "504" in str(exc) and attempt == 1:
+                    print(f"    [RETRY] {name} failed on a relay 504 -- re-running the test once")
+                    continue
+                # The summary table stays readable with a 200-char message, but the FULL
+                # failure goes to the run log here -- a truncated structured response
+                # (error/repairHints/settingsSkipped all cut off) has repeatedly forced an
+                # extra run just to learn why a test failed.
+                print(f"    FULL-FAILURE {name}: {exc}")
+                self._record(name, group, "fail", message=str(exc)[:200], duration=elapsed)
+                return
         # Inter-test breathing room for the hub's per-app load limiter. The limiter has
         # tripped MID-RUN on a freshly-booted hub, and the suite's recent speedups all
         # removed the natural idle gaps the older, slower flow gave the server app between
@@ -638,12 +693,31 @@ class TestRunner:
     # -- Rule helper: create, verify, delete ---------------------------------
 
     def _create_rule_and_verify(self, name: str, rule_def: dict) -> str:
-        """Create a rule, verify it was created, return ruleId."""
+        """Create a rule, verify it was created, return ruleId.
+
+        On a relay 504 the create response (ruleId) is lost but the rule may have
+        committed; recover the id by listing custom rules for the unique name, then
+        fall through to the same read-back verification."""
         rule_def.setdefault("name", name)
         rule_def.setdefault("testRule", True)
-        result = self.client.call_tool("hub_create_custom_rule", rule_def)
-        rule_id = str(result.get("ruleId", result.get("id", "")))
-        assert rule_id, f"hub_create_custom_rule did not return a ruleId: {result}"
+        try:
+            result = self.client.call_tool("hub_create_custom_rule", rule_def)
+            rule_id = str(result.get("ruleId", result.get("id", "")))
+            assert rule_id, f"hub_create_custom_rule did not return a ruleId: {result}"
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            print(f"    hub_create_custom_rule '{name}' response lost to relay 504 -- verifying by name lookup")
+            time.sleep(3.0)
+            rule_id = ""
+            listed = self.client.call_tool("hub_get_custom_rule")
+            rules = listed if isinstance(listed, list) else (listed.get("rules") or [])
+            for r in rules:
+                if isinstance(r, dict) and r.get("name") == name:
+                    rule_id = str(r.get("id", r.get("ruleId", "")))
+                    break
+            assert rule_id, f"hub_create_custom_rule '{name}' lost to relay 504 and never committed"
+            print(f"    create committed despite the dropped response -- adopting ruleId {rule_id}")
         self.created_rule_ids.append(rule_id)
 
         # Verify creation
@@ -669,6 +743,14 @@ class TestRunner:
         assert not missing, \
             f"custom rule '{key}': types missing after round-trip: {missing} (got {got!r}) -- a type was dropped or replaced by a duplicate"
 
+    def _custom_rule_absent(self, rule_id: str) -> bool:
+        """True if the custom rule is gone (delete-verify-by-absence on a 504)."""
+        try:
+            self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
+            return False  # still retrievable => not deleted
+        except (McpToolError, McpError):
+            return True  # the read errors because the rule is gone
+
     def _delete_rule_safe(self, rule_id: str) -> None:
         """Delete a rule, swallowing errors."""
         try:
@@ -680,11 +762,38 @@ class TestRunner:
 
     def _create_variable(self, name: str, var_type: str = "String",
                          value: str = "test") -> None:
-        """Create a hub variable via the gateway."""
-        self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_set_variable", "args": {"name": name, "type": var_type, "value": value},
-        })
+        """Create a hub variable via the gateway.
+
+        Track BEFORE the call so a relay 504 mid-create still cleans up. On a 504 the
+        write may have committed; verify by reading it back (a genuine non-commit is
+        surfaced, not silently soft-passed)."""
         self.created_variable_names.append(name)
+        try:
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": name, "type": var_type, "value": value},
+            })
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            print(f"    hub_set_variable '{name}' response lost to relay 504 -- verifying by read-back")
+            time.sleep(3.0)
+            got = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": name},
+            })
+            assert got.get("name") == name or got.get("value") is not None, \
+                f"hub_set_variable '{name}' lost to relay 504 and never committed: {got}"
+
+    def _hub_variable_absent(self, name: str) -> bool:
+        """True if the hub variable is gone (delete-verify-by-absence on a 504).
+
+        hub_get_variable raises (McpToolError 'not found') when the variable is gone in
+        both namespaces -- that raise is the proof of absence."""
+        try:
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_get_variable", "args": {"name": name}})
+            return False  # still retrievable => not deleted
+        except (McpToolError, McpError) as exc:
+            return "not found" in str(exc).lower()
 
     def _delete_variable_safe(self, name: str) -> None:
         try:
@@ -698,6 +807,42 @@ class TestRunner:
             print(f"[WARN] _delete_variable_safe({name}) failed: {exc}")
         if name in self.created_variable_names:
             self.created_variable_names.remove(name)
+
+    # -- Shared relay-504 soft-write -----------------------------------------
+
+    def _soft_write(self, tool_call, verify, describe: str) -> Any:
+        """Run a write call; on a relay 504 resolve committed-or-not via verify().
+
+        The e2e client never transport-replays writes (duplicate-commit risk), so a
+        cloud-relay 504 drops the RESPONSE while the hub may or may not have committed
+        the op. `tool_call()` is the write (returns the parsed response dict). On a 504
+        we call `verify()` -- a read that returns a truthy "evidence" value when the
+        write DID commit (e.g. the adopted appId, the read-back config dict) and a
+        falsy value when it did NOT. The return envelope distinguishes the three cases:
+
+          - normal:        {relayDropped: False, response: <tool_call result>}
+          - 504+committed: {relayDropped: True,  committed: True,  evidence: <verify()>}
+          - 504+lost:      {relayDropped: True,  committed: False, evidence: <falsy>}
+
+        Callers MUST branch on relayDropped and skip-with-print any response-field
+        assertions when it is set (the response is gone); the verify() evidence is the
+        only thing that bound on the 504 path. Non-504 errors re-raise so real failures
+        still bind. This centralizes the verify-first pattern; the existing dedicated
+        helpers (_create_native_rule, _set_rule, ...) keep their bespoke shapes where
+        those read clearer."""
+        try:
+            return {"relayDropped": False, "response": tool_call()}
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            print(f"    {describe}: response lost to relay 504 -- verifying committed-or-not")
+            time.sleep(3.0)
+            evidence = verify()
+            committed = bool(evidence)
+            verdict = "committed despite the dropped response" if committed \
+                else "did NOT commit (verify found no evidence)"
+            print(f"    {describe}: {verdict}")
+            return {"relayDropped": True, "committed": committed, "evidence": evidence}
 
     # -----------------------------------------------------------------------
     # GROUP 1: infrastructure (7 tests)
@@ -869,14 +1014,42 @@ class TestRunner:
     # GROUP 3: virtual_device_lifecycle (4 tests)
     # -----------------------------------------------------------------------
 
+    def _find_device_dni_by_label(self, label_substr: str) -> str | None:
+        """Look up a virtual device's DNI by label substring (create-verify on 504)."""
+        try:
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            print(f"    [WARN] hub_list_devices lookup for {label_substr!r} failed: {exc}")
+            return None
+        dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
+        for d in dev_list:
+            lbl = d.get("label") or d.get("name") or ""
+            if label_substr in lbl:
+                found = str(d.get("deviceNetworkId", d.get("dni", "")))
+                if found:
+                    return found
+        return None
+
     @test("virtual_device_lifecycle")
     def test_create_virtual_switch(self) -> None:
-        result = self.client.call_tool("hub_manage_virtual_device", {
-            "action": "create",
-            "deviceType": "Virtual Switch",
-            "deviceLabel": f"{PREFIX}Switch_Test",
-            "confirm": True,
-        })
+        cw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_virtual_device", {
+                "action": "create",
+                "deviceType": "Virtual Switch",
+                "deviceLabel": f"{PREFIX}Switch_Test",
+                "confirm": True}),
+            lambda: self._find_device_dni_by_label(f"{PREFIX}Switch_Test"),
+            "create virtual switch",
+        )
+        if cw["relayDropped"]:
+            # The response (success/id/dni) is gone; the labelFilter lookup is the
+            # evidence the create committed. Track the recovered DNI for cleanup.
+            assert cw["committed"], "create virtual switch lost to relay 504 and never committed"
+            self.created_device_dnis.append(str(cw["evidence"]))
+            print(f"    create virtual switch: response-field assertions skipped (relay 504); "
+                  f"verified by labelFilter (DNI {cw['evidence']})")
+            return
+        result = cw["response"]
         # Response may be {success: true, message: "..."} without device IDs at top level
         # Track DNI if available, otherwise look it up via hub_list_devices (labelFilter)
         dni = result.get("deviceNetworkId", result.get("dni", ""))
@@ -884,15 +1057,9 @@ class TestRunner:
             self.created_device_dnis.append(str(dni))
         elif result.get("success"):
             # Look up the created device to get its DNI for cleanup
-            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
-            dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
-            for d in dev_list:
-                lbl = d.get("label") or d.get("name") or ""
-                if f"{PREFIX}Switch_Test" in lbl:
-                    found_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
-                    if found_dni:
-                        self.created_device_dnis.append(found_dni)
-                    break
+            found_dni = self._find_device_dni_by_label(f"{PREFIX}Switch_Test")
+            if found_dni:
+                self.created_device_dnis.append(found_dni)
         assert result.get("success") or result.get("id") or result.get("deviceId") or dni, \
             f"create virtual device failed: {result}"
 
@@ -1067,11 +1234,18 @@ class TestRunner:
         if not target_dni:
             raise AssertionError(f"{PREFIX}Switch_Test not found for deletion -- the upstream create test must have failed")
 
-        self.client.call_tool("hub_manage_virtual_device", {
-            "action": "delete",
-            "deviceNetworkId": target_dni,
-            "confirm": True,
-        })
+        # On a relay 504 the response is lost but the delete may still have committed;
+        # the gone-by-listing check below is the verification either way.
+        dw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_virtual_device", {
+                "action": "delete",
+                "deviceNetworkId": target_dni,
+                "confirm": True}),
+            lambda: self._find_device_dni_by_label(f"{PREFIX}Switch_Test") is None,
+            "delete virtual switch",
+        )
+        if dw["relayDropped"]:
+            assert dw["committed"], f"{PREFIX}Switch_Test still present after a relay-504 delete (did not commit)"
         if target_dni in self.created_device_dnis:
             self.created_device_dnis.remove(target_dni)
 
@@ -1114,10 +1288,16 @@ class TestRunner:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise AssertionError("No rule created to update -- the upstream create-rule test must have failed")
-        self.client.call_tool("hub_update_custom_rule", {
-            "ruleId": rule_id,
-            "name": f"{PREFIX}Rule_CRUD_Updated",
-        })
+        # The read-back below binds the rename; a relay 504 only drops the response.
+        uw = self._soft_write(
+            lambda: self.client.call_tool("hub_update_custom_rule", {
+                "ruleId": rule_id,
+                "name": f"{PREFIX}Rule_CRUD_Updated"}),
+            lambda: True,  # verified by the read-back below
+            "hub_update_custom_rule",
+        )
+        if uw["relayDropped"]:
+            print("    hub_update_custom_rule: response skipped (relay 504); rename verified via read-back")
         fetched = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
         assert "Updated" in fetched.get("name", ""), \
             f"Rule name not updated: {fetched.get('name')}"
@@ -1127,7 +1307,15 @@ class TestRunner:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise AssertionError("No rule created to delete -- the upstream create-rule test must have failed")
-        self.client.call_tool("hub_delete_custom_rule", {"ruleId": rule_id, "confirm": True})
+        # On a relay 504 the response is lost but the delete may still have committed;
+        # the gone-check below is the verification either way.
+        dw = self._soft_write(
+            lambda: self.client.call_tool("hub_delete_custom_rule", {"ruleId": rule_id, "confirm": True}),
+            lambda: self._custom_rule_absent(rule_id),
+            "hub_delete_custom_rule",
+        )
+        if dw["relayDropped"]:
+            assert dw["committed"], f"custom rule {rule_id} still present after a relay-504 delete (did not commit)"
         if rule_id in self.created_rule_ids:
             self.created_rule_ids.remove(rule_id)
         # Verify it's gone
@@ -1152,6 +1340,45 @@ class TestRunner:
     def _untrack_native_app(self, app_id) -> None:
         if str(app_id) in self.created_native_app_ids:
             self.created_native_app_ids.remove(str(app_id))
+
+    def _find_app_id_by_label(self, label: str) -> str | None:
+        """Look up an installed app by its unique label across both listing surfaces.
+
+        Used by the create-verify-by-label leg of the native-app soft-write paths: a
+        relay-504-dropped CREATE may still have committed, so we hunt the label. Checks
+        hub_list_apps (scope=instances, all user apps -- catches button controllers,
+        Hub Variables, basic rules) AND hub_list_rules (RM rules surface there by
+        name/label). Returns the id as a string, or None if the create truly failed."""
+        try:
+            listed = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_list_apps", "args": {"scope": "instances", "filter": "user"},
+            })
+            apps = listed if isinstance(listed, list) else (listed.get("apps") or listed.get("instances") or [])
+            for a in apps:
+                if not isinstance(a, dict):
+                    continue
+                if label in (a.get("label") or a.get("name") or ""):
+                    return str(a.get("id") or a.get("appId"))
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            print(f"    [WARN] hub_list_apps lookup for {label!r} failed: {exc}")
+        try:
+            rules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+            rule_list = rules if isinstance(rules, list) else (rules.get("rules") or [])
+            for r in rule_list:
+                if isinstance(r, dict) and label in (r.get("label") or r.get("name") or ""):
+                    return str(r.get("id") or r.get("appId"))
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            print(f"    [WARN] hub_list_rules lookup for {label!r} failed: {exc}")
+        return None
+
+    def _app_still_present(self, app_id: Any) -> bool:
+        """True if app_id is still installed (used by delete-verify-by-absence on a 504)."""
+        try:
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id}})
+            return cfg.get("success") is not False
+        except (McpToolError, McpError):
+            return False  # the read errors because the app is gone => deleted
 
     @test("native_apps")
     def test_set_rule_native_lifecycle(self) -> None:
@@ -1206,34 +1433,62 @@ class TestRunner:
     def test_set_native_app_lifecycle(self) -> None:
         # hub_set_native_app: the GENERIC create-or-edit upsert. Create via the
         # registry-driven create path, rename via a raw settings write, then delete.
-        created = self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_set_native_app",
-            "args": {"appType": "rule_machine", "name": f"{PREFIX}NativeApp", "confirm": True},
-        })
-        app_id = created.get("appId")
-        assert app_id, f"hub_set_native_app create did not return an appId: {created}"
+        # Each leg is relay-504-hardened: a dropped CREATE response is resolved by a
+        # label lookup, a dropped EDIT/DELETE by reading back the field / the listing.
+        create_label = f"{PREFIX}NativeApp"
+        cw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appType": "rule_machine", "name": create_label, "confirm": True}}),
+            lambda: self._find_app_id_by_label(create_label),
+            "hub_set_native_app create",
+        )
+        if cw["relayDropped"]:
+            assert cw["committed"], f"hub_set_native_app create lost to relay 504 and never committed ({create_label})"
+            app_id = cw["evidence"]
+        else:
+            created = cw["response"]
+            app_id = created.get("appId")
+            assert app_id, f"hub_set_native_app create did not return an appId: {created}"
         self.created_native_app_ids.append(str(app_id))
 
         # EDIT: generic settings write (rename via origLabel) -- the lean edit path.
-        edited = self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_set_native_app",
-            "args": {"appId": app_id, "settings": {"origLabel": f"{PREFIX}NativeApp_Renamed"}, "confirm": True},
-        })
-        assert edited.get("success") is not False, f"hub_set_native_app edit reported failure: {edited}"
+        # On a 504 the response (settingsApplied etc.) is gone; verify the rename via
+        # hub_get_app_config below regardless, so the EDIT-success assertion only binds
+        # on the normal path.
+        ew = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": app_id, "settings": {"origLabel": f"{PREFIX}NativeApp_Renamed"}, "confirm": True}}),
+            lambda: True,  # the rename is verified by the read-back below, not here
+            "hub_set_native_app edit (rename)",
+        )
+        if ew["relayDropped"]:
+            print("    hub_set_native_app edit: response-field assertions skipped (relay 504); "
+                  "rename verified via hub_get_app_config below")
+        else:
+            assert ew["response"].get("success") is not False, \
+                f"hub_set_native_app edit reported failure: {ew['response']}"
 
         # VERIFY the RENAME actually applied via the read-only hub_get_app_config.
         # Identity (label/name) is nested under the `app` object (toolGetAppConfig
         # shape). Asserting the post-rename token (not just PREFIX, which the create
         # label already carries) proves the settings edit landed, not just succeeded.
+        # This binds on BOTH paths -- it is the real evidence the edit committed.
         cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
         app_obj = cfg.get("app") or {}
         label = str(app_obj.get("label") or app_obj.get("name") or "")
         assert "_Renamed" in label, f"hub_set_native_app rename did not land; label={label!r} (cfg keys: {list(cfg.keys())})"
 
-        # DELETE.
-        self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
-        })
+        # DELETE -- the lifecycle's delete contract. On a 504 verify by absence.
+        dw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True}}),
+            lambda: not self._app_still_present(app_id),  # truthy => confirmed gone
+            "hub_delete_native_app",
+        )
+        if dw["relayDropped"]:
+            assert dw["committed"], f"native app {app_id} still present after a relay-504 delete (did not commit)"
         self._untrack_native_app(app_id)
 
     @test("native_apps")
@@ -1242,12 +1497,21 @@ class TestRunner:
         # Vue SPA). Create via generic createchild, edit a setting -- which must
         # NOT poison the page with the "For input string: updateRule" error
         # (the commitButton=null fix) -- then delete.
-        created = self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_set_native_app",
-            "args": {"appType": "basic_rule", "name": f"{PREFIX}BasicRule", "confirm": True},
-        })
-        app_id = created.get("appId")
-        assert app_id, f"basic_rule create did not return an appId: {created}"
+        create_label = f"{PREFIX}BasicRule"
+        cw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appType": "basic_rule", "name": create_label, "confirm": True}}),
+            lambda: self._find_app_id_by_label(create_label),
+            "basic_rule create",
+        )
+        if cw["relayDropped"]:
+            assert cw["committed"], f"basic_rule create lost to relay 504 and never committed ({create_label})"
+            app_id = cw["evidence"]
+        else:
+            created = cw["response"]
+            app_id = created.get("appId")
+            assert app_id, f"basic_rule create did not return an appId: {created}"
         self.created_native_app_ids.append(str(app_id))
 
         try:
@@ -1257,21 +1521,45 @@ class TestRunner:
             assert (cfg.get("app") or {}).get("name") == "Basic Rule-1.0", f"unexpected Basic Rule config: {cfg}"
 
             # EDIT: write the Notes field. NO updateRule click fires (Basic Rule
-            # is submitOnChange), so the render stays clean.
-            edited = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appId": app_id, "settings": {"comments": f"{PREFIX}note"}, "confirm": True},
-            })
-            assert "updateRule" not in str(edited.get("configPageError") or ""), \
-                f"Basic Rule edit poisoned the render with the updateRule error: {edited}"
-            assert edited.get("success") is not False, f"Basic Rule edit reported failure: {edited}"
+            # is submitOnChange), so the render stays clean. On a 504 the response
+            # (configPageError/success) is gone; verify the note landed via read-back
+            # so the no-poison + success assertions only bind on the normal path.
+            ew = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                    "tool": "hub_set_native_app",
+                    "args": {"appId": app_id, "settings": {"comments": f"{PREFIX}note"}, "confirm": True}}),
+                lambda: True,  # verified by the comments read-back below
+                "basic_rule edit (notes)",
+            )
+            if ew["relayDropped"]:
+                rb = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+                note = str(((rb.get("settings") or {}).get("comments")) or "")
+                assert f"{PREFIX}note" in note, \
+                    f"basic_rule notes edit lost to relay 504 and did not commit (settings.comments={note!r})"
+                # The hub did not page-error on a committed write (the configPageError
+                # check the response would have carried); the clean read-back is the proxy.
+                assert not (rb.get("app") or {}).get("configPageError"), \
+                    f"basic_rule render poisoned after the dropped edit: {rb}"
+                print("    basic_rule edit: response-field assertions skipped (relay 504); note verified via read-back")
+            else:
+                edited = ew["response"]
+                assert "updateRule" not in str(edited.get("configPageError") or ""), \
+                    f"Basic Rule edit poisoned the render with the updateRule error: {edited}"
+                assert edited.get("success") is not False, f"Basic Rule edit reported failure: {edited}"
         finally:
             # DELETE inline (not just via the global-cleanup backstop) so an
-            # assertion failure above doesn't strand the fixture mid-run.
-            self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
-            })
-            self._untrack_native_app(app_id)
+            # assertion failure above doesn't strand the fixture mid-run. A 504 here
+            # must not mask a real failure from the try: verify by absence, and only
+            # re-raise a genuinely-uncommitted delete (the id stays tracked otherwise).
+            dw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                    "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True}}),
+                lambda: not self._app_still_present(app_id),
+                "basic_rule delete",
+            )
+            if not dw["relayDropped"] or dw["committed"]:
+                self._untrack_native_app(app_id)
 
     @test("native_apps")
     def test_button_rule_create_via_controller(self) -> None:
@@ -1284,7 +1572,16 @@ class TestRunner:
         # so this runs on a clean hub (e.g. the CI test hub) that doesn't have it yet.
         controller_id = None
         button_dni = None
+        ctrl_label = f"{PREFIX}BtnCtrl"
         try:
+            # This test is a tightly-coupled CHAIN: each step's RESPONSE feeds the next
+            # (device id -> controller -> buttonDev write -> buttonRule create -> action).
+            # A relay 504 mid-chain drops a response the next step needs, and the
+            # per-step verify-by-read can recover an id but not the full response shape
+            # the downstream asserts on -- so a 504 anywhere skips the whole chain
+            # (with-print, never a soft-pass). The except below still adopts the
+            # controller by label so cleanup/finally can reap it.
+
             # Virtual button device for the controller to bind to.
             dev = self.client.call_tool("hub_manage_virtual_device", {
                 "action": "create", "deviceType": "Virtual Button",
@@ -1299,7 +1596,7 @@ class TestRunner:
             # Button Controller-5.1 instance + assign its button device.
             ctrl = self.client.call_tool("hub_manage_native_rules_and_apps", {
                 "tool": "hub_set_native_app",
-                "args": {"appType": "button_controller", "name": f"{PREFIX}BtnCtrl", "confirm": True},
+                "args": {"appType": "button_controller", "name": ctrl_label, "confirm": True},
             })
             controller_id = ctrl.get("appId")
             assert controller_id, f"button controller create did not return an appId: {ctrl}"
@@ -1346,17 +1643,32 @@ class TestRunner:
                 "args": {"appId": rule_id, "addAction": {"capability": "log", "message": "E2E button rule"}, "confirm": True},
             })
             assert acted.get("success") is not False, f"authoring the button rule's action failed: {acted}"
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            # A dropped response mid-chain leaves no trustworthy id/shape to continue
+            # from. If the controller create was the casualty, adopt it by label so the
+            # finally + cleanup sweep reap it, then skip (never soft-pass).
+            if controller_id is None:
+                adopted = self._find_app_id_by_label(ctrl_label)
+                if adopted:
+                    controller_id = adopted
+                    self.created_native_app_ids.append(str(adopted))
+            raise SkipTest("button-rule chain hit a relay 504 mid-sequence -- "
+                           "no trustworthy intermediate response to continue from") from exc
         finally:
             # Deleting the controller cascades to its grandchild rules. Guarded:
             # an unguarded raise here would REPLACE the real test failure, and
-            # the controller stays tracked for the global-cleanup backstop.
+            # the controller stays tracked for the global-cleanup backstop. A 504 on
+            # the delete is swallowed too (the cascade likely committed; the tracked id
+            # + prefix sweep backstop a strand).
             if controller_id:
                 try:
                     self.client.call_tool("hub_manage_native_rules_and_apps", {
                         "tool": "hub_delete_native_app", "args": {"appId": controller_id, "force": True, "confirm": True},
                     })
                     self._untrack_native_app(controller_id)
-                except (McpToolError, McpError) as exc:
+                except (McpToolError, McpError, requests.HTTPError) as exc:
                     print(f"  [WARN] button-rule e2e cleanup: delete controller {controller_id} failed: {exc}")
             # Delete the virtual button device now (not just via global cleanup) so the hub
             # stays clean even if a later test fails or the run is interrupted.
@@ -1367,7 +1679,7 @@ class TestRunner:
                     })
                     if button_dni in self.created_device_dnis:
                         self.created_device_dnis.remove(button_dni)
-                except (McpToolError, McpError) as exc:
+                except (McpToolError, McpError, requests.HTTPError) as exc:
                     print(f"  [WARN] button-rule e2e cleanup: delete device {button_dni} failed: {exc}")
 
     # ---- shared helpers for the native-authoring coverage below ----
@@ -1404,6 +1716,14 @@ class TestRunner:
                     app_id = r.get("id")
                     print(f"    create committed despite the dropped response -- adopting appId {app_id}")
                     break
+            if not app_id:
+                # Verified NON-commit: re-issuing is duplicate-safe (the only point a write
+                # retry is allowed -- after evidence the first attempt never landed).
+                print(f"    create '{label}' verified NOT committed -- one safe retry")
+                created = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_rule", "args": dict({"name": label, "confirm": True}, **(extra or {})),
+                })
+                app_id = created.get("appId")
         assert app_id, f"hub_set_rule create did not yield an appId for '{label}'"
         self.created_native_app_ids.append(str(app_id))
         return app_id
@@ -2030,29 +2350,48 @@ class TestRunner:
         # end-to-end: the RE field is present (NOT dropped), the RE actually lands on
         # the rule, and the rule is healthy.
         sw = int(self.get_test_switch_id())
-        created = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule",
-            "args": {
-                "name": f"{PREFIX}CreateRE",
-                "addRequiredExpression": {"conditions": [
-                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
-                "confirm": True,
-            },
-        })
-        app_id = created.get("appId")
-        assert app_id, f"create-with-RE did not return appId: {created}"
+        create_label = f"{PREFIX}CreateRE"
+        cw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "name": create_label,
+                    "addRequiredExpression": {"conditions": [
+                        {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
+                    "confirm": True,
+                }}),
+            lambda: self._find_app_id_by_label(create_label),
+            "create-with-RE",
+        )
+        if cw["relayDropped"]:
+            assert cw["committed"], f"create-with-RE lost to relay 504 and never committed ({create_label})"
+            app_id = cw["evidence"]
+            created = None
+        else:
+            created = cw["response"]
+            app_id = created.get("appId")
+            assert app_id, f"create-with-RE did not return appId: {created}"
         self.created_native_app_ids.append(str(app_id))
         try:
-            # The whole point: the bundled RE was honored, not silently dropped.
-            re_result = created.get("requiredExpression")
-            assert re_result is not None, \
-                f"addRequiredExpression was silently dropped on create (no requiredExpression in result): {created}"
-            assert re_result.get("success") is not False, \
-                f"bundled addRequiredExpression failed on create: {re_result}"
-            # The RE actually landed: a condition index was returned by the walk.
-            assert re_result.get("conditionIndices"), \
-                f"create-with-RE produced no conditionIndices -- the expression did not land: {re_result}"
-            self._assert_rule_healthy(app_id)
+            if created is None:
+                # The bundled-RE response (requiredExpression/conditionIndices) is gone
+                # to the 504; the recoverable evidence is the rule rendering healthy
+                # (an unhealthy/broken RE would fail this). Skip the response-shape
+                # assertions with a printed line rather than soft-passing them.
+                print("    create-with-RE: requiredExpression response-field assertions skipped "
+                      "(relay 504); verifying rule health instead")
+                self._assert_rule_healthy(app_id)
+            else:
+                # The whole point: the bundled RE was honored, not silently dropped.
+                re_result = created.get("requiredExpression")
+                assert re_result is not None, \
+                    f"addRequiredExpression was silently dropped on create (no requiredExpression in result): {created}"
+                assert re_result.get("success") is not False, \
+                    f"bundled addRequiredExpression failed on create: {re_result}"
+                # The RE actually landed: a condition index was returned by the walk.
+                assert re_result.get("conditionIndices"), \
+                    f"create-with-RE produced no conditionIndices -- the expression did not land: {re_result}"
+                self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
 
@@ -2069,11 +2408,18 @@ class TestRunner:
     @test("native_apps")
     def test_delete_native_app_from_native_gateway(self) -> None:
         # hub_delete_native_app is cross-listed in BOTH gateways. Create via the RM
-        # gateway, delete via the native gateway, and confirm it is gone.
+        # gateway, delete via the native gateway, and confirm it is gone. On a relay
+        # 504 the response is lost but the delete may still have committed, so the
+        # gone-check below is the verification either way (absent => committed).
         app_id = self._create_native_rule("CrossGwDelete")
-        self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True},
-        })
+        dw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True}}),
+            lambda: not self._app_still_present(app_id),
+            "hub_delete_native_app (cross-gateway)",
+        )
+        if dw["relayDropped"]:
+            assert dw["committed"], f"app {app_id} still present after a relay-504 delete (did not commit)"
         self._untrack_native_app(app_id)
         try:
             cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
@@ -2084,17 +2430,39 @@ class TestRunner:
     @test("native_apps")
     def test_set_native_app_button_edit(self) -> None:
         # hub_set_native_app edit path also drives a page-transition button (generic).
-        created = self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_set_native_app",
-            "args": {"appType": "rule_machine", "name": f"{PREFIX}GenericButton", "confirm": True},
-        })
-        app_id = created.get("appId")
-        assert app_id, f"hub_set_native_app create did not return appId: {created}"
+        create_label = f"{PREFIX}GenericButton"
+        cw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appType": "rule_machine", "name": create_label, "confirm": True}}),
+            lambda: self._find_app_id_by_label(create_label),
+            "hub_set_native_app create (button-edit fixture)",
+        )
+        if cw["relayDropped"]:
+            assert cw["committed"], f"hub_set_native_app create lost to relay 504 and never committed ({create_label})"
+            app_id = cw["evidence"]
+        else:
+            created = cw["response"]
+            app_id = created.get("appId")
+            assert app_id, f"hub_set_native_app create did not return appId: {created}"
         self.created_native_app_ids.append(str(app_id))
-        edited = self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_set_native_app", "args": {"appId": app_id, "button": "updateRule", "confirm": True},
-        })
-        assert edited.get("success") is not False, f"hub_set_native_app button edit failed: {edited}"
+
+        # EDIT via a page-transition button. On a 504 the success field is gone; the
+        # button is a benign page transition (no destructive payload), and the rule
+        # still rendering is the recoverable evidence, so skip the success assertion
+        # with a printed line rather than hard-failing.
+        ew = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app", "args": {"appId": app_id, "button": "updateRule", "confirm": True}}),
+            lambda: self._app_still_present(app_id),
+            "hub_set_native_app button edit",
+        )
+        if ew["relayDropped"]:
+            assert ew["committed"], f"app {app_id} vanished after the dropped button-edit response: not recoverable"
+            print("    hub_set_native_app button edit: success assertion skipped (relay 504); app still renders")
+        else:
+            assert ew["response"].get("success") is not False, \
+                f"hub_set_native_app button edit failed: {ew['response']}"
         self._delete_native(app_id, gateway="hub_manage_native_rules_and_apps")
 
     # -----------------------------------------------------------------------
@@ -2145,6 +2513,17 @@ class TestRunner:
         args = {} if app_id is None else {"appId": app_id}
         return self.client.call_tool("hub_read_rules", {"tool": "hub_get_visual_rule", "args": args})
 
+    def _find_visual_rule_id_by_name(self, name: str) -> str | None:
+        """Look up a VRB rule's appId by name via the list mode (create-verify on 504)."""
+        try:
+            listed = self._get_visual_rule()
+            for r in (listed.get("rules") or []):
+                if isinstance(r, dict) and r.get("name") == name:
+                    return str(r.get("appId"))
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            print(f"    [WARN] visual-rule listing lookup for {name!r} failed: {exc}")
+        return None
+
     @test("visual_rules")
     def test_visual_rule_classic_lifecycle(self) -> None:
         # Full VRB round-trip: create (classic-first, one graph retry -- the hub
@@ -2152,27 +2531,47 @@ class TestRunner:
         # list, rename+pause, resume, wholesale replace, delete-with-verify.
         switch_id = int(self.get_test_switch_id())
         name = f"{PREFIX}VisualRule"
-        created = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_visual_rule",
-            "args": {"name": name, "confirm": True,
-                     "definition": self._vrb_definition("classic", switch_id, "Turns off")},
-        })
-        if created.get("success") is False and created.get("hubNativeFormat") == "graph":
-            # This firmware's builder creates graph-format rules (the tool already
-            # force-deleted the orphan shell); retry once with the equivalent graph
-            # definition so the lifecycle still executes deterministically.
-            created = self.client.call_tool("hub_manage_rule_machine", {
+
+        def _create_with_retry() -> Any:
+            r = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_visual_rule",
                 "args": {"name": name, "confirm": True,
-                         "definition": self._vrb_definition("graph", switch_id, "Turns off")},
-            })
-        app_id = created.get("appId")
-        assert app_id, f"hub_set_visual_rule create did not return an appId: {created}"
-        self.created_native_app_ids.append(str(app_id))
-        assert created.get("success") is True, f"hub_set_visual_rule create did not verify: {created}"
-        assert created.get("created") is True, f"create response missing created=true: {created}"
-        fmt = created.get("format")
-        assert fmt in ("classic", "graph"), f"create returned an unknown format {fmt!r}: {created}"
+                         "definition": self._vrb_definition("classic", switch_id, "Turns off")}})
+            if r.get("success") is False and r.get("hubNativeFormat") == "graph":
+                # This firmware's builder creates graph-format rules (the tool already
+                # force-deleted the orphan shell); retry once with the equivalent graph
+                # definition so the lifecycle still executes deterministically.
+                r = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"name": name, "confirm": True,
+                             "definition": self._vrb_definition("graph", switch_id, "Turns off")}})
+            return r
+
+        cw = self._soft_write(
+            _create_with_retry,
+            lambda: self._find_visual_rule_id_by_name(name),
+            "hub_set_visual_rule create",
+        )
+        if cw["relayDropped"]:
+            assert cw["committed"], f"hub_set_visual_rule create lost to relay 504 and never committed ({name})"
+            app_id = cw["evidence"]
+            self.created_native_app_ids.append(str(app_id))
+            # The create response (created/format) is gone; recover the format from a
+            # read-back so the rest of the lifecycle still runs deterministically.
+            rb = self._get_visual_rule(app_id)
+            fmt = rb.get("format")
+            assert fmt in ("classic", "graph"), f"read-back of dropped-create rule has unknown format {fmt!r}: {rb}"
+            print(f"    hub_set_visual_rule create: created/format assertions skipped (relay 504); "
+                  f"adopted appId {app_id}, format {fmt!r} via read-back")
+        else:
+            created = cw["response"]
+            app_id = created.get("appId")
+            assert app_id, f"hub_set_visual_rule create did not return an appId: {created}"
+            self.created_native_app_ids.append(str(app_id))
+            assert created.get("success") is True, f"hub_set_visual_rule create did not verify: {created}"
+            assert created.get("created") is True, f"create response missing created=true: {created}"
+            fmt = created.get("format")
+            assert fmt in ("classic", "graph"), f"create returned an unknown format {fmt!r}: {created}"
 
         try:
             # READ back through the pure-read gateway: name/format/definition round-trip.
@@ -2201,48 +2600,81 @@ class TestRunner:
             assert str(app_id) in ids, f"created VRB rule {app_id} not in the listing: {ids}"
 
             # RENAME + PAUSE in one call, then prove both landed via an independent read.
+            # The read-back is the real evidence, so a relay-504-dropped response only
+            # costs the response-success assertion (skipped with a print).
             renamed = f"{PREFIX}VisualRuleRenamed"
-            res = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_visual_rule",
-                "args": {"appId": app_id, "name": renamed, "paused": True, "confirm": True},
-            })
-            assert res.get("success") is True, f"rename+pause reported failure: {res}"
+            rp = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"appId": app_id, "name": renamed, "paused": True, "confirm": True}}),
+                lambda: True,  # verified by the read-back below
+                "hub_set_visual_rule rename+pause",
+            )
+            if rp["relayDropped"]:
+                print("    hub_set_visual_rule rename+pause: success assertion skipped (relay 504); "
+                      "verified via read-back")
+            else:
+                assert rp["response"].get("success") is True, f"rename+pause reported failure: {rp['response']}"
             got = self._get_visual_rule(app_id)
             assert got.get("name") == renamed, f"rename did not land: {got.get('name')!r}"
             assert got.get("rulePaused") is True, f"pause did not land: {got}"
 
             # RESUME.
-            res = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_visual_rule",
-                "args": {"appId": app_id, "paused": False, "confirm": True},
-            })
-            assert res.get("success") is True, f"resume reported failure: {res}"
+            rs = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"appId": app_id, "paused": False, "confirm": True}}),
+                lambda: True,  # verified by the read-back below
+                "hub_set_visual_rule resume",
+            )
+            if rs["relayDropped"]:
+                print("    hub_set_visual_rule resume: success assertion skipped (relay 504); verified via read-back")
+            else:
+                assert rs["response"].get("success") is True, f"resume reported failure: {rs['response']}"
             got = self._get_visual_rule(app_id)
             assert got.get("rulePaused") is False, f"resume did not land: {got}"
 
             # REPLACE: wholesale definition edit in the SAME format the rule speaks
             # ('Turns on' variant), verified by the tool's read-back AND our own.
-            res = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_visual_rule",
-                "args": {"appId": app_id, "confirm": True,
-                         "definition": self._vrb_definition(fmt, switch_id, "Turns on")},
-            })
-            assert res.get("success") is True and res.get("verified") is True, \
-                f"definition replacement not verified: {res}"
+            rr = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"appId": app_id, "confirm": True,
+                             "definition": self._vrb_definition(fmt, switch_id, "Turns on")}}),
+                lambda: True,  # verified by the 'Turns on' read-back below
+                "hub_set_visual_rule replace",
+            )
+            if rr["relayDropped"]:
+                print("    hub_set_visual_rule replace: success/verified assertions skipped (relay 504); "
+                      "verified via read-back")
+            else:
+                assert rr["response"].get("success") is True and rr["response"].get("verified") is True, \
+                    f"definition replacement not verified: {rr['response']}"
             got = self._get_visual_rule(app_id)
             replaced_blob = json.dumps(got.get("whenNodes") if fmt == "classic" else got.get("definition"))
             assert "Turns on" in replaced_blob, \
                 f"replaced definition did not round-trip 'Turns on': {replaced_blob[:300]}"
         finally:
             # DELETE inline -- the delete contract IS part of the lifecycle under
-            # test (the tracked-id sweep stays as backstop if this raises).
-            deleted = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_delete_visual_rule", "args": {"appId": app_id, "confirm": True},
-            })
-            assert deleted.get("success") is True, f"hub_delete_visual_rule reported failure: {deleted}"
-            assert deleted.get("verified") is True, f"delete not verified gone: {deleted}"
-            assert deleted.get("predeleteDefinition"), \
-                f"delete response missing the predeleteDefinition recovery aid: {deleted}"
+            # test (the tracked-id sweep stays as backstop if this raises). On a relay
+            # 504 the response (verified/predeleteDefinition) is gone; verify by
+            # absence via the gone-read, skipping the response-shape assertions.
+            dw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_delete_visual_rule", "args": {"appId": app_id, "confirm": True}}),
+                lambda: self._get_visual_rule(app_id).get("success") is False,
+                "hub_delete_visual_rule",
+            )
+            if dw["relayDropped"]:
+                assert dw["committed"], f"VRB rule {app_id} still readable after a relay-504 delete (did not commit)"
+                print("    hub_delete_visual_rule: verified/predeleteDefinition assertions skipped (relay 504); "
+                      "verified gone by read")
+            else:
+                deleted = dw["response"]
+                assert deleted.get("success") is True, f"hub_delete_visual_rule reported failure: {deleted}"
+                assert deleted.get("verified") is True, f"delete not verified gone: {deleted}"
+                assert deleted.get("predeleteDefinition"), \
+                    f"delete response missing the predeleteDefinition recovery aid: {deleted}"
             gone = self._get_visual_rule(app_id)
             assert gone.get("success") is False, f"rule {app_id} still readable after delete: {gone}"
             # Untrack only after the independent gone-read: a false-verified delete
@@ -2258,33 +2690,64 @@ class TestRunner:
         # back, not by trusting the restore response flags alone.
         switch_id = int(self.get_test_switch_id())
         name = f"{PREFIX}VrbRestore"
-        created = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_visual_rule",
-            "args": {"name": name, "confirm": True,
-                     "definition": self._vrb_definition("classic", switch_id, "Turns off")},
-        })
-        if created.get("success") is False and created.get("hubNativeFormat") == "graph":
-            # Same firmware-decides-the-format adaptation as the lifecycle test
-            # (the tool already force-deleted the orphan classic shell).
-            created = self.client.call_tool("hub_manage_rule_machine", {
+
+        def _create_with_retry() -> Any:
+            r = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_visual_rule",
                 "args": {"name": name, "confirm": True,
-                         "definition": self._vrb_definition("graph", switch_id, "Turns off")},
-            })
-        app_id = created.get("appId")
-        assert app_id, f"hub_set_visual_rule create did not return an appId: {created}"
-        self.created_native_app_ids.append(str(app_id))
-        assert created.get("success") is True, f"hub_set_visual_rule create did not verify: {created}"
-        fmt = created.get("format")
-        assert fmt in ("classic", "graph"), f"create returned an unknown format {fmt!r}: {created}"
+                         "definition": self._vrb_definition("classic", switch_id, "Turns off")}})
+            if r.get("success") is False and r.get("hubNativeFormat") == "graph":
+                # Same firmware-decides-the-format adaptation as the lifecycle test
+                # (the tool already force-deleted the orphan classic shell).
+                r = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"name": name, "confirm": True,
+                             "definition": self._vrb_definition("graph", switch_id, "Turns off")}})
+            return r
+
+        cw = self._soft_write(
+            _create_with_retry,
+            lambda: self._find_visual_rule_id_by_name(name),
+            "hub_set_visual_rule create (backup-restore fixture)",
+        )
+        if cw["relayDropped"]:
+            assert cw["committed"], f"VRB create lost to relay 504 and never committed ({name})"
+            app_id = cw["evidence"]
+            self.created_native_app_ids.append(str(app_id))
+            rb = self._get_visual_rule(app_id)
+            fmt = rb.get("format")
+            assert fmt in ("classic", "graph"), f"read-back of dropped-create rule has unknown format {fmt!r}: {rb}"
+            print(f"    VRB create: success/format assertions skipped (relay 504); adopted appId {app_id}, format {fmt!r}")
+        else:
+            created = cw["response"]
+            app_id = created.get("appId")
+            assert app_id, f"hub_set_visual_rule create did not return an appId: {created}"
+            self.created_native_app_ids.append(str(app_id))
+            assert created.get("success") is True, f"hub_set_visual_rule create did not verify: {created}"
+            fmt = created.get("format")
+            assert fmt in ("classic", "graph"), f"create returned an unknown format {fmt!r}: {created}"
 
         # DELETE through hub_delete_native_app -- THIS path takes the VRB-aware
         # snapshot (the feature's entry point); hub_delete_visual_rule does not.
         # If any of its asserts fire, the original id stays tracked for the sweep.
-        deleted = self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_delete_native_app",
-            "args": {"appId": app_id, "force": True, "confirm": True},
-        })
+        # The whole test is ABOUT this snapshot response (backup.backupKey) and the
+        # restore response -- a relay 504 that drops EITHER response leaves nothing to
+        # validate this run, so a 504 on the snapshot-delete skips-with-print (never a
+        # soft-pass of the response contract). We still verify the delete itself
+        # committed (gone-read) so we don't leak the rule.
+        try:
+            deleted = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_delete_native_app",
+                "args": {"appId": app_id, "force": True, "confirm": True},
+            })
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            time.sleep(3.0)
+            if self._get_visual_rule(app_id).get("success") is False:
+                self._untrack_native_app(app_id)
+            raise SkipTest("VRB snapshot-delete response (backup.backupKey) lost to relay 504 -- "
+                           "no backup key to drive the restore contract this run") from exc
         assert deleted.get("success") is True, f"hub_delete_native_app reported failure: {deleted}"
         backup_key = (deleted.get("backup") or {}).get("backupKey")
         assert backup_key, f"delete response carries no backup.backupKey to restore from: {deleted}"
@@ -2299,10 +2762,24 @@ class TestRunner:
         # mattered -- it is already deleted; the sweep handles strays).
         new_id = None
         try:
-            restored = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_restore_backup",
-                "args": {"backupKey": backup_key, "confirm": True},
-            })
+            try:
+                restored = self.client.call_tool("hub_manage_code", {
+                    "tool": "hub_restore_backup",
+                    "args": {"backupKey": backup_key, "confirm": True},
+                })
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                if "504" not in str(exc):
+                    raise
+                # The restore response (ruleId/recreated/verified) is the contract under
+                # test and is gone. A restore MAY have minted a rule; adopt it by name so
+                # cleanup reaps it, then skip (never soft-pass the restore contract).
+                time.sleep(3.0)
+                adopted = self._find_visual_rule_id_by_name(name)
+                if adopted:
+                    new_id = adopted
+                    self.created_native_app_ids.append(str(adopted))
+                raise SkipTest("hub_restore_backup response lost to relay 504 -- "
+                               "the recreate/verify contract can't be validated this run") from exc
             # Track the recreated id IMMEDIATELY -- even a failed-verification
             # restore leaves a live recreated app behind to clean up.
             new_id = restored.get("ruleId")
@@ -2341,12 +2818,21 @@ class TestRunner:
         finally:
             # Cleanup the RESTORED rule (the original is already gone). Same delete
             # contract + untrack-after-gone-assert discipline as the lifecycle test.
+            # A relay 504 here is verified by absence so it doesn't mask a real failure
+            # from the try (or strand the rule).
             if new_id:
-                deleted = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_delete_visual_rule", "args": {"appId": new_id, "confirm": True},
-                })
-                assert deleted.get("success") is True, \
-                    f"cleanup delete of restored rule {new_id} failed: {deleted}"
+                dw = self._soft_write(
+                    lambda: self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_delete_visual_rule", "args": {"appId": new_id, "confirm": True}}),
+                    lambda: self._get_visual_rule(new_id).get("success") is False,
+                    "hub_delete_visual_rule (restored-rule cleanup)",
+                )
+                if dw["relayDropped"]:
+                    assert dw["committed"], \
+                        f"restored rule {new_id} still readable after a relay-504 cleanup delete"
+                else:
+                    assert dw["response"].get("success") is True, \
+                        f"cleanup delete of restored rule {new_id} failed: {dw['response']}"
                 gone = self._get_visual_rule(new_id)
                 assert gone.get("success") is False, \
                     f"restored rule {new_id} still readable after cleanup delete: {gone}"
@@ -2381,6 +2867,13 @@ class TestRunner:
             blob = (detail if isinstance(detail, str) else json.dumps(detail)).lower()
             refused = (isinstance(detail, dict) and bool(detail.get("isError"))) \
                 or "confirm" in blob or "required parameter" in blob
+        except requests.HTTPError as e:
+            # A relay 504 can't distinguish "gate refused" from "response dropped" --
+            # skip rather than soft-pass an expected-refusal assertion.
+            if "504" not in str(e):
+                raise
+            raise SkipTest("no-confirm refusal contract lost to relay 504 -- "
+                           "can't distinguish refusal from a dropped response") from e
         except McpError as e:  # also catches McpToolError (subclass): a raised envelope / -32602
             detail = str(e)
             refused = any(s in detail.lower() for s in ("confirm", "safety check", "required parameter"))
@@ -2402,6 +2895,10 @@ class TestRunner:
             blob = res if isinstance(res, str) else json.dumps(res)
             assert "hub_set_visual_rule" in blob, \
                 f"appType=visual_rule should redirect to hub_set_visual_rule, got: {res}"
+        except requests.HTTPError as exc:
+            if "504" not in str(exc):
+                raise
+            raise SkipTest("appType=visual_rule redirect contract lost to relay 504") from exc
         except McpError as exc:
             assert "hub_set_visual_rule" in str(exc), \
                 f"appType=visual_rule error should point at hub_set_visual_rule: {exc}"
@@ -2420,9 +2917,18 @@ class TestRunner:
             assert "hub_set_rule" in str(got.get("note", "")), \
                 f"type-gate note should route to the RM tools: {got}"
 
-            deleted = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_delete_visual_rule", "args": {"appId": rm_id, "confirm": True},
-            })
+            try:
+                deleted = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_delete_visual_rule", "args": {"appId": rm_id, "confirm": True},
+                })
+            except requests.HTTPError as exc:
+                # Expected-refusal call: a 504 can't confirm the gate refused -- skip
+                # rather than soft-pass. (The rule-survival check below would still
+                # catch a regression that actually destroyed the RM rule, but the
+                # refusal CONTRACT itself is what's under test here.)
+                if "504" not in str(exc):
+                    raise
+                raise SkipTest("type-gated delete-refusal contract lost to relay 504") from exc
             assert deleted.get("success") is False, \
                 f"hub_delete_visual_rule must refuse (not delete) an RM rule: {deleted}"
             assert "not a visual rules builder rule" in str(deleted.get("error", "")).lower(), \
@@ -2944,12 +3450,21 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         # Track BEFORE creating: there is no prefix sweep for variables, so a crash
         # between the create landing and a later append would strand it.
         self.created_variable_names.append(var_name)
-        created = self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_create_variable",
-            "args": {"name": var_name, "type": "String", "value": "round-trip-v1", "confirm": True},
-        })
-        assert created.get("success") is True and created.get("source") == "hub", \
-            f"hub_create_variable did not create in the hub namespace: {created}"
+        # CREATE -- the read-back below binds source/value/type, so a relay 504 only
+        # costs the create-response assertion (skipped with a print).
+        cw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_create_variable",
+                "args": {"name": var_name, "type": "String", "value": "round-trip-v1", "confirm": True}}),
+            lambda: True,  # verified by the read-back below
+            "hub_create_variable",
+        )
+        if cw["relayDropped"]:
+            print("    hub_create_variable: success/source assertions skipped (relay 504); verified via read-back")
+        else:
+            created = cw["response"]
+            assert created.get("success") is True and created.get("source") == "hub", \
+                f"hub_create_variable did not create in the hub namespace: {created}"
 
         got = self.client.call_tool("hub_manage_variables", {
             "tool": "hub_get_variable", "args": {"name": var_name},
@@ -2958,14 +3473,24 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         assert got.get("value") == "round-trip-v1", f"hub variable value mismatch: {got}"
         assert got.get("type"), f"hub variable read-back carries no type metadata: {got}"
 
-        deleted = self.client.call_tool("hub_manage_variables", {
-            "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True},
-        })
-        assert deleted.get("success") is True and deleted.get("deleted") is True, \
-            f"hub_delete_variable failed: {deleted}"
-        assert deleted.get("source") == "hub", f"delete resolved the wrong namespace: {deleted}"
-        assert deleted.get("previousValue") == "round-trip-v1", \
-            f"delete did not report the previous value: {deleted}"
+        # DELETE -- response carries deleted/previousValue; the gone-check below binds
+        # the real effect, so a relay 504 skips the response-shape assertions.
+        dw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}}),
+            lambda: self._hub_variable_absent(var_name),
+            "hub_delete_variable",
+        )
+        if dw["relayDropped"]:
+            assert dw["committed"], f"hub variable {var_name} still present after a relay-504 delete (did not commit)"
+            print("    hub_delete_variable: deleted/previousValue assertions skipped (relay 504); verified gone")
+        else:
+            deleted = dw["response"]
+            assert deleted.get("success") is True and deleted.get("deleted") is True, \
+                f"hub_delete_variable failed: {deleted}"
+            assert deleted.get("source") == "hub", f"delete resolved the wrong namespace: {deleted}"
+            assert deleted.get("previousValue") == "round-trip-v1", \
+                f"delete did not report the previous value: {deleted}"
 
         # Verify gone from BOTH namespaces (hub_get_variable searches hub first,
         # then falls back to rule_engine -- a not-found proves both are clean).
@@ -4636,6 +5161,12 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                   f"{self.server_app_id or '?'} were needed mid-run -- the platform's per-app "
                   "load limiter tripped under the accumulated back-to-back load. The retried "
                   "dispatches passed; this is a capacity signal, not a product failure.")
+
+        if self._soft_passes:
+            print(f"\n  [SOFT-PASS] {len(self._soft_passes)} test(s) needed a relay-504 retry "
+                  "(assertions skipped loudly; see the run log):")
+            for line in self._soft_passes:
+                print(f"    {line}")
 
         if self._canary_transitions:
             print("\n  Dispatch canary timeline (load-limiter block/recovery moments):")
