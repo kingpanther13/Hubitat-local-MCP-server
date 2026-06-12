@@ -6735,6 +6735,306 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.partial == true
     }
 
+    def "addTrigger Custom Attribute enum attribute + state-change comparator on a picker WITHOUT a change option surfaces a genuine skip"() {
+        // Defensive branch coverage of the trigger-row skip path: the picker-lacks-
+        // change-option counterfactual. Live on the test hub the trigger-row tstate<N>
+        // picker DOES offer a change-equivalent option, so the trigger surface ROUTES
+        // (see the Map-option route spec, which matches live, and the e2e trigger
+        // scenario). This fixture deliberately models the OTHER shape -- a picker with
+        // on/off only, no change option -- to pin the skip branch that production still
+        // contains for attributes/firmwares whose trigger picker lacks the option (the
+        // shape the Required Expression surface exhibits live). When the comparator is
+        // unrepresentable, the fix records a comparator_not_representable_for_enum_attribute
+        // skip that flips partial and emits a repairHint, and never claims the comparator
+        // landed -- rather than the pre-fix silent success:true/partial:false.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrSchemaJson(100, fetchSeq, false)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*changed*"],
+            confirm: true
+        ])
+
+        then: "the comparator is NOT falsely claimed applied"
+        !(result.settingsApplied as List).contains("ReltDev1")
+
+        and: "the unrepresentable comparator is NOT POSTed into a hidden field"
+        !posts.any { p -> (p.body as Map).containsKey("settings[ReltDev1]") }
+
+        and: "a genuine skip records the unrepresentable comparator and flips partial"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        result.partial == true
+
+        and: "an actionable repair hint names the unrepresentable comparator"
+        (result.repairHints as List).any { it?.toString()?.contains("cannot be represented") && it?.toString()?.contains("native capability") }
+    }
+
+    def "addTrigger Custom Attribute free attribute + state-change comparator writes the comparator normally"() {
+        // The sibling free-valued-attribute path must keep working: a free attribute
+        // reveals the comparator ReltDev<N>, and '*changed*' is itself the comparator
+        // value (no RHS). It must land in ReltDev1 -- not skip, not flip partial via
+        // a not-representable skip.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrSchemaJson(100, fetchSeq, true)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Custom Attribute", deviceIds: [2], attribute: "fixtureMode", comparator: "*changed*"],
+            confirm: true
+        ])
+
+        then: "the comparator lands in ReltDev1 (no value needed for a state-change comparator)"
+        result.success == true
+        (result.settingsApplied as List).contains("ReltDev1")
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+
+        and: "the state-change comparator value is POSTed verbatim"
+        posts.any { p -> (p.body as Map)["settings[ReltDev1]"] == "*changed*" }
+    }
+
+    def "addTrigger Custom Attribute enum picker offering a Map-shaped change option routes the clean value, not the stringified map"() {
+        // The hub CAN return enum-picker options as value-key Maps ([value:'*changed*',
+        // text:'changed']), not just bare strings. When the picker offers a
+        // change-equivalent option, the fix must route the CLEAN value ('*changed*'),
+        // never the toString() of the Map ('[value:*changed*, text:changed]'), which would
+        // corrupt the picker write and relocate the #199 bug onto the fallback. This also
+        // exercises the otherwise-untested route-to-change-option branch.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            // Enum attribute: comparator ReltDev1 hidden, value picker tstate1 exposed --
+            // and tstate1's options are VALUE-KEY MAPS, one of which is change-equivalent.
+            def inputs = [
+                [name: "tCapab1", type: "enum", options: ["Custom Attribute"]],
+                [name: "tDev1", type: "capability.*", multiple: true],
+                [name: "tCustomAttr1", type: "enum", options: ["switch", "fixtureMode"]],
+                [name: "tstate1", type: "enum", options: [[value: "on", text: "On"], [value: "off", text: "Off"], [value: "*changed*", text: "changed"]]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ]
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*changed*"],
+            confirm: true
+        ])
+
+        then: "the CLEAN change value lands in the value picker tstate1 (not the stringified Map)"
+        posts.any { p -> (p.body as Map)["settings[tstate1]"] == "*changed*" }
+        !posts.any { p -> (p.body as Map)["settings[tstate1]"]?.toString()?.startsWith("[value:") }
+
+        and: "no not-representable skip is produced and partial stays false"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        result.partial == false
+    }
+
+    def "addTrigger Custom Attribute enum + '*changed*' WITH an explicit value records an informational skip (value wins, partial stays false)"() {
+        // #6 honest-drop pin. A contradictory request -- a no-RHS state-change comparator
+        // ('*changed*') AND an explicit value ('on') -- on an enum attribute. The value lands
+        // in tstate1 and the rule works as an equals-check, so the dropped change-comparator
+        // intent is reported via an INFORMATIONAL skip (state_change_comparator_ignored_explicit_value)
+        // that must NOT flip partial (it is in _rmInformationalSkippedReasons()). Pre-fix the
+        // change intent was dropped SILENTLY with no skip at all.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrSchemaJson(100, fetchSeq, false)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*changed*", state: "on"],
+            confirm: true
+        ])
+
+        then: "the explicit value wins and lands in tstate1"
+        posts.any { p -> (p.body as Map)["settings[tstate1]"] == "on" }
+
+        and: "an informational skip records the dropped change-comparator intent, but partial stays false"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" && it?.reason == "state_change_comparator_ignored_explicit_value" }
+        result.partial == false
+
+        and: "no not-representable skip (the value DID land, so it is not unrepresentable)"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+    }
+
+    def "addTrigger Custom Attribute enum picker offering BOTH became-true and became-false routes the EXACT requested token, not the first"() {
+        // Exact-token routing pin. A picker offering both 'became true' and 'became false'
+        // must route a '*became false*' request to the EXACT match, never the first
+        // RHS-optional option. The fuzzy family gate (_rmComparatorIsRhsOptional) would
+        // route to whichever option appears first ('became true' here); the fix routes via
+        // _rmComparatorTokensMatch (exact equality). Reverting to the family-find re-selects
+        // 'became true', failing this spec.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            // Enum attribute: comparator ReltDev1 hidden, value picker tstate1 exposed with
+            // BOTH change-equivalent options, 'became true' listed FIRST.
+            def inputs = [
+                [name: "tCapab1", type: "enum", options: ["Custom Attribute"]],
+                [name: "tDev1", type: "capability.*", multiple: true],
+                [name: "tCustomAttr1", type: "enum", options: ["switch", "fixtureMode"]],
+                [name: "tstate1", type: "enum", options: ["*became true*", "*became false*"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ]
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*became false*"],
+            confirm: true
+        ])
+
+        then: "the EXACT requested option lands in tstate1, never the first RHS-optional option"
+        posts.any { p -> (p.body as Map)["settings[tstate1]"] == "*became false*" }
+        !posts.any { p -> (p.body as Map)["settings[tstate1]"] == "*became true*" }
+
+        and: "no not-representable skip is produced and partial stays false"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        result.partial == false
+    }
+
+    def "addTrigger Custom Attribute enum picker whose only change-ish option is 'unchanged' does NOT false-match a '*changed*' request -- it skips"() {
+        // Exact-token NON-match pin. An option containing 'changed' as a substring
+        // ('unchanged') satisfies the fuzzy family gate but is NOT the requested token, so
+        // it must NOT be routed. With no exact match the comparator is unrepresentable and
+        // the not-representable skip fires. The fuzzy-find would mis-route to 'unchanged';
+        // the exact-match gate refuses it.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            def inputs = [
+                [name: "tCapab1", type: "enum", options: ["Custom Attribute"]],
+                [name: "tDev1", type: "capability.*", multiple: true],
+                [name: "tCustomAttr1", type: "enum", options: ["switch", "fixtureMode"]],
+                [name: "tstate1", type: "enum", options: ["on", "off", "unchanged"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ]
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*changed*"],
+            confirm: true
+        ])
+
+        then: "'unchanged' is NOT routed -- the substring-match trap is avoided"
+        !posts.any { p -> (p.body as Map)["settings[tstate1]"] == "unchanged" }
+
+        and: "the unrepresentable comparator surfaces as a genuine skip + partial"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "ReltDev1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        result.partial == true
+    }
+
     // ---------- addTrigger.condition (conditional-trigger) Custom Attribute routing ----------
     //
     // The conditional-trigger sub-wizard (_rmBuildCondition) uses underscore
@@ -6945,6 +7245,201 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.partial == true
     }
 
+    def "addTrigger conditional Custom Attribute enum attribute + state-change comparator with no value surfaces a genuine skip"() {
+        // Conditional-trigger sibling of the #199 silent-drop guard. The enum
+        // attribute reveals state_1 (on/off) and hides RelrDev_1; a '*changed*'
+        // comparator has no RHS and the picker has no change-equivalent option, so
+        // the comparator is unrepresentable. _rmBuildCondition must record a genuine
+        // comparator_not_representable_for_enum_attribute skip (flips partial via the
+        // trigger row's shared accounting) rather than dropping it as clean success.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrConditionSchemaJson(100, fetchSeq, false)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
+                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*changed*"]],
+            confirm: true
+        ])
+
+        then: "the comparator is neither claimed applied nor POSTed into a hidden field"
+        !(result.settingsApplied as List).contains("RelrDev_1")
+        !posts.any { p -> (p.body as Map).containsKey("settings[RelrDev_1]") }
+
+        and: "a genuine not-representable skip flips partial"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        result.partial == true
+
+        and: "an actionable repair hint names the unrepresentable comparator and the native-capability alternative"
+        (result.repairHints as List).any { it?.toString()?.contains("cannot be represented") && it?.toString()?.contains("native capability") }
+    }
+
+    // Conditional-trigger schema whose enum condition value picker (state_1) carries
+    // caller-supplied options -- used by the exact-routing + unchanged-negative-pin mirrors.
+    private String customAttrConditionSchemaJsonOpts(int ruleId, int seqNum, List state1Options) {
+        def inputs = [
+            [name: "isCondTrig.1", type: "bool"],
+            [name: "condTrig.1", type: "enum", options: ["": "Click to set", "a": "--> New Condition"]],
+            [name: "rCapab_1", type: "enum", options: ["Custom Attribute"]],
+            [name: "rDev_1", type: "capability.*", multiple: true],
+            [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
+            [name: "state_1", type: "enum", options: state1Options],
+            [name: "not1", type: "bool"],
+            [name: "tCapab2", type: "enum", options: ["Switch"]],
+            [name: "tDev2", type: "capability.switch", multiple: true],
+            [name: "tstate2", type: "enum", options: ["on", "off"]],
+            [name: "isCondTrig.2", type: "bool"],
+            [name: "condTrig.2", type: "enum", options: ["": "Click to set"]],
+            [name: "hasAll", type: "button"]
+        ]
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                         sections: [[title: "", input: inputs, paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:],
+            childApps: []
+        ])
+    }
+
+    def "addTrigger conditional Custom Attribute enum picker offering BOTH became-true and became-false routes the EXACT requested token"() {
+        // Sibling-surface mirror of the trigger-row exact-routing spec, on the
+        // _rmBuildCondition (conditional-trigger condition) path. The condition value picker
+        // state_1 offers both change options; a '*became false*' request must route to the
+        // EXACT match, never the first RHS-optional option.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrConditionSchemaJsonOpts(100, fetchSeq, ["*became true*", "*became false*"])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
+                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*became false*"]],
+            confirm: true
+        ])
+
+        then: "the EXACT requested option lands in state_1, never the first RHS-optional option"
+        posts.any { p -> (p.body as Map)["settings[state_1]"] == "*became false*" }
+        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "*became true*" }
+
+        and: "no not-representable skip is produced"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+    }
+
+    def "addTrigger conditional Custom Attribute enum picker whose only change-ish option is 'unchanged' does NOT false-match a '*changed*' request -- it skips"() {
+        // Sibling-surface mirror of the trigger-row 'unchanged' negative pin, on the
+        // _rmBuildCondition path. 'unchanged' satisfies the fuzzy family gate but is NOT
+        // the requested token, so it must NOT be routed; with no exact match the
+        // not-representable skip fires.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrConditionSchemaJsonOpts(100, fetchSeq, ["on", "off", "unchanged"])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
+                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*changed*"]],
+            confirm: true
+        ])
+
+        then: "'unchanged' is NOT routed -- the substring-match trap is avoided"
+        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "unchanged" }
+
+        and: "the unrepresentable comparator surfaces as a genuine skip + partial"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        result.partial == true
+    }
+
+    def "addTrigger conditional Custom Attribute enum + '*changed*' WITH an explicit value records an informational skip (value wins, partial stays false)"() {
+        // #6 honest-drop pin on the _rmBuildCondition (conditional-trigger condition) path --
+        // the second of the four surfaces that emit the informational skip. A contradictory
+        // request (no-RHS '*changed*' AND an explicit value 'on') on an enum condition
+        // attribute: the value lands in state_1 and the condition works as an equals-check, so
+        // the dropped change intent is reported via the informational
+        // state_change_comparator_ignored_explicit_value skip that must NOT flip partial.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            customAttrConditionSchemaJsonOpts(100, fetchSeq, ["on", "off"])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [2], state: "on",
+                         condition: [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*changed*", state: "on"]],
+            confirm: true
+        ])
+
+        then: "the explicit value wins and lands in state_1"
+        posts.any { p -> (p.body as Map)["settings[state_1]"] == "on" }
+
+        and: "an informational skip records the dropped change-comparator intent, but partial stays false"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "state_change_comparator_ignored_explicit_value" }
+        result.partial == false
+
+        and: "no not-representable skip (the value DID land, so it is not unrepresentable)"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+    }
+
     // ---------- Custom Attribute comparator-guard fetch-failure fallback ----------
     //
     // The enum-vs-free routing re-fetches selectTriggers after writing the
@@ -7033,6 +7528,118 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         skipped[0].key == "ReltDev1"
         skipped[0].reason == "comparator_force_write_failed"
         skipped[0].value == "="
+    }
+
+    def "_rmComparatorIsRhsOptional classifies the no-RHS state-change comparator family"() {
+        // Authoritative predicate for the comparator family that carries no right-hand
+        // value. It is the single source of truth shared by the Variable RHS-required
+        // guard and the four enum-attribute not-representable checks; a value comparator
+        // must NOT be misclassified as RHS-optional (that would mask a missing value).
+        expect:
+        script._rmComparatorIsRhsOptional(comparator) == expected
+
+        where:
+        comparator   | expected
+        "*changed*"  | true
+        "*became*"   | true
+        "*became true*"  | true
+        "*became false*" | true
+        "*changed*".toUpperCase() | true
+        "="          | false
+        "≠"          | false
+        ">"          | false
+        "*increased*"| false
+        "*decreased*"| false
+        "increased by"   | false
+        "in"         | false
+        null         | false
+    }
+
+    def "_rmReadPickerOptionStrings normalizes every picker option container/shape to value strings"() {
+        // Direct edge-table for the shared picker-option reader. The hub renders enum
+        // options as bare strings, a LIST of value-key Maps, OR a MAP container keyed by
+        // value. All three (and the null/missing shapes) must yield clean value strings --
+        // never a stringified Map ("[value:on, text:On]") nor a Map.Entry ("on=On"), either
+        // of which would corrupt the route probe AND the state_<N> domain validator that
+        // shares this helper.
+        // Both-ways pending (orchestrator).
+        expect:
+        script._rmReadPickerOptionStrings(picker) == expected
+
+        where:
+        picker                                                                | expected
+        [options: ["on", "off"]]                                              | ["on", "off"]
+        [options: [[value: "on", text: "On"], [value: "off", text: "Off"]]]   | ["on", "off"]
+        [options: [[text: "On"], [value: "off"]]]                             | ["off"]
+        [options: ["on": "On", "off": "Off"]]                                 | ["on", "off"]
+        [options: ["on": "On", "*changed*": "changed"]]                       | ["on", "*changed*"]
+        [options: ["on", [value: "off"], "*changed*"]]                        | ["on", "off", "*changed*"]
+        // Scalar (bare-String) options must be treated as ONE option, never char-iterated
+        // into ["o","n"]. The pre-hardening .collect would shatter the String.
+        [options: "on"]                                                       | ["on"]
+        [options: "*changed*"]                                                | ["*changed*"]
+        [options: ""]                                                         | []
+        [options: []]                                                         | []
+        [options: null]                                                       | []
+        null                                                                  | []
+    }
+
+    def "_rmComparatorTokensMatch is exact-token equality, not the fuzzy family gate"() {
+        // The ROUTE gate. _rmComparatorIsRhsOptional answers "no-RHS family?" (fuzzy
+        // substring); _rmComparatorTokensMatch decides WHICH option a request routes to and
+        // must require exact equality after stripping the '*...*' wrapping + case-folding.
+        // 'became false' must NOT match 'became true'; 'unchanged' must NOT match a
+        // '*changed*' request; wrapped/bare/case variants of the SAME token must match.
+        // Both-ways pending (orchestrator).
+        expect:
+        script._rmComparatorTokensMatch(requested, candidate) == expected
+
+        where:
+        requested        | candidate         | expected
+        "*became false*" | "became false"    | true
+        "*became false*" | "*became false*"  | true
+        "*became false*" | "became true"     | false
+        "*became true*"  | "*became false*"  | false
+        "*changed*"      | "changed"         | true
+        "*changed*"      | "*CHANGED*"       | true
+        "changed"        | "*changed*"       | true
+        // Multi-word both-sides case-fold: a one-sided fold regression would FAIL these
+        // (lowercase request vs UPPERCASE picker option, and vice versa).
+        "*became false*" | "*BECAME FALSE*"  | true
+        "*BECAME FALSE*" | "*became false*"  | true
+        "*became false*" | "*BECAME TRUE*"   | false
+        "*changed*"      | "unchanged"       | false
+        "unchanged"      | "*changed*"       | false
+        "*changed*"      | "became true"     | false
+        null             | "*changed*"       | false
+        "*changed*"      | null              | false
+        // All-asterisk tokens strip to "" and must be re-nulled, so two emptied tokens
+        // do NOT false-match each other (empty-vs-empty). A revert of the re-null guard
+        // would make these true.
+        "*"              | "**"              | false
+        "**"             | "*"               | false
+        "*"              | "*changed*"       | false
+    }
+
+    def "_rmNotRepresentableEnumComparatorHint is the single canonical wording -- names the comparator, attribute, workaround + concrete example"() {
+        // #4 unification pin. The three emit sites (trigger / action / required-expression)
+        // hand-duplicated this hint and drifted (some omitted the capability:'Switch'
+        // example). They now all call this one helper, so pinning its wording here pins all
+        // three. Asserts the load-bearing substrings the route/skip integration specs match.
+        when:
+        def hint = script._rmNotRepresentableEnumComparatorHint("switch", "*changed*")
+
+        then: "names the requested comparator and the offending attribute"
+        hint.contains("'*changed*'")
+        hint.contains("'switch'")
+
+        and: "states the limitation and the native-capability workaround WITH a concrete example"
+        hint.contains("cannot be represented")
+        hint.contains("native capability")
+        hint.contains("capability:'Switch'")
+
+        and: "ASCII-only"
+        hint.every { (it as char) < 128 }
     }
 
     def "_rmWriteSubPageField: a write into a hidden field with a STABLE render verifies as NOT persisted (no renderShifted mask)"() {
@@ -10146,6 +10753,384 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
     }
 
+    def "addRequiredExpression Custom Attribute walker (STPage) enum attribute + '*changed*' with no value surfaces a genuine skip"() {
+        // #199 walker (STPage) surface guard. The enum attribute reveals state_1 (on/off,
+        // no change-equivalent option) and hides RelrDev_1. A '*changed*' comparator has no
+        // RHS and cannot ride the value picker, so _rmWalkConditionReveal must record a
+        // comparator_not_representable_for_enum_attribute skip (flips partial + repairHint),
+        // NOT report a clean success. The shared-predicate both-ways can't catch a walker-only
+        // revert, so this pins the walker path directly.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF S1 reports switch THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            def inputs = [
+                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                // Enum attribute: value picker state_1 (on/off only, no change option) is
+                // revealed; comparator RelrDev_1 stays hidden.
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "switch",
+                comparator: "*changed*"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the comparator is neither written nor falsely claimed applied"
+        !(result.settingsApplied as List).contains("RelrDev_1")
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+
+        and: "a genuine not-representable skip flips partial"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        result.partial == true
+
+        and: "an actionable repair hint names the unrepresentable comparator"
+        (result.repairHints as List).any { it?.toString()?.contains("cannot be represented") }
+    }
+
+    def "addRequiredExpression walker (STPage) enum picker offering BOTH became-true and became-false routes the EXACT requested token"() {
+        // Sibling-surface mirror of the trigger-row exact-routing spec, on the STPage
+        // reveal walker (_rmWalkConditionReveal via writeST). The enum value picker state_1
+        // offers both change options; a '*became false*' request must route to the EXACT
+        // match, never the first RHS-optional option.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF S1 reports switch THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            def inputs = [
+                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                // Enum value picker offering BOTH change options, 'became true' FIRST.
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["*became true*", "*became false*"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "switch",
+                comparator: "*became false*"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the EXACT requested option lands in state_1, never the first RHS-optional option"
+        posts.any { p -> (p.body as Map)["settings[state_1]"] == "*became false*" }
+        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "*became true*" }
+
+        and: "no not-representable skip is produced"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+    }
+
+    def "addRequiredExpression walker (STPage) enum picker whose only change-ish option is 'unchanged' does NOT false-match a '*changed*' request -- it skips"() {
+        // Sibling-surface mirror of the trigger-row 'unchanged' negative pin, on the STPage
+        // walker. 'unchanged' satisfies the fuzzy family gate but is NOT the requested token,
+        // so it must NOT be routed; with no exact match the not-representable skip fires.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF S1 reports switch THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            def inputs = [
+                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                // Enum value picker with a substring-trap option ('unchanged') but NO exact
+                // '*changed*' option.
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off", "unchanged"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "switch",
+                comparator: "*changed*"
+            ]]],
+            confirm: true
+        ])
+
+        then: "'unchanged' is NOT routed -- the substring-match trap is avoided"
+        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "unchanged" }
+
+        and: "the unrepresentable comparator surfaces as a genuine skip + partial"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        result.partial == true
+    }
+
+    def "addRequiredExpression walker (STPage) enum + '*changed*' WITH an explicit value records an informational skip (value wins, partial stays false)"() {
+        // #6 honest-drop pin on the _rmWalkConditionReveal Site A enum branch (STPage) --
+        // the third of the four surfaces that emit the informational skip, reached via the
+        // relrReveal.visibleNames.contains(stateKey) enum path. A contradictory request
+        // (no-RHS '*changed*' AND explicit value 'on'): the value lands in state_1 and the
+        // condition works as an equals-check, so the dropped change intent is reported via the
+        // informational state_change_comparator_ignored_explicit_value skip (no partial flip).
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF S1 reports switch THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            def inputs = [
+                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                // Enum value picker (on/off, no change option); the explicit value lands here.
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "switch",
+                comparator: "*changed*",
+                state: "on"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the explicit value wins and lands in state_1"
+        posts.any { p -> (p.body as Map)["settings[state_1]"] == "on" }
+
+        and: "an informational skip records the dropped change-comparator intent, but partial stays false"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "state_change_comparator_ignored_explicit_value" }
+        result.partial == false
+
+        and: "no not-representable skip (the value DID land) and RelrDev_1 never POSTed"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+    }
+
     def "addRequiredExpression Custom Attribute walker on a free attribute still writes RelrDev_1 (negative pin)"() {
         // Negative pin for the enum walker fix: a genuinely free-valued attribute
         // reveals RelrDev_1 (progressive disclosure: rCustomAttr_1 -> RelrDev_1 ->
@@ -10347,6 +11332,188 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
     }
 
+    def "addRequiredExpression walker Site B no-RHS: a standard capability + enum attribute + '*changed*' ROUTES via a matching change option (partial=false)"() {
+        // Site B no-RHS ROUTE arm coverage. Site B (the walker's default block, a standard
+        // capability carrying a custom attribute) gained a new no-RHS route+skip pair that
+        // the value-comparator Site B specs never exercise. Here the enum value picker
+        // offers a change-equivalent option, so a '*changed*' request must ROUTE to it
+        // (state_1 = '*changed*', partial=false), never skip. A revert of the route arm
+        // would drop the value and fail this spec.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF T1 thermostatMode THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            def inputs = [
+                [name: "cond",          type: "enum",                   options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",                   options: ["Custom Attribute", "Temperature"]],
+                [name: "rDev_1",        type: "capability.temperature", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",                   options: ["thermostatMode", "temperature"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                // Enum attribute -> state_1 revealed (with a change-equivalent option), RelrDev_1 hidden.
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["comfort", "eco", "*changed*"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                attribute: "thermostatMode",
+                comparator: "*changed*"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the change option ROUTES into state_1 and the path stays partial=false"
+        result.partial == false
+        posts.any { p -> (p.body as Map)["settings[state_1]"] == "*changed*" }
+
+        and: "no not-representable skip and RelrDev_1 never POSTed"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+    }
+
+    def "addRequiredExpression walker Site B no-RHS: a standard capability + enum attribute + '*changed*' with NO change option SKIPS (partial=true)"() {
+        // Site B no-RHS SKIP arm coverage. Same Site B path, but the enum value picker
+        // offers ONLY discrete states (no change option), so the no-RHS '*changed*'
+        // comparator is unrepresentable -> comparator_not_representable_for_enum_attribute
+        // skip + partial. A revert of the skip arm ships clean-but-broken success.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF T1 thermostatMode THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            def inputs = [
+                [name: "cond",          type: "enum",                   options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",                   options: ["Custom Attribute", "Temperature"]],
+                [name: "rDev_1",        type: "capability.temperature", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",                   options: ["thermostatMode", "temperature"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                // Enum attribute -> state_1 revealed with NO change option, RelrDev_1 hidden.
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["comfort", "eco"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Temperature",
+                deviceIds: [8],
+                attribute: "thermostatMode",
+                comparator: "*changed*"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the unrepresentable comparator surfaces as a genuine skip + partial"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        result.partial == true
+
+        and: "no change option was routed and RelrDev_1 never POSTed"
+        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "*changed*" }
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+    }
+
     def "addAction ifThen walker Site A: an enum Custom Attribute lands the value in state_1 with no RelrDev write and partial=false"() {
         // doActPage mirror of the STPage Site A enum-success spec. The same shared
         // walker reaches this through a DIFFERENT write closure: STPage injects
@@ -10439,6 +11606,670 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "RelrDev_1 was never written -- the comparator field the enum render hid"
         !(result.settingsApplied as List).contains("RelrDev_1")
         !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+    }
+
+    def "addAction ifThen walker (doActPage) enum Custom Attribute + '*changed*' with no value surfaces a genuine skip"() {
+        // #199 walker (doActPage) surface guard -- the doActPage mirror of the STPage
+        // '*changed*' enum spec, reached through the writeAct closure (the other shared-walker
+        // write path). The enum attribute reveals state_1 (on/off, no change option) and hides
+        // RelrDev_1; a no-RHS '*changed*' comparator is unrepresentable, so the walker must
+        // record a comparator_not_representable_for_enum_attribute skip (flips partial +
+        // repairHint via _rmAddAction's envelope), NOT a clean success.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        def daSeq = 0
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            def inputs = [
+                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond",          type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF switch reports THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF switch reports THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Custom Attribute",
+                    deviceIds: [8],
+                    attribute: "switch",
+                    comparator: "*changed*"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the comparator is neither written nor falsely claimed applied"
+        !(result.settingsApplied as List).contains("RelrDev_1")
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+
+        and: "a genuine not-representable skip flips partial"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        result.partial == true
+
+        and: "an actionable repair hint names the unrepresentable comparator"
+        (result.repairHints as List).any { it?.toString()?.contains("cannot be represented") }
+    }
+
+    def "addAction ifThen walker (doActPage) enum picker offering BOTH became-true and became-false routes the EXACT requested token"() {
+        // Sibling-surface mirror of the trigger-row exact-routing spec, on the doActPage
+        // walker (writeAct path). The enum value picker state_1 offers both change options;
+        // a '*became false*' request must route to the EXACT match, never the first
+        // RHS-optional option.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        def daSeq = 0
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            def inputs = [
+                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond",          type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["*became true*", "*became false*"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF switch reports THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF switch reports THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Custom Attribute",
+                    deviceIds: [8],
+                    attribute: "switch",
+                    comparator: "*became false*"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the EXACT requested option lands in state_1, never the first RHS-optional option"
+        posts.any { p -> (p.body as Map)["settings[state_1]"] == "*became false*" }
+        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "*became true*" }
+
+        and: "no not-representable skip is produced"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+    }
+
+    def "addAction ifThen walker (doActPage) enum picker whose only change-ish option is 'unchanged' does NOT false-match a '*changed*' request -- it skips"() {
+        // Sibling-surface mirror of the trigger-row 'unchanged' negative pin, on the
+        // doActPage walker. 'unchanged' satisfies the fuzzy family gate but is NOT the
+        // requested token, so it must NOT be routed; with no exact match the skip fires.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        def daSeq = 0
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            def inputs = [
+                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond",          type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off", "unchanged"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF switch reports THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF switch reports THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Custom Attribute",
+                    deviceIds: [8],
+                    attribute: "switch",
+                    comparator: "*changed*"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "'unchanged' is NOT routed -- the substring-match trap is avoided"
+        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "unchanged" }
+
+        and: "the unrepresentable comparator surfaces as a genuine skip + partial"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        result.partial == true
+    }
+
+    def "addAction ifThen walker (doActPage) enum picker with a Map-shaped change option routes the clean value (per-surface Map guard)"() {
+        // #6 per-surface Map-CONTAINER guard on the doActPage walker -- the writeAct-path
+        // mirror of the STPage Map-shaped walker spec. The enum value picker state_1's
+        // options are a MAP CONTAINER keyed by value (["on":"On", "*changed*":"changed"]),
+        // the shape _rmReadPickerOptionStrings must read via .keySet() rather than corrupt
+        // into "on=On" Map.Entry strings. Guards the doActPage surface against a per-surface
+        // revert of the container handling.
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        def daSeq = 0
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            def inputs = [
+                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond",          type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                // MAP CONTAINER options: the change-equivalent value is the KEY '*changed*'.
+                inputs = inputs + [[name: "state_1", type: "enum",
+                                    options: ["on": "On", "off": "Off", "*changed*": "changed"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF switch reports THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF switch reports THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Custom Attribute",
+                    deviceIds: [8],
+                    attribute: "switch",
+                    comparator: "*changed*"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the CLEAN change value lands in state_1, never a stringified Map.Entry"
+        posts.any { p -> (p.body as Map)["settings[state_1]"] == "*changed*" }
+        !posts.any { p -> (p.body as Map)["settings[state_1]"]?.toString()?.contains("=") }
+
+        and: "no not-representable skip is produced and partial stays false"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        result.partial == false
+    }
+
+    def "addRequiredExpression walker (STPage) enum '*changed*': a THROWING reveal re-fetch force-writes (degrades) instead of ROUTING the change option"() {
+        // #1/#2 STPage NON-VACUOUS guard. The enum no-RHS path reads the value picker's
+        // options from the schema the preceding relrReveal step ALREADY fetched (no separate
+        // probe). To make the throw-degradation distinguishable from the normal path, the
+        // picker here OFFERS a matching change option: the NON-throwing path would ROUTE
+        // ('*changed*' into state_1, partial=false). Injecting a throw on the reveal re-fetch
+        // (the 2nd post-attr STPage fetch, the one that exposes the picker) sends the walker
+        // down the outer force-write fallback instead -- partial=true, a
+        // comparator_force_written_unverified skip, RelrDev_1 force-written, and crucially the
+        // change option is NOT routed. throw-vs-no-throw = force-write-vs-route, so a spec that
+        // skipped the try/catch entirely (taking the route) would FAIL the force-write
+        // assertions. Reverting the walker's degrade-never-abort contract re-introduces the
+        // propagated abort, failing noExceptionThrown.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        int postAttrStFetches = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF S1 reports switch THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            // The attr write's own _rmWriteSubPageField does a leading fetch (pre-write) and a
+            // trailing verify (1st post-write fetch). The revealStep re-fetch that exposes the
+            // picker is the 2nd post-write fetch -- fail exactly that one so the throw lands on
+            // the reveal (force-write path), not the verify.
+            if (rCustomAttrWritten) {
+                postAttrStFetches++
+                if (postAttrStFetches == 2) return ''
+            }
+            def inputs = [
+                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                // Picker OFFERS a matching change option: the non-throwing path would ROUTE.
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off", "*changed*"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${postAttrStFetches}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "switch",
+                comparator: "*changed*"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the throwing reveal did NOT propagate -- the build completed and stayed success"
+        noExceptionThrown()
+        result != null
+        result.success == true
+
+        and: "the throw took the force-write fallback (partial), NOT the route -- distinguishable"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_force_written_unverified" }
+        (result.settingsApplied as List).contains("RelrDev_1")
+        result.partial == true
+
+        and: "the change option was NOT routed -- proving the throw path ran, not the normal route"
+        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "*changed*" }
+    }
+
+    def "addAction ifThen walker (doActPage) enum '*changed*': a THROWING reveal re-fetch force-writes (degrades) instead of ROUTING the change option"() {
+        // #1/#2 doActPage NON-VACUOUS guard -- the writeAct-path mirror of the STPage spec.
+        // Same shared walker, reached through addAction ifThen; the breadcrumb the force-write
+        // posts is the doActPage '["mainPage"]' arm. The picker OFFERS a matching change
+        // option so the non-throwing path would ROUTE ('*changed*' into state_1,
+        // partial=false); injecting a throw on the reveal re-fetch (the 2nd post-attr
+        // doActPage fetch, the one that exposes the picker) sends the walker down the
+        // force-write fallback instead -- partial=true, comparator_force_written_unverified,
+        // RelrDev_1 force-written, change option NOT routed. throw-vs-no-throw =
+        // force-write-vs-route, distinguishable. Reverting the degrade-never-abort contract
+        // re-introduces the propagated abort, failing noExceptionThrown.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        int postAttrDaFetches = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            // The attr write's own _rmWriteSettingOnPage does a leading fetch (pre-write) and a
+            // trailing verify (1st post-write fetch). The revealStep re-fetch that exposes the
+            // picker is the 2nd post-write fetch -- fail exactly that one.
+            if (rCustomAttrWritten) {
+                postAttrDaFetches++
+                if (postAttrDaFetches == 2) return ''
+            }
+            def inputs = [
+                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond",          type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                // Picker OFFERS a matching change option: the non-throwing path would ROUTE.
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["on", "off", "*changed*"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF switch reports THEN (seq ${postAttrDaFetches})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF switch reports THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Custom Attribute",
+                    deviceIds: [8],
+                    attribute: "switch",
+                    comparator: "*changed*"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the throwing reveal did NOT propagate -- the build completed and stayed success"
+        noExceptionThrown()
+        result != null
+        result.success == true
+
+        and: "the throw took the force-write fallback (partial), NOT the route -- distinguishable"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_force_written_unverified" }
+        (result.settingsApplied as List).contains("RelrDev_1")
+        result.partial == true
+
+        and: "the change option was NOT routed -- proving the throw path ran, not the normal route"
+        !posts.any { p -> (p.body as Map)["settings[state_1]"] == "*changed*" }
+    }
+
+    def "addRequiredExpression walker (STPage) enum picker with a Map-shaped change option routes the clean value (per-surface Map guard)"() {
+        // #7 per-surface Map-option guard. The trigger surface already pins the Map-shaped
+        // picker option; the WALKER surfaces share the _rmReadPickerOptionStrings reader, so
+        // this guards the STPage walker against a per-surface revert that re-corrupts a
+        // value-key Map option ("[value:*changed*, text:changed]") into the route probe.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph",
+                                                 description: "IF S1 reports switch THEN"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        def stSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stSeq++
+            def inputs = [
+                [name: "cond",          type: "enum",              options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum",              options: ["Custom Attribute", "Switch"]],
+                [name: "rDev_1",        type: "capability.sensor", multiple: true],
+                [name: "rCustomAttr_1", type: "enum",              options: ["switch", "fixtureMode"]],
+                [name: "hasAll",        type: "button"],
+                [name: "doneST",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                // Enum attribute: value picker state_1 with VALUE-KEY MAP options, one of
+                // which is the change-equivalent (must route the clean '*changed*', never the
+                // stringified Map).
+                inputs = inputs + [[name: "state_1", type: "enum",
+                                    options: [[value: "on", text: "On"], [value: "off", text: "Off"], [value: "*changed*", text: "changed"]]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["seq ${stSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Custom Attribute",
+                deviceIds: [8],
+                attribute: "switch",
+                comparator: "*changed*"
+            ]]],
+            confirm: true
+        ])
+
+        then: "the CLEAN change value lands in state_1, never the stringified Map"
+        posts.any { p -> (p.body as Map)["settings[state_1]"] == "*changed*" }
+        !posts.any { p -> (p.body as Map)["settings[state_1]"]?.toString()?.startsWith("[value:") }
+
+        and: "no not-representable skip is produced and partial stays false"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
+        result.partial == false
     }
 
     def "addAction ifThen walker Site B: a standard capability carrying an enum attribute suppresses RelrDev_1 and stays partial=false"() {
@@ -10536,6 +12367,100 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "RelrDev_1 was neither applied nor POSTed -- the comparator the enum render hid"
         !(result.settingsApplied as List).contains("RelrDev_1")
+        !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
+    }
+
+    def "addAction ifThen walker Site B + '*changed*' WITH an explicit value records an informational skip (value wins, partial stays false)"() {
+        // #6 honest-drop pin on the _rmWalkConditionReveal Site B (afterAttrInputs) path
+        // reached via addAction ifThen (doActPage) -- the fourth of the four surfaces that
+        // emit the informational skip. A standard capability (Temperature) carrying an enum
+        // attribute, with a contradictory no-RHS '*changed*' comparator AND an explicit value
+        // 'comfort': the value lands in state_1 and the condition works as an equals-check, so
+        // the dropped change intent is reported via the informational
+        // state_change_comparator_ignored_explicit_value skip (no partial flip).
+        given:
+        enableWrite()
+        boolean rCustomAttrWritten = false
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null && key == "rCustomAttr_1") rCustomAttrWritten = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        def daSeq = 0
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            def inputs = [
+                [name: "actType.1",     type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1",  type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond",          type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1",      type: "enum", options: ["Custom Attribute", "Temperature"]],
+                [name: "rDev_1",        type: "capability.temperature", multiple: true],
+                [name: "rCustomAttr_1", type: "enum", options: ["thermostatMode", "temperature"]],
+                [name: "hasAll",        type: "button"]
+            ]
+            if (rCustomAttrWritten) {
+                // Enum attribute -> state_1 revealed (comfort/eco, no change option), RelrDev_1 hidden.
+                inputs = inputs + [[name: "state_1", type: "enum", options: ["comfort", "eco"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF mode is comfort THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [],
+                                         paragraphs: ["IF mode is comfort THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Temperature",
+                    deviceIds: [8],
+                    attribute: "thermostatMode",
+                    comparator: "*changed*",
+                    state: "comfort"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "the explicit value wins and lands in state_1"
+        posts.any { p -> (p.body as Map)["settings[state_1]"] == "comfort" }
+
+        and: "an informational skip records the dropped change-comparator intent, but partial stays false"
+        ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "state_change_comparator_ignored_explicit_value" }
+        result.partial == false
+
+        and: "no not-representable skip (the value DID land) and RelrDev_1 never POSTed"
+        !((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
         !posts.any { p -> (p.body as Map).any { k, v -> k?.toString() == "settings[RelrDev_1]" } }
     }
 
@@ -29824,6 +31749,55 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "it throws loudly, naming the missing field"
         def e = thrown(IllegalArgumentException)
         e.message.contains("ctx.applied")
+    }
+
+    def "_rmWalkConditionReveal fails loud when ctx.skipped is absent -- the degradation skips would otherwise be silently dropped"() {
+        // Internal-contract guard for #3's fail-loud: the walker records every degradation
+        // signal (reveal-fallback, force-written-unverified, not-representable) into
+        // ctx.skipped. A null accumulator on a degradation-surfacing path is a PROGRAMMING
+        // error, so the walker rejects it at the boundary rather than no-op'ing the skip.
+        // ctx.applied is supplied here so the failure is unambiguously the skipped guard.
+        // Both-ways pending (orchestrator).
+        when: "the walker is invoked with a ctx that omits the skipped accumulator"
+        script._rmWalkConditionReveal(100, [page: "STPage", applied: []], [capability: "Switch"], 0)
+
+        then: "it throws loudly, naming the missing field"
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("ctx.skipped")
+    }
+
+    def "_rmBuildCondition fails loud on an enum no-RHS comparator when the skipped accumulator is null -- never silently no-ops"() {
+        // Internal-contract guard for #3 on the conditional-trigger path. _rmBuildCondition's
+        // signature defaults skipped=null, but the enum no-RHS not-representable case has
+        // nowhere to record the skip without it. Driving the helper directly with the 4-arg
+        // form (skipped omitted -> null) through the enum re-render must throw rather than
+        // drop the skip silently. Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            // Enum condition attribute: state_1 exposed (on/off, no change option),
+            // RelrDev_1 hidden. _rmBuildCondition's enum no-RHS branch is reached.
+            customAttrConditionSchemaJsonOpts(100, fetchSeq, ["on", "off"])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> mainPageJson(100, "r", true) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/2') { params -> '{"id":"2","name":"S1"}' }
+
+        when: "_rmBuildCondition is called with the 4-arg form (skipped defaults to null)"
+        script._rmBuildCondition(100, 1,
+            [capability: "Custom Attribute", deviceIds: [2], attribute: "switch", comparator: "*changed*"],
+            [])
+
+        then: "it throws loudly rather than silently dropping the not-representable skip"
+        def e = thrown(IllegalStateException)
+        e.message.contains("skipped")
     }
 
     def "hub_set_rule with appId present routes to the edit engine, NOT create"() {

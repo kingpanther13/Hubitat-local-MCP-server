@@ -2268,7 +2268,7 @@ Per-condition spec fields:
   - state — enum value matching the capability ('on'/'off' Switch, 'active'/'inactive' Motion, 'open'/'closed' Contact, 'locked'/'unlocked' Lock, etc.); omit for numeric.
   - comparator — numeric capabilities ('=', '<', '>', '<=', '>=', '!='); REQUIRED together with attribute for Custom Attribute, and with variable+value for Variable (ASCII !=/<>/== auto-map to RM glyphs).
   - value — numeric threshold paired with comparator.
-  - attribute — Custom Attribute name (e.g. 'humidity'); REQUIRED and paired with comparator. Example: {capability:'Custom Attribute', deviceIds:[N], attribute:'water', comparator:'=', state:'empty'}.[[FLAT_TRIM]] For an attribute the hub recognizes as an ENUM (switch/motion/contact/lock/...), RM routes the value to the enum picker and omits the comparator -- that is correct, not a lost value (see hub_get_tool_guide section='set_rule_reference').[[/FLAT_TRIM]]
+  - attribute — Custom Attribute name (e.g. 'humidity'); REQUIRED and paired with comparator. Example: {capability:'Custom Attribute', deviceIds:[N], attribute:'water', comparator:'=', state:'empty'}.[[FLAT_TRIM]] For an attribute the hub recognizes as an ENUM (switch/motion/contact/lock/...), RM routes the value to the enum picker and omits the comparator -- that is correct for a value comparator, not a lost value. A no-RHS state-change comparator (`*changed*`/`*became*`) cannot be represented on an enum attribute (no comparator slot, no value); use the device's native capability instead (e.g. capability:'Switch'), or a non-built-in attribute name (see hub_get_tool_guide section='set_rule_reference').[[/FLAT_TRIM]]
   - not — boolean (default false), inverts the condition.
   - rawSettings — escape hatch {fieldName: value} for fields not yet mapped.
 
@@ -5170,7 +5170,13 @@ private List _rmInformationalSkippedReasons() {
     // already set the write does not advance the schema and _rmWriteSettingOnPage
     // tags it silent_rejection; that is cosmetic, not a lost-value degradation, so
     // it is re-tagged to this informational code and must NOT flip partial.
-    return ["reveal_fallback_to_existing_field", "useST_idempotent_noop"]
+    //
+    // state_change_comparator_ignored_explicit_value: a no-RHS state-change comparator
+    // ('*changed*'/'*became*') was requested on an enum attribute ALONGSIDE an explicit
+    // state/value. The value lands and the rule works as an equals-check, so the dropped
+    // change-comparator intent is reported informationally, NOT as a partial degradation.
+    return ["reveal_fallback_to_existing_field", "useST_idempotent_noop",
+            "state_change_comparator_ignored_explicit_value"]
 }
 
 /**
@@ -5227,6 +5233,108 @@ String _rmNormalizeComparator(Object raw) {
     if (s == "!=" || s == "<>") return "≠"
     if (s == "==") return "="
     return s
+}
+
+/* package-private for testability — _rm prefix is the convention for internal helpers */
+// Single source of truth for the RM no-RHS state-change comparator family. Each entry
+// is a substring marker that identifies a comparator selecting a change EVENT rather
+// than a value test, so it has no right-hand value to place in a value picker. The
+// predicate below is a FAMILY gate ("is this a no-RHS comparator at all"); routing an
+// option to a specific request must additionally match the exact token (see
+// _rmComparatorTokensMatch). If RM adds a new no-RHS token, extend THIS list in
+// lockstep -- the enum branches across the four wizard surfaces consult the predicate,
+// not a private copy of the markers. Method-constant, not `static final` (script-scope
+// rejects the field in the Hubitat sandbox -- see hubResponseCapBytes).
+private List<String> _rmRhsOptionalComparatorMarkers() { ["changed", "became"] }
+
+/* package-private for testability — _rm prefix is the convention for internal helpers */
+// FAMILY gate for the no-RHS state-change comparator family. Used both to relax the
+// RHS-required guards (a missing value is legitimate here) and to detect when such a
+// comparator is being routed to an enum-valued attribute whose value picker cannot
+// represent it. This is intentionally a fuzzy substring test: it answers "no-RHS
+// comparator?" only. Choosing WHICH picker option to route a request to is the job of
+// _rmComparatorTokensMatch (exact-token equality), never this gate.
+boolean _rmComparatorIsRhsOptional(Object rawComparator) {
+    def c = rawComparator?.toString()?.toLowerCase()
+    if (c == null) return false
+    return _rmRhsOptionalComparatorMarkers().any { c.contains(it) }
+}
+
+/* package-private for testability — _rm prefix is the convention for internal helpers */
+// Strip a comparator token to its comparable core: the '*...*' wizard wrapping and
+// surrounding whitespace removed, case-folded. RM renders state-change tokens wrapped
+// (e.g. '*became true*') in the picker option list but the request may arrive wrapped
+// or bare; normalizing both sides lets an EXACT equality decide a route.
+private String _rmComparatorToken(Object raw) {
+    def s = raw?.toString()?.trim()?.toLowerCase()
+    if (!s) return null
+    while (s.startsWith("*")) s = s.substring(1)
+    while (s.endsWith("*")) s = s.substring(0, s.length() - 1)
+    s = s.trim()
+    // Re-null an emptied result: an all-asterisk token ('*' / '**') strips to "",
+    // which must NOT equality-match another emptied token (empty-vs-empty false match).
+    return s ?: null
+}
+
+/* package-private for testability — _rm prefix is the convention for internal helpers */
+// Exact-token equality between a requested comparator and a candidate picker option,
+// after stripping the '*...*' wrapping and case-folding both sides. This is the ROUTE
+// gate: a picker offering both 'became true' and 'became false' must route a
+// '*became false*' request to the EXACT option, never the first RHS-optional option;
+// and a picker option like 'unchanged' must NOT match a '*changed*' request. Use this
+// (not the fuzzy family gate) whenever choosing which option to write.
+private boolean _rmComparatorTokensMatch(Object requested, Object candidate) {
+    return _rmComparatorTokenMatchesOption(_rmComparatorToken(requested), candidate)
+}
+
+/* package-private for testability — _rm prefix is the convention for internal helpers */
+// Equality of an ALREADY-NORMALIZED requested token against a candidate picker option.
+// Route sites normalize the requested comparator ONCE (hoisted out of the per-candidate
+// .find) and call this; _rmComparatorTokensMatch is the un-hoisted convenience form.
+private boolean _rmComparatorTokenMatchesOption(String requestedToken, Object candidate) {
+    if (requestedToken == null) return false
+    def b = _rmComparatorToken(candidate)
+    return b != null && requestedToken == b
+}
+
+/* package-private for testability — _rm prefix is the convention for internal helpers */
+// Normalize an enum input's `options` to a list of value strings. The hub returns
+// enum-picker options in shapes that need flattening before use:
+//   - bare strings: ["on", "off"]
+//   - a LIST of value-key Maps: [[value:"on", text:"On"], ...] -- one option per Map
+//   - a MAP container keyed by value: ["on":"On", "off":"Off"] -- value is the KEY
+// A naive toString() on a value-key Map option yields "[value:on, text:On]"; iterating
+// a Map CONTAINER with .collect would yield "on=On" Map.Entry strings; a bare-String
+// `options` would .collect into per-CHARACTER options. Any of those corrupts the route
+// probe AND the shared state_<N> domain validator that consumes this helper. The
+// canonical reader for the enum route-or-skip probe and the state_<N> domain validator.
+List _rmReadPickerOptionStrings(Object pickerInput) {
+    def opts = pickerInput?.options
+    if (opts == null) return []
+    if (opts instanceof Map) {
+        // Map CONTAINER: the option VALUE is the key (RM's enum value), the entry value
+        // is the display label. Read the keys.
+        return opts.keySet().collect { it?.toString() }.findAll { it }
+    }
+    if (opts instanceof CharSequence) {
+        // Scalar options (a lone String): treat as a single option, never char-iterate.
+        def s = opts.toString()
+        return s ? [s] : []
+    }
+    return (opts.collect { o ->
+        (o instanceof Map ? o.value?.toString() : o?.toString())
+    }).findAll { it }
+}
+
+/* package-private for testability — _rm prefix is the convention for internal helpers */
+// Canonical repair-hint for a no-RHS state-change comparator requested on an enum-valued
+// Custom Attribute (the comparator_not_representable_for_enum_attribute skip). Single
+// source of truth so the trigger / condition / Required-Expression emit sites cannot
+// drift. ASCII-only.
+private String _rmNotRepresentableEnumComparatorHint(Object attribute, Object comparator) {
+    def attrName = attribute?.toString()
+    def cmp = comparator?.toString()
+    return "Comparator '${cmp}' cannot be represented for the enum-valued Custom Attribute '${attrName}': Rule Machine offers only a value picker (e.g. on/off) for an attribute it recognizes as an enum, with no comparator slot, so a state-change comparator has nowhere to land. Use a non-built-in attribute name, or trigger on the device's native capability instead (e.g. capability:'Switch')."
 }
 
 private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
@@ -5455,6 +5563,51 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
                     writeIfPresent("ReltDev${idx}", _rmNormalizeComparator(triggerSpec.comparator))
                 } else if (!valuePickerExposed) {
                     writeIfPresent("ReltDev${idx}", _rmNormalizeComparator(triggerSpec.comparator))
+                } else {
+                    // ENUM-recognized attribute: only the value picker tstate<N> is exposed,
+                    // the comparator ReltDev<N> is hidden. A value comparator's value lands in
+                    // tstate<N> below -- correct, nothing to do here. The no-RHS family is
+                    // gated by _rmComparatorIsRhsOptional (single-source-of-truth markers in
+                    // _rmRhsOptionalComparatorMarkers -- extend BOTH in lockstep if RM adds a
+                    // new no-RHS token, or this branch silently falls through). A state-change
+                    // comparator ('*changed*' / '*became*') has NO right-hand value, so it
+                    // cannot ride the value picker; the routing here applies ONLY when no
+                    // explicit value was supplied. If the picker offers an option matching the
+                    // REQUESTED change token exactly, the generic tstate<N> write below will
+                    // place it; otherwise the comparator is genuinely unrepresentable through
+                    // this path and must NOT be silently dropped as clean success (the bug). When
+                    // an explicit value WAS supplied it wins and lands in tstate<N> below -- the
+                    // change-comparator intent is moot, not routed here.
+                    if (_rmComparatorIsRhsOptional(triggerSpec.comparator)) {
+                        def stateVal = triggerSpec.state != null ? triggerSpec.state : triggerSpec.value
+                        if (stateVal != null) {
+                            // Contradictory request: a state-change comparator AND an explicit
+                            // value. The value lands in tstate<N> below and the rule works as an
+                            // equals-check, so the change-comparator intent is dropped -- but
+                            // honestly, via an INFORMATIONAL skip that does NOT flip partial.
+                            skipped << [key: "ReltDev${idx}".toString(), reason: "state_change_comparator_ignored_explicit_value",
+                                        value: _rmNormalizeComparator(triggerSpec.comparator), attribute: triggerSpec.attribute?.toString()]
+                        } else {
+                            def pickerInput = afterAttrInputs.find { it?.name == "tstate${idx}".toString() }
+                            // Family gate passed; now require an EXACT token match between the
+                            // requested comparator and a picker option (not just any RHS-optional
+                            // option), so 'became false' never routes to a 'became true' slot and
+                            // 'unchanged' never satisfies a '*changed*' request. Normalize the
+                            // requested token ONCE, not per-candidate.
+                            def reqToken = _rmComparatorToken(triggerSpec.comparator)
+                            def changeOption = _rmReadPickerOptionStrings(pickerInput).find { _rmComparatorTokenMatchesOption(reqToken, it) }
+                            if (changeOption != null) {
+                                // The picker offers the exact requested change option -- route it
+                                // through the generic tstate<N> write so the trigger actually fires.
+                                triggerSpec.state = changeOption
+                            } else {
+                                // The accumulator is the local `skipped` list -- always present on
+                                // this path; recording the skip is the whole point here, never a no-op.
+                                skipped << [key: "ReltDev${idx}".toString(), reason: "comparator_not_representable_for_enum_attribute",
+                                            value: _rmNormalizeComparator(triggerSpec.comparator), attribute: triggerSpec.attribute?.toString()]
+                            }
+                        }
+                    }
                 }
             }
         } else {
@@ -6043,7 +6196,13 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // confirm it failed transiently. Telling the caller it "didn't land" / to re-write
         // it would be wrong, so split those keys out into a verify-don't-rewrite hint.
         def forceWrittenKeys = genuineSkipped.findAll { it instanceof Map && it.reason == "comparator_force_written_unverified" }*.key.findAll { it != null }
-        def lostSkipped = genuineSkipped.findAll { !(it instanceof Map && it.reason == "comparator_force_written_unverified") }
+        // Both comparator_force_written_unverified (written-but-unverified) and
+        // comparator_not_representable_for_enum_attribute (genuinely unrepresentable)
+        // get their OWN specific hint below, so exclude them from the generic
+        // "didn't land -- introspect and re-write" hint -- that advice does not apply
+        // to either and would mislead.
+        def specificHintReasons = ["comparator_force_written_unverified", "comparator_not_representable_for_enum_attribute"]
+        def lostSkipped = genuineSkipped.findAll { !(it instanceof Map && it.reason in specificHintReasons) }
         if (!lostSkipped.isEmpty()) {
             def skippedKeys = lostSkipped*.key.findAll { it != null }.join(', ')
             def settingWord = lostSkipped.size() == 1 ? "setting" : "settings"
@@ -6053,6 +6212,11 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
             def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
             repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the trigger paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
+        }
+        def notRepresentable = genuineSkipped.findAll { it instanceof Map && it.reason == "comparator_not_representable_for_enum_attribute" }
+        notRepresentable.each { sk ->
+            repairHints << _rmNotRepresentableEnumComparatorHint(
+                (sk instanceof Map ? sk.attribute : null), (sk instanceof Map ? sk.value : null))
         }
         if (hasBrokenLabel) {
             repairHints << "Trigger row has *BROKEN* marker -- capability '${cap}' likely needs a capability-specific field (Mode: pass state='ModeName' or modeIds=['id'], NOT rawSettings.tstate; Periodic: pass periodic={} sub-spec). Re-add the trigger with the correct fields."
@@ -9705,9 +9869,12 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         // fact the field was written via the already-revealed path.
         // comparator_force_written_unverified is written-but-unverified, NOT lost (the
         // walker's exposure-probe-failure fallback force-wrote the comparator and it IS in
-        // settingsApplied). Split it out so the "didn't land" hint does not mislead.
+        // settingsApplied). comparator_not_representable_for_enum_attribute is genuinely
+        // unrepresentable. Both get their own specific hint below, so split them out so the
+        // generic "didn't land -- introspect and re-write" hint does not mislead.
         def forceWrittenKeys = genuineSkipped.findAll { it instanceof Map && it.reason == "comparator_force_written_unverified" }*.key.findAll { it != null }
-        def lostSkipped = genuineSkipped.findAll { !(it instanceof Map && it.reason == "comparator_force_written_unverified") }
+        def specificHintReasons = ["comparator_force_written_unverified", "comparator_not_representable_for_enum_attribute"]
+        def lostSkipped = genuineSkipped.findAll { !(it instanceof Map && it.reason in specificHintReasons) }
         if (!lostSkipped.isEmpty()) {
             def skippedKeys = lostSkipped*.key.findAll { it != null }.join(', ')
             def settingWord = lostSkipped.size() == 1 ? "setting" : "settings"
@@ -9721,6 +9888,10 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
             def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
             repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the action paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
+        }
+        genuineSkipped.findAll { it instanceof Map && it.reason == "comparator_not_representable_for_enum_attribute" }.each { sk ->
+            repairHints << _rmNotRepresentableEnumComparatorHint(
+                (sk instanceof Map ? sk.attribute : null), (sk instanceof Map ? sk.value : null))
         }
         if ((health?.brokenMarkers as List)?.size() > 0) {
             repairHints << "Rule has pre-existing broken markers: ${(health.brokenMarkers as List).unique().join(', ')}. The new action committed, but run hub_get_rule_health(${appId}) and repair the existing broken trigger/action rows before this rule fires correctly."
@@ -9863,6 +10034,48 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
                     _rmWriteSettingOnPage(appId, "selectTriggers", "RelrDev_${idx}", _rmNormalizeComparator(condSpec.comparator), applied, null, skipped)
                 } else if (!valuePickerExposed) {
                     _rmWriteSettingOnPage(appId, "selectTriggers", "RelrDev_${idx}", _rmNormalizeComparator(condSpec.comparator), applied, null, skipped)
+                } else {
+                    // ENUM-recognized attribute: only state_<N> (value picker) is exposed.
+                    // The no-RHS family is gated by _rmComparatorIsRhsOptional (markers in
+                    // _rmRhsOptionalComparatorMarkers -- extend BOTH in lockstep if RM adds a
+                    // new no-RHS token, or this branch silently falls through). A state-change
+                    // comparator ('*changed*' / '*became*') has no RHS to place there; the
+                    // routing here applies ONLY when no explicit value was supplied. If the
+                    // picker offers an option matching the REQUESTED change token exactly, route
+                    // it through the state_<N> write below; otherwise the comparator is
+                    // unrepresentable through this path and must surface as a genuine skip
+                    // (-> partial) rather than be silently dropped as clean success. An explicit
+                    // value, when supplied, wins and lands in state_<N>.
+                    if (_rmComparatorIsRhsOptional(condSpec.comparator)) {
+                        def cStateVal = condSpec.state != null ? condSpec.state : condSpec.value
+                        if (cStateVal != null) {
+                            // Contradictory request (state-change comparator + explicit value):
+                            // the value lands, the rule works as an equals-check, so the dropped
+                            // change intent is reported via an INFORMATIONAL skip (no partial).
+                            if (skipped == null) {
+                                throw new IllegalStateException("_rmBuildCondition: informational skip for RelrDev_${idx} has nowhere to land -- the 'skipped' accumulator was not supplied. The degradation-surfacing path requires it; pass a non-null List.")
+                            }
+                            skipped << [key: "RelrDev_${idx}".toString(), reason: "state_change_comparator_ignored_explicit_value",
+                                        value: _rmNormalizeComparator(condSpec.comparator), attribute: condSpec.attribute?.toString()]
+                        } else {
+                            def pickerInput = afterAttrInputs.find { it?.name == "state_${idx}".toString() }
+                            // Family gate passed; require an EXACT token match (not just any
+                            // RHS-optional option) so 'became false' never routes to 'became true'
+                            // and 'unchanged' never satisfies a '*changed*' request. Normalize the
+                            // requested token ONCE, not per-candidate.
+                            def reqToken = _rmComparatorToken(condSpec.comparator)
+                            def changeOption = _rmReadPickerOptionStrings(pickerInput).find { _rmComparatorTokenMatchesOption(reqToken, it) }
+                            if (changeOption != null) {
+                                condSpec.state = changeOption
+                            } else {
+                                if (skipped == null) {
+                                    throw new IllegalStateException("_rmBuildCondition: not-representable skip for RelrDev_${idx} has nowhere to land -- the 'skipped' accumulator was not supplied. The degradation-surfacing path requires it; pass a non-null List.")
+                                }
+                                skipped << [key: "RelrDev_${idx}".toString(), reason: "comparator_not_representable_for_enum_attribute",
+                                            value: _rmNormalizeComparator(condSpec.comparator), attribute: condSpec.attribute?.toString()]
+                            }
+                        }
+                    }
                 }
             }
         } else {
@@ -12144,7 +12357,11 @@ private Map _rmRevealStep(Integer appId, String page, String pattern, Closure tr
     // imply failure: static-schema firmware legitimately exposes always-visible fields
     // and this path is the only way the walker reaches them.
     def fallbackToExisting = (revealedNew == null) && (revealedAny != null)
-    return [input: revealed, visibleNames: postInputs.collect { it?.name?.toString() }.findAll { it }, fallbackToExisting: fallbackToExisting]
+    // postInputs is the full post-trigger input-object list (not just names) so a caller
+    // that already drove a reveal can read a sibling field's options from the SAME fetch
+    // rather than re-probing the schema (e.g. the Custom Attribute enum no-RHS route).
+    return [input: revealed, visibleNames: postInputs.collect { it?.name?.toString() }.findAll { it },
+            postInputs: postInputs, fallbackToExisting: fallbackToExisting]
 }
 
 /**
@@ -12218,6 +12435,15 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     if (appliedAccum == null) {
         throw new IllegalArgumentException("_rmWalkConditionReveal requires ctx.applied (the caller's settingsApplied List) -- the Custom Attribute force-write fallback records into it and its skip hint promises the value is in settingsApplied. Pass applied: <list>.")
     }
+    // The skipped accumulator carries every degradation signal this walker surfaces
+    // (reveal-fallback sentinel, comparator_force_written_unverified, and the
+    // comparator_not_representable_for_enum_attribute enum skip). A null accumulator on
+    // a path whose whole purpose is surfacing degradation would silently drop the skip --
+    // the pre-fix silent bug. Both call sites pass a non-null List; fail loud if one does
+    // not rather than no-op the skip.
+    if (skippedAccum == null) {
+        throw new IllegalArgumentException("_rmWalkConditionReveal requires ctx.skipped (the caller's settingsSkipped List) -- the walker records degradation skips into it. Pass skipped: <list>.")
+    }
     def page                  = ctx.page?.toString() ?: "STPage"
     // _rmRevealStep returns fallbackToExisting=true when only revealedAny matched (a
     // matching field was already visible BEFORE the trigger closure ran). On static-schema
@@ -12236,7 +12462,8 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // _rmRevealStep directly without the sentinel push.
     def revealStep = { Integer aId, String pg, String pattern, Closure trigger ->
         def step = _rmRevealStep(aId, pg, pattern, trigger)
-        if (step?.fallbackToExisting == true && skippedAccum != null) {
+        // skippedAccum is non-null (guarded at entry).
+        if (step?.fallbackToExisting == true) {
             skippedAccum << [key: pattern, reason: "reveal_fallback_to_existing_field", condIdx: condIdx]
         }
         return step
@@ -12646,8 +12873,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         // xVarR_<N> did not land for the same conceptual reason. State-change
         // comparators ('*changed*', '*became*' family) legitimately omit RHS, so accept
         // those without a value.
-        def comparatorIsRhsOptional = normalizedComparator?.toString()?.toLowerCase()?.contains("changed") ||
-                                      normalizedComparator?.toString()?.toLowerCase()?.contains("became")
+        def comparatorIsRhsOptional = _rmComparatorIsRhsOptional(normalizedComparator)
         if (condStateOrValue == null && !comparatorIsRhsOptional) {
             cancelInFlightCond()
             throw new IllegalArgumentException("conditions[${condIdx}]: Variable: comparator '${cond.comparator}' requires an RHS value, but neither 'state' nor 'value' was provided. Without an RHS, RM renders the comparator against the field default (0). Either supply 'value: <constant>' / 'state: <variableName>' or use a state-change comparator ('*changed*' / '*became*').")
@@ -12767,9 +12993,45 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             } else if (relrReveal.visibleNames?.contains(stateKey)) {
                 // Enum-recognized attribute -> the re-render revealed the value picker
                 // state_<N> directly and hid the comparator. Skip the comparator entirely
-                // and write the value to state_<N>. This is correct enum behaviour, not a
-                // degradation: do not throw, do not flag partial.
-                if (condStateOrValue != null) {
+                // and write the value to state_<N>. This is correct enum behaviour for a
+                // value comparator, not a degradation: do not throw, do not flag partial.
+                // The no-RHS family is gated by _rmComparatorIsRhsOptional (markers in
+                // _rmRhsOptionalComparatorMarkers -- extend BOTH in lockstep if RM adds a new
+                // no-RHS token, or this branch silently falls through). A state-change
+                // comparator ('*changed*' / '*became*') is the exception -- it has no RHS, so
+                // when the caller supplied no value we check whether the value picker offers an
+                // option matching the REQUESTED change token exactly. If it does, route it; if
+                // not, the comparator is unrepresentable through this enum path and must surface
+                // as a genuine skip (-> partial), never a silent clean success.
+                if (_rmComparatorIsRhsOptional(cond.comparator)) {
+                    if (condStateOrValue != null) {
+                        // Contradictory request (state-change comparator + explicit value): the
+                        // value lands in state_<N> below and the rule works as an equals-check, so
+                        // the dropped change intent is reported via an INFORMATIONAL skip (no partial).
+                        skippedAccum << [key: "RelrDev_${cIdx}".toString(), reason: "state_change_comparator_ignored_explicit_value",
+                                         value: _rmNormalizeComparator(cond.comparator), attribute: cond.attribute?.toString()]
+                        writeST(hrefParams, stateKey, condStateOrValue)
+                    } else {
+                        // No explicit value: read the value picker's options from the schema the
+                        // preceding relrReveal ALREADY fetched (relrReveal.postInputs) -- no second
+                        // probe re-fetch. (A throw during that reveal fetch is already handled by
+                        // the outer force-write fallback, so there is no separate abort surface
+                        // here.) Require an EXACT token match (not just any RHS-optional option) so
+                        // 'became false' never routes to a 'became true' slot and 'unchanged' never
+                        // satisfies a '*changed*' request. Normalize the requested token ONCE.
+                        def pickerInput = (relrReveal.postInputs ?: []).find { it?.name?.toString() == stateKey }
+                        def reqToken = _rmComparatorToken(cond.comparator)
+                        def changeOption = _rmReadPickerOptionStrings(pickerInput).find { _rmComparatorTokenMatchesOption(reqToken, it) }
+                        if (changeOption != null) {
+                            writeST(hrefParams, stateKey, changeOption)
+                        } else {
+                            // skippedAccum is non-null (guarded at entry) -- recording the skip is
+                            // the whole point on this degradation path, never a no-op.
+                            skippedAccum << [key: "RelrDev_${cIdx}".toString(), reason: "comparator_not_representable_for_enum_attribute",
+                                             value: _rmNormalizeComparator(cond.comparator), attribute: cond.attribute?.toString()]
+                        }
+                    }
+                } else if (condStateOrValue != null) {
                     writeST(hrefParams, stateKey, condStateOrValue)
                 }
             } else {
@@ -13025,19 +13287,23 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             // comparator best-effort (comparator_force_written_unverified -> partial)
             // and skip the exposed/hidden discrimination below. Force-write breadcrumbs
             // follow the page's write convention (STPage=[] / doActPage=["mainPage"]).
-            def afterCustomAttr
+            // KEEP the full input objects from this single fetch -- the enum no-RHS
+            // routing below reads the value picker's options from them, so there is no
+            // second probe re-fetch (which would be both redundant and a fresh abort risk).
+            def afterAttrInputs = null
             try {
-                afterCustomAttr = discoverField(appId, page, /state_\d+|RelrDev_\d+/)
+                def afterCfg = _rmFetchConfigJson(appId, page)
+                afterAttrInputs = (afterCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
             } catch (Exception revealEx) {
                 mcpLog("warn", "rm-native", "conditions[${condIdx}]: Custom Attribute (default block): exposure-probe re-fetch after rCustomAttr_${cIdx} failed for app ${appId} on page ${page} (${revealEx.message ?: revealEx}); force-writing comparator RelrDev_${cIdx} as fallback (partial)")
                 def forceBreadcrumbs = (page == "STPage") ? '[]' : '["mainPage"]'
                 _rmForceWriteEnumField(appId, page, "RelrDev_${cIdx}".toString(), _rmNormalizeComparator(cond.comparator),
                                        appliedAccum, skippedAccum, forceBreadcrumbs)
-                afterCustomAttr = null
+                afterAttrInputs = null
             }
-            if (afterCustomAttr != null) {
-                def attrValuePickerExposed = afterCustomAttr.visibleNames?.contains("state_${cIdx}".toString())
-                def comparatorExposed = afterCustomAttr.visibleNames?.contains("RelrDev_${cIdx}".toString())
+            if (afterAttrInputs != null) {
+                def attrValuePickerExposed = afterAttrInputs.any { it?.name?.toString() == "state_${cIdx}".toString() }
+                def comparatorExposed = afterAttrInputs.any { it?.name?.toString() == "RelrDev_${cIdx}".toString() }
                 // Comparator-FIRST, matching the dedicated Custom Attribute block (the
                 // revealStep path above): a free-valued attribute can render BOTH the
                 // comparator RelrDev_<N> AND the value picker state_<N>, so the presence of
@@ -13054,6 +13320,45 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                     // Condition-wizard comparator field is RelrDev_<N> ("Relr"),
                     // not ReltDev_<N> ("Relt" = trigger-row comparator).
                     writeST(hrefParams, "RelrDev_${cIdx}".toString(), _rmNormalizeComparator(cond.comparator.toString()))
+                } else {
+                    // True enum case (value picker present, comparator hidden). A value
+                    // comparator's value lands via state_<N> in the block below; routing here
+                    // applies ONLY when no explicit value was supplied. The no-RHS family is
+                    // gated by _rmComparatorIsRhsOptional (markers in
+                    // _rmRhsOptionalComparatorMarkers -- extend BOTH in lockstep if RM adds a
+                    // new no-RHS token, or this branch silently falls through). A state-change
+                    // comparator ('*changed*' / '*became*') with no RHS has nowhere to land: if
+                    // the picker offers an option matching the REQUESTED change token exactly,
+                    // the value-write below will place it once cond.state is set; otherwise the
+                    // comparator is unrepresentable and must surface as a genuine skip, not
+                    // silent success. An explicit value, when supplied, wins.
+                    def bStateVal = cond.state != null ? cond.state : cond.value
+                    if (_rmComparatorIsRhsOptional(cond.comparator)) {
+                        if (bStateVal != null) {
+                            // Contradictory request (state-change comparator + explicit value):
+                            // the value lands via state_<N> below and the rule works as an
+                            // equals-check, so the dropped change intent is reported via an
+                            // INFORMATIONAL skip (no partial).
+                            skippedAccum << [key: "RelrDev_${cIdx}".toString(), reason: "state_change_comparator_ignored_explicit_value",
+                                             value: _rmNormalizeComparator(cond.comparator.toString()), attribute: cond.attribute?.toString()]
+                        } else {
+                            // Reuse the input objects already fetched above -- no second re-fetch.
+                            def pickerInput = afterAttrInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
+                            // Family gate passed; require an EXACT token match (not just any
+                            // RHS-optional option) so 'became false' never routes to 'became true'
+                            // and 'unchanged' never satisfies a '*changed*' request. Normalize the
+                            // requested token ONCE, not per-candidate.
+                            def reqToken = _rmComparatorToken(cond.comparator)
+                            def changeOption = _rmReadPickerOptionStrings(pickerInput).find { _rmComparatorTokenMatchesOption(reqToken, it) }
+                            if (changeOption != null) {
+                                cond.state = changeOption
+                            } else {
+                                // skippedAccum is non-null (guarded at entry).
+                                skippedAccum << [key: "RelrDev_${cIdx}".toString(), reason: "comparator_not_representable_for_enum_attribute",
+                                                 value: _rmNormalizeComparator(cond.comparator.toString()), attribute: cond.attribute?.toString()]
+                            }
+                        }
+                    }
                 }
             }
         } else {
@@ -13071,9 +13376,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         def stateInputs = (stateNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
         def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
         if (stateInput?.options) {
-            def stateOptions = (stateInput.options ?: []).collect { o ->
-                (o instanceof Map ? o.value?.toString() : o?.toString()) ?: ""
-            }.findAll { it }
+            def stateOptions = _rmReadPickerOptionStrings(stateInput)
             def matched = stateOptions.find { it.equalsIgnoreCase(condStateOrValue.toString()) }
             if (!matched && stateOptions) {
                 cancelInFlightCond()
@@ -13645,7 +13948,10 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             it instanceof Map && it.reason != null && !(it.reason in informationalReasons)
         }
         def forceWrittenKeys = degEntries.findAll { it.reason == "comparator_force_written_unverified" }*.key.findAll { it != null }
-        def lostEntries = degEntries.findAll { it.reason != "comparator_force_written_unverified" }
+        // Both comparator_force_written_unverified and comparator_not_representable_for_enum_attribute
+        // get their own specific hint below, so exclude them from the generic degraded-path hint.
+        def specificHintReasons = ["comparator_force_written_unverified", "comparator_not_representable_for_enum_attribute"]
+        def lostEntries = degEntries.findAll { !(it.reason in specificHintReasons) }
         def reRepairHints = []
         if (!lostEntries.isEmpty()) {
             // Count UNIQUE conditions that had any genuinely-lost degraded write, not raw
@@ -13663,6 +13969,10 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
             def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
             def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
             reRepairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the expression paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
+        }
+        degEntries.findAll { it.reason == "comparator_not_representable_for_enum_attribute" }.each { sk ->
+            reRepairHints << _rmNotRepresentableEnumComparatorHint(
+                (sk instanceof Map ? sk.attribute : null), (sk instanceof Map ? sk.value : null))
         }
         return [
             success: true,
@@ -15592,11 +15902,12 @@ Prefer the structured shortcuts above. Raw mode is the unstructured escape hatch
 `settingsSkipped[]` sentinel reasons callers may see:
 - `offset_field_not_revealed` -- compareToDevice optional offset field (`state_<N>`) absent after the reference-device write (firmware may not expose the offset slot for this capability); the offset is dropped but the device-relative comparison is otherwise complete. Flips `partial:true`.
 - `api_unavailable` paired with `key: "variable-validation"` (LHS Variable picker) OR `key: "compareToVariable-validation"` (RHS variable picker for `compareToVariable`) -- the ENUM picker returned an empty option list; write proceeds unvalidated. Flips `partial:true`. NOTE: `compareToDevice` does NOT emit this -- its `relDevice_<N>` reference picker is a capability.* DEVICE picker that exposes no options client-side, so an empty option list is normal and is NOT treated as a validation gap (no sentinel, no partial). A wrong-capability reference device surfaces in the rendered/broken state, not a pre-write option check.
-- `not_in_schema` -- a written field was absent from the current page schema, so the value did not land. Genuine degradation on addTrigger, the condition wizard, AND the walker pages (STPage/doActPage); flips `partial:true`. A state-change comparator like `*changed*` is written as a value into the comparator field, so a clean trigger produces no `not_in_schema` skip on a real field. Two exempt cases do NOT flip `partial`. (1) The cosmetic `isCondTrig.<N>` post-commit finalize toggle on addTrigger -- its absence is a clean exit, and the skip that would otherwise be produced is exempted. (2) The enum-recognized Custom Attribute comparator across all FOUR wizard surfaces -- the trigger row (`ReltDev<N>`), the conditional-trigger condition wizard (`RelrDev_<N>`), the STPage walker, and the doActPage walker. Here the comparator is deliberately NOT written, so NO skip is produced in the first place (this case is exempt from `partial` by construction, not by exempting a produced skip): when the hub treats the attribute as an ENUM (switch, motion, contact, lock, ...) the re-render reveals the value picker (`tstate<N>` / `state_<N>`) and HIDES the comparator, the helper detects the picker is exposed and writes only the value, and partial stays false. A free-valued attribute still reveals and writes the comparator normally. The walker's two Custom Attribute sites diverge on the neither-rendered edge case: the dedicated capability-block (Site A) throws because its reveal-step contract has no field to write into without a revealed target, whereas the default enum/numeric block (Site B) still attempts the write because its `writeST` POSTs-then-verifies (no schema-containment pre-gate) -- on a hidden field the post-write verify records a `silent_rejection` skip that flips `partial`, surfacing the degradation without hard-failing the wizard, which is less strict than Site A's throw but still honest about the value loss. (Site B normalizes the comparator and writes it comparator-first: whenever `RelrDev_<N>` is exposed, OR when neither field rendered; it suppresses the comparator only for the positively-detected enum case.) On the trigger row and condition wizard the analogous neither-rendered write goes through `_rmWriteSettingOnPage`, which DOES schema-gate: the comparator is not POSTed and a `not_in_schema` skip flips `partial` instead. On a TRANSIENT exposure-probe re-fetch failure (empty/unparseable hub response after the attribute write), all four surfaces now degrade gracefully rather than aborting: the comparator is force-written best-effort and a `comparator_force_written_unverified` skip flips `partial` (verify via `hub_get_app_config`).
+- `not_in_schema` -- a written field was absent from the current page schema, so the value did not land. Genuine degradation on addTrigger, the condition wizard, AND the walker pages (STPage/doActPage); flips `partial:true`. A state-change comparator like `*changed*` is written as a value into the comparator field on a free-valued attribute (where the comparator IS exposed), so a clean trigger produces no `not_in_schema` skip on a real field. Two exempt cases do NOT flip `partial`. (1) The cosmetic `isCondTrig.<N>` post-commit finalize toggle on addTrigger -- its absence is a clean exit, and the skip that would otherwise be produced is exempted. (2) A VALUE comparator (`=`/`<`/etc.) on the enum-recognized Custom Attribute across all FOUR wizard surfaces -- the trigger row (`ReltDev<N>`), the conditional-trigger condition wizard (`RelrDev_<N>`), the STPage walker, and the doActPage walker. Here the comparator is deliberately NOT written, so NO skip is produced in the first place (this case is exempt from `partial` by construction, not by exempting a produced skip): when the hub treats the attribute as an ENUM (switch, motion, contact, lock, ...) the re-render reveals the value picker (`tstate<N>` / `state_<N>`) and HIDES the comparator, the helper detects the picker is exposed and writes only the value, and partial stays false. The exception is a no-RHS state-change comparator (`*changed*` / `*became*`) on an enum attribute: there is no comparator slot AND no value for the picker, so unless the picker offers a change-equivalent option the comparator is unrepresentable and the helper emits a `comparator_not_representable_for_enum_attribute` skip (flips `partial`) instead of a false clean success. A free-valued attribute still reveals and writes the comparator normally. The walker's two Custom Attribute sites diverge on the neither-rendered edge case: the dedicated capability-block (Site A) throws because its reveal-step contract has no field to write into without a revealed target, whereas the default enum/numeric block (Site B) still attempts the write because its `writeST` POSTs-then-verifies (no schema-containment pre-gate) -- on a hidden field the post-write verify records a `silent_rejection` skip that flips `partial`, surfacing the degradation without hard-failing the wizard, which is less strict than Site A's throw but still honest about the value loss. (Site B normalizes the comparator and writes it comparator-first: whenever `RelrDev_<N>` is exposed, OR when neither field rendered; it suppresses the comparator only for the positively-detected enum case.) On the trigger row and condition wizard the analogous neither-rendered write goes through `_rmWriteSettingOnPage`, which DOES schema-gate: the comparator is not POSTed and a `not_in_schema` skip flips `partial` instead. On a TRANSIENT exposure-probe re-fetch failure (empty/unparseable hub response after the attribute write), all four surfaces now degrade gracefully rather than aborting: the comparator is force-written best-effort and a `comparator_force_written_unverified` skip flips `partial` (verify via `hub_get_app_config`).
 - `reveal_fallback_to_existing_field` -- walker matched an already-visible field instead of a newly-revealed one (static-schema firmware). INFORMATIONAL -- does NOT flip `partial` by itself.
 - `useST_idempotent_noop` -- the idempotent `useST=true` mainPage toggle (Step 1 of addRequiredExpression) was already set, so the write did not advance the schema. INFORMATIONAL -- does NOT flip `partial` by itself, because the toggle write is idempotent and the schema rejection is cosmetic (the required-expression href is already exposed), not a lost value.
 - `comparator_force_written_unverified` -- on a Custom Attribute add, the exposure-probe re-fetch (issued after writing the attribute to decide whether the comparator is still exposed) failed transiently, so the comparator was force-written straight to the page as a fallback. The value is in `settingsApplied` and `success` stays true, but it could not be schema-confirmed -- flips `partial:true`. Verify via `hub_get_app_config`.
 - `comparator_force_write_failed` -- the force-write fallback above ALSO failed (the hub rejected the POST, e.g. a stale version token). The comparator did not land. Genuine degradation -- flips `partial:true`. The rest of the trigger/condition still committed; re-add the comparator via `hub_set_rule(walkStep=...)` or rebuild the row.
+- `comparator_not_representable_for_enum_attribute` -- a no-RHS state-change comparator (`*changed*` / the `*became*` family) was requested on a Custom Attribute the hub recognizes as an ENUM (switch/motion/contact/lock/...). RM exposes only the value picker (e.g. on/off) for such an attribute, with no comparator slot, so a no-value change comparator cannot be represented through this path. Genuine degradation -- flips `partial:true` with a repair hint. To express "this attribute changed", trigger on the device's native capability instead (e.g. `capability:'Switch'`), or use a non-built-in attribute name (RM treats those as free-valued and exposes a real comparator). Applies across all four wizard surfaces. If the value picker happens to offer a change-equivalent option, the helper routes it there and no skip is produced.
 
 Trailing-updateRule failure slots (`addRequiredExpression`, `addTrigger`, `addLocalVariable`, bulk `addTriggers`/`addActions`, `patches`, and the action/trigger mutation dispatchers):
 - `addRequiredExpression`: `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError: <message>` when the post-commit `updateRule` click is rejected. `success` flips false and `partial` flips true. `repairHints` adds a recovery line pointing at `hub_set_rule(button='updateRule', confirm=true)`.
