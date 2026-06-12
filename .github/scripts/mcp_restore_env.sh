@@ -25,9 +25,22 @@ echo "Restoring pre-run state: $PRE_STATE"
 SETTINGS_PAYLOAD="$(jq -nc --argjson s "$PRE_STATE" '{settings: $s, confirm: true}')"
 RPC_BODY="$(jq -nc --argjson p "$SETTINGS_PAYLOAD" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_manage_mcp",arguments:{tool:"hub_update_mcp_settings",args:$p}}}')"
 
-curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
-  -H "Content-Type: application/json" \
-  -d "$RPC_BODY" \
-  | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null
+# Retry transient relay 504s: this step runs AFTER the disarm fired the watchdog's
+# asynchronous restore-to-main, so a call can land mid-recompile of the main app (a
+# brief window that 504s through the cloud relay). update_mcp_settings is idempotent
+# for this payload, so retrying is safe.
+attempt=1
+until curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
+    -H "Content-Type: application/json" \
+    -d "$RPC_BODY" \
+    | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null; do
+  if [ "$attempt" -ge 5 ]; then
+    echo "::error::Could not restore the pre-run settings after ${attempt} attempts (relay 504s / hub busy). Restore manually: $PRE_STATE"
+    exit 1
+  fi
+  echo "::warning::restore-env attempt ${attempt} failed (transient relay error / restore recompile in progress). Retrying in 10s..."
+  attempt=$((attempt + 1))
+  sleep 10
+done
 
 echo "Test environment restored from pre-run state."

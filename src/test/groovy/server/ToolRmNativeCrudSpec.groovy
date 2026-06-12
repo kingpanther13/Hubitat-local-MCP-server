@@ -2040,26 +2040,69 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "removeAction throws when delAct click is silently no-oped (action still present after all retries)"() {
         given:
         enableWrite()
-        // statusJson ALWAYS returns the same indices across all 4 retry attempts =>
-        // the deletion never propagates => all retries exhaust => IllegalStateException.
-        // pauseExecution is a no-op on the AppExecutor mock so the test runs at full speed.
+        // statusJson ALWAYS returns the same indices across every verify attempt =>
+        // the deletion never propagates (even after the in-tool verified re-click)
+        // => retries exhaust => IllegalStateException. pauseExecution is a no-op on
+        // the AppExecutor mock so the test runs at full speed.
+        def delActClicks = 0
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params ->
             statusJson(100, [[name: "actType.1", value: "delayActs"], [name: "actType.2", value: "switchActs"]])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActClicks++
             [status: 200, location: null, data: '']
         }
 
         when:
         def result = script.toolSetRule([appId: 100, removeAction: [index: 1], confirm: true])
 
-        then: "the silent no-op is surfaced as success: false with the honest dropped-click / verify-first recovery hint"
+        then: "the silent no-op is surfaced as success: false with the honest re-click / verify-first recovery hint"
         result.success == false
         result.error?.contains("still present in rule")
-        result.error?.contains("DROPPED first wizard click")
+        result.error?.contains("one verified re-click")
         result.error?.contains("hub_get_app_config")
+
+        and: "the tool re-clicked delAct exactly once before giving up (never blind-spams the button)"
+        delActClicks == 2
+    }
+
+    def "removeAction re-clicks once when the first delAct click silently no-ops, then succeeds"() {
+        given:
+        enableWrite()
+        // The dropped-first-click signature live-measured 2/2 on 2026-06-12: the first
+        // delAct returns 200 and nothing ever propagates, so the early verify polls all
+        // see the index present. The tool must re-click ONCE (presence check immediately
+        // before = verified non-commit, duplicate-safe) and succeed on the next poll --
+        // instead of burning the whole budget past the cloud-relay ceiling and throwing.
+        def delActClicks = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (delActClicks >= 2) {
+                // only the SECOND click actually lands
+                statusJson(100, [[name: "actType.2", value: "switchActs"]])
+            } else {
+                statusJson(100, [[name: "actType.1", value: "delayActs"], [name: "actType.2", value: "switchActs"]])
+            }
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActClicks++
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 1], confirm: true])
+
+        then: "the removal succeeds via the verified re-click"
+        result.success == true
+        result.removedIndex == 1
+        !((result.afterIndices as List).contains(1))
+
+        and: "exactly two clicks fired and the re-click is surfaced on the result"
+        delActClicks == 2
+        result.reclicked == true
     }
 
     def "removeAction succeeds immediately when deletion propagates on the first post-click fetch"() {
@@ -3197,9 +3240,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.actionsRequestedForRemoval == null
         result.actionsStillPresent == null
 
-        and: "honest dropped-click diagnostic + restoreHint hint shape still present, and the retry-exhaustion discriminator (_rmDeleteAction's '~10s of polling' phrase) pins the spec to the EXHAUSTION path -- catches a wrong-impl that satisfies the dropped-click message via an unrelated IllegalArgumentException"
-        result.error?.contains("DROPPED first wizard click")
-        result.error?.contains("~10s of polling")
+        and: "honest re-click diagnostic + restoreHint hint shape still present, and the retry-exhaustion discriminator (_rmDeleteAction's '~8s of polling' phrase) pins the spec to the EXHAUSTION path -- catches a wrong-impl that satisfies the re-click message via an unrelated IllegalArgumentException"
+        result.error?.contains("one verified re-click")
+        result.error?.contains("~8s of polling")
         result.restoreHint != null
         result.verifyHint != null
         result.verifyHint?.contains("hub_get_app_config")
@@ -14575,7 +14618,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "returns success: false after retry budget exhausted"
         result.success == false
-        result.error?.contains("~10s of polling")
+        result.error?.contains("~8s of polling")
         result.error?.contains("hub_get_app_config")
         result.error?.contains("hub_restore_backup")
 

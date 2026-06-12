@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Shared helpers for the watchdog-driven e2e scripts (deploy / arm / self-update). Source it:
+# Shared helpers for the watchdog-driven e2e scripts (deploy / arm). Source it:
 #   source "$(dirname "$0")/mcp_watchdog_lib.sh"
 # Every call targets $WATCHDOG_URL (the watchdog's own /mcp endpoint), never the main $MCP_URL.
 #
-# Single source of truth for the JSON-RPC plumbing + the deploy CONFIRMATION, so the three callers
+# Single source of truth for the JSON-RPC plumbing + the deploy CONFIRMATION, so the callers
 # cannot drift. call_tool surfaces a JSON-RPC error envelope loudly (a tool/protocol error must not be
 # mistaken for an empty relay drop). deploy_app_via_watchdog confirms a deploy LANDED via a FRESH
 # lastSelfDeploy success -- the only signal that works for a relay-dropped response AND a same-length
@@ -12,8 +12,16 @@
 mcp_call() { curl -sS --max-time 120 -X POST "$WATCHDOG_URL" -H "Content-Type: application/json" --data-binary "$1"; }
 
 # Echo the inner tool-result text, or empty. A JSON-RPC ERROR envelope ({"error":...}, no .result) is a
-# real hub/protocol failure: surface it loudly and return empty so the caller's empty-check fails -- it
-# must NOT look like a (recoverable) dropped response.
+# real hub/protocol failure: log it loudly to stderr and return empty so the caller's empty-check fails --
+# it must NOT look like a (recoverable) dropped response.
+#
+# RETURN CONTRACT: call_tool ALWAYS returns rc 0 -- on success, on an empty relay drop, AND on a JSON-RPC
+# error envelope (the error is signalled by EMPTY STDOUT, never by exit status). This is deliberate: every
+# caller runs under `set -e` and consumes the output via `VAR=$(call_tool ...)`, so a non-zero return would
+# hard-kill the script before its own tailored error message could run. Consequence for callers: NEVER
+# trust call_tool's exit status to detect failure -- a caller that ignores stdout (e.g. `call_tool ...
+# >/dev/null || warn`) will see rc 0 even on a JSON-RPC error, so its `||` branch never fires. Such a
+# caller MUST check the response explicitly (ok_of / non-empty stdout) instead of relying on `||`.
 call_tool() {
   local resp err
   resp=$(mcp_call "$1" || true)
@@ -41,21 +49,38 @@ ok_of() { printf '%s' "$1" | jq -r '.success // false' 2>/dev/null || echo false
 err_of() { printf '%s' "$1" | jq -r '.error // .message // .errorMessage // empty' 2>/dev/null || true; }
 
 # resolve_class_id NS NAME -> echoes the Apps Code CLASS id (matching namespace AND name), exits 1 loudly
-# on an unusable response or a miss. Retries the read so a single relay 504 can't hard-fail.
+# only when NO source can resolve it. Retries the read so a single relay 504 can't hard-fail.
+# FALLBACK: if the watchdog's hub_list_apps misses, the MAIN server's
+# hub_read_apps_code/hub_list_apps(scope=types) answers instead. Watchdog-first stays the rule (main
+# may be the bricked app in the disaster scenarios this lib exists for); the fallback covers a
+# deployed watchdog revision whose hub_list_apps regressed (happened live when a same-named
+# instances tool shadowed it) -- it is exactly the self-heal path for deploying a FIXED watchdog
+# through a broken one.
 resolve_class_id() {
-  local ns="$1" name="$2" list_text class_id
+  local ns="$1" name="$2" list_text class_id main_text
   list_text=$(call_tool_retry '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_apps","arguments":{"scope":"types"}}}')
-  if [ -z "$list_text" ]; then
-    echo "::error::hub_list_apps (scope=types) returned no content from the watchdog -- cannot resolve the class id for ${ns}:${name}." >&2
-    exit 1
+  if [ -n "$list_text" ]; then
+    class_id=$(printf '%s' "$list_text" | jq -r --arg ns "$ns" --arg name "$name" \
+      'first(.apps[]? | select(.namespace == $ns and .name == $name) | .id) // empty' 2>/dev/null || true)
+    if [ -n "$class_id" ] && [ "$class_id" != "null" ]; then
+      printf '%s' "$class_id"
+      return 0
+    fi
   fi
-  class_id=$(printf '%s' "$list_text" | jq -r --arg ns "$ns" --arg name "$name" \
-    'first(.apps[]? | select(.namespace == $ns and .name == $name) | .id) // empty' 2>/dev/null || true)
-  if [ -z "$class_id" ] || [ "$class_id" = "null" ]; then
-    echo "::error::Apps Code class ${ns}:${name} not found via hub_list_apps (scope=types) on the watchdog endpoint." >&2
-    exit 1
+  echo "::warning::Apps Code class ${ns}:${name} not resolvable via the watchdog's hub_list_apps -- falling back to the MAIN server's listing." >&2
+  if [ -n "${MCP_URL:-}" ]; then
+    main_text=$(curl -sS --max-time 60 -X POST "$MCP_URL" -H "Content-Type: application/json" \
+      --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_read_apps_code","arguments":{"tool":"hub_list_apps","args":{"scope":"types"}}}}' 2>/dev/null \
+      | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
+    class_id=$(printf '%s' "$main_text" | jq -r --arg ns "$ns" --arg name "$name" \
+      'first(.apps[]? | select(.namespace == $ns and .name == $name) | .id) // empty' 2>/dev/null || true)
+    if [ -n "$class_id" ] && [ "$class_id" != "null" ]; then
+      printf '%s' "$class_id"
+      return 0
+    fi
   fi
-  printf '%s' "$class_id"
+  echo "::error::Apps Code class ${ns}:${name} not found via the watchdog NOR the main server -- cannot resolve the class id." >&2
+  exit 1
 }
 
 # app_total_length CLASS_ID -> echoes the live app source totalLength (a noSave probe, so it never

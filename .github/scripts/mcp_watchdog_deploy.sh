@@ -72,17 +72,15 @@ fi
 # ---------------------------------------------------------------------------
 # Shared watchdog JSON-RPC + deploy-confirmation helpers (mcp_call / call_tool [surfaces JSON-RPC
 # errors] / call_tool_retry / ok_of / err_of / resolve_class_id / app_total_length [noSave probe] /
-# deploy_app_via_watchdog [confirms via fresh lastSelfDeploy]). One source of truth so the deploy, arm,
-# and self-update scripts cannot drift.
+# deploy_app_via_watchdog [confirms via fresh lastSelfDeploy]). One source of truth so the deploy and
+# arm scripts cannot drift.
 source "$(dirname "$0")/mcp_watchdog_lib.sh"
 
 # ---------------------------------------------------------------------------
-# The watchdog's destructive WRITE tools require ONLY confirm:true -- unlike the main server it DROPS
-# the 24h-backup requirement (see the watchdog's SECURITY banner). This hub_create_backup call is a
-# best-effort DEFENSIVE snapshot, NOT a gate prerequisite, so a failure here is tolerated.
-echo "Triggering a defensive hub backup via the watchdog (best-effort; not a write-gate prerequisite)..."
-mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true}}}' >/dev/null \
-  || echo "::warning::hub_create_backup call failed/timed out; continuing (the backup is a defensive snapshot, not required for writes)"
+# NO per-run defensive backup here anymore: the hub backup is a heavy operation the platform's
+# load limiter punishes (empirically: dispatch-block episodes tracked per-run backups; backup-free
+# runs never tripped). The watchdog's write tools don't require one, and the test runner takes a
+# REAL backup only when the destructive-confirm gate's 24h record has gone stale (>20h).
 
 # ===========================================================================
 # 1) LIBRARIES are delivered ONLY by the BUNDLE below (section 2) -- the bundle is the real HPM/user
@@ -114,6 +112,13 @@ echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- deli
 if [ -z "$BUNDLE_RELS" ]; then
   echo "packageManifest.json declares no bundles -- skipping the bundle step (clean no-op)."
 else
+  # The bundle build is DETERMINISTIC (tools/build-bundle.py pins create_system), so byte-equality
+  # against canonical main proves the PR ships the same libraries. When equal, installing the PR's
+  # bundle is a pure waste -- the hub already carries those exact library bytes (the arm/restore keep
+  # them at main) and the install would only fire a dependent-recompile wave of the ~1.8MB app. The
+  # outcome is recorded run-scoped on the hub so the dead-man restore can skip its mirror reinstall
+  # for the same reason; anything but a verified this-run "unchanged" makes the restore install.
+  ANY_BUNDLE_DIFFERS="false"
   while IFS= read -r BUNDLE_REL; do
     [ -z "$BUNDLE_REL" ] && continue
     BUNDLE_PATH="$(dirname "$APP_FILE")/${BUNDLE_REL}"
@@ -121,6 +126,20 @@ else
       echo "::error::packageManifest.json declares bundle '${BUNDLE_REL}' but it is not in the checkout ($BUNDLE_PATH). Manifest/repo drift -- CI cannot prove HPM bundle delivery. Failing instead of passing as 'no bundle'."
       exit 1
     fi
+    BUNDLE_SAME="false"
+    if [ -n "${MAIN_SOURCE_URL:-}" ]; then
+      MAIN_ZIP_TMP="$(mktemp)"
+      if curl -fsSL "${MAIN_SOURCE_URL%/*}/${BUNDLE_REL}" -o "$MAIN_ZIP_TMP" 2>/dev/null \
+         && cmp -s "$BUNDLE_PATH" "$MAIN_ZIP_TMP"; then
+        BUNDLE_SAME="true"
+      fi
+      rm -f "$MAIN_ZIP_TMP"
+    fi
+    if [ "$BUNDLE_SAME" = "true" ]; then
+      echo "Bundle '${BUNDLE_REL}' is byte-identical to canonical main's -- skipping the install (hub already carries these exact library bytes; no recompile wave)."
+      continue
+    fi
+    ANY_BUNDLE_DIFFERS="true"
     BUNDLE_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/${BUNDLE_REL}"
     echo "Installing package bundle '${BUNDLE_REL}' from ${BUNDLE_URL} via hub_install_bundle ..."
     BUN_RPC=$(jq -nc --arg url "$BUNDLE_URL" \
@@ -132,6 +151,20 @@ else
     fi
     echo "Bundle '${BUNDLE_REL}' installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint,message}' 2>/dev/null || true)"
   done <<< "$BUNDLE_RELS"
+  # Run-scoped bundle-state marker for the dead-man restore: "<runId>:unchanged" lets restorePackage
+  # skip reinstalling main's cached bundle (the libraries never left main's bytes this run). Any other
+  # content -- different runId (stale marker from a crashed run), "changed", or a failed write -- makes
+  # the restore do the install: fail-safe in the direction of restoring.
+  BUNDLE_STATE=$([ "$ANY_BUNDLE_DIFFERS" = "true" ] && echo "changed" || echo "unchanged")
+  MARKER_RPC=$(jq -nc --arg c "${GITHUB_RUN_ID:-unknown}:${BUNDLE_STATE}" \
+    '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:"e2e-pr-bundle-state.txt",content:$c,confirm:true}}}')
+  # call_tool returns rc 0 even on a JSON-RPC error (signalled by empty stdout), so `|| warn` would never
+  # fire -- check the result explicitly instead.
+  MARKER_TEXT=$(call_tool "$MARKER_RPC")
+  if [ "$(ok_of "$MARKER_TEXT")" != "true" ]; then
+    echo "::warning::could not write the bundle-state marker; the restore will reinstall the cached bundle (safe, just slower)."
+  fi
+  echo "Bundle state marker: ${GITHUB_RUN_ID:-unknown}:${BUNDLE_STATE}"
 fi
 
 # ===========================================================================
@@ -163,7 +196,12 @@ fi
 # stale marker (closing the contaminated-hub-after-failed-restore gap). The disarm rewrites the marker
 # only after a CONFIRMED restore. Best-effort -- the marker is a skip optimization, not a safety gate.
 echo "Clearing the canonical-main SHA marker (about to deploy PR code -- hub no longer guaranteed canonical main)..."
-call_tool "$(jq -nc '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:"mcp-main-deployed-sha.txt",content:"",confirm:true}}}')" >/dev/null || true
+# call_tool returns rc 0 even on a JSON-RPC error (empty stdout), so a trailing `|| true` would swallow a
+# real failure silently -- check the result and warn so a stranded stale marker is at least visible in the log.
+SHA_CLEAR_TEXT=$(call_tool "$(jq -nc '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:"mcp-main-deployed-sha.txt",content:"",confirm:true}}}')")
+if [ "$(ok_of "$SHA_CLEAR_TEXT")" != "true" ]; then
+  echo "::warning::could not clear the canonical-main SHA marker; a stale marker may let the next arm skip a needed main refresh."
+fi
 
 DEPLOYED_APPS=0
 while IFS=$'\t' read -r A_NS A_NAME A_LOC; do
@@ -193,6 +231,79 @@ while IFS=$'\t' read -r A_NS A_NAME A_LOC; do
   echo "App ${A_NS}:${A_NAME} live at class ${A_CLASS} (totalLength ${POST_LEN:-<unreadable>})."
   DEPLOYED_APPS=$((DEPLOYED_APPS + 1))
 done <<< "$APP_RECS"
+
+# ===========================================================================
+# 4) CLEAR THE PER-APP LOAD THROTTLE -- bounce (disable/enable) the server app.
+#    Hubitat's platform load limiter ("LimitExceededException: App N generates
+#    excessive hub load") silently blocks the app's device-method dispatch once
+#    tripped -- device commands false-succeed (the exception is thrown in the
+#    DEVICE's context, invisible to the calling app) -- and the block does NOT
+#    lift when the load drains. A short disable/enable of the app INSTANCE clears
+#    it (verified live 2026-06-11 on fw 2.5.0.143; a hub reboot is NOT required).
+#    Back-to-back e2e runs are the normal cadence, so every run clears any block
+#    left by prior activity before its tests start. Routed via the WATCHDOG (a
+#    different app) so the toggle cannot race the server's own request handling.
+#    Failing to RE-ENABLE is a hard stop: tests against a disabled app would all
+#    red with a misleading signature (the watchdog stays alive for manual rescue).
+# ===========================================================================
+SERVER_APP_ID="${HUBITAT_APP_ID:-}"
+if [ -z "$SERVER_APP_ID" ]; then
+  echo "::warning::HUBITAT_APP_ID not set -- skipping the load-throttle bounce (this run stays exposed to a stale platform throttle from prior activity)."
+else
+  echo "Bouncing server app instance ${SERVER_APP_ID} (disable/enable via watchdog) to clear any platform load throttle..."
+  BOUNCE_OFF=$(jq -nc --arg id "$SERVER_APP_ID" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_set_app_disabled",arguments:{appId:$id,disable:true,confirm:true}}}')
+  BOUNCE_ON=$(jq -nc --arg id "$SERVER_APP_ID" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_set_app_disabled",arguments:{appId:$id,disable:false,confirm:true}}}')
+  OFF_TEXT=$(call_tool "$BOUNCE_OFF" || true)
+  if [ "$(ok_of "$OFF_TEXT")" != "true" ]; then
+    # Never confirmed disabled -> nothing to undo; the run proceeds merely unbounced.
+    echo "::warning::throttle-bounce disable did not confirm ($(err_of "$OFF_TEXT")) -- skipping the enable leg; this run stays exposed to a stale platform throttle."
+  else
+    sleep 3
+    ENABLED="false"
+    for ATTEMPT in 1 2 3 4 5; do
+      ON_TEXT=$(call_tool "$BOUNCE_ON" || true)
+      if [ "$(ok_of "$ON_TEXT")" = "true" ] && printf '%s' "$ON_TEXT" | grep -q '"disabled":false'; then
+        ENABLED="true"
+        break
+      fi
+      echo "re-enable attempt ${ATTEMPT}/5 not confirmed ($(err_of "$ON_TEXT")); retrying in 5s..."
+      sleep 5
+    done
+    if [ "$ENABLED" != "true" ]; then
+      echo "::error::Server app ${SERVER_APP_ID} was disabled for the load-throttle bounce and could NOT be verifiably re-enabled after 5 attempts. Re-enable it via the watchdog (hub_set_app_disabled appId=${SERVER_APP_ID} disable=false confirm=true) before re-running. Failing loudly instead of running every test against a disabled app."
+      exit 1
+    fi
+    echo "Load-throttle bounce complete: app ${SERVER_APP_ID} disable->enable verified."
+
+    # Post-enable readiness: prove the server's /mcp endpoint actually ANSWERS before handing off to
+    # the tests. The first request after an enable absorbs any lazy-recompile/warmup latency here
+    # instead of inside the first test, and a bounce that somehow left the endpoint dead fails THIS
+    # step with a precise message rather than 100 tests with a misleading one. The bounce itself
+    # already cannot race a compile: it only runs after every app deploy above was CONFIRMED landed
+    # (fresh lastSelfDeploy + live-length cross-check), so the saves' compiles are complete.
+    if [ -n "${HUBITAT_HUB_URL:-}" ] && [ -n "${HUBITAT_ACCESS_TOKEN:-}" ]; then
+      MAIN_MCP_URL="${HUBITAT_HUB_URL}/apps/${SERVER_APP_ID}/mcp?access_token=${HUBITAT_ACCESS_TOKEN}"
+      READY="false"
+      for ATTEMPT in 1 2 3 4 5 6 7 8 9; do
+        INIT_RESP=$(curl -sS --max-time 30 -X POST "$MAIN_MCP_URL" -H "Content-Type: application/json" \
+          --data-binary '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"e2e-deploy-readiness","version":"1"}}}' 2>/dev/null || true)
+        if printf '%s' "$INIT_RESP" | jq -e '.result.protocolVersion // empty' >/dev/null 2>&1; then
+          READY="true"
+          echo "Server endpoint answered initialize on readiness attempt ${ATTEMPT} -- app ${SERVER_APP_ID} is serving."
+          break
+        fi
+        echo "  ...readiness attempt ${ATTEMPT}/9: endpoint not answering yet; retrying in 10s..."
+        sleep 10
+      done
+      if [ "$READY" != "true" ]; then
+        echo "::error::Server app ${SERVER_APP_ID} is ENABLED but its /mcp endpoint never answered initialize within ~90s after the throttle bounce. Investigate before the tests bury this signal."
+        exit 1
+      fi
+    else
+      echo "::warning::HUBITAT_HUB_URL/HUBITAT_ACCESS_TOKEN not set -- skipping the post-bounce endpoint readiness check (the test runner's own connectivity check still gates)."
+    fi
+  fi
+fi
 
 echo "Full-repair deploy succeeded via watchdog: ${DEPLOYED_APPS} app(s) + their library bundle(s) live on the hub."
 echo "WATCHDOG_DEPLOY_OK apps=${DEPLOYED_APPS} libraries=${#INCLUDES[@]}"

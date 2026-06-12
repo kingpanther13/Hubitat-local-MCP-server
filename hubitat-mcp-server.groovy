@@ -1223,12 +1223,12 @@ def getGatewayConfig() {
             description: "DESTRUCTIVE hub operations: reboot, shutdown, and permanent device deletion. All operations are irreversible or cause significant downtime — confirm with user first.",
             tools: ["hub_reboot", "hub_shutdown", "hub_delete_device"],
             summaries: [
-                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). Args: confirm=true",
+                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime); updatePlatform=true installs the pending platform update instead. Args: confirm=true",
                 hub_shutdown: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
                 hub_delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true"
             ],
             searchHints: [
-                hub_reboot: "restart reset power cycle",
+                hub_reboot: "restart reset power cycle update platform firmware upgrade",
                 hub_shutdown: "power off turn off stop halt",
                 hub_delete_device: "remove ghost orphan zwave zigbee stuck failed pairing"
             ]
@@ -1395,7 +1395,7 @@ def getGatewayConfig() {
                 hub_test_custom_rule: "simulate preview validate check automation custom dry run",
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
                 hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption",
-                hub_get_visual_rule: "visual rules builder VRB read list show inspect simple automation json definition when then else nodes graph"
+                hub_get_visual_rule: "visual rules builder VRB read list show inspect automation json definition when then else nodes graph"
             ]
         ],
         hub_manage_native_rules_and_apps: [
@@ -1513,7 +1513,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_rule_machine: [
-            description: "Dedicated rule-authoring gateway. For SIMPLE device automations (motion lights, contact alerts, schedules) PREFER the Visual Rules Builder tools — hub_set_visual_rule / hub_get_visual_rule / hub_delete_visual_rule — one clean JSON write, no wizard. CREATE and EDIT full RM rules with hub_set_rule (triggers, actions, conditions, required expressions, IF/THEN/ELSE, local variables, walkStep) when the automation needs branching logic, loops, variables, or arbitrary device commands; DELETE RM rules with hub_delete_native_app, plus RMUtils runtime control: list rules, trigger/run, pause/resume, set the private boolean, and check rule health. THIS is the right path for 'create a rule' / 'make a Hubitat automation'. For NON-RM classic apps (Room Lighting, Button Controllers, Notifier, Groups+Scenes, etc.) use hub_manage_native_rules_and_apps. Read-only views are also in hub_read_rules.",
+            description: "Dedicated rule-authoring gateway. Visual Rules Builder is the PRIMARY engine for new automations — hub_set_visual_rule / hub_get_visual_rule / hub_delete_visual_rule — one clean JSON write, no wizard, with if/then/else condition gating. CREATE and EDIT full RM rules with hub_set_rule (triggers, actions, conditions, required expressions, IF/THEN/ELSE, local variables, walkStep) when the automation needs something complex (nested logic, loops, variables, arbitrary device commands); DELETE RM rules with hub_delete_native_app, plus RMUtils runtime control: list rules, trigger/run, pause/resume, set the private boolean, and check rule health. THIS is the right path for 'create a rule' / 'make a Hubitat automation'. For NON-RM classic apps (Room Lighting, Button Controllers, Notifier, Groups+Scenes, etc.) use hub_manage_native_rules_and_apps. Read-only views are also in hub_read_rules.",
             tools: ["hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_get_rule_health", "hub_delete_native_app", "hub_get_visual_rule", "hub_set_visual_rule", "hub_delete_visual_rule"],
             summaries: [
                 hub_set_rule: "Create or edit a Rule Machine rule (RM 5.1) — the full authoring surface. Omit appId to create (name; optionally bundle addTriggers/addActions); provide appId to edit via addTrigger / addAction / addRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / addLocalVariable / patches / walkStep, or raw settings/button. Auto-backs-up first. Args: appId (omit=create), name, <shortcut>|settings|button, confirm.",
@@ -1524,7 +1524,7 @@ def getGatewayConfig() {
                 hub_get_rule_health: "Inspect a rule for broken state (BROKEN markers, configPage errors, multiple-flag corruption). Args: appId",
                 hub_delete_native_app: "Delete any classic native app incl. RM rules (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm.",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?",
-                hub_set_visual_rule: "Create or update a Visual Rules Builder rule — simplest rule engine, one JSON write. PREFER for simple automations; use hub_set_rule when you need branching/loops/variables. Args: appId (omit=create), name, definition, paused (opt), confirm.",
+                hub_set_visual_rule: "Create or update a Visual Rules Builder rule — VRB is the primary rule engine; one JSON write with if/then/else gating. Use hub_set_rule only for complex automations (nested logic/loops/variables). Args: appId (omit=create), name, definition, paused (opt), confirm.",
                 hub_delete_visual_rule: "Delete a Visual Rules Builder rule (type-gated; returns the pre-delete definition for recovery). Args: appId, confirm."
             ],
             searchHints: [
@@ -1535,9 +1535,9 @@ def getGatewayConfig() {
                 hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
                 hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger multiple flag corruption",
                 hub_delete_native_app: "remove delete destroy rule machine rule native app classic smartapp",
-                hub_get_visual_rule: "visual rules builder VRB read list show inspect simple automation json definition when then else nodes graph",
-                hub_set_visual_rule: "visual rules builder VRB create edit update make simple automation motion light contact alert schedule json easiest rule",
-                hub_delete_visual_rule: "visual rules builder VRB remove delete destroy simple automation"
+                hub_get_visual_rule: "visual rules builder VRB read list show inspect automation json definition when then else nodes graph",
+                hub_set_visual_rule: "visual rules builder VRB create edit update make automation rule motion light contact alert schedule json primary engine if then else",
+                hub_delete_visual_rule: "visual rules builder VRB remove delete destroy automation rule"
             ]
         ]
     ]
@@ -1828,7 +1828,7 @@ def getToolDisplayMeta() {
         hub_delete_room: [title: "Delete Room", summary: "Permanently delete a room."],
         hub_update_room: [title: "Rename Room", summary: "Rename an existing room."],
         // Destructive hub ops
-        hub_reboot: [title: "Reboot Hub", summary: "Reboot the hub (1-3 minutes of downtime)."],
+        hub_reboot: [title: "Reboot Hub", summary: "Reboot the hub (1-3 minutes of downtime), optionally installing the pending platform update first."],
         hub_shutdown: [title: "Shut Down Hub", summary: "Power the hub off; a physical restart is required afterwards."],
         // Diagnostics + logs
         hub_get_logs: [title: "Get Hub Logs", summary: "Hub log entries with level, source, regex, and time-window filters."],
@@ -2754,6 +2754,7 @@ Verify rule after creation.""",
                     databaseSizeKB: [type: "string", description: "Database size in KB"],
                     databaseWarning: [type: "string", description: "Present when database is large"],
                     mcpServerVersion: [type: "string", description: "Installed MCP server version"],
+                    lastBackupEpoch: [type: "integer", description: "Epoch millis of the last hub_create_backup via this app; null if never. The destructive-confirm 24h gate reads the same record."],
                     mcpDeviceCount: [type: "integer", description: "Selected device count"],
                     mcpRuleCount: [type: "integer", description: "MCP rule child-app count"],
                     mcpLogEntries: [type: "integer", description: "Buffered MCP log entry count"],
@@ -3825,7 +3826,8 @@ Requires Write master + confirm. This is the only write tool that doesn't requir
             inputSchema: [
                 type: "object",
                 properties: [
-                    confirm: [type: "boolean", description: "Must be true to confirm you want to create a backup"]
+                    confirm: [type: "boolean", description: "Must be true to confirm you want to create a backup"],
+                    mock: [type: "boolean", description: "Developer Mode only: stamp the 24h gate record; NO real backup (test envs)."]
                 ],
                 required: ["confirm"]
             ],
@@ -3833,6 +3835,8 @@ Requires Write master + confirm. This is the only write tool that doesn't requir
                 type: "object",
                 properties: [
                     success: [type: "boolean", description: "Whether the backup was created"],
+                    confirmed: [type: "boolean", description: "Whether completion was confirmed via the hub's backup status (false = best-effort trigger)"],
+                    mocked: [type: "boolean", description: "true when mock=true stamped the gate record without a real backup"],
                     message: [type: "string", description: "Human-readable result"],
                     backupTimestamp: [type: "string", description: "Formatted backup time"],
                     backupTimestampEpoch: [type: "integer", description: "Backup time in epoch millis"],
@@ -3844,13 +3848,15 @@ Requires Write master + confirm. This is the only write tool that doesn't requir
         [
             name: "hub_reboot",
             description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop).
+updatePlatform=true installs the pending platform update instead (install + self-reboot, 5-10 min); versions via hub_get_update_status.
 
 PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true
 Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
+                    updatePlatform: [type: "boolean", description: "true = install the pending platform update instead (hub self-reboots after install)."]
                 ],
                 required: ["confirm"]
             ],
@@ -3859,6 +3865,7 @@ Requires Write master.""",
                 properties: [
                     success: [type: "boolean", description: "Whether the reboot was initiated"],
                     message: [type: "string", description: "Human-readable result"],
+                    checkForUpdate: [type: "string", description: "Hub's checkForUpdate response (updatePlatform mode only)"],
                     lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
                     warning: [type: "string", description: "Downtime warning"],
                     response: [type: "string", description: "Truncated hub response body"]
@@ -7417,6 +7424,10 @@ def toolGetHubInfo(args = null) {
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = state.debugLogs?.entries?.size() ?: 0
     info.mcpCapturedStates = atomicState.capturedDeviceStates?.size() ?: 0
+    // Last hub_create_backup epoch (millis): lets a client decide whether a fresh backup is
+    // actually needed (the destructive-confirm gate's 24h window reads this same state key) --
+    // e2e uses it to skip per-run backups, a hub-heavy op the platform's load limiter punishes.
+    info.lastBackupEpoch = state.lastBackupTimestamp ?: null
 
     // Settings visibility (always available)
     info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
@@ -12607,20 +12618,69 @@ def toolCreateHubBackup(args) {
         throw new IllegalArgumentException("You must set confirm=true to create a backup.")
     }
 
-    mcpLog("info", "hub-admin", "Creating hub backup...")
-
-    try {
-        // GET /hub/backupDB?fileName=latest triggers a fresh backup and returns the .lzf file
-        // We just need the backup to be created; the binary response confirms success
-        def responseText = hubInternalGet("/hub/backupDB", [fileName: "latest"], 300)
+    if (args.mock == true) {
+        // Test-hub lever (maintainer-directed): stamp ONLY the destructive-confirm gate record
+        // without performing any real backup -- the hub backup is a heavy operation the platform's
+        // load limiter punishes, and e2e needs the GATED tools tested, not the backup itself.
+        // Developer-mode-gated so a production client can't silently satisfy the gate with a lie.
+        if (settings.enableDeveloperMode != true) {
+            throw new IllegalArgumentException("hub_create_backup mock=true requires Developer Mode (it satisfies the destructive-confirm gate WITHOUT a real backup -- test environments only).")
+        }
         def backupTime = now()
-
         state.lastBackupTimestamp = backupTime
-
-        mcpLog("info", "hub-admin", "Hub backup created successfully at ${formatTimestamp(backupTime)}")
+        mcpLog("warn", "hub-admin", "MOCK backup recorded (no real backup performed; developer mode)")
         return [
             success: true,
-            message: "Hub backup created successfully",
+            mocked: true,
+            message: "MOCK backup recorded: the destructive-confirm gate is satisfied but NO real backup was created.",
+            backupTimestamp: formatTimestamp(backupTime),
+            backupTimestampEpoch: backupTime,
+            note: "Test environments only. Create a real backup before relying on restore."
+        ]
+    }
+
+    mcpLog("info", "hub-admin", "Creating hub backup (async trigger; the backup file is never downloaded through this app)...")
+
+    try {
+        // GET /hub/backupDB?fileName=latest makes the hub CREATE a fresh backup and stream the
+        // .lzf back. The old implementation read that multi-MB binary through this app's
+        // execution just to confirm success -- a one-off load spike the platform's per-app
+        // limiter punishes with a STICKY device-dispatch block ~13 minutes later (verified A/B
+        // on fw 2.5.0.157: every slurping backup wedged the hub; async-triggered backups never
+        // did). So: fire the request asynchronously (the hub still creates the backup; the
+        // async client's truncated body is discarded) and confirm completion via the hub's own
+        // /hub/backup/statusJson instead of the binary response.
+        def asyncParams = [uri: hubBaseUri(), path: "/hub/backupDB", query: [fileName: "latest"], timeout: 300]
+        def cookie = getHubSecurityCookie()
+        if (cookie) asyncParams.headers = [Cookie: cookie]
+        asynchttpGet("backupResponseSink", asyncParams)
+
+        // Confirm via statusJson: wait for an in-progress backup to finish (small JSON reads).
+        // A small-DB backup can finish before the first poll, so backupInProgress=false is
+        // treated as completion rather than requiring an observed true->false transition.
+        def confirmed = false
+        for (int i = 0; i < 12; i++) {
+            pauseExecution(3000)
+            def statusText = null
+            try { statusText = hubInternalGet("/hub/backup/statusJson", null, 15) } catch (Exception ignored) { }
+            def parsed = null
+            try { parsed = statusText ? new groovy.json.JsonSlurper().parseText(statusText) : null } catch (Exception ignored) { }
+            if (parsed instanceof Map && parsed.backupInProgress == false && parsed.cloudBackupInProgress != true) {
+                confirmed = true
+                break
+            }
+            if (parsed == null && i >= 2) break   // status endpoint unreadable; stop burning time
+        }
+
+        def backupTime = now()
+        state.lastBackupTimestamp = backupTime
+
+        mcpLog("info", "hub-admin", "Hub backup ${confirmed ? 'completed' : 'triggered (completion unconfirmed)'} at ${formatTimestamp(backupTime)}")
+        return [
+            success: true,
+            confirmed: confirmed,
+            message: confirmed ? "Hub backup created successfully"
+                               : "Hub backup triggered; completion could not be confirmed via /hub/backup/statusJson (best-effort).",
             backupTimestamp: formatTimestamp(backupTime),
             backupTimestampEpoch: backupTime,
             note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore."
@@ -12636,8 +12696,42 @@ def toolCreateHubBackup(args) {
     }
 }
 
+// asynchttpGet completion sink for the backup trigger: the .lzf body is deliberately never
+// read into this app (see toolCreateHubBackup -- the whole point of the async trigger).
+def backupResponseSink(response, data) {
+    try { mcpLog("debug", "hub-admin", "backup async response status=${response?.status}") } catch (Exception ignored) { }
+}
+
 def toolRebootHub(args) {
     requireDestructiveConfirm(args.confirm)
+
+    if (args.updatePlatform == true) {
+        // Install the hub's PENDING platform update instead of a plain reboot -- the admin UI's own
+        // path (/hub/cloud/updatePlatform downloads + installs; the hub reboots itself when done).
+        // Folded into hub_reboot rather than a new tool: the operation IS a reboot with the update
+        // taken on the way down, and it inherits the same destructive gate. Status/progress is the
+        // existing read tool hub_get_update_status.
+        mcpLog("warn", "hub-admin", "Hub platform update initiated by MCP (install + self-reboot)")
+        try {
+            def check = hubInternalGet("/hub/cloud/checkForUpdate", null, 60)
+            def responseText = hubInternalGet("/hub/cloud/updatePlatform", null, 60)
+            return [
+                success: true,
+                message: "Platform update initiated. The hub downloads and installs the pending update, then reboots itself (5-10 minutes total).",
+                checkForUpdate: check?.take(500),
+                lastBackup: formatTimestamp(state.lastBackupTimestamp),
+                warning: "All automations and device communications stop during the install and reboot. Confirm the new version afterwards via hub_get_update_status or hub_get_info.",
+                response: responseText?.take(500)
+            ]
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "Hub platform update failed", e)
+            return [
+                success: false,
+                error: "Platform update failed: ${e.message}",
+                note: "The update command could not be sent. Check Hub Security credentials or apply the update from the hub UI."
+            ]
+        }
+    }
 
     mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP")
 
@@ -19896,29 +19990,40 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")
     // Verify the action actually disappeared. RM 5.1 silently no-ops the
     // delAct click if the button-handler dispatch races with another edit.
-    // state.editAct was clear at pre-flight, so the retry loop here absorbs
-    // only click-EFFECT propagation lag -- not a stuck-state no-op.
-    //
-    // The retry loop below absorbs the async dispatch race: the click can
-    // return 200 OK before the deletion propagates to appSettings. Each
-    // attempt re-fetches the live index list; if the index is gone, we
-    // return immediately. Delays: 1s before attempt 2, 3s before attempt 3,
-    // 6s before attempt 4. Max additional wait ~10s on total failure.
-    // Four attempts (10s budget) cover typical and slow hub propagation
-    // observed in live-hub runs (two agents hit the race independently;
-    // observed propagation lag exceeded several seconds in one repro).
-    // Faster hubs return on the first or second attempt with no perceived
-    // delay since the immediate-success path skips all sleeps.
+    // state.editAct was clear at pre-flight, so the loop below absorbs the
+    // two failure modes a clean 200 on the click can hide:
+    //   (a) propagation lag -- the click committed but appSettings updates
+    //       asynchronously (observed at several seconds in live repros);
+    //   (b) a silently DROPPED first click -- RM 5.1 occasionally no-ops the
+    //       first delAct entirely (live-measured 2/2 on a quiet hub,
+    //       2026-06-12), so nothing ever propagates.
+    // The old loop (1s/3s/6s backoff) treated both the same: it burned the
+    // whole ~10s budget, pushed the op past the ~10s cloud-relay ceiling
+    // (10.4s direct-timed on a QUIET hub, so every cloud caller got a 504),
+    // and then threw -- while its own error text prescribed the verified
+    // re-click performed below. Now: short early polls absorb (a); if the
+    // index is STILL present at ~2.5s, that is the dropped-click signature
+    // (b) -- re-click ONCE (the immediately-preceding presence check is the
+    // verified-non-commit evidence that makes the second click duplicate-
+    // safe) and keep polling. Success lands ~4-7s even on a dropped first
+    // click, back under the relay ceiling.
     def afterIndices = null
-    def retryDelaysMs = [1000, 3000, 6000]
-    for (int attempt = 0; attempt < 4; attempt++) {
+    def reclicked = false
+    def retryDelaysMs = [1000, 1500, 2000, 3000]
+    for (int attempt = 0; attempt < 5; attempt++) {
         if (attempt > 0) pauseExecution(retryDelaysMs[attempt - 1] as Integer)
         afterIndices = _rmCollectActionIndices(appId)
         if (!afterIndices.contains(actionIdx)) {
-            return [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
+            def out = [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
+            if (reclicked) out.reclicked = true
+            return out
+        }
+        if (!reclicked && attempt == 2) {
+            reclicked = true
+            _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")
         }
     }
-    throw new IllegalStateException("removeAction(${actionIdx}): after the delAct click and ~10s of polling, action ${actionIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). state.editAct was clear at pre-flight, so the most likely cause is a DROPPED first wizard click -- RM 5.1 occasionally silently no-ops the first delAct click, in which case the action was NOT removed and nothing is pending. Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check action ${actionIdx}. If still present -> the click dropped; safe to call removeAction(index:${actionIdx}) again. If gone -> the original click committed late (rare extreme lag); the removal already succeeded, do not retry. Indices shift on deletion, so retrying without this check can delete the wrong action.")
+    throw new IllegalStateException("removeAction(${actionIdx}): after the delAct click, one verified re-click, and ~8s of polling, action ${actionIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). state.editAct was clear at pre-flight and the re-click also failed to land. Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check action ${actionIdx}. If still present -> safe to call removeAction(index:${actionIdx}) again. If gone -> a click committed late (rare extreme lag); the removal already succeeded, do not retry. Indices shift on deletion, so retrying without this check can delete the wrong action.")
 }
 
 /**
@@ -19965,40 +20070,51 @@ private Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
     // Including the form-context fields in POST 1 (the path
     // _rmClickAppButton takes when pageName is provided) makes RM treat
     // the click as a settings-save; the deletion intent gets dropped.
-    _rmClickAppButton(appId, triggerIdx.toString(), "deleteCon")
-    // POST 2: page-save commit. Pull version from the just-fetched config
-    // (cheap; we already have it locally if we want to reuse, but a fresh
-    // fetch keeps the helper self-contained).
-    def cfgForVersion = null
-    try { cfgForVersion = _rmFetchConfigJson(appId, "selectTriggers") } catch (Exception verExc) {
-        mcpLog("warn", "rm-native", "_rmRemoveTrigger: version fetch for app ${appId} failed (${verExc.message}) -- POSTing commit without version field; hub may reject with a version-conflict error on concurrent edits")
+    def fireDeleteSequence = {
+        _rmClickAppButton(appId, triggerIdx.toString(), "deleteCon")
+        // POST 2: page-save commit. Pull version from the just-fetched config
+        // (cheap; we already have it locally if we want to reuse, but a fresh
+        // fetch keeps the helper self-contained).
+        def cfgForVersion = null
+        try { cfgForVersion = _rmFetchConfigJson(appId, "selectTriggers") } catch (Exception verExc) {
+            mcpLog("warn", "rm-native", "_rmRemoveTrigger: version fetch for app ${appId} failed (${verExc.message}) -- POSTing commit without version field; hub may reject with a version-conflict error on concurrent edits")
+        }
+        def commitBody = [
+            id: appId.toString(),
+            formAction: "update",
+            currentPage: "selectTriggers",
+            pageBreadcrumbs: '["mainPage"]'
+        ]
+        if (cfgForVersion?.app?.version != null) commitBody.version = cfgForVersion.app.version.toString()
+        try { hubInternalPostForm("/installedapp/update/json", commitBody) } catch (Exception postExc) {
+            mcpLog("warn", "rm-native", "_rmRemoveTrigger: page-save commit failed for app ${appId} trigger ${triggerIdx} (${postExc.message}) -- the deletion may not have committed; the verify retry loop below will catch it.")
+        }
     }
-    def commitBody = [
-        id: appId.toString(),
-        formAction: "update",
-        currentPage: "selectTriggers",
-        pageBreadcrumbs: '["mainPage"]'
-    ]
-    if (cfgForVersion?.app?.version != null) commitBody.version = cfgForVersion.app.version.toString()
-    try { hubInternalPostForm("/installedapp/update/json", commitBody) } catch (Exception postExc) {
-        mcpLog("warn", "rm-native", "_rmRemoveTrigger: page-save commit failed for app ${appId} trigger ${triggerIdx} (${postExc.message}) -- the deletion may not have committed; the verify retry loop below will catch it.")
-    }
-    // Verify the trigger actually disappeared. RM 5.1 processes the button
-    // click asynchronously; the click returns 200 OK before the deletion
-    // propagates to appSettings. Each attempt re-fetches the live index list;
-    // if the index is gone, we return immediately. Delays: 1s before attempt
-    // 2, 3s before attempt 3, 6s before attempt 4. Max additional wait ~10s
-    // on total failure. Faster hubs return on the first attempt with no delay.
+    fireDeleteSequence()
+    // Verify the trigger actually disappeared -- same two failure modes and same
+    // verified re-click recovery as _rmDeleteAction's delAct (see the comment
+    // there): short early polls absorb async propagation lag; an index still
+    // present at ~2.5s is the silently-DROPPED-first-click signature, so the
+    // full click+commit sequence re-fires ONCE (the immediately-preceding
+    // presence check is the verified-non-commit evidence that makes it
+    // duplicate-safe), keeping the op under the ~10s cloud-relay ceiling.
     def afterIndices = null
-    def retryDelaysMs = [1000, 3000, 6000]
-    for (int attempt = 0; attempt < 4; attempt++) {
+    def reclicked = false
+    def retryDelaysMs = [1000, 1500, 2000, 3000]
+    for (int attempt = 0; attempt < 5; attempt++) {
         if (attempt > 0) pauseExecution(retryDelaysMs[attempt - 1] as Integer)
         afterIndices = _rmCollectTriggerIndices(appId)
         if (!afterIndices.contains(triggerIdx)) {
-            return [success: true, removedIndex: triggerIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
+            def out = [success: true, removedIndex: triggerIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
+            if (reclicked) out.reclicked = true
+            return out
+        }
+        if (!reclicked && attempt == 2) {
+            reclicked = true
+            fireDeleteSequence()
         }
     }
-    throw new IllegalStateException("removeTrigger(${triggerIdx}): after the delete click and ~10s of polling, trigger ${triggerIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). The most likely cause is a DROPPED first wizard click (RM 5.1 occasionally silently no-ops it), in which case the trigger was NOT removed and nothing is pending. Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check trigger ${triggerIdx}. If still present -> safe to call removeTrigger(index:${triggerIdx}) again. If gone -> the original click committed late (rare); the removal already succeeded, do not retry. If a retry also fails, hub_restore_backup to the pre-operation snapshot. Indices shift on deletion, so retrying without this check can delete the wrong trigger.")
+    throw new IllegalStateException("removeTrigger(${triggerIdx}): after the delete click, one verified re-click, and ~8s of polling, trigger ${triggerIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check trigger ${triggerIdx}. If still present -> safe to call removeTrigger(index:${triggerIdx}) again. If gone -> a click committed late (rare); the removal already succeeded, do not retry. If a retry also fails, hub_restore_backup to the pre-operation snapshot. Indices shift on deletion, so retrying without this check can delete the wrong trigger.")
 }
 
 /**
@@ -26814,10 +26930,10 @@ def _applyNativeAppEdit(args) {
             // commit case is handled by the structured envelope above.
             // removeAction stays on the legacy flat shape because it's single-
             // row and the dropped-click race is rarer in practice. Detected by
-            // the distinctive "DROPPED first wizard click" phrase in
-            // _rmDeleteAction's exhaustion throw (BUG-13 rewrote this from the
-            // old, misleading "deletion may commit post-response" wording).
-            def isRetryExhaustion = e.message?.contains("DROPPED first wizard click")
+            // the distinctive "one verified re-click" phrase in _rmDeleteAction's
+            // exhaustion throw (which fires only after the in-helper re-click
+            // also failed to land; BUG-13 had rewritten the original wording).
+            def isRetryExhaustion = e.message?.contains("one verified re-click")
             if (isRetryExhaustion) {
                 result.restoreHint = "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')."
                 result.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
@@ -26890,6 +27006,9 @@ def _applyNativeAppEdit(args) {
             removedIndex: removeResult?.removedIndex,
             beforeIndices: removeResult?.beforeIndices,
             afterIndices: removeResult?.afterIndices,
+            // True when the first delAct click silently no-oped and the helper's
+            // verified re-click is what landed the removal (see _rmDeleteAction).
+            reclicked: removeResult?.reclicked,
             health: health,
             updateRuleFailed: updateRuleFailed,
             subscriptionsNotLive: subscriptionsNotLive,
@@ -26936,10 +27055,11 @@ def _applyNativeAppEdit(args) {
             // live-verified and the replace-half data-loss case justifies the
             // richer recovery contract. Trigger-mutation exhaustion is rare and
             // single-row, so the flat shape stays sufficient here. Detected by the
-            // distinctive "DROPPED first wizard click" phrase in removeTrigger's
-            // exhaustion throw (BUG-13 rewrote the old "deletion may commit
-            // post-response" wording on both the action and trigger paths).
-            def isRetryExhaustion = e.message?.contains("DROPPED first wizard click")
+            // distinctive "one verified re-click" phrase in removeTrigger's
+            // exhaustion throw (which fires only after the in-helper re-click
+            // also failed to land; BUG-13 had rewritten the original wording on
+            // both the action and trigger paths).
+            def isRetryExhaustion = e.message?.contains("one verified re-click")
             def trigResult = [
                 success: false,
                 appId: appId,
@@ -29073,7 +29193,7 @@ All Write master tools require these steps:
 
 ### Tool-Specific Requirements
 
-**hub_reboot** - 1-3 min downtime, all automations stop, scheduled jobs lost, radios restart. Only when user explicitly requests.
+**hub_reboot** - 1-3 min downtime, all automations stop, scheduled jobs lost, radios restart. Only when user explicitly requests. updatePlatform=true installs the pending platform update instead (install + self-reboot, 5-10 min).
 
 **hub_shutdown** - Powers OFF completely, requires physical restart. NOT a reboot. Only when user explicitly requests.
 
@@ -29538,7 +29658,7 @@ The right move when `partial: true` is to follow the `repairHints`, NOT to delet
 
         visual_rule_reference: '''## Visual Rules Builder reference (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`)
 
-Visual Rules Builder (VRB) is Hubitat's simplest rule engine — capability tier similar to Basic Rules, but stored as ONE clean JSON definition (no wizard, no settings[] protocol). PREFER it for simple device automations; use `hub_set_rule` (Rule Machine) when you need: nested IF/THEN/ELSE in actions, loops, local variables, boolean expressions, capture/restore, custom device commands, or running another rule's actions.
+Visual Rules Builder (VRB) is the PRIMARY rule engine for new automations; each rule is stored as ONE clean JSON definition (no wizard, no settings[] protocol). A VRB rule is: one or more trigger events, an optional condition gate, and then/else action branches — if/then/else logic is fully supported (a condition node routes execution to thenNodes or elseNodes). Pretty much everything can be done with it; use `hub_set_rule` (Rule Machine) when something complex is needed — nested or multiple condition blocks, loops, variables and expressions, capture/restore, waiting on a device-state expression (VRB's `wait` waits a fixed duration), or device commands outside the action catalog below.
 
 ### Two serializations (`format` in every single-rule success response)
 

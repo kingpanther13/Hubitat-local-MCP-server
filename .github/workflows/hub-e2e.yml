@@ -38,7 +38,6 @@ on:
       - '.github/scripts/mcp_validate_package_tool.sh'
       - '.github/scripts/mcp_watchdog_lib.sh'
       - '.github/scripts/mcp_watchdog_deploy.sh'
-      - '.github/scripts/mcp_watchdog_self_update.sh'
       - '.github/scripts/mcp_arm_watchdog.sh'
       - '.github/scripts/mcp_disarm_watchdog.sh'
       - 'libraries/**'
@@ -48,6 +47,18 @@ on:
       pr_number:
         description: 'PR number to test (blank = current ref)'
         required: false
+      probe_only:
+        description: 'true = read-only hub inventory probe instead of the e2e suite (diagnose hub state)'
+        required: false
+        default: 'false'
+      reboot_first:
+        description: 'probe_only: true = reboot the test hub before probing (clears a stuck per-app load throttle / LimitExceededException)'
+        required: false
+        default: 'false'
+      disable_app_id:
+        description: 'probe_only: installed-app id to DISABLE (red-X, not delete) after the probe, via the watchdog hub_set_app_disabled'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -82,30 +93,106 @@ jobs:
       - name: Gate
         run: echo "e2e approved to run against the shared test hub"
 
-  e2e:
+  # Read-only hub inventory dump (dispatch with probe_only=true). Diagnoses test-hub
+  # state -- devices, apps, rules, jobs, memory, watchdog flags -- without deploying or
+  # mutating anything beyond one labeled command round-trip on the BAT scaffold switch.
+  # Shares the hub-e2e concurrency group so it never overlaps a live e2e run.
+  probe:
     needs: [approve]
+    if: inputs.probe_only == 'true'
     runs-on: ubuntu-latest
-    # Bounds the whole job (lease wait + hold). Kept equal to the lease TTL in
-    # lease_acquire.sh: the lease is claimed only AFTER any wait, so the
-    # post-acquisition window always stays within the 30-min TTL and the job can't
-    # outlive its own lease and let another run trample state mid-test. lease_acquire.sh
-    # now WAITS for a busy lease (LEASE_WAIT_TIMEOUT_S, default 600s) and claims it when
-    # it frees instead of failing fast; that wait spends part of this same window, so a
-    # run that waits out most of it for a stuck lease times out red rather than running a
-    # truncated test.
-    timeout-minutes: 30
-
-    # Serialize against the shared test hub at the JOB level (not workflow level) so the
-    # `approve` gate -- which may sit waiting on a human reviewer -- never holds this
-    # group. This group is the PRIMARY serializer: it stops two CI e2e jobs from running
-    # against the single-tenant hub at once, so they never even both enter lease_acquire's
-    # wait loop. lease_acquire.sh's in-script wait (it polls a busy lease, it does NOT
-    # abort on sight) is the SECONDARY net -- it covers a manual hub session GitHub's
-    # `concurrency` can't see. Don't cancel in-progress: a running job holds the lease and
-    # needs to release it cleanly via its `if: always()` cleanup step.
+    timeout-minutes: 15
     concurrency:
       group: hub-e2e
       cancel-in-progress: false
+    env:
+      MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
+      WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Mask access tokens
+        run: |
+          for U in "$MCP_URL" "$WATCHDOG_URL"; do
+            TOKEN="$(echo "$U" | sed -nE 's|.*access_token=(.*)|\1|p')"
+            if [ -n "$TOKEN" ]; then
+              echo "::add-mask::$TOKEN"
+            fi
+          done
+      - name: Reboot test hub first (reboot_first=true)
+        if: inputs.reboot_first == 'true'
+        # Clears the platform's sticky per-app load throttle (LimitExceededException "generates
+        # excessive hub load") -- community-confirmed to reset only on reboot. Fired through the
+        # normal destructive-ops gateway; the probe below then captures the post-reboot state.
+        run: |
+          set -euo pipefail
+          echo "Sending hub_reboot to the test hub..."
+          RESP=$(curl -sS --max-time 60 -X POST "$MCP_URL" -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"hub_manage_destructive_ops","arguments":{"tool":"hub_reboot","args":{"confirm":true}}}}' || true)
+          echo "reboot response head: $(printf '%s' "$RESP" | head -c 300 | tr '\n' ' ')"
+          if printf '%s' "$RESP" | grep -qiE "SAFETY CHECK|BACKUP REQUIRED|Write tools are disabled"; then
+            echo "::error::hub_reboot was REFUSED by the destructive-ops gate -- see response above."
+            exit 1
+          fi
+          echo "Waiting 60s for the hub to go down, then polling for recovery (up to ~8 min)..."
+          sleep 60
+          attempt=1
+          until curl -sS --fail --max-time 20 -X POST "$MCP_URL" -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' \
+              | jq -e '.result.content[0].text' >/dev/null 2>&1; do
+            if [ "$attempt" -ge 32 ]; then
+              echo "::error::Test hub did not come back within ~8 min of the reboot."
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep 15
+          done
+          echo "Hub is back after reboot (poll attempt ${attempt})."
+      - name: Probe hub inventory
+        run: bash .github/scripts/mcp_probe_hub.sh
+      - name: Disable installed app (disable_app_id set)
+        if: inputs.disable_app_id != ''
+        # Parks an app via its disabled flag (the admin UI red-X) WITHOUT deleting it, through the
+        # watchdog's hub_set_app_disabled (POST /installedapp/disable + read-back verification).
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "${{ inputs.disable_app_id }}" | grep -qE '^[0-9]+$'; then
+            echo "::error::disable_app_id must be numeric"; exit 1
+          fi
+          RPC=$(jq -nc --arg id "${{ inputs.disable_app_id }}" \
+            '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_set_app_disabled",arguments:{appId:$id,disable:true,confirm:true}}}')
+          RESP=$(curl -sS --max-time 60 -X POST "$WATCHDOG_URL" -H "Content-Type: application/json" --data-binary "$RPC")
+          TEXT=$(printf '%s' "$RESP" | jq -r '.result.content[0].text // empty')
+          echo "disable result: $TEXT"
+          printf '%s' "$TEXT" | jq -e '.success == true' >/dev/null || {
+            echo "::error::hub_set_app_disabled did not verify the flip -- see result above."; exit 1; }
+
+  e2e:
+    needs: [approve]
+    if: inputs.probe_only != 'true'
+    runs-on: ubuntu-latest
+    # Bounds the whole job: up to a 4h lease-queue wait (LEASE_WAIT_TIMEOUT_S in
+    # lease_acquire.sh) + the ~30-min post-acquisition run window. The lease is claimed
+    # only AFTER the wait, so the run itself always stays within the 30-min lease TTL.
+    timeout-minutes: 270
+
+    # Serialization model: runs QUEUE ON THE LEASE, not on a global GitHub group.
+    # lease_acquire.sh is the PRIMARY serializer -- every run enters its wait loop
+    # (poll every 30s, up to 4h) and claims the hub the moment its turn comes, so
+    # several PRs can sit queued for the single shared hub and run back-to-back.
+    # It also covers a manual hub session GitHub's `concurrency` can't see.
+    #
+    # The GitHub group is PER-PR (per-ref for dispatches) and exists only to cancel
+    # SUPERSEDED runs: a new commit pushed while the previous run is still lease-waiting
+    # (or mid-test on the now-outdated commit) cancels it -- its results are stale either
+    # way. Cancellation is safe: the cleanup/restore/lease-release steps are
+    # `if: always()` (GitHub still runs those on cancellation), and a hard kill is
+    # backstopped by the dead-man watchdog's deadline restore plus the lease TTL
+    # (an unreleased lease is reclaimable after at most 30 min).
+    # Scoped at the JOB level (not workflow level) so the `approve` gate -- which may
+    # sit waiting on a human reviewer -- never holds the group.
+    concurrency:
+      group: hub-e2e-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
 
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
@@ -220,6 +307,15 @@ jobs:
         if: steps.gate.outputs.available == 'true'
         run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
 
+      - name: Pre-run hub status probe
+        if: steps.gate.outputs.available == 'true'
+        # Standard since the 2026-06-11 LimitExceededException hunt: capture the hub's exact
+        # pre-run state (memory, jobs, error logs, devices, app instances, live command check)
+        # inside our lease window, so a degraded starting state is visible in every run's log.
+        # Diagnostic only -- must never fail the run.
+        continue-on-error: true
+        run: bash .github/scripts/mcp_probe_hub.sh
+
       - name: Configure test environment (capture pre-state + enable toggles)
         if: steps.gate.outputs.available == 'true'
         # Captures enableCustomRuleEngine / enableRead
@@ -306,17 +402,11 @@ jobs:
           echo "MAIN_CHARS=$MAIN_CHARS" >> "$GITHUB_ENV"
           echo "::notice::canonical main: $MAIN_URL (${MAIN_CHARS} chars)"
 
-      # Self-update the dead-man watchdog to THIS PR's version BEFORE it is used to arm/install, so e2e
-      # always exercises the watchdog the PR ships (not whatever level99 first imported). ALWAYS deploys
-      # (a length-preserving edit must not leave the old watchdog live) and confirms via a fresh
-      # lastSelfDeploy; brick-safe (a compile error keeps the old watchdog). level99 never has to
-      # re-import. Blocking: a rejected/unconfirmed or broken-transport watchdog must fail the run.
-      - name: Self-update watchdog to PR version
-        if: steps.gate.outputs.available == 'true'
-        env:
-          PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
-          PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
-        run: bash .github/scripts/mcp_watchdog_self_update.sh
+      # The dead-man watchdog is NOT deployed by e2e: the maintainer manages the watchdog app on the
+      # test hub out-of-band (direct hub access). e2e never writes to the watchdog app -- it only drives
+      # the standing watchdog's endpoint to arm/install/restore. A PR that changes the watchdog source
+      # (e2e-deadman-watchdog-v2.groovy) is validated by WatchdogV2Spec plus that out-of-band deploy,
+      # not by an in-run self-update.
 
       # Backup the known-good MCP server source and ARM the standing v2 dead-man watchdog for THIS
       # run, both driven over the watchdog's own endpoint ($WATCHDOG_URL). The arm script captures a
@@ -379,10 +469,12 @@ jobs:
       # both the old disarm AND the old "Restore previous app source" step). It runs FIRST in teardown,
       # BEFORE the MCP_URL-based cleanup/settings-restore below, on purpose: if the PR compiled but broke
       # the main MCP runtime, those MCP_URL steps would fail against the broken PR app -- restoring main
-      # first means they operate on a healthy server. It reads the flag back and asserts armed==false +
-      # restoreResult==restored, AND that the live app source length is back to the arm-stamped MAIN
-      # baseline (not this PR's), failing loudly otherwise -- a silently-failed/poisoned restore is the
-      # dangerous case. A clean disarm also prevents handing the next run an armed flag.
+      # first means they operate on a healthy server. The disarm is FIRE-AND-FORGET: it writes
+      # {armed:false,intent:disarm}, reads the flag back and asserts that landed (armed==false +
+      # intent==disarm), reaps the deferred native-rule fixtures, and exits. The watchdog restores main
+      # asynchronously from the canonical install URLs in the flag manifest; CI does not wait for the
+      # restore or assert restoreResult/source-length here. A clean disarm also prevents handing the
+      # next run an armed flag.
       - name: Disarm dead-man watchdog (restore main)
         if: always() && steps.gate.outputs.available == 'true'
         run: bash .github/scripts/mcp_disarm_watchdog.sh
@@ -401,6 +493,15 @@ jobs:
         # failure before capture doesn't propagate here. Runs after the disarm so
         # MCP_URL points at restored main, not a possibly-broken PR app.
         run: bash .github/scripts/mcp_restore_env.sh
+
+      - name: Post-run hub status probe
+        if: always() && steps.gate.outputs.available == 'true'
+        # The pre-run probe's counterpart: capture what the run LEFT BEHIND (stranded artifacts,
+        # load-limiter trips in the error log, memory descent, watchdog flag state) while we still
+        # hold the lease. Runs after the cleanup step's restore-completion gate, so the hub is
+        # quiet. Diagnostic only -- must never fail the run.
+        continue-on-error: true
+        run: bash .github/scripts/mcp_probe_hub.sh
 
       - name: Release test hub lease
         if: always() && steps.gate.outputs.available == 'true'

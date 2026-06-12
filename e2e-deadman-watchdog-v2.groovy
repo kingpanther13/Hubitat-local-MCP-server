@@ -5,12 +5,14 @@
  * installed but ORPHANED: e2e only arms THIS app (its own Apps Code class + its own flag
  * file e2e-deadman-v2.json), so v1 sees no flag of its own and sits idle/harmless.
  *
- * What v2 does: it restores the WHOLE main package -- every #include'd library FIRST
- * (POST /library/saveOrUpdateJson), then the app(s) (POST /app/ajax/update) -- from LOCAL
- * File Manager cache files that CI populated from main at the healthy START of the run
- * (importUrl + hub_get_source). It restores on BOTH a clean disarm (intent=disarm) and a
- * missed-deadline fire, and writes restoreResult/restoreFor back into the flag so CI can
- * confirm the reinstall landed.
+ * What v2 does: it restores the WHOLE main package by installing main's BUNDLE (which delivers
+ * every #include'd library) and then every app, from the CANONICAL raw.githubusercontent.com
+ * URLs the arm recorded in the flag manifest at MAIN_SHA -- the HPM-repair path
+ * (adminInstallBundle(importUrl) -> GET /bundle2/uploadZipFromUrl for the bundle,
+ * adminUpdateApp(importUrl) -> POST /app/ajax/update for each app). NOTHING is cached locally,
+ * so GitHub reachability is required at fire time. It restores on BOTH a clean disarm
+ * (intent=disarm) and a missed-deadline fire, and writes restoreResult/restoreFor back into the
+ * flag so CI can confirm the reinstall landed.
  *
  * SECOND DRIVER (this revision): v2 is now also a SMALL second MCP server -- a deploy
  * controller. It exposes a token-gated cloud /mcp endpoint (Hubitat OAuth) carrying ONLY
@@ -153,6 +155,33 @@ def deadmanKick() { checkDeadman() }
 // polls). BOTH triggers retry up to a 5-tick cap before latching "failed" (a transient miss must not
 // latch the restore failed); a success stamps restoreFor=runId so it runs at most once per run.
 private void actAndRecord(Map flag, String trigger) {
+    // SINGLE-FLIGHT LATCH. restoreFor is only stamped at the END of a restore, but a restore takes
+    // 3-4 minutes and checkDeadman fires every minute (plus the adminWriteFile kick) -- without this
+    // latch each tick starts ANOTHER full restore and they run CONCURRENTLY (seen live: three
+    // overlapping "disarm complete" at 193/210/235s). Each restore is a bundle install + every
+    // library + two app recompiles, so the overlap is a hub-load spike big enough to trip the
+    // platform's per-app load limiter (LimitExceededException), which then blocks device commands
+    // hub-wide until a reboot. atomicState narrows the duplicate window from minutes to
+    // milliseconds; the 10-minute staleness escape keeps a crashed restore from wedging the latch.
+    long nowMs = now()
+    Long inFlightAt = null
+    try { inFlightAt = atomicState.restoreInFlightAt as Long } catch (Exception ignore) { inFlightAt = null }
+    if (atomicState.restoreInFlightFor?.toString() == flag.runId?.toString()
+            && inFlightAt != null && (nowMs - inFlightAt) < 600000L) {
+        logInfo "restore for run ${flag.runId} already in flight (${((nowMs - inFlightAt) / 1000) as long}s, trigger=${trigger}) -- skipping duplicate tick"
+        return
+    }
+    atomicState.restoreInFlightFor = flag.runId
+    atomicState.restoreInFlightAt = nowMs
+    try {
+        actAndRecordLocked(flag, trigger)
+    } finally {
+        atomicState.restoreInFlightFor = null
+        atomicState.restoreInFlightAt = null
+    }
+}
+
+private void actAndRecordLocked(Map flag, String trigger) {
     Map res = restorePackage(flag)
     if (res.ok) {
         flag.armed = false
@@ -162,6 +191,15 @@ private void actAndRecord(Map flag, String trigger) {
         flag.restoredAt = now()
         flag.restoreDetail = res.detail
         flag.fireAttempts = 0
+        // Restore confirmed -> the hub is canonical main again. Stamp the SHA marker the PR
+        // install cleared so the next run's arm can skip its main refresh. CI's disarm is
+        // fire-and-forget (it no longer polls for this restore), so the stamp must happen
+        // HERE, on both the disarm and the dead-man fire paths. Best-effort: a missed stamp
+        // just means the next arm re-refreshes main.
+        if (flag.canonicalMainSha) {
+            try { uploadHubFile("mcp-main-deployed-sha.txt", flag.canonicalMainSha.toString().getBytes("UTF-8")) }
+            catch (Exception e) { log.warn "could not stamp the canonical-main marker after restore: ${e.message}" }
+        }
     } else {
         int attempts = ((flag.fireAttempts ?: 0) as int) + 1
         flag.fireAttempts = attempts
@@ -190,13 +228,12 @@ private void actAndRecord(Map flag, String trigger) {
     log.warn "E2E Dead-Man Watchdog v2 ${trigger} complete: ${flag.restoreResult}."
 }
 
-// ---- restore the whole package from the cache manifest: drop the PR's stale bundle, restore main's
-// LIBRARIES, restore the APP, then drop the PR's stale libraries. Leaves the hub carrying ONLY main's
-// bundles + libraries + app -- no leftover from the PR install (the user's "overwrite with main without
-// any stale bundles/libraries"). Every step is LOCAL (cached source + loopback deletes), so the dead-man
-// still fires when GitHub is unreachable; orphan cleanup is best-effort (it never fails the restore --
-// restoring main's libs+app is the guarantee), and the disarm step independently ASSERTS no stale
-// mcp-namespace bundle/library remains.
+// ---- restore the whole package from the manifest's canonical install URLs: drop the PR's stale bundle,
+// install main's BUNDLE (delivers every library), install the APP(s), then drop the PR's stale libraries.
+// Leaves the hub carrying ONLY main's bundles + libraries + app -- no leftover from the PR install (the
+// user's "overwrite with main without any stale bundles/libraries"). The bundle + app installs fetch from
+// the canonical https URLs the arm recorded, so GitHub MUST be reachable at fire time. Orphan cleanup is
+// best-effort (it never fails the restore -- installing main's bundle+app is the guarantee).
 private Map restorePackage(Map flag) {
     def m = flag.manifest
     if (!(m instanceof Map)) return [ok: false, detail: "no manifest in flag"]
@@ -210,25 +247,76 @@ private Map restorePackage(Map flag) {
     // the restore below re-creates them; if it does NOT cascade, step (3) deletes the PR-only libraries.
     detail << reconcileStaleBundles(m)
 
-    // (1) Libraries -- restore each to main's cached source. restoreLibrary self-heals a bundle-managed
-    // or cascade-removed library (delete+recreate / create). Libraries first so the app's #include
-    // directives resolve on recompile. This IS the restore guarantee -- a failure aborts.
-    def libs = (m.libraries instanceof List) ? m.libraries : []
-    for (lib in libs) {
-        // Re-resolve the library's CURRENT id from its namespace.name: the deploy may have deleted +
-        // recreated a bundle-managed library, giving it a new id the arm-time manifest doesn't know.
-        // Falls back to the manifest id if the lookup fails, so it never makes a restore worse.
-        String curId = resolveLibraryId(lib?.namespace?.toString(), lib?.name?.toString(), lib?.id?.toString())
-        boolean ok = restoreLibrary(curId, lib?.file?.toString())
-        detail << "lib ${lib?.name ?: lib?.id}(${curId})=${ok}"
-        if (!ok) return [ok: false, detail: "library ${lib?.name ?: lib?.id} restore failed [${detail.join('; ')}]"]
+    // (1) Libraries -- delivered the HPM way: install canonical main's bundle from the CANONICAL
+    // https URL the arm recorded in the manifest (one operation; the hub fetches, unpacks and
+    // compiles every library inside, exactly like a user's HPM update -- no per-library writes, no
+    // per-library dependent recompiles). Requires GitHub reachability at fire time -- acceptable,
+    // the whole e2e pipeline depends on GitHub anyway. An old-format flag whose manifest bundles
+    // carry no url has no install source (nothing is cached locally) and fails loudly below so the
+    // operator re-arms -- there is no per-library fallback path.
+    def cachedBundles = (m.bundles instanceof List) ? m.bundles.findAll { it?.url } : []
+    // Run-scoped skip: the deploy stamps "<runId>:unchanged" when the PR's bundle was byte-identical
+    // to main's (deterministic build), meaning the libraries never left main's bytes this run --
+    // reinstalling the cached bundle would only fire a redundant dependent-recompile wave. Anything
+    // but a verified THIS-run "unchanged" (stale runId from a crashed run, "changed", unreadable
+    // marker) falls through to the install: fail-safe in the direction of restoring.
+    boolean bundleUnchangedThisRun = false
+    try {
+        def marker = readHubFileText("e2e-pr-bundle-state.txt")?.trim()
+        bundleUnchangedThisRun = (marker == "${flag.runId}:unchanged".toString())
+    } catch (Exception ignore) { bundleUnchangedThisRun = false }
+    if (bundleUnchangedThisRun && !cachedBundles.isEmpty()) {
+        detail << "bundle-skip:pr-identical-to-main(run ${flag.runId})"
+    } else if (!cachedBundles.isEmpty()) {
+        for (b in cachedBundles) {
+            // Install from the CANONICAL https URL the arm recorded -- the exact HPM path. NEVER a
+            // hub-local /local/ URL: registering the hub's own loopback URL as a bundle source is
+            // off the platform's tested path (the UI uses uploadZip+processUploadedZip for local
+            // files) and coincided with /hub2/userLibraries wedging hub-wide. cachedBundles is
+            // pre-filtered to entries WITH a url (the no-url old-format case is handled below).
+            String srcUrl = b.url?.toString()
+            def r = null
+            try { r = adminInstallBundle([importUrl: srcUrl, confirm: true]) }
+            catch (Exception e) { r = [success: false, error: e.message] }
+            boolean ok = (r?.success == true)
+            detail << "bundle ${b?.name ?: '?'}(url)=${ok}"
+            if (!ok) return [ok: false, detail: "bundle ${b?.name} restore failed: ${r?.error} [${detail.join('; ')}]"]
+        }
+    } else if ((m.bundles instanceof List) && !m.bundles.isEmpty()) {
+        // Bundle entries exist but carry no url: an old-format flag (pre url-manifest arm). There is
+        // no local cache to fall back to anymore -- fail loudly so the operator re-arms; the watchdog
+        // endpoint stays reachable for manual recovery (the design's safety floor).
+        return [ok: false, detail: "manifest bundles carry no url (old-format flag?) -- re-run the arm [${detail.join('; ')}]"]
     }
-    // (2) App(s). manifest.app is a single {classId,file}; manifest.apps an optional list.
+    // (no bundles at all = an apps-only package; nothing library-side to restore)
+    // (2) App(s) -- installed from their CANONICAL https URLs, the exact HPM repair path (the hub
+    // downloads main at the END; nothing was saved locally). adminUpdateApp(importUrl) runs hub-side
+    // here (no cloud relay cap) and captures the hub's verbatim compile error (#237). A landing
+    // assert cross-checks the live source length against the manifest's expected char count.
     def apps = (m.apps instanceof List) ? m.apps : (m.app ? [m.app] : [])
     for (a in apps) {
-        boolean ok = restoreApp(a?.classId?.toString(), a?.file?.toString())
-        detail << "app ${a?.classId}=${ok}"
-        if (!ok) return [ok: false, detail: "app ${a?.classId} restore failed [${detail.join('; ')}]"]
+        String classId = a?.classId?.toString()
+        String srcUrl = a?.url?.toString()
+        if (!classId || !srcUrl) {
+            return [ok: false, detail: "app entry missing classId/url (old-format flag? re-arm) [${detail.join('; ')}]"]
+        }
+        def r = null
+        try { r = adminUpdateApp([appId: classId, importUrl: srcUrl, confirm: true]) }
+        catch (Exception e) { r = [success: false, error: e.message] }
+        boolean ok = (r?.success == true)
+        if (ok && a?.mainChars) {
+            try {
+                def live = hubGet("/app/ajax/code", [id: classId])
+                def parsed = live ? new groovy.json.JsonSlurper().parseText(live) : null
+                def liveLen = (parsed instanceof Map) ? parsed.source?.toString()?.length() : null
+                if (liveLen != null && liveLen.toString() != a.mainChars.toString()) {
+                    ok = false
+                    r = [success: false, error: "landed source length ${liveLen} != expected ${a.mainChars}"]
+                }
+            } catch (Exception e) { logDebug "restore app ${classId}: length cross-check skipped (${e.message})" }
+        }
+        detail << "app ${classId}(url)=${ok}"
+        if (!ok) return [ok: false, detail: "app ${classId} restore failed: ${r?.error} [${detail.join('; ')}]"]
     }
     if (apps.isEmpty()) return [ok: false, detail: "manifest has no app to restore [${detail.join('; ')}]"]
 
@@ -267,9 +355,13 @@ private String reconcileStaleBundles(Map m) {
     return "bundle-cleanup:removed=${removed}${failed ? " failed=${failed}" : ''}"
 }
 
-// Delete any mcp-namespace LIBRARY not in the manifest's main library set. Best-effort. Scoped to
-// namespace "mcp"; runs AFTER the app restore so a still-#included main library is never removed.
-// SKIPPED when the manifest lists no main libraries (defensive -- don't blind-delete every mcp library).
+// Delete any mcp-namespace LIBRARY not in the manifest's main library set -- INCLUDING same-name
+// DUPLICATE rows whose id differs from the manifest's (name-only matching kept every duplicate
+// forever; 36 accumulated and wedged /hub2/userLibraries hub-wide). A row is kept only when BOTH
+// its namespace.name AND its id match a manifest entry. Best-effort. Scoped to namespace "mcp";
+// runs AFTER the app restore so a still-#included main library is never removed -- note the hub
+// itself also refuses deleting the row an installed app's #include binds ("Library is in use"),
+// a second guard under this one.
 private String reconcileStaleLibraries(Map m) {
     def mainLibs = (m?.libraries instanceof List) ? m.libraries : []
     if (mainLibs.isEmpty()) return "lib-cleanup:skipped(no main library set in manifest)"
@@ -281,170 +373,22 @@ private String reconcileStaleLibraries(Map m) {
         if (lib?.namespace?.toString() != "mcp") continue
         if (lib?.id == null) continue
         boolean keep = mainLibs.any {
-            (it?.namespace?.toString() == lib.namespace?.toString()) && (it?.name?.toString() == lib.name?.toString())
+            (it?.namespace?.toString() == lib.namespace?.toString()) &&
+            (it?.name?.toString() == lib.name?.toString()) &&
+            (it?.id?.toString() == lib.id?.toString())
         }
         if (keep) continue
         try {
             def r = adminDeleteItem([type: "library", id: lib.id.toString(), confirm: true])
-            if (r?.success == true) removed << lib.name else failed << lib.name
-        } catch (Exception e) { logDebug "reconcileStaleLibraries ${lib?.name}: ${e.message}"; failed << lib?.name }
+            if (r?.success == true) removed << "${lib.name}(${lib.id})" else failed << "${lib.name}(${lib.id})"
+        } catch (Exception e) { logDebug "reconcileStaleLibraries ${lib?.name}: ${e.message}"; failed << "${lib?.name}(${lib?.id})" }
     }
     return "lib-cleanup:removed=${removed}${failed ? " failed=${failed}" : ''}"
 }
 
-// ---- restore one app class: read cached source, POST it to the LOCAL /app/ajax/update ----
-boolean restoreApp(String classId, String restoreFileName) {
-    if (!classId || !restoreFileName) {
-        log.error "restoreApp: missing classId (${classId}) or restoreFileName (${restoreFileName})"
-        return false
-    }
-    String source = readHubFileText(restoreFileName)
-    if (source == null || source.length() < 50) {
-        log.error "restoreApp: cache '${restoreFileName}' missing/empty/too-small -- refusing to push it."
-        return false
-    }
-    def oldVersion = appCodeVersion(classId)
-    if (oldVersion == null) {
-        log.error "restoreApp: could not read current version of app class ${classId}"
-        return false
-    }
-    def resp = hubPostForm("/app/ajax/update", [id: classId, version: oldVersion, source: source])
-    if (resp?.status != 200) {
-        log.error "restoreApp: /app/ajax/update returned status ${resp?.status}; body=${resp?.data?.toString()?.take(300)}"
-        return false
-    }
-    boolean reported = false
-    try { reported = (new groovy.json.JsonSlurper().parseText(resp.data ?: "{}")).status == "success" }
-    catch (Exception e) { log.error "restoreApp: could not parse update response (${e.message}); body=${resp?.data?.toString()?.take(300)}" }
-    if (!reported) {
-        log.error "restoreApp: hub did not report success; body=${resp?.data?.toString()?.take(300)}"
-        return false
-    }
-    // A real code-class save advances the version -- but Hubitat may NOT bump it on a byte-identical
-    // save, which is a legitimate no-op (the live app already equals what we pushed; common when a PR
-    // triggers e2e WITHOUT changing hubitat-mcp-server.groovy). So: version-advanced -> restored; else
-    // re-read the live source and require it to be BYTE-IDENTICAL to what we pushed (NOT merely the same
-    // length -- a same-length-but-different live source means the push silently dropped and main is NOT
-    // restored). Mirrors mcp_watchdog_deploy.sh's no-op handling.
-    def newVersion = appCodeVersion(classId)
-    String oldStr = oldVersion?.toString()?.trim()
-    String newStr = newVersion?.toString()?.trim()
-    if (newStr?.isLong() && oldStr?.isLong() && newStr.toLong() > oldStr.toLong()) {
-        logInfo "restoreApp: pushed ${source.length()} chars to class ${classId}; version ${oldVersion}->${newVersion}, confirmed."
-        return true
-    }
-    String live = readAppSource(classId)
-    if (live != null && live == source) {
-        logInfo "restoreApp: class ${classId} version unchanged (${oldVersion}) but live source is byte-identical to the pushed source -- legitimate no-op, treating as restored."
-        return true
-    }
-    log.error "restoreApp: reported success but version did not advance (old=${oldVersion}, new=${newVersion}) and the live source is not byte-identical to the pushed source -- the restore did not land for class ${classId}."
-    return false
-}
 
-// ---- restore one library from its LOCAL cached source (no external fetch, so the dead-man fires even
-// when GitHub is unreachable). Robust to a bundle-managed library that rejects an in-place update, and
-// to a library that no longer exists (a deploy-time delete+recreate, or a bundle delete that cascaded
-// its managed libraries): in-place update -> if not confirmed, delete+recreate -> if absent, create.
-// All three land the SAME cached source; each confirms BYTE-IDENTICAL live source (never id alone), so
-// a silently-dropped push can't false-green as restored.
-boolean restoreLibrary(String libId, String fileName) {
-    if (!fileName) {
-        log.error "restoreLibrary: missing fileName"
-        return false
-    }
-    String source = readHubFileText(fileName)
-    if (source == null || source.length() < 20) {
-        log.error "restoreLibrary: cache '${fileName}' missing/empty/too-small -- refusing to push it."
-        return false
-    }
-    Integer curVer = (libId) ? libraryVersion(libId) : null
-    if (curVer == null) {
-        // Library not present at this id (cascade-removed / never existed) -- create it fresh from cache.
-        logInfo "restoreLibrary: library '${libId}' has no readable version -- creating fresh from cache '${fileName}'."
-        return _createLibraryFromSource(source)
-    }
-    // In-place update first (the proven path; bundle-managed libs usually accept saveOrUpdateJson).
-    if (_restoreLibraryInPlace(libId, source, curVer)) return true
-    // Not confirmed -- self-heal by delete+recreate from the SAME cached source (a bundle-managed library
-    // may reject an in-place update; deleting frees it, then create re-installs it). Local only.
-    log.warn "restoreLibrary ${libId}: in-place update not confirmed -- deleting + recreating from cache (the library may be bundle-managed)."
-    try { hubGet("/library/edit/deleteJson/${libId}", [:]) }
-    catch (Exception e) { logDebug "restoreLibrary ${libId}: delete threw (continuing to recreate): ${e.message}" }
-    return _createLibraryFromSource(source)
-}
 
-// In-place library restore via /library/saveOrUpdateJson {id, source, version}. Confirms it LANDED:
-// version advanced, OR (a byte-identical no-op the hub may not bump) the live source is byte-identical
-// to what we pushed. Returns false (so the caller self-heals) on any non-confirmation -- including a
-// same-length-but-different live source (a silently-dropped push).
-private boolean _restoreLibraryInPlace(String libId, String source, Integer curVer) {
-    String body = groovy.json.JsonOutput.toJson([id: libId.toInteger(), source: source, version: curVer])
-    Map resp = hubPostJson("/library/saveOrUpdateJson", body)
-    if (resp?.status != 200) {
-        log.warn "restoreLibrary ${libId}: in-place /library/saveOrUpdateJson returned status ${resp?.status}; body=${resp?.data?.toString()?.take(200)}"
-        return false
-    }
-    try {
-        def parsed = new groovy.json.JsonSlurper().parseText(resp.data ?: "{}")
-        if (parsed?.success == false || parsed?.id == null) {
-            log.warn "restoreLibrary ${libId}: in-place update reported failure or no id (${resp?.data?.toString()?.take(200)})"
-            return false
-        }
-        def newVer = parsed?.version
-        if (newVer != null && (newVer as Integer) > curVer) {
-            logInfo "restoreLibrary ${libId}: in-place update confirmed (version ${curVer}->${newVer})."
-            return true
-        }
-        String live = readLibrarySource(libId)
-        if (live != null && live == source) {
-            logInfo "restoreLibrary ${libId}: in-place update is a byte-identical no-op -- restored."
-            return true
-        }
-        log.warn "restoreLibrary ${libId}: in-place success reported but version did not advance and live source is not byte-identical -- not confirmed."
-        return false
-    } catch (Exception e) {
-        log.warn "restoreLibrary ${libId}: could not parse in-place update response (${e.message})"
-        return false
-    }
-}
 
-// Create a fresh library from source via /library/saveOrUpdateJson {id:null}. Confirms the restore
-// LANDED the same way restoreApp / the in-place path do: a returned id AND a readable BYTE-IDENTICAL
-// live source -- never the id alone. An unreadable read-back is NOT accepted (it would weaken the
-// byte-identical restore guarantee); it returns false so actAndRecord retries the whole restore, which
-// re-confirms via the in-place path now that the library exists. readLibrarySource is a local loopback
-// read, so a persistent failure means we genuinely cannot confirm ANY restore -- failing closed is right.
-private boolean _createLibraryFromSource(String source) {
-    String body = groovy.json.JsonOutput.toJson([id: null, source: source, version: null])
-    Map resp = hubPostJson("/library/saveOrUpdateJson", body)
-    if (resp?.status != 200) {
-        log.error "restoreLibrary(create): /library/saveOrUpdateJson returned status ${resp?.status}; body=${resp?.data?.toString()?.take(200)}"
-        return false
-    }
-    try {
-        def parsed = new groovy.json.JsonSlurper().parseText(resp.data ?: "{}")
-        def newId = parsed?.id?.toString()
-        if (parsed?.success == false || !newId) {
-            log.error "restoreLibrary(create): hub reported failure or no id (${resp?.data?.toString()?.take(200)})"
-            return false
-        }
-        String live = readLibrarySource(newId)
-        if (live == null) {
-            log.error "restoreLibrary(create) ${newId}: created but could not read the live source back to byte-confirm it landed -- treating as NOT restored (the restore retry re-confirms via the in-place path)."
-            return false
-        }
-        if (live != source) {
-            log.error "restoreLibrary(create) ${newId}: created but live source differs from the pushed source -- did not land."
-            return false
-        }
-        logInfo "restoreLibrary(create): created library id ${newId} from cache (${source.length()} chars), byte-identical confirmed."
-        return true
-    } catch (Exception e) {
-        log.error "restoreLibrary(create): could not parse create response (${e.message})"
-        return false
-    }
-}
 
 // Current version of an app class (optimistic-lock field on /app/ajax/update).
 def appCodeVersion(String classId) {
@@ -465,28 +409,6 @@ Integer libraryVersion(String libId) {
     return null
 }
 
-// Re-resolve a library's CURRENT id from its namespace.name via /hub2/userLibraries (same source as
-// hub_list_libraries). Used by restorePackage so a deploy-time delete+recreate (which changes the id)
-// can't strand the restore on a stale arm-time id. Returns fallbackId if name is missing or the lookup
-// fails -- defensive, never makes a restore worse.
-private String resolveLibraryId(String ns, String name, String fallbackId) {
-    if (!ns || !name) return fallbackId
-    try {
-        def body = hubGet("/hub2/userLibraries", [:])
-        if (body) {
-            def parsed = new groovy.json.JsonSlurper().parseText(body)
-            if (parsed instanceof List) {
-                def match = parsed.find { it?.namespace == ns && it?.name == name }
-                if (match?.id != null) {
-                    String resolved = match.id.toString()
-                    if (resolved != fallbackId) logInfo "resolveLibraryId: ${ns}.${name} id ${fallbackId} -> ${resolved} (re-resolved from live hub state)."
-                    return resolved
-                }
-            }
-        }
-    } catch (Exception e) { logDebug "resolveLibraryId(${ns}.${name}): ${e.message}" }
-    return fallbackId
-}
 
 // Full current source of an app class / library -- for the restore no-op check (a reported success
 // that doesn't bump the version is legitimate when the live source already equals what we pushed).
@@ -664,6 +586,12 @@ def executeAdminTool(String toolName, Map args) {
         case "hub_update_library":  return adminUpdateLibrary(args)
         case "hub_delete_item":     return adminDeleteItem(args)
         case "hub_force_delete_app": return adminForceDeleteInstalledApp(args)
+        case "hub_set_app_disabled": return adminSetAppDisabled(args)
+        case "hub_get_metrics":      return adminGetMetrics(args)
+        case "hub_update_platform":  return adminUpdatePlatform(args)
+        case "hub_get_memory_history": return adminGetMemoryHistory(args)
+        case "hub_get_hub_logs":     return adminGetHubLogs(args)
+        case "hub_list_app_instances": return adminListAppInstances(args)
         case "hub_install_bundle":  return adminInstallBundle(args)
         case "hub_list_bundles":    return adminListBundles(args)
         case "hub_delete_bundle":   return adminDeleteBundle(args)
@@ -1019,7 +947,7 @@ def adminUpdateLibrary(args) {
         // Fail CLOSED: a dropped/empty loopback POST yields resp.data null -> parsed null, and a lone
         // `parsed?.success == false` gate would fall through to success:true (null?.success == false is
         // false). The hub returns the saved library's id + version on success; require status 200, a
-        // parsed body, no explicit failure, and an id -- mirrors adminCreateLibrary / restoreLibrary.
+        // parsed body, no explicit failure, and an id -- mirrors adminCreateLibrary.
         if (resp?.status != 200 || parsed == null || parsed?.success == false || parsed?.id == null) {
             return [success: false,
                     error: "Library update failed: ${parsed?.message ?: (resp?.status != 200 ? "hub HTTP ${resp?.status}" : 'empty/dropped hub response -- the loopback POST may have failed')}",
@@ -1108,10 +1036,191 @@ def adminForceDeleteInstalledApp(args) {
     // The forcedelete endpoint answers SUCCESS with a 302 redirect to the apps list (a plain 2xx is
     // also fine). >=400 -- or no status at all, meaning the request never reached the hub
     // (auth/transport) -- is a real failure: report it so the disarm sweep warns + keeps its id list.
-    if (st != null && st < 400) {
-        return [success: true, message: "Force-deleted installed app ${id} (HTTP ${st}).", id: id]
+    if (st == null || st >= 400) {
+        return [success: false, error: "Force-delete of installed app ${id} did not confirm (status=${st ?: 'none'}) -- endpoint error, auth failure, or the request never reached the hub.", id: id]
     }
-    return [success: false, error: "Force-delete of installed app ${id} did not confirm (status=${st ?: 'none'}) -- endpoint error, auth failure, or the request never reached the hub.", id: id]
+    // The 302 alone is NOT proof the delete committed: the disarm sweep fires these while the hub is
+    // recompiling the restored main app, a window where admin-endpoint writes are known to commit
+    // late or strand on this firmware. Verify gone-ness via /installedapp/json/<id> (the same
+    // existence read the server's VRB delete uses: {id,...} while installed, 404/empty once gone).
+    // Only a definite "absent" confirms; "still found" or an unreadable check reports success:false
+    // so the caller keeps the id on its recovery list -- re-deleting a gone app is a harmless no-op.
+    def check = hubGetStatus("/installedapp/json/${id}", [:])
+    Integer cst = (check?.status != null) ? (check.status as Integer) : null
+    if (cst == 404 || (cst != null && cst < 400 && !(check.data?.toString()?.trim()))) {
+        return [success: true, message: "Force-deleted installed app ${id} (HTTP ${st}; verified gone).", id: id]
+    }
+    if (cst != null && cst < 400) {
+        def parsed = null
+        try {
+            parsed = new groovy.json.JsonSlurper().parseText(check.data.toString())
+        } catch (Exception ignore) {
+            // An unparseable 200 (e.g. a login page) is NOT proof of absence -- fall through to keep-the-id.
+            return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the gone-check body was unparseable (auth/login page?) -- keep the id and re-delete to be safe.", id: id]
+        }
+        if ((parsed instanceof Map) && parsed.id != null) {
+            return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the app still exists (late/stranded commit) -- keep the id and re-delete.", id: id]
+        }
+        return [success: true, message: "Force-deleted installed app ${id} (HTTP ${st}; verified gone).", id: id]
+    }
+    return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the gone-check could not read /installedapp/json (status=${cst ?: 'none'}) -- keep the id and re-delete to be safe.", id: id]
+}
+
+// hub_set_app_disabled: toggle an installed app's disabled flag (the admin UI's red-X) via
+// POST /installedapp/disable {id, disable} -- the documented Vue wire format (vue-hub2.min.js:
+// `const e={id:this.appId,disable:!0};postJsonAndCallback(...)`). Remote-management aid for the
+// test hub (e.g. parking the legacy v1 watchdog without deleting it). Verified via the
+// /installedapp/json/<id> read-back: only an observed flag flip reports success.
+def adminSetAppDisabled(args) {
+    requireConfirm(args)
+    def id = (args.appId != null) ? args.appId : args.id
+    if (id == null || !id.toString().isInteger() || id.toString().toInteger() <= 0) {
+        throw new IllegalArgumentException("appId must be a positive integer (got: '${id}')")
+    }
+    boolean disable = (args.disable == true || args.disable?.toString() == "true")
+    mcpAdminLog "Setting installed app ${id} disabled=${disable} (/installedapp/disable)"
+    def body = groovy.json.JsonOutput.toJson([id: id.toString().toInteger(), disable: disable])
+    Map resp = hubPostJson("/installedapp/disable", body)
+    Integer st = (resp?.status != null) ? (resp.status as Integer) : null
+    if (st == null || st >= 400) {
+        return [success: false, error: "POST /installedapp/disable returned status=${st ?: 'none'} for app ${id}.", appId: id]
+    }
+    // Read back the flag -- a 200 alone is not proof the flip landed.
+    def check = hubGetStatus("/installedapp/json/${id}", [:])
+    def observed = null
+    try {
+        def parsed = new groovy.json.JsonSlurper().parseText(check?.data?.toString() ?: "")
+        if (parsed instanceof Map) observed = (parsed.disabled == true)
+    } catch (Exception ignore) { observed = null }
+    if (observed == disable) {
+        return [success: true, appId: id, disabled: disable, message: "App ${id} disabled flag verified ${disable}."]
+    }
+    return [success: false, appId: id, disabled: observed,
+            error: "POST accepted (HTTP ${st}) but the read-back shows disabled=${observed} (wanted ${disable})."]
+}
+
+
+// hub_get_metrics: probe-grade current metrics + the hub's own health alerts. Mirrors the main
+// server's toolGetHubPerformance current block (/hub/advanced/* reads) and _healthAlertsFromHub2
+// (/hub2/hubData), WITHOUT the CSV trend history (that stays main's). Exists so the e2e status probe
+// reads hub health through THIS always-alive endpoint instead of 504ing against a busy main app.
+def adminGetMetrics(args) {
+    def current = [:]
+    try { current.freeMemoryKB = hubGet("/hub/advanced/freeOSMemory", [:])?.trim() } catch (Exception e) { current.freeMemoryKB = "unavailable" }
+    try { current.internalTempC = hubGet("/hub/advanced/internalTempCelsius", [:])?.trim() } catch (Exception e) { current.internalTempC = "unavailable" }
+    try { current.databaseSizeKB = hubGet("/hub/advanced/databaseSize", [:])?.trim() } catch (Exception e) { current.databaseSizeKB = "unavailable" }
+    try { current.uptimeSeconds = location.hub?.uptime } catch (Exception e) { current.uptimeSeconds = "unavailable" }
+    def healthAlerts = null
+    try {
+        def raw = hubGet("/hub2/hubData", [:])
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        if (parsed instanceof Map) {
+            def alerts = (parsed.alerts instanceof Map) ? ([:] + parsed.alerts) : [:]
+            alerts.remove("platformUpdateAvailable"); alerts.remove("platformUpdateVersion")
+            healthAlerts = [safeMode: parsed.safeMode == true,
+                            active: alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort(),
+                            details: alerts]
+        }
+    } catch (Exception e) { logDebug "adminGetMetrics hubData: ${e.message}" }
+    return [current: current, healthAlerts: healthAlerts]
+}
+
+// hub_update_platform: apply the hub's pending platform update via the admin UI's own endpoints
+// (/hub/cloud/updatePlatform fires the download+install; the hub reboots itself when the install
+// completes). Test-hub maintenance tooling: keeps the test hub current without UI access, and the
+// reboot legitimately resets the platform's per-app load counters. statusOnly:true polls
+// /hub/cloud/checkUpdateStatus without confirm (read); the apply leg requires confirm=true.
+def adminUpdatePlatform(args) {
+    if (args?.statusOnly == true) {
+        def st = null
+        try { st = hubGet("/hub/cloud/checkUpdateStatus", [:]) } catch (Exception e) { return [success: false, error: "checkUpdateStatus failed: ${e.message}"] }
+        return [success: true, status: st]
+    }
+    if (args?.confirm != true) {
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: set confirm=true to apply the platform update (downloads + installs + REBOOTS the hub). Use statusOnly:true to poll progress without confirm.")
+    }
+    def check = null
+    try { check = hubGet("/hub/cloud/checkForUpdate", [:]) } catch (Exception e) { return [success: false, error: "checkForUpdate failed: ${e.message}"] }
+    def resp = null
+    try { resp = hubGet("/hub/cloud/updatePlatform", [:]) } catch (Exception e) { return [success: false, error: "updatePlatform failed: ${e.message}", checkForUpdate: check] }
+    return [success: true, checkForUpdate: check, updateResponse: resp,
+            note: "The hub downloads, installs, then reboots itself. Poll hub_update_platform(statusOnly:true) for progress; expect the endpoint to go dark during the reboot (~5-10 min total), then verify firmwareVersion via hub_get_info."]
+}
+
+// hub_get_memory_history: /hub/advanced/freeOSMemoryHistory parse, mirroring the main server's
+// toolGetMemoryHistory row shape (timestamp, freeMemoryKB, cpuLoad5min, Java heap columns).
+def adminGetMemoryHistory(args) {
+    int limit = (args?.limit != null) ? (args.limit as int) : 60
+    String raw = hubGet("/hub/advanced/freeOSMemoryHistory", [:])
+    if (!raw) return [entries: [], summary: [message: "No memory history data available"]]
+    def entries = []
+    for (line in raw.trim().split("\n")) {
+        def parts = line?.trim()?.split(",", -1)
+        if (parts == null || parts.size() < 3) continue
+        Integer memKB = null
+        try { memKB = parts[1]?.trim() as Integer } catch (Exception e) { continue }
+        def entry = [timestamp: parts[0]?.trim(), freeMemoryKB: memKB, cpuLoad5min: parts[2]?.trim()]
+        if (parts.size() >= 6) {
+            try { entry.totalJavaKB = parts[3]?.trim() as Integer } catch (Exception ignore) { }
+            try { entry.freeJavaKB = parts[4]?.trim() as Integer } catch (Exception ignore) { }
+            try { entry.directJavaKB = parts[5]?.trim() as Integer } catch (Exception ignore) { }
+        }
+        entries << entry
+    }
+    int total = entries.size()
+    if (limit > 0 && total > limit) entries = entries.subList(total - limit, total)
+    def mems = entries.collect { it.freeMemoryKB }.findAll { it != null }
+    return [entries: entries,
+            summary: [totalEntries: total,
+                      currentMemoryKB: mems ? mems[-1] : null,
+                      minMemoryKB: mems ? mems.min() : null,
+                      maxMemoryKB: mems ? mems.max() : null]]
+}
+
+// hub_get_hub_logs: most-recent hub system log entries with a level filter. Mirrors the main
+// server's /logs/past/json parse (JSON array of tab-delimited strings, oldest-first -> reversed)
+// without the since/TZ machinery -- the probe wants "newest N errors/warnings", nothing more.
+def adminGetHubLogs(args) {
+    String level = args?.level?.toString()?.toLowerCase()
+    int limit = (args?.limit != null) ? (args.limit as int) : 50
+    String raw = hubGet("/logs/past/json", [:], 30)
+    if (!raw) return [logs: [], count: 0, message: "No log data returned from hub"]
+    def arr
+    try { arr = new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return [logs: [], count: 0, error: "unparseable /logs/past/json: ${e.message}"] }
+    if (!(arr instanceof List)) return [logs: [], count: 0, error: "unexpected log format"]
+    def out = []
+    for (entry in arr.reverse()) {
+        def parts = entry?.toString()?.split("\t", -1)
+        if (parts == null || parts.size() < 3) continue
+        String entLevel = parts[1]?.toString()?.toLowerCase()
+        if (level && entLevel != level) continue
+        out << [name: parts[0], level: parts[1], message: parts.size() > 2 ? parts[2] : "",
+                time: parts.size() > 3 ? parts[3] : "", type: parts.size() > 4 ? parts[4] : ""]
+        if (out.size() >= limit) break
+    }
+    return [logs: out, count: out.size(), totalParsed: arr.size(), appliedFilters: [level: level, limit: limit]]
+}
+
+// hub_list_app_instances: every running app instance, flattened from /hub2/appsList with parentId --
+// mirrors the main server's instances mapping (id/name/type/disabled/user/parentId). The full
+// inventory the probe needs (RM rules, Basic Rules, Button Controllers/Rules, Visual Rules,
+// watchdogs -- every app type), readable while the main app is busy.
+def adminListAppInstances(args) {
+    String raw = hubGet("/hub2/appsList", [:])
+    if (!raw) return [success: false, error: "empty response from /hub2/appsList"]
+    def parsed
+    try { parsed = new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}"] }
+    def flat = []
+    def recurse
+    recurse = { Map node, parentId ->
+        def d = node?.data ?: [:]
+        flat << [id: d.id, name: d.name, type: d.type, disabled: d.disabled == true,
+                 user: d.user == true, parentId: parentId,
+                 childCount: node?.children?.size() ?: 0]
+        node?.children?.each { c -> recurse(c, d.id) }
+    }
+    (parsed?.apps ?: []).each { a -> recurse(a, null) }
+    return [apps: flat, count: flat.size()]
 }
 
 // hub_install_bundle: copied from toolInstallBundle + _firmwareAtLeast + _bundleResponseSucceeded
@@ -1456,8 +1565,29 @@ def adminWriteFile(args) {
 
 // hub_create_backup: copied from toolCreateHubBackup (hubitat-mcp-server.groovy 12023-12057).
 // GET /hub/backupDB?fileName=latest. Records state.lastBackupTimestamp.
+// light:true = trigger the backup WITHOUT downloading the multi-MB .lzf body through this app:
+// fire /hub/backupDB asynchronously (the async client truncates the body; the hub still creates
+// the backup) and confirm via /hub/backup/statusJson instead of the binary response. The full
+// synchronous download slurps the whole backup file through the calling app's execution -- a
+// one-off load spike implicated in tripping the platform's per-app limiter ~13 min later.
 def adminCreateBackup(args) {
     if (!args.confirm) throw new IllegalArgumentException("You must set confirm=true to create a backup.")
+    if (args.light == true) {
+        mcpAdminLog "Triggering hub backup (light mode -- async, body discarded)..."
+        try {
+            asynchttpGet("backupFired", [uri: "http://127.0.0.1:8080", path: "/hub/backupDB", query: [fileName: "latest"], timeout: 300])
+            def backupTime = now()
+            state.lastBackupTimestamp = backupTime
+            def status = null
+            try { status = hubGet("/hub/backup/statusJson", [:]) } catch (Exception ignored) { }
+            return [success: true, mode: "light",
+                    message: "Hub backup triggered asynchronously (body not downloaded). Poll /hub/backup/statusJson via hub_get_metrics or re-read statusJson for completion.",
+                    statusJson: status?.take(300), backupTimestampEpoch: backupTime]
+        } catch (Exception e) {
+            log.error "adminCreateBackup(light): ${e.message}"
+            return [success: false, error: "Light backup trigger failed: ${e.message}"]
+        }
+    }
     mcpAdminLog "Creating hub backup..."
     try {
         // hubGet swallows its own transport exception (returns null), so this try/catch alone can't see
@@ -1474,6 +1604,12 @@ def adminCreateBackup(args) {
         log.error "adminCreateBackup: ${e.message}"
         return [success: false, error: "Backup failed: ${e.message}"]
     }
+}
+
+// asynchttpGet completion sink for the light-mode backup trigger: the response body (the .lzf)
+// is deliberately ignored -- the point of light mode is that this app never holds it.
+def backupFired(response, data) {
+    try { mcpAdminLog "light backup async response: status=${response?.status}" } catch (Exception ignored) { }
 }
 
 // hub_manage_variables: thin action-dispatch gateway exposing hub_get_variable / hub_set_variable
@@ -1597,6 +1733,15 @@ def getAdminToolDefinitions() {
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
         [name: "hub_force_delete_app", description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. confirm:true required.",
          inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
+        [name: "hub_set_app_disabled", description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
+         inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
+        [name: "hub_get_metrics", description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
+        [name: "hub_update_platform", description: "Apply the hub's pending platform update (downloads + installs + REBOOTS the hub; requires confirm=true). statusOnly=true polls update progress without confirm.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true to apply (the hub reboots itself)."], statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only; no confirm needed."]]]],
+        [name: "hub_get_memory_history", description: "Free-memory / CPU-load history rows from the hub. Args: limit (default 60). Read-only.",
+         inputSchema: [type: "object", properties: [limit: [type: "integer"]]]],
+        [name: "hub_get_hub_logs", description: "Most-recent hub system log entries. Args: level (error/warn/info), limit (default 50). Read-only.",
+         inputSchema: [type: "object", properties: [level: [type: "string"], limit: [type: "integer"]]]],
+        [name: "hub_list_app_instances", description: "Every running app INSTANCE (flattened /hub2/appsList with parentId) -- the full app inventory. DISTINCT from hub_list_apps (Apps Code CLASSES, which resolve_class_id depends on). Read-only."],
         [name: "hub_install_bundle", description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
          inputSchema: [type: "object", properties: [importUrl: [type: "string"], primary: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
         [name: "hub_list_bundles", description: "List installed code bundle containers (id/name/namespace). Read-only.",

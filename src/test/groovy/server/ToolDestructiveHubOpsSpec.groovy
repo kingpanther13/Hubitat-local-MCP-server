@@ -26,6 +26,17 @@ import support.ToolSpecBase
  */
 class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
+    // asynchttpGet/pauseExecution are AppExecutor API methods: metaClass stubbing silently
+    // no-ops for those, and the shared per-spec-class mock only honors interactions declared
+    // in setupSpec (the additive-stub pattern; see HarnessSpec's buildAppExecutorMock note).
+    @spock.lang.Shared
+    List asyncCalls = []
+
+    def setupSpec() {
+        appExecutor.asynchttpGet(*_) >> { args -> asyncCalls << [cb: args[0], params: args[1]] }
+        appExecutor.pauseExecution(_) >> null
+    }
+
     private void enableWrite() {
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
@@ -72,6 +83,83 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         ex.message.contains('hub_create_backup')
     }
 
+    // -------- toolCreateHubBackup (async trigger; never slurps the .lzf) --------
+
+    def "hub_create_backup triggers /hub/backupDB asynchronously and confirms via statusJson"() {
+        given:
+        settingsMap.enableWrite = true
+        asyncCalls.clear()
+        hubGet.register('/hub/backup/statusJson') { params -> '{"backupInProgress":false,"cloudBackupInProgress":false}' }
+
+        when:
+        def result = script.toolCreateHubBackup([confirm: true])
+
+        then:
+        asyncCalls.size() == 1
+        asyncCalls[0].params.path == '/hub/backupDB'    // the hub creates the backup...
+        asyncCalls[0].params.query == [fileName: 'latest']
+        asyncCalls[0].cb == 'backupResponseSink'        // ...and the .lzf body is discarded, never read here
+        result.success == true
+        result.confirmed == true
+        stateMap.lastBackupTimestamp != null
+    }
+
+    def "hub_create_backup reports an honest unconfirmed trigger when statusJson is unreadable"() {
+        given:
+        settingsMap.enableWrite = true
+        asyncCalls.clear()
+        // No statusJson registration -> hubInternalGet throws/returns null -> never confirmed.
+
+        when:
+        def result = script.toolCreateHubBackup([confirm: true])
+
+        then:
+        result.success == true
+        result.confirmed == false
+        result.message.toLowerCase().contains('could not be confirmed')
+    }
+
+    def "hub_create_backup mock=true stamps the gate record without any backup work (developer mode)"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.enableDeveloperMode = true
+        asyncCalls.clear()
+
+        when:
+        def result = script.toolCreateHubBackup([confirm: true, mock: true])
+
+        then:
+        asyncCalls.isEmpty()                       // no /hub/backupDB trigger at all
+        result.success == true
+        result.mocked == true
+        result.message.contains('MOCK')
+        stateMap.lastBackupTimestamp != null
+    }
+
+    def "hub_create_backup mock=true is refused without Developer Mode"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.enableDeveloperMode = false
+
+        when:
+        script.toolCreateHubBackup([confirm: true, mock: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Developer Mode')
+    }
+
+    def "hub_create_backup still requires confirm"() {
+        given:
+        settingsMap.enableWrite = true
+
+        when:
+        script.toolCreateHubBackup([:])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
     def "hub_reboot posts to /hub/reboot and reports success"() {
         given:
         enableWrite()
@@ -90,6 +178,75 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         result.message.contains('reboot')
         result.warning.contains('automations')
         result.response == 'ok'
+    }
+
+    def "hub_reboot updatePlatform=true fires checkForUpdate then updatePlatform (no plain-reboot POST)"() {
+        given:
+        enableWrite()
+        def gets = []
+        hubGet.register('/hub/cloud/checkForUpdate') { params -> gets << '/hub/cloud/checkForUpdate'; '{"version":"2.5.0.157","upgrade":true}' }
+        hubGet.register('/hub/cloud/updatePlatform') { params -> gets << '/hub/cloud/updatePlatform'; '{"success":"true"}' }
+        def postedPath = null
+        script.metaClass.hubInternalPost = { String path, Map body = null -> postedPath = path; 'ok' }
+
+        when:
+        def result = script.toolRebootHub([confirm: true, updatePlatform: true])
+
+        then:
+        gets == ['/hub/cloud/checkForUpdate', '/hub/cloud/updatePlatform']
+        postedPath == null                       // platform-update mode must NOT plain-reboot
+        result.success == true
+        result.message.contains('Platform update')
+        result.checkForUpdate.contains('2.5.0.157')
+        result.warning.contains('hub_get_update_status')
+    }
+
+    def "hub_reboot updatePlatform=true still requires the destructive confirm gate"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolRebootHub([updatePlatform: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('SAFETY CHECK FAILED')
+    }
+
+    def "hub_reboot updatePlatform=true surfaces an update failure instead of false-greening"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/cloud/checkForUpdate') { params -> '{"upgrade":true}' }
+        hubGet.register('/hub/cloud/updatePlatform') { params -> throw new RuntimeException('boom') }
+
+        when:
+        def result = script.toolRebootHub([confirm: true, updatePlatform: true])
+
+        then:
+        result.success == false
+        result.error.contains('Platform update failed')
+    }
+
+    @spock.lang.Unroll
+    def "hub_reboot via dispatch applies the platform update (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        hubGet.register('/hub/cloud/checkForUpdate') { params -> '{"upgrade":true}' }
+        hubGet.register('/hub/cloud/updatePlatform') { params -> '{"success":"true"}' }
+
+        when:
+        def response = mcpDriver.callTool('hub_reboot', [confirm: true, updatePlatform: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.message.contains('Platform update')
+
+        where:
+        useGateways << [true, false]
     }
 
     @spock.lang.Unroll
