@@ -1552,6 +1552,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.3.0** - refactor: split every remaining tool domain into #include libraries with co-located per-tool metadata (#209); fix: rebuild-bundle pushes with the release deploy key + carry the rebuilt 18-library zip. PRs: [#269](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/269), [#273](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/273)
 - **v2.2.2** - fix: VRB-first rule guidance; rebuild e2e restore on the HPM importUrl path. PRs: [#268](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/268)
 - **v2.2.1** - feat: per-app JSON reads, direct-alias app resolution, and hub_call_device_swap. PRs: [#267](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/267)
 - **v2.2.0** - docs: list string/decimal for runCommand parameter types; feat: add Visual Rules Builder tools to the rule machine gateway. PRs: [#266](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/266), [#265](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/265)
