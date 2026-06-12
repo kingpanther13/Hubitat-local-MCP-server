@@ -26,6 +26,17 @@ import support.ToolSpecBase
  */
 class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
+    // asynchttpGet/pauseExecution are AppExecutor API methods: metaClass stubbing silently
+    // no-ops for those, and the shared per-spec-class mock only honors interactions declared
+    // in setupSpec (the additive-stub pattern; see HarnessSpec's buildAppExecutorMock note).
+    @spock.lang.Shared
+    List asyncCalls = []
+
+    def setupSpec() {
+        appExecutor.asynchttpGet(*_) >> { args -> asyncCalls << [cb: args[0], params: args[1]] }
+        appExecutor.pauseExecution(_) >> null
+    }
+
     private void enableWrite() {
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L  // matches fixed now()
@@ -70,6 +81,53 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('BACKUP REQUIRED')
         ex.message.contains('hub_create_backup')
+    }
+
+    // -------- toolCreateHubBackup (async trigger; never slurps the .lzf) --------
+
+    def "hub_create_backup triggers /hub/backupDB asynchronously and confirms via statusJson"() {
+        given:
+        settingsMap.enableWrite = true
+        asyncCalls.clear()
+        hubGet.register('/hub/backup/statusJson') { params -> '{"backupInProgress":false,"cloudBackupInProgress":false}' }
+
+        when:
+        def result = script.toolCreateHubBackup([confirm: true])
+
+        then:
+        asyncCalls.size() == 1
+        asyncCalls[0].params.path == '/hub/backupDB'    // the hub creates the backup...
+        asyncCalls[0].params.query == [fileName: 'latest']
+        asyncCalls[0].cb == 'backupResponseSink'        // ...and the .lzf body is discarded, never read here
+        result.success == true
+        result.confirmed == true
+        stateMap.lastBackupTimestamp != null
+    }
+
+    def "hub_create_backup reports an honest unconfirmed trigger when statusJson is unreadable"() {
+        given:
+        settingsMap.enableWrite = true
+        asyncCalls.clear()
+        // No statusJson registration -> hubInternalGet throws/returns null -> never confirmed.
+
+        when:
+        def result = script.toolCreateHubBackup([confirm: true])
+
+        then:
+        result.success == true
+        result.confirmed == false
+        result.message.toLowerCase().contains('could not be confirmed')
+    }
+
+    def "hub_create_backup still requires confirm"() {
+        given:
+        settingsMap.enableWrite = true
+
+        when:
+        script.toolCreateHubBackup([:])
+
+        then:
+        thrown(IllegalArgumentException)
     }
 
     def "hub_reboot posts to /hub/reboot and reports success"() {

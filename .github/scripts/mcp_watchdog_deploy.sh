@@ -79,9 +79,11 @@ source "$(dirname "$0")/mcp_watchdog_lib.sh"
 # ---------------------------------------------------------------------------
 # The watchdog's destructive WRITE tools require ONLY confirm:true -- unlike the main server it DROPS
 # the 24h-backup requirement (see the watchdog's SECURITY banner). This hub_create_backup call is a
-# best-effort DEFENSIVE snapshot, NOT a gate prerequisite, so a failure here is tolerated.
+# best-effort DEFENSIVE snapshot, NOT a gate prerequisite, so a failure here is tolerated. light:true
+# triggers the backup without downloading the .lzf through the watchdog -- the synchronous download is
+# what the platform's per-app limiter punishes with a sticky dispatch block ~13 min later (fw 2.5.0.157).
 echo "Triggering a defensive hub backup via the watchdog (best-effort; not a write-gate prerequisite)..."
-mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true}}}' >/dev/null \
+mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"light":true}}}' >/dev/null \
   || echo "::warning::hub_create_backup call failed/timed out; continuing (the backup is a defensive snapshot, not required for writes)"
 
 # ===========================================================================

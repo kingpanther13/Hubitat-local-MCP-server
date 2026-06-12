@@ -3833,6 +3833,7 @@ Requires Write master + confirm. This is the only write tool that doesn't requir
                 type: "object",
                 properties: [
                     success: [type: "boolean", description: "Whether the backup was created"],
+                    confirmed: [type: "boolean", description: "Whether completion was confirmed via the hub's backup status (false = best-effort trigger)"],
                     message: [type: "string", description: "Human-readable result"],
                     backupTimestamp: [type: "string", description: "Formatted backup time"],
                     backupTimestampEpoch: [type: "integer", description: "Backup time in epoch millis"],
@@ -12610,20 +12611,48 @@ def toolCreateHubBackup(args) {
         throw new IllegalArgumentException("You must set confirm=true to create a backup.")
     }
 
-    mcpLog("info", "hub-admin", "Creating hub backup...")
+    mcpLog("info", "hub-admin", "Creating hub backup (async trigger; the backup file is never downloaded through this app)...")
 
     try {
-        // GET /hub/backupDB?fileName=latest triggers a fresh backup and returns the .lzf file
-        // We just need the backup to be created; the binary response confirms success
-        def responseText = hubInternalGet("/hub/backupDB", [fileName: "latest"], 300)
-        def backupTime = now()
+        // GET /hub/backupDB?fileName=latest makes the hub CREATE a fresh backup and stream the
+        // .lzf back. The old implementation read that multi-MB binary through this app's
+        // execution just to confirm success -- a one-off load spike the platform's per-app
+        // limiter punishes with a STICKY device-dispatch block ~13 minutes later (verified A/B
+        // on fw 2.5.0.157: every slurping backup wedged the hub; async-triggered backups never
+        // did). So: fire the request asynchronously (the hub still creates the backup; the
+        // async client's truncated body is discarded) and confirm completion via the hub's own
+        // /hub/backup/statusJson instead of the binary response.
+        def asyncParams = [uri: hubBaseUri(), path: "/hub/backupDB", query: [fileName: "latest"], timeout: 300]
+        def cookie = getHubSecurityCookie()
+        if (cookie) asyncParams.headers = [Cookie: cookie]
+        asynchttpGet("backupResponseSink", asyncParams)
 
+        // Confirm via statusJson: wait for an in-progress backup to finish (small JSON reads).
+        // A small-DB backup can finish before the first poll, so backupInProgress=false is
+        // treated as completion rather than requiring an observed true->false transition.
+        def confirmed = false
+        for (int i = 0; i < 12; i++) {
+            pauseExecution(3000)
+            def statusText = null
+            try { statusText = hubInternalGet("/hub/backup/statusJson", null, 15) } catch (Exception ignored) { }
+            def parsed = null
+            try { parsed = statusText ? new groovy.json.JsonSlurper().parseText(statusText) : null } catch (Exception ignored) { }
+            if (parsed instanceof Map && parsed.backupInProgress == false && parsed.cloudBackupInProgress != true) {
+                confirmed = true
+                break
+            }
+            if (parsed == null && i >= 2) break   // status endpoint unreadable; stop burning time
+        }
+
+        def backupTime = now()
         state.lastBackupTimestamp = backupTime
 
-        mcpLog("info", "hub-admin", "Hub backup created successfully at ${formatTimestamp(backupTime)}")
+        mcpLog("info", "hub-admin", "Hub backup ${confirmed ? 'completed' : 'triggered (completion unconfirmed)'} at ${formatTimestamp(backupTime)}")
         return [
             success: true,
-            message: "Hub backup created successfully",
+            confirmed: confirmed,
+            message: confirmed ? "Hub backup created successfully"
+                               : "Hub backup triggered; completion could not be confirmed via /hub/backup/statusJson (best-effort).",
             backupTimestamp: formatTimestamp(backupTime),
             backupTimestampEpoch: backupTime,
             note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore."
@@ -12637,6 +12666,12 @@ def toolCreateHubBackup(args) {
                   "Check Hub Security credentials if Hub Security is enabled, or try creating a backup manually from the Hubitat web UI."
         ]
     }
+}
+
+// asynchttpGet completion sink for the backup trigger: the .lzf body is deliberately never
+// read into this app (see toolCreateHubBackup -- the whole point of the async trigger).
+def backupResponseSink(response, data) {
+    try { mcpLog("debug", "hub-admin", "backup async response status=${response?.status}") } catch (Exception ignored) { }
 }
 
 def toolRebootHub(args) {
