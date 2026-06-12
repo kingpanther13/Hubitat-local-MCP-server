@@ -126,6 +126,17 @@ class HubitatMcpClient:
         # Rate-limit: don't overwhelm the hub
         time.sleep(0.2)
 
+        # NEVER transport-replay a WRITE. The retry loop below re-sends the identical request
+        # on a 5xx or network error -- but a relay 504 means the response was LOST while the hub
+        # kept processing, so replaying a non-idempotent wizard write commits it AGAIN (observed
+        # live: one slow addAction(ifThen) -> relay 504 -> 2 transport replays -> THREE unclosed
+        # IF blocks in the rule; same mechanism makes duplicate devices from replayed creates).
+        # Every destructive/wizard write in this suite carries confirm:true -- use that as the
+        # write marker and surface the failure immediately instead, so the callers' soft
+        # contracts (verify-first, never blind-retry) handle the unknown-commit state.
+        _pj = json.dumps(payload)
+        replay_safe = '"confirm": true' not in _pj and '"confirm":true' not in _pj
+
         last_exc: Exception | None = None
         data: dict | None = None
         resp = None
@@ -142,6 +153,8 @@ class HubitatMcpClient:
                     # Hub or cloud relay returned a transient error. Heavy
                     # queries (e.g. hub_get_performance_stats) sometimes 504.
                     last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}")
+                    if not replay_safe:
+                        raise last_exc   # write: unknown-commit -- surface, never replay
                     self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/3) — retrying")
                     # Exponential backoff with jitter to avoid thundering-herd if
                     # multiple consumers ever retry simultaneously.
@@ -154,6 +167,8 @@ class HubitatMcpClient:
                     requests.exceptions.ChunkedEncodingError,
                     json.JSONDecodeError) as exc:
                 last_exc = exc
+                if not replay_safe and not isinstance(exc, json.JSONDecodeError):
+                    raise   # write: request may have reached the hub -- never replay
                 snippet = ""
                 if isinstance(exc, json.JSONDecodeError) and resp is not None:
                     try:
