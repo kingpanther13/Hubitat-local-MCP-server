@@ -326,6 +326,9 @@ class TestRunner:
         self.watchdog_url = os.environ.get("WATCHDOG_URL", "")
         self.server_app_id = os.environ.get("HUBITAT_APP_ID", "")
         self.throttle_bounces = 0
+        # Inter-test pacing (see _run_one): default 1.5s of client-side breathing room per
+        # test caps the server app's short-window duty cycle without adding any hub load.
+        self.pace_seconds = float(os.environ.get("E2E_PACE_SECONDS", "1.5"))
 
         # Cached helpers
         self._first_device_id: str | None = None
@@ -530,6 +533,14 @@ class TestRunner:
             # extra run just to learn why a test failed.
             print(f"    FULL-FAILURE {name}: {exc}")
             self._record(name, group, "fail", message=str(exc)[:200], duration=elapsed)
+        # Inter-test breathing room for the hub's per-app load limiter. The limiter has
+        # tripped MID-RUN on a freshly-booted hub, and the suite's recent speedups all
+        # removed the natural idle gaps the older, slower flow gave the server app between
+        # heavy phases -- raising its short-window duty cycle. A client-side sleep costs
+        # the hub NOTHING (no request is in flight) and caps that duty cycle. Tunable via
+        # E2E_PACE_SECONDS; 0 disables.
+        if self.pace_seconds > 0:
+            time.sleep(self.pace_seconds)
 
     # -- Rule helper: create, verify, delete ---------------------------------
 
@@ -1418,11 +1429,16 @@ class TestRunner:
             # and reveals state_<N> directly. The fix branches to the enum path: it writes
             # the value to state_<N>, skips the comparator, does NOT throw, and does NOT
             # flag partial. This pins the walker enum contract end-to-end on a live hub.
+            # NEEDS ITS OWN RULE: the required_expression substep above already added an
+            # RE to the shared rule, and RM cannot replace an existing RE (the live run
+            # failed with requiredExpressionAlreadyExists) -- same pristine-rule constraint
+            # as the CtdReject case.
             print("    SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error ...")
+            stp_app_id = self._create_native_rule("WalkerStp")
             result = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule",
                 "args": {
-                    "appId": app_id,
+                    "appId": stp_app_id,
                     "addRequiredExpression": {"conditions": [
                         {"capability": "Custom Attribute", "deviceIds": [sw],
                          "attribute": "switch", "comparator": "=", "state": "on"}]},
@@ -1446,7 +1462,8 @@ class TestRunner:
                  f"not_in_schema skip on the walker enum path: {bad}")
             assert not result.get("partial"), \
                 f"SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: walker enum condition falsely flagged partial: {result}"
-            self._assert_rule_healthy(app_id)
+            self._assert_rule_healthy(stp_app_id)
+            self._delete_native(stp_app_id)
 
             # ===== SUBSTEP test_set_rule_walker_compare_to_device =====
             # hub_set_rule edit -> addRequiredExpression (STPage reveal walker) with a
@@ -1460,10 +1477,15 @@ class TestRunner:
             # unit-green but live-wrong before the wire-up fix.
             print("    SUBSTEP test_set_rule_walker_compare_to_device ...")
             dev_a, dev_b = self.get_test_temperature_ids()
+            # OWN RULE for the positive leg too: the shared rule already carries an RE
+            # (required_expression_and_local_var above), and RM cannot add a second one
+            # (requiredExpressionAlreadyExists) -- the landing assertions below would be
+            # masked behind that failure instead of exercising the walker.
+            ctd_app_id = self._create_native_rule("CtdLand")
             result = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule",
                 "args": {
-                    "appId": app_id,
+                    "appId": ctd_app_id,
                     "addRequiredExpression": {"conditions": [
                         {"capability": "Temperature", "deviceIds": [int(dev_a)],
                          "comparator": ">",
@@ -1486,12 +1508,13 @@ class TestRunner:
                 f"SUBSTEP test_set_rule_walker_compare_to_device: relDevice_<N> reference picker did not land: {applied}"
             # The rule renders device-relative text, NOT a literal threshold / "A > 0".
             cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id},
+                "tool": "hub_get_app_config", "args": {"appId": ctd_app_id},
             })
             blob = str(cfg)
             assert ("Temperature of" in blob) or ("temperature of" in blob.lower()), \
                 (f"SUBSTEP test_set_rule_walker_compare_to_device: rule paragraph does not render a "
                  f"device-relative Temperature comparison: {blob[:600]}")
+            self._delete_native(ctd_app_id)
             # No degradation skip for the empty device-picker option list (normal case).
             skipped = result.get("settingsSkipped") or []
             bad = [s for s in skipped if isinstance(s, dict)
