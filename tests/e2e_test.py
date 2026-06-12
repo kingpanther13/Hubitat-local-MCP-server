@@ -23,6 +23,7 @@ import json
 import os
 import random
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -330,6 +331,17 @@ class TestRunner:
         # test caps the server app's short-window duty cycle without adding any hub load.
         self.pace_seconds = float(os.environ.get("E2E_PACE_SECONDS", "1.5"))
 
+        # Dispatch canary (see _canary_loop): a background thread toggles a dedicated
+        # throwaway switch through the server app every ~20s and reads the state back,
+        # so the run log shows EXACTLY when the platform's load limiter starts blocking
+        # device dispatch (the hub's own error log is lazy -- it only timestamps refusals
+        # when something happens to try). E2E_CANARY=0 disables.
+        self.canary_enabled = os.environ.get("E2E_CANARY", "1") == "1"
+        self._canary_stop = threading.Event()
+        self._canary_pause = threading.Event()   # set while a throttle bounce disables the app
+        self._canary_transitions: list[str] = []
+        self._current_test = ""
+
         # Cached helpers
         self._first_device_id: str | None = None
         self._test_start_time: str | None = None  # ISO for log check
@@ -345,6 +357,40 @@ class TestRunner:
                 raise RuntimeError("No devices available on hub -- cannot run tests")
             self._first_device_id = str(devices[0]["id"])
         return self._first_device_id
+
+    def _canary_loop(self, canary_client: HubitatMcpClient, dev_id: str, t_start: float) -> None:
+        """Background dispatch monitor: every ~20s, toggle the dedicated canary switch and
+        read the state back. A command that doesn't land = the load limiter is blocking the
+        server app's device dispatch RIGHT NOW -- print the elapsed time and the test that
+        was running, so the trip moment is bracketed to one probe interval instead of being
+        inferred from the hub's lazy error log. Uses its OWN client (thread safety) and its
+        OWN device (never the shared scaffold -- the poll tests assert on that one)."""
+        last_state = "off"
+        blocked = False
+        while not self._canary_stop.wait(20.0):
+            if self._canary_pause.is_set():
+                continue   # a throttle bounce has the app disabled; skip this probe
+            target = "on" if last_state == "off" else "off"
+            try:
+                canary_client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": target})
+                time.sleep(2.0)
+                res = canary_client.call_tool("hub_get_device_attribute", {"deviceId": dev_id, "attribute": "switch"})
+                landed = isinstance(res, dict) and res.get("value") == target
+            except Exception:
+                continue   # transport noise is not dispatch evidence either way
+            t = time.monotonic() - t_start
+            if landed:
+                last_state = target
+                if blocked:
+                    blocked = False
+                    line = f"[CANARY] dispatch RECOVERED at +{t:.0f}s (during {self._current_test or '<between tests>'})"
+                    print(f"    {line}")
+                    self._canary_transitions.append(line)
+            elif not blocked:
+                blocked = True
+                line = f"[CANARY] dispatch BLOCKED at +{t:.0f}s (during {self._current_test or '<between tests>'}) -- '{target}' produced no state change"
+                print(f"    {line}")
+                self._canary_transitions.append(line)
 
     def _watchdog_set_app_disabled(self, disable: bool) -> bool:
         """One leg of the throttle bounce via the watchdog endpoint. True only on a
@@ -376,8 +422,10 @@ class TestRunner:
             return False
         print(f"    [THROTTLE] suspected platform load-limiter block: {reason}")
         print(f"    [THROTTLE] bouncing server app {self.server_app_id} via the watchdog (disable/enable)...")
+        self._canary_pause.set()   # the app is about to be disabled; canary probes would false-alarm
         if not self._watchdog_set_app_disabled(True):
             print("    [THROTTLE] disable leg did not verify -- not retrying the enable; failing as-is.")
+            self._canary_pause.clear()
             return False
         time.sleep(3)
         enabled = False
@@ -393,6 +441,7 @@ class TestRunner:
                 f"[THROTTLE] server app {self.server_app_id} was disabled for a bounce and could "
                 "not be re-enabled -- re-enable via the watchdog (hub_set_app_disabled disable=false) NOW.")
         time.sleep(3)
+        self._canary_pause.clear()
         self.throttle_bounces += 1
         print(f"    [THROTTLE] bounce #{self.throttle_bounces} complete -- retrying the blocked dispatch once.")
         return True
@@ -517,6 +566,7 @@ class TestRunner:
 
     def _run_one(self, group: str, name: str, method_name: str) -> None:
         method = getattr(self, method_name)
+        self._current_test = f"{group}/{name}"
         t0 = time.monotonic()
         try:
             method()
@@ -4226,6 +4276,34 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             print("No tests matched the filter criteria.")
             return True
 
+        # Start the dispatch canary (its own client + its own throwaway device; the
+        # thread brackets the load-limiter trip moment to one ~20s probe interval).
+        canary_thread = None
+        canary_dni = ""
+        if self.canary_enabled:
+            try:
+                canary_dev = self._create_virtual_switch_device(f"{PREFIX}Canary")
+                if canary_dev:
+                    vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}Canary"})
+                    for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                        canary_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                        if canary_dni:
+                            break
+                    canary_client = HubitatMcpClient(
+                        hub_url=self.client.hub_url,
+                        app_id=self.client.app_id,
+                        access_token=self.client.access_token,
+                    )
+                    canary_thread = threading.Thread(
+                        target=self._canary_loop,
+                        args=(canary_client, canary_dev, time.monotonic()),
+                        daemon=True,
+                    )
+                    canary_thread.start()
+                    print(f"  [CANARY] dispatch monitor running (device {canary_dev}, ~20s probes)")
+            except Exception as exc:
+                print(f"  [CANARY] could not start the dispatch monitor: {exc}")
+
         # Group for display
         current_group = None
         for group, display_name, method_name in tests_to_run:
@@ -4233,6 +4311,18 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 current_group = group
                 print(f"\n[{group}]")
             self._run_one(group, display_name, method_name)
+
+        # Stop the canary before cleanup (its device gets deleted below).
+        if canary_thread is not None:
+            self._canary_stop.set()
+            canary_thread.join(timeout=30)
+            if canary_dni:
+                try:
+                    self.client.call_tool("hub_manage_virtual_device", {
+                        "action": "delete", "deviceNetworkId": canary_dni, "confirm": True,
+                    })
+                except Exception as exc:
+                    print(f"  [CANARY] could not delete the canary device ({canary_dni}): {exc}")
 
         # Always clean up
         self.cleanup()
@@ -4282,6 +4372,11 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                   f"{self.server_app_id or '?'} were needed mid-run -- the platform's per-app "
                   "load limiter tripped under the accumulated back-to-back load. The retried "
                   "dispatches passed; this is a capacity signal, not a product failure.")
+
+        if self._canary_transitions:
+            print("\n  Dispatch canary timeline (load-limiter block/recovery moments):")
+            for line in self._canary_transitions:
+                print(f"    {line}")
 
         # Slowest tests (diagnostic -- surface optimization targets; the suite is the biggest e2e cost).
         slow = sorted(self.results, key=lambda r: r.get("duration", 0.0), reverse=True)[:15]
