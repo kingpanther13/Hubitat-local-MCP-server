@@ -29,7 +29,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      issues: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -69,12 +68,3 @@ jobs:
           done
           echo "::error::Could not push the rebuilt bundle zip after 3 attempts."
           exit 1
-      - name: Alarm on failure (stale zip on main breaks raw-main installs)
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh issue create -R "${GITHUB_REPOSITORY}"             --title "rebuild-bundle FAILED on main -- committed bundle zip may be stale"             --body "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-
-While this is unresolved, the committed bundles/mcp-libraries.zip on main may not match main's libraries/ -- raw-main consumers (HPM installs/updates, manual installs, the e2e dead-man restore, hub_update_package at ref=main fallback) can fetch a bundle that cannot satisfy the app's #includes. Fix the workflow or push the rebuilt zip manually (python tools/build-bundle.py)."             || echo "::error::could not open the alarm issue -- the committed zip on main may be STALE; rebuild and push it manually."
-
