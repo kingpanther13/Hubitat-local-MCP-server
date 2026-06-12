@@ -27,10 +27,17 @@ concurrency:
 jobs:
   rebuild:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
     steps:
       - uses: actions/checkout@v6
         with:
           ref: main
+          # Push via the release deploy key: main's ruleset (required status checks)
+          # rejects a GITHUB_TOKEN push (GH013 -- proven by run 27445202166), exactly
+          # as release.yml documents for its own bookkeeping push.
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
@@ -46,10 +53,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add bundles/
           git commit -m "chore: rebuild library bundle zip from main's library source"
-          # The default GITHUB_TOKEN push does not retrigger workflows (GitHub suppresses
-          # recursion), and the post-merge concurrency group serializes us against the
-          # release bot -- but a release commit may still have landed between our checkout
-          # and push, so retry on a rejected push.
+          # The deploy-key push DOES retrigger push workflows (unlike GITHUB_TOKEN):
+          # release.yml skips bot-authored pushes via its recursion guard, and this
+          # workflow + publish-bundle-artifact filter on libraries/** which a bundles/-only
+          # commit never matches. The post-merge concurrency group serializes us against
+          # the release bot, but a release commit may still land between our checkout and
+          # push, so retry on a rejected push.
           for attempt in 1 2 3; do
             if git push origin main; then
               echo "Bundle commit pushed (attempt $attempt)."
@@ -60,3 +69,12 @@ jobs:
           done
           echo "::error::Could not push the rebuilt bundle zip after 3 attempts."
           exit 1
+      - name: Alarm on failure (stale zip on main breaks raw-main installs)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create -R "${GITHUB_REPOSITORY}"             --title "rebuild-bundle FAILED on main -- committed bundle zip may be stale"             --body "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+While this is unresolved, the committed bundles/mcp-libraries.zip on main may not match main's libraries/ -- raw-main consumers (HPM installs/updates, manual installs, the e2e dead-man restore, hub_update_package at ref=main fallback) can fetch a bundle that cannot satisfy the app's #includes. Fix the workflow or push the rebuilt zip manually (python tools/build-bundle.py)."             || echo "::error::could not open the alarm issue -- the committed zip on main may be STALE; rebuild and push it manually."
+
