@@ -2014,6 +2014,105 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_set_rule_replace_required_expression(self) -> None:
+        # hub_set_rule edit -> replaceRequiredExpression: change a committed Required
+        # Expression IN PLACE (same appId, no clone). Proves the cancelST delete +
+        # rebuild path end-to-end on a live hub: the new condition replaces the old one
+        # and renders, requiredExpressionReplaced=true, the rule stays healthy. The
+        # destructive-window safety (validate-before-delete, post-delete auto-restore) is
+        # covered by Spock + the orchestrator both-ways; that path can't be triggered
+        # deterministically from the e2e surface (see the note at the end of this test).
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("ReplRE")
+        try:
+            # Commit an initial RE: Switch is on. strict=True so a relay-504 soft
+            # envelope (which lacks conditionIndices) raises a recognizable 504 the
+            # runner retries, instead of a bare AssertionError it cannot classify.
+            add = self._set_rule(app_id, {"addRequiredExpression": {"conditions": [
+                {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}}, strict=True)
+            assert add.get("conditionIndices"), \
+                f"initial addRequiredExpression produced no conditionIndices: {add}"
+            # Replace it in place with a DIFFERENT condition: Switch is off.
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "appId": app_id,
+                    "replaceRequiredExpression": {"conditions": [
+                        {"capability": "Switch", "deviceIds": [sw], "state": "off"}]},
+                    "confirm": True,
+                },
+            })
+            # The replace committed a new live expression in place.
+            assert result.get("success") is True, \
+                f"replaceRequiredExpression reported failure: {result}"
+            assert result.get("requiredExpressionReplaced") is True, \
+                f"replaceRequiredExpression did not flag requiredExpressionReplaced: {result}"
+            assert result.get("conditionIndices"), \
+                f"replaceRequiredExpression produced no conditionIndices -- the new expression did not land: {result}"
+            # A successful replace never reports a restore (the new RE is live, the old
+            # one was cleanly superseded, not deleted-and-rolled-back).
+            assert result.get("requiredExpressionRestored") is None, \
+                f"a successful replace should not report a restore: {result}"
+            # The rendered RE now shows the NEW condition (Switch ... off), not the old
+            # (Switch ... on). The rule paragraph renders the active formula only.
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id},
+            })
+            blob = str(cfg).lower()
+            assert "is off" in blob, \
+                f"rendered Required Expression does not show the new 'is off' condition: {str(cfg)[:600]}"
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+        # NOTE on the failure-restore path: replaceRequiredExpression auto-restores the
+        # pre-op backup when the post-delete rebuild fails (requiredExpressionRestored
+        # true/false). That path needs a spec that PASSES pre-validation (so the cancelST
+        # delete fires) yet FAILS the live walk (so the rebuild doesn't bake) -- e.g. an
+        # invalid state for a valid device. Whether such a spec fails-to-bake is firmware/
+        # render dependent and historically flaky (BAT T651 hedges the same way), so it is
+        # NOT asserted here. The restore branches are covered deterministically by the
+        # Spock ReplaceRequiredExpressionSpec (restore-success, restore-fail, validate-
+        # before-delete) plus the orchestrator both-ways proof.
+
+    @test("native_apps")
+    def test_set_rule_replace_required_expression_missing_refusal(self) -> None:
+        # hub_set_rule edit -> replaceRequiredExpression on a rule with NO committed
+        # Required Expression. The tool must REFUSE (success:false,
+        # requiredExpressionMissing:true) and steer the caller to addRequiredExpression,
+        # never silently turning a replace into an add. The rule is left unchanged.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("ReplNoRE")
+        try:
+            try:
+                result = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_rule",
+                    "args": {
+                        "appId": app_id,
+                        "replaceRequiredExpression": {"conditions": [
+                            {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
+                        "confirm": True,
+                    },
+                })
+                # Refusal is a structured success:false envelope (not a thrown error).
+                assert result.get("success") is False, \
+                    f"replaceRequiredExpression on a rule with no RE should refuse (success:false): {result}"
+                assert result.get("requiredExpressionMissing") is True, \
+                    f"refusal should flag requiredExpressionMissing: {result}"
+                assert "addRequiredExpression" in str(result.get("error", "")), \
+                    f"refusal error should steer to addRequiredExpression: {result}"
+                # A pre-erase refusal never reports a restore -- nothing was erased.
+                assert result.get("requiredExpressionRestored") is None, \
+                    f"a no-RE refusal must not report a restore (nothing was erased): {result}"
+            except (McpToolError, McpError) as exc:
+                # Tolerate a thrown variant as long as it names the missing-RE guidance.
+                assert "addRequiredExpression" in str(exc) or "Required Expression" in str(exc), \
+                    f"no-RE refusal fail-loud should steer to addRequiredExpression: {exc}"
+            # The rule is unchanged and healthy (no RE was added behind the refusal).
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_walker_enum_required_expression(self) -> None:
         # hub_set_rule edit -> addRequiredExpression (STPage reveal walker) with an
         # ENUM-recognized Custom Attribute condition. The walker pre-fix THREW

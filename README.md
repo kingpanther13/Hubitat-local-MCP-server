@@ -364,7 +364,7 @@ Monitoring tools are gated by the Read master (ON by default).
 | `hub_get_custom_rule` | Full custom-engine rule details (triggers, conditions, actions). Omit `ruleId` to list all custom-engine rules with status; pass `detailed=true` for comprehensive diagnostics on a specific rule. |
 | `hub_test_custom_rule` | Dry-run a custom-engine rule without executing actions |
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API |
-| `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. |
+| `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers (with per-marker counts in `brokenMarkerCounts`), multiple-flag poison, configPage errors. |
 | `hub_get_visual_rule` | List Visual Rules Builder rules (omit `appId`) or read one rule's full JSON definition + format (`classic` whenNodes/thenNodes/elseNodes or `graph` nodes/edges). |
 
 </details>
@@ -527,7 +527,7 @@ Write/delete require the Write master + confirm + a recent backup.
 
 | Tool | Description |
 |------|-------------|
-| `hub_set_rule` | Create or edit a Rule Machine rule (RM 5.1) — the full authoring surface (omit `appId` to create). Structured shortcuts: addTrigger / addAction / addRequiredExpression / walkStep / patches and more. Auto-snapshots before every write. |
+| `hub_set_rule` | Create or edit a Rule Machine rule (RM 5.1) — the full authoring surface (omit `appId` to create). Structured shortcuts: addTrigger / addAction / addRequiredExpression / replaceRequiredExpression / walkStep / patches and more. Auto-snapshots before every write. |
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API (also in `hub_read_rules`) |
 | `hub_call_rule` | Trigger an RM rule (`action`: "rule"/"actions"/"stop") |
 | `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible) |

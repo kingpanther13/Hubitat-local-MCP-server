@@ -31678,6 +31678,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "walkStep"         | [page: "mainPage"]
         "settings"         | [foo: "bar"]
         "button"           | "save"
+        "replaceRequiredExpression" | [conditions: [[capability: "Mode", modeIds: ["2"]]]]
     }
 
     def "hub_set_rule CREATE (no appId) does NOT reject the honored bundle shortcuts -- must-not-catch side of the completeness guard"() {
