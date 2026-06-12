@@ -3826,7 +3826,8 @@ Requires Write master + confirm. This is the only write tool that doesn't requir
             inputSchema: [
                 type: "object",
                 properties: [
-                    confirm: [type: "boolean", description: "Must be true to confirm you want to create a backup"]
+                    confirm: [type: "boolean", description: "Must be true to confirm you want to create a backup"],
+                    mock: [type: "boolean", description: "Developer Mode only: stamp the 24h gate record; NO real backup (test envs)."]
                 ],
                 required: ["confirm"]
             ],
@@ -3835,6 +3836,7 @@ Requires Write master + confirm. This is the only write tool that doesn't requir
                 properties: [
                     success: [type: "boolean", description: "Whether the backup was created"],
                     confirmed: [type: "boolean", description: "Whether completion was confirmed via the hub's backup status (false = best-effort trigger)"],
+                    mocked: [type: "boolean", description: "true when mock=true stamped the gate record without a real backup"],
                     message: [type: "string", description: "Human-readable result"],
                     backupTimestamp: [type: "string", description: "Formatted backup time"],
                     backupTimestampEpoch: [type: "integer", description: "Backup time in epoch millis"],
@@ -3846,7 +3848,7 @@ Requires Write master + confirm. This is the only write tool that doesn't requir
         [
             name: "hub_reboot",
             description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop).
-updatePlatform=true installs the hub's PENDING platform update instead (download + install + self-reboot, 5-10 min); check/confirm versions via hub_get_update_status.
+updatePlatform=true installs the pending platform update instead (install + self-reboot, 5-10 min); versions via hub_get_update_status.
 
 PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true
 Requires Write master.""",
@@ -3854,7 +3856,7 @@ Requires Write master.""",
                 type: "object",
                 properties: [
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
-                    updatePlatform: [type: "boolean", description: "true = install the pending platform update (the hub reboots itself when the install completes) instead of a plain reboot."]
+                    updatePlatform: [type: "boolean", description: "true = install the pending platform update instead (hub self-reboots after install)."]
                 ],
                 required: ["confirm"]
             ],
@@ -12614,6 +12616,27 @@ def toolCreateHubBackup(args) {
     // backup itself, so it cannot require a pre-existing recent one (no requireDestructiveConfirm).
     if (!args.confirm) {
         throw new IllegalArgumentException("You must set confirm=true to create a backup.")
+    }
+
+    if (args.mock == true) {
+        // Test-hub lever (maintainer-directed): stamp ONLY the destructive-confirm gate record
+        // without performing any real backup -- the hub backup is a heavy operation the platform's
+        // load limiter punishes, and e2e needs the GATED tools tested, not the backup itself.
+        // Developer-mode-gated so a production client can't silently satisfy the gate with a lie.
+        if (settings.enableDeveloperMode != true) {
+            throw new IllegalArgumentException("hub_create_backup mock=true requires Developer Mode (it satisfies the destructive-confirm gate WITHOUT a real backup -- test environments only).")
+        }
+        def backupTime = now()
+        state.lastBackupTimestamp = backupTime
+        mcpLog("warn", "hub-admin", "MOCK backup recorded (no real backup performed; developer mode)")
+        return [
+            success: true,
+            mocked: true,
+            message: "MOCK backup recorded: the destructive-confirm gate is satisfied but NO real backup was created.",
+            backupTimestamp: formatTimestamp(backupTime),
+            backupTimestampEpoch: backupTime,
+            note: "Test environments only. Create a real backup before relying on restore."
+        ]
     }
 
     mcpLog("info", "hub-admin", "Creating hub backup (async trigger; the backup file is never downloaded through this app)...")

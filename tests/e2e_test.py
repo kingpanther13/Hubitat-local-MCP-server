@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import random
@@ -1156,21 +1157,16 @@ class TestRunner:
     def test_set_rule_native_lifecycle(self) -> None:
         # CREATE a native RM rule in ONE call: hub_set_rule with no appId, bundling
         # a (device-free) Time trigger + a log action -- the headline new capability.
-        created = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule",
-            "args": {
-                "name": f"{PREFIX}NativeRule",
-                "addTrigger": {
-                    "capability": "Certain Time (and optional date)",
-                    "time": "A specific time", "atTime": "17:00",
-                },
-                "addActions": [{"capability": "log", "message": "E2E native rule fired"}],
-                "confirm": True,
+        # The bundled create is the suite's heaviest single create; route it through
+        # _create_native_rule so a dropped relay response gets verified by label lookup
+        # instead of hard-failing the whole lifecycle.
+        app_id = self._create_native_rule("NativeRule", {
+            "addTrigger": {
+                "capability": "Certain Time (and optional date)",
+                "time": "A specific time", "atTime": "17:00",
             },
+            "addActions": [{"capability": "log", "message": "E2E native rule fired"}],
         })
-        app_id = created.get("appId")
-        assert app_id, f"hub_set_rule create did not return an appId: {created}"
-        self.created_native_app_ids.append(str(app_id))
 
         # VERIFY: the new rule shows up in the NATIVE RM rule list (RMUtils).
         rules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
@@ -1182,16 +1178,28 @@ class TestRunner:
         assert found, f"created native rule {app_id} not found in hub_list_rules"
 
         # EDIT: hub_set_rule WITH appId routes to the edit engine -- add a second action.
-        edited = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule",
-            "args": {"appId": app_id, "addAction": {"capability": "log", "message": "second action"}, "confirm": True},
-        })
+        # _set_rule carries the relay-504 soft contract (verify health, don't hard-fail).
+        edited = self._set_rule(app_id, {"addAction": {"capability": "log", "message": "second action"}})
         assert edited.get("success") is not False, f"hub_set_rule edit reported failure: {edited}"
 
-        # DELETE via the cross-listed hub_delete_native_app.
-        self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
-        })
+        # DELETE via the cross-listed hub_delete_native_app -- this IS the lifecycle
+        # assertion, so it stays binding: on a relay 504 the response is lost but the
+        # delete may still have committed, so verify by listing rules (absent => the
+        # delete committed). Only a rule still PRESENT after a non-504 path is a failure.
+        try:
+            self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
+            })
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            print(f"    delete of native rule {app_id} response lost to relay 504 -- verifying deletion by listing rules")
+            time.sleep(3.0)
+            listed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+            remaining = listed if isinstance(listed, list) else (listed.get("rules") or [])
+            still_present = any(str(r.get("id")) == str(app_id) for r in remaining)
+            assert not still_present, \
+                f"native rule {app_id} still present after a relay-504 delete (deletion did not commit): {listed}"
         self._untrack_native_app(app_id)
 
     @test("native_apps")
@@ -1364,16 +1372,22 @@ class TestRunner:
 
     # ---- shared helpers for the native-authoring coverage below ----
 
-    def _create_native_rule(self, suffix: str) -> Any:
-        """Create an empty native RM rule via hub_set_rule (no appId), track it.
+    def _create_native_rule(self, suffix: str, extra: dict | None = None) -> Any:
+        """Create a native RM rule via hub_set_rule (no appId), track it.
+
+        With no `extra` this creates an empty shell; pass `extra` to BUNDLE create-time
+        args (e.g. a trigger + actions) into the same single create call.
 
         Verify-after-504: writes are never transport-replayed (duplicate-commit risk), so a
         relay 504 here means the CREATE may or may not have committed. Look the rule up by
         its unique label: found -> adopt it; not found -> the create truly failed."""
         label = f"{PREFIX}{suffix}"
+        args = {"name": label, "confirm": True}
+        if extra:
+            args.update(extra)
         try:
             created = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule", "args": {"name": label, "confirm": True},
+                "tool": "hub_set_rule", "args": args,
             })
             app_id = created.get("appId")
         except (McpError, McpToolError, requests.HTTPError) as exc:
@@ -1442,6 +1456,50 @@ class TestRunner:
         h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
         assert h.get("ok") is not False, f"hub_get_rule_health reports the rule broken: {h}"
 
+    def _add_action_or_raise_504(self, app_id: Any, action: dict) -> Any:
+        """addAction edit that, unlike _set_rule, lets a relay 504 PROPAGATE.
+
+        Used for block CLOSERS (THEN-add / endIf) where a dropped response must reach
+        the enclosing _substep guard so it can clearActions-reset the now-dangling IF.
+        _set_rule's soft path would instead swallow the 504 and then run its OWN in-
+        helper health check on the unclosed IF -- which fails with a non-504 AssertionError
+        the _substep guard can't recognize (the exact run-27407212930 failure). On the
+        normal (non-504) path the success contract still binds."""
+        result = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule", "args": {"appId": app_id, "addAction": action, "confirm": True},
+        })
+        assert result.get("success") is not False, f"addAction({action}) reported failure: {result}"
+        return result
+
+    @contextlib.contextmanager
+    def _substep(self, name: str, app_id: Any = None):
+        """Structural per-substep relay-504 guard for the mega-test.
+
+        Prints the SUBSTEP banner, then runs the body. A 504 can drop ANY call's
+        response inside a substep -- including a closer (endIf/stopRepeat/THEN-add)
+        whose loss strands the rule mid-structure (e.g. an unclosed IF that the final
+        whole-rule health check then flags). The per-call relayDropped soft envelopes
+        only cover the call that returns the envelope; they can't see a closer that
+        was supposed to run after an opener already succeeded. This guard catches the
+        raised 504 at the SUBSTEP boundary and resets the shared rule to a known-
+        coherent action list (clearActions wipes any dangling IF/Repeat opener), so a
+        dropped closer can't poison later substeps or the final health assertion. Non-
+        504 errors propagate unchanged so real failures still bind."""
+        print(f"    SUBSTEP {name} ...")
+        try:
+            yield
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            print(f"    SUBSTEP {name}: aborted by relay 504 -- resetting the shared rule and continuing")
+            if app_id is not None:
+                try:
+                    self._set_rule(app_id, {"clearActions": True})
+                    self._set_rule(app_id, {"replaceActions": [{"capability": "log", "message": "substep-reset"}]})
+                except Exception as reset_exc:
+                    print(f"    SUBSTEP {name}: reset after 504 failed ({reset_exc}) -- continuing; final health check will judge")
+                self._assert_rule_healthy(app_id)
+
     def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine") -> None:
         # Fixture-teardown delete. When deferral is on, skip it (rule stays tracked) so it's reaped by
         # the disarm sweep during the restore window, not inline on the test critical path. Tests whose
@@ -1473,13 +1531,13 @@ class TestRunner:
         try:
             # ===== SUBSTEP test_set_rule_walkstep_introspect =====
             # hub_set_rule edit -> walkStep (schema-aware single-step walker), read-only op.
-            print("    SUBSTEP test_set_rule_walkstep_introspect ...")
-            ws = self._set_rule(app_id, {"walkStep": {"page": "selectTriggers", "operation": "introspect"}})
-            if ws.get("relayDropped"):
-                print("    SUBSTEP test_set_rule_walkstep_introspect: "
-                      "wire-format assertions skipped (relay 504; rule health verified)")
-            else:
-                assert isinstance(ws, dict), f"SUBSTEP test_set_rule_walkstep_introspect: walkStep introspect returned non-dict: {ws}"
+            with self._substep("test_set_rule_walkstep_introspect", app_id):
+                ws = self._set_rule(app_id, {"walkStep": {"page": "selectTriggers", "operation": "introspect"}})
+                if ws.get("relayDropped"):
+                    print("    SUBSTEP test_set_rule_walkstep_introspect: "
+                          "wire-format assertions skipped (relay 504; rule health verified)")
+                else:
+                    assert isinstance(ws, dict), f"SUBSTEP test_set_rule_walkstep_introspect: walkStep introspect returned non-dict: {ws}"
 
             # ===== SUBSTEP test_set_native_app_allows_walkstep =====
             # The rmOnly reject on walkStep was removed: it's a generic classic-
@@ -1487,52 +1545,52 @@ class TestRunner:
             # any classic app. The introspect op itself doesn't modify the app
             # (a pre-walkStep backup snapshot is still written). Routes through the
             # GENERIC native-app tool (hub_set_native_app), not hub_set_rule.
-            print("    SUBSTEP test_set_native_app_allows_walkstep ...")
-            wsn = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appId": app_id, "walkStep": {"page": "mainPage", "operation": "introspect"}, "confirm": True},
-            })
-            assert wsn.get("page") == "mainPage", \
-                f"SUBSTEP test_set_native_app_allows_walkstep: walkStep should route through the native-app tool, got: {wsn}"
+            with self._substep("test_set_native_app_allows_walkstep", app_id):
+                wsn = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                    "tool": "hub_set_native_app",
+                    "args": {"appId": app_id, "walkStep": {"page": "mainPage", "operation": "introspect"}, "confirm": True},
+                })
+                assert wsn.get("page") == "mainPage", \
+                    f"SUBSTEP test_set_native_app_allows_walkstep: walkStep should route through the native-app tool, got: {wsn}"
 
             # ===== SUBSTEP test_set_rule_edit_trigger_and_action =====
             # hub_set_rule edit -> the device-state addTrigger + addAction wizard paths.
-            print("    SUBSTEP test_set_rule_edit_trigger_and_action ...")
-            self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
-            self._set_rule(app_id, {"addAction": {"capability": "switch", "action": "on", "deviceIds": [sw]}})
-            self._assert_rule_healthy(app_id)
+            with self._substep("test_set_rule_edit_trigger_and_action", app_id):
+                self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
+                self._set_rule(app_id, {"addAction": {"capability": "switch", "action": "on", "deviceIds": [sw]}})
+                self._assert_rule_healthy(app_id)
 
             # ===== SUBSTEP test_set_rule_trigger_mutations =====
             # hub_set_rule edit -> modifyTrigger (state) + removeTrigger. Self-cleaning:
             # it adds its OWN trigger, reads the returned index, mutates and removes THAT
             # trigger (never a hardcoded index), so the trigger left by the substep above
             # is untouched and this can't poison later steps.
-            print("    SUBSTEP test_set_rule_trigger_mutations ...")
-            added = self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
-            if added.get("relayDropped"):
-                # The triggerIndex is gone with the dropped response, so modify/remove
-                # can't target the trigger this substep added. Skip the rest of this
-                # substep -- the (possibly committed) extra trigger is acceptable; no
-                # later substep assumes an exact trigger count.
-                print("    SUBSTEP test_set_rule_trigger_mutations: "
-                      "wire-format assertions skipped (relay 504; rule health verified)")
-            else:
-                tidx = added.get("triggerIndex")
-                assert tidx is not None, \
-                    f"SUBSTEP test_set_rule_trigger_mutations: addTrigger did not return a triggerIndex (contract regression): {added}"
-                mod = self._set_rule(app_id, {"modifyTrigger": {"index": tidx, "mods": {"state": "off"}}})
-                # modifyTrigger now reads the PERSISTED tstate (configure/json), so
-                # verifiedState echoes the new value instead of always being null
-                # (the old readback hit the closed selectTriggers wizard page).
-                if mod.get("relayDropped"):
+            with self._substep("test_set_rule_trigger_mutations", app_id):
+                added = self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
+                if added.get("relayDropped"):
+                    # The triggerIndex is gone with the dropped response, so modify/remove
+                    # can't target the trigger this substep added. Skip the rest of this
+                    # substep -- the (possibly committed) extra trigger is acceptable; no
+                    # later substep assumes an exact trigger count.
                     print("    SUBSTEP test_set_rule_trigger_mutations: "
                           "wire-format assertions skipped (relay 504; rule health verified)")
-                elif mod.get("verificationFetchFailed") is not True:
-                    assert mod.get("verifiedState") == "off", \
-                        (f"SUBSTEP test_set_rule_trigger_mutations: modifyTrigger verifiedState should echo the "
-                         f"persisted new state 'off', got {mod.get('verifiedState')!r}: {mod}")
-                self._set_rule(app_id, {"removeTrigger": {"index": tidx}})
-            self._assert_rule_healthy(app_id)
+                else:
+                    tidx = added.get("triggerIndex")
+                    assert tidx is not None, \
+                        f"SUBSTEP test_set_rule_trigger_mutations: addTrigger did not return a triggerIndex (contract regression): {added}"
+                    mod = self._set_rule(app_id, {"modifyTrigger": {"index": tidx, "mods": {"state": "off"}}})
+                    # modifyTrigger now reads the PERSISTED tstate (configure/json), so
+                    # verifiedState echoes the new value instead of always being null
+                    # (the old readback hit the closed selectTriggers wizard page).
+                    if mod.get("relayDropped"):
+                        print("    SUBSTEP test_set_rule_trigger_mutations: "
+                              "wire-format assertions skipped (relay 504; rule health verified)")
+                    elif mod.get("verificationFetchFailed") is not True:
+                        assert mod.get("verifiedState") == "off", \
+                            (f"SUBSTEP test_set_rule_trigger_mutations: modifyTrigger verifiedState should echo the "
+                             f"persisted new state 'off', got {mod.get('verifiedState')!r}: {mod}")
+                    self._set_rule(app_id, {"removeTrigger": {"index": tidx}})
+                self._assert_rule_healthy(app_id)
 
             # ===== SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial =====
             # hub_set_rule edit -> addTrigger Custom Attribute on an ENUM-recognized
@@ -1545,75 +1603,75 @@ class TestRunner:
             # the Spock regression specs guard, end-to-end against a live hub. Covers BOTH
             # the trigger row (_rmAddTrigger, ReltDev<N>) and the conditional-trigger
             # condition (_rmBuildCondition, RelrDev_<N>) -- the two share the enum bug.
-            print("    SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial ...")
-            # --- trigger row: tCustomAttr<N> / tstate<N> / ReltDev<N> ---
-            result = self._rm_call_soft({
-                "appId": app_id,
-                "addTrigger": {"capability": "Custom Attribute", "deviceIds": [sw],
-                               "attribute": "switch", "comparator": "=", "state": "on"},
-                "confirm": True,
-            })
-            if result.get("relayDropped"):
-                print("    SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: "
-                      "wire-format assertions skipped (relay 504; rule health verified)")
-            else:
-                assert result.get("success") is not False, \
-                    f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: addTrigger reported failure: {result}"
-                # The enum value landed in the value picker (tstate<N>) ...
-                applied = result.get("settingsApplied") or []
-                assert any(str(k).startswith("tstate") for k in applied), \
-                    (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: enum value did not land in a "
-                     f"tstate field; settingsApplied={applied}")
-                # ... and the hidden comparator was NOT written, so no ReltDev not_in_schema
-                # skip was produced -- the false-positive not_in_schema partial this guards.
-                skipped = result.get("settingsSkipped") or []
-                bad = [s for s in skipped if isinstance(s, dict)
-                       and (s.get("key") or "").startswith("ReltDev")
-                       and s.get("reason") == "not_in_schema"]
-                assert not bad, \
-                    (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: unexpected ReltDev not_in_schema "
-                     f"skip (the enum false-partial bug): {bad}")
-                # The contract discriminator: partial stays falsy.
-                assert not result.get("partial"), \
-                    (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: trigger falsely flagged partial "
-                     f"despite building correctly: {result}")
-            # --- condition path: a conditional trigger whose condition is the same
-            #     enum Custom Attribute (rCustomAttr_<N> / state_<N> / RelrDev_<N>) ---
-            cond_result = self._rm_call_soft({
-                "appId": app_id,
-                "addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on",
-                               "condition": {"capability": "Custom Attribute", "deviceIds": [sw],
-                                             "attribute": "switch", "comparator": "=", "state": "on"}},
-                "confirm": True,
-            })
-            if cond_result.get("relayDropped"):
-                print("    SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: "
-                      "wire-format assertions skipped (relay 504; rule health verified)")
-            else:
-                assert cond_result.get("success") is not False, \
-                    f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: conditional addTrigger reported failure: {cond_result}"
-                cond_applied = cond_result.get("settingsApplied") or []
-                assert any(str(k).startswith("state_") for k in cond_applied), \
-                    (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: condition enum value did not land "
-                     f"in a state_<N> field; settingsApplied={cond_applied}")
-                cond_skipped = cond_result.get("settingsSkipped") or []
-                cond_bad = [s for s in cond_skipped if isinstance(s, dict)
-                            and (s.get("key") or "").startswith("RelrDev_")
-                            and s.get("reason") == "not_in_schema"]
-                assert not cond_bad, \
-                    (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: unexpected RelrDev_<N> "
-                     f"not_in_schema skip on the condition path: {cond_bad}")
-                assert not cond_result.get("partial"), \
-                    f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: conditional trigger falsely flagged partial: {cond_result}"
-            self._assert_rule_healthy(app_id)
+            with self._substep("test_set_rule_custom_attribute_enum_no_false_partial", app_id):
+                # --- trigger row: tCustomAttr<N> / tstate<N> / ReltDev<N> ---
+                result = self._rm_call_soft({
+                    "appId": app_id,
+                    "addTrigger": {"capability": "Custom Attribute", "deviceIds": [sw],
+                                   "attribute": "switch", "comparator": "=", "state": "on"},
+                    "confirm": True,
+                })
+                if result.get("relayDropped"):
+                    print("    SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: "
+                          "wire-format assertions skipped (relay 504; rule health verified)")
+                else:
+                    assert result.get("success") is not False, \
+                        f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: addTrigger reported failure: {result}"
+                    # The enum value landed in the value picker (tstate<N>) ...
+                    applied = result.get("settingsApplied") or []
+                    assert any(str(k).startswith("tstate") for k in applied), \
+                        (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: enum value did not land in a "
+                         f"tstate field; settingsApplied={applied}")
+                    # ... and the hidden comparator was NOT written, so no ReltDev not_in_schema
+                    # skip was produced -- the false-positive not_in_schema partial this guards.
+                    skipped = result.get("settingsSkipped") or []
+                    bad = [s for s in skipped if isinstance(s, dict)
+                           and (s.get("key") or "").startswith("ReltDev")
+                           and s.get("reason") == "not_in_schema"]
+                    assert not bad, \
+                        (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: unexpected ReltDev not_in_schema "
+                         f"skip (the enum false-partial bug): {bad}")
+                    # The contract discriminator: partial stays falsy.
+                    assert not result.get("partial"), \
+                        (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: trigger falsely flagged partial "
+                         f"despite building correctly: {result}")
+                # --- condition path: a conditional trigger whose condition is the same
+                #     enum Custom Attribute (rCustomAttr_<N> / state_<N> / RelrDev_<N>) ---
+                cond_result = self._rm_call_soft({
+                    "appId": app_id,
+                    "addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on",
+                                   "condition": {"capability": "Custom Attribute", "deviceIds": [sw],
+                                                 "attribute": "switch", "comparator": "=", "state": "on"}},
+                    "confirm": True,
+                })
+                if cond_result.get("relayDropped"):
+                    print("    SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: "
+                          "wire-format assertions skipped (relay 504; rule health verified)")
+                else:
+                    assert cond_result.get("success") is not False, \
+                        f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: conditional addTrigger reported failure: {cond_result}"
+                    cond_applied = cond_result.get("settingsApplied") or []
+                    assert any(str(k).startswith("state_") for k in cond_applied), \
+                        (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: condition enum value did not land "
+                         f"in a state_<N> field; settingsApplied={cond_applied}")
+                    cond_skipped = cond_result.get("settingsSkipped") or []
+                    cond_bad = [s for s in cond_skipped if isinstance(s, dict)
+                                and (s.get("key") or "").startswith("RelrDev_")
+                                and s.get("reason") == "not_in_schema"]
+                    assert not cond_bad, \
+                        (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: unexpected RelrDev_<N> "
+                         f"not_in_schema skip on the condition path: {cond_bad}")
+                    assert not cond_result.get("partial"), \
+                        f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: conditional trigger falsely flagged partial: {cond_result}"
+                self._assert_rule_healthy(app_id)
 
             # ===== SUBSTEP test_set_rule_required_expression_and_local_var =====
             # hub_set_rule edit -> addLocalVariable + addRequiredExpression (STPage) wizards.
-            print("    SUBSTEP test_set_rule_required_expression_and_local_var ...")
-            self._set_rule(app_id, {"addLocalVariable": {"name": "batCounter", "type": "Number", "value": 0}})
-            self._set_rule(app_id, {"addRequiredExpression": {"conditions": [
-                {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}})
-            self._assert_rule_healthy(app_id)
+            with self._substep("test_set_rule_required_expression_and_local_var", app_id):
+                self._set_rule(app_id, {"addLocalVariable": {"name": "batCounter", "type": "Number", "value": 0}})
+                self._set_rule(app_id, {"addRequiredExpression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}})
+                self._assert_rule_healthy(app_id)
 
             # ===== SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error =====
             # hub_set_rule edit -> addRequiredExpression (STPage reveal walker) with an
@@ -1626,37 +1684,37 @@ class TestRunner:
             # RE to the shared rule, and RM cannot replace an existing RE (the live run
             # failed with requiredExpressionAlreadyExists) -- same pristine-rule constraint
             # as the CtdReject case.
-            print("    SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error ...")
             stp_app_id = self._create_native_rule("WalkerStp")
-            result = self._rm_call_soft({
-                "appId": stp_app_id,
-                "addRequiredExpression": {"conditions": [
-                    {"capability": "Custom Attribute", "deviceIds": [sw],
-                     "attribute": "switch", "comparator": "=", "state": "on"}]},
-                "confirm": True,
-            })
-            if result.get("relayDropped"):
-                print("    SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: "
-                      "wire-format assertions skipped (relay 504; rule health verified)")
-            else:
-                # The whole point: the walker no longer hard-errors on the enum attribute.
-                assert result.get("success") is not False, \
-                    (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: addRequiredExpression "
-                     f"hard-errored on an enum Custom Attribute (the walker bug): {result}")
-                applied = result.get("settingsApplied") or []
-                assert any(str(k).startswith("state_") for k in applied), \
-                    (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: walker enum value did not "
-                     f"land in a state_<N> field; settingsApplied={applied}")
-                skipped = result.get("settingsSkipped") or []
-                bad = [s for s in skipped if isinstance(s, dict)
-                       and (s.get("key") or "").startswith("RelrDev_")
-                       and s.get("reason") == "not_in_schema"]
-                assert not bad, \
-                    (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: unexpected RelrDev_<N> "
-                     f"not_in_schema skip on the walker enum path: {bad}")
-                assert not result.get("partial"), \
-                    f"SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: walker enum condition falsely flagged partial: {result}"
-            self._assert_rule_healthy(stp_app_id)
+            with self._substep("test_set_rule_walker_custom_attribute_enum_no_hard_error", stp_app_id):
+                result = self._rm_call_soft({
+                    "appId": stp_app_id,
+                    "addRequiredExpression": {"conditions": [
+                        {"capability": "Custom Attribute", "deviceIds": [sw],
+                         "attribute": "switch", "comparator": "=", "state": "on"}]},
+                    "confirm": True,
+                })
+                if result.get("relayDropped"):
+                    print("    SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: "
+                          "wire-format assertions skipped (relay 504; rule health verified)")
+                else:
+                    # The whole point: the walker no longer hard-errors on the enum attribute.
+                    assert result.get("success") is not False, \
+                        (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: addRequiredExpression "
+                         f"hard-errored on an enum Custom Attribute (the walker bug): {result}")
+                    applied = result.get("settingsApplied") or []
+                    assert any(str(k).startswith("state_") for k in applied), \
+                        (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: walker enum value did not "
+                         f"land in a state_<N> field; settingsApplied={applied}")
+                    skipped = result.get("settingsSkipped") or []
+                    bad = [s for s in skipped if isinstance(s, dict)
+                           and (s.get("key") or "").startswith("RelrDev_")
+                           and s.get("reason") == "not_in_schema"]
+                    assert not bad, \
+                        (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: unexpected RelrDev_<N> "
+                         f"not_in_schema skip on the walker enum path: {bad}")
+                    assert not result.get("partial"), \
+                        f"SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: walker enum condition falsely flagged partial: {result}"
+                self._assert_rule_healthy(stp_app_id)
             self._delete_native(stp_app_id)
 
             # ===== SUBSTEP test_set_rule_walker_compare_to_device =====
@@ -1669,125 +1727,126 @@ class TestRunner:
             # reject, not a silent literal fallback. The unit Spock suite proves the logic in
             # isolation; this proves it end-to-end against a live hub, where the feature was
             # unit-green but live-wrong before the wire-up fix.
-            print("    SUBSTEP test_set_rule_walker_compare_to_device ...")
             dev_a, dev_b = self.get_test_temperature_ids()
             # OWN RULE for the positive leg too: the shared rule already carries an RE
             # (required_expression_and_local_var above), and RM cannot add a second one
             # (requiredExpressionAlreadyExists) -- the landing assertions below would be
             # masked behind that failure instead of exercising the walker.
             ctd_app_id = self._create_native_rule("CtdLand")
-            result = self._rm_call_soft({
-                "appId": ctd_app_id,
-                "addRequiredExpression": {"conditions": [
-                    {"capability": "Temperature", "deviceIds": [int(dev_a)],
-                     "comparator": ">",
-                     "compareToDevice": {"deviceId": int(dev_b),
-                                         "attribute": "temperature", "offset": -2}}]},
-                "confirm": True,
-            })
-            if result.get("relayDropped"):
-                print("    SUBSTEP test_set_rule_walker_compare_to_device: "
-                      "wire-format assertions skipped (relay 504; rule health verified)")
-                self._delete_native(ctd_app_id)
-            else:
-                # (1) The device-relative condition committed cleanly.
-                assert result.get("success") is not False, \
-                    f"SUBSTEP test_set_rule_walker_compare_to_device: compareToDevice addRequiredExpression reported failure: {result}"
-                assert not result.get("partial"), \
-                    (f"SUBSTEP test_set_rule_walker_compare_to_device: compareToDevice condition falsely flagged "
-                     f"partial (the live-wrong false-partial): {result}")
-                applied = result.get("settingsApplied") or []
-                assert any(str(k).startswith("isDev_") for k in applied), \
-                    (f"SUBSTEP test_set_rule_walker_compare_to_device: isDev_<N> toggle did not land -- the "
-                     f"device-relative RHS was not wired: {applied}")
-                assert any(str(k).startswith("relDevice_") for k in applied), \
-                    f"SUBSTEP test_set_rule_walker_compare_to_device: relDevice_<N> reference picker did not land: {applied}"
-                # The rule renders device-relative text, NOT a literal threshold / "A > 0".
-                cfg = self.client.call_tool("hub_read_apps_code", {
-                    "tool": "hub_get_app_config", "args": {"appId": ctd_app_id},
+            with self._substep("test_set_rule_walker_compare_to_device", ctd_app_id):
+                result = self._rm_call_soft({
+                    "appId": ctd_app_id,
+                    "addRequiredExpression": {"conditions": [
+                        {"capability": "Temperature", "deviceIds": [int(dev_a)],
+                         "comparator": ">",
+                         "compareToDevice": {"deviceId": int(dev_b),
+                                             "attribute": "temperature", "offset": -2}}]},
+                    "confirm": True,
                 })
-                blob = str(cfg)
-                assert ("Temperature of" in blob) or ("temperature of" in blob.lower()), \
-                    (f"SUBSTEP test_set_rule_walker_compare_to_device: rule paragraph does not render a "
-                     f"device-relative Temperature comparison: {blob[:600]}")
-                self._delete_native(ctd_app_id)
-                # No degradation skip for the empty device-picker option list (normal case).
-                skipped = result.get("settingsSkipped") or []
-                bad = [s for s in skipped if isinstance(s, dict)
-                       and s.get("key") == "compareToDevice-validation"]
-                assert not bad, \
-                    (f"SUBSTEP test_set_rule_walker_compare_to_device: unexpected compareToDevice-validation skip "
-                     f"(empty device-picker options are normal): {bad}")
-            # (2) compareToDevice + a literal state RHS is now a HARD reject (fail-loud),
-            # not a silent literal fallback. The mutual-exclusion guard is a pre-write
-            # check inside the walker, so it must be exercised on a FRESH rule: adding a
-            # second Required Expression to a rule that already has one (this shared rule
-            # now has several) takes a different path that never reaches the per-condition
-            # walker check, masking the guard's error behind the second-RE failure. So this
-            # ONE reject case keeps its own throwaway rule -- it is the only mutation-path
-            # assertion that genuinely needs a pristine (zero-RE) rule.
-            reject_app_id = self._create_native_rule("CtdReject")
-            try:
-                try:
-                    rej = self.client.call_tool("hub_manage_rule_machine", {
-                        "tool": "hub_set_rule",
-                        "args": {
-                            "appId": reject_app_id,
-                            "addRequiredExpression": {"conditions": [
-                                {"capability": "Temperature", "deviceIds": [int(dev_a)],
-                                 "comparator": ">", "state": 70,
-                                 "compareToDevice": {"deviceId": int(dev_b),
-                                                     "attribute": "temperature"}}]},
-                            "confirm": True,
-                        },
+                if result.get("relayDropped"):
+                    print("    SUBSTEP test_set_rule_walker_compare_to_device: "
+                          "wire-format assertions skipped (relay 504; rule health verified)")
+                    self._delete_native(ctd_app_id)
+                else:
+                    # (1) The device-relative condition committed cleanly.
+                    assert result.get("success") is not False, \
+                        f"SUBSTEP test_set_rule_walker_compare_to_device: compareToDevice addRequiredExpression reported failure: {result}"
+                    assert not result.get("partial"), \
+                        (f"SUBSTEP test_set_rule_walker_compare_to_device: compareToDevice condition falsely flagged "
+                         f"partial (the live-wrong false-partial): {result}")
+                    applied = result.get("settingsApplied") or []
+                    assert any(str(k).startswith("isDev_") for k in applied), \
+                        (f"SUBSTEP test_set_rule_walker_compare_to_device: isDev_<N> toggle did not land -- the "
+                         f"device-relative RHS was not wired: {applied}")
+                    assert any(str(k).startswith("relDevice_") for k in applied), \
+                        f"SUBSTEP test_set_rule_walker_compare_to_device: relDevice_<N> reference picker did not land: {applied}"
+                    # The rule renders device-relative text, NOT a literal threshold / "A > 0".
+                    cfg = self.client.call_tool("hub_read_apps_code", {
+                        "tool": "hub_get_app_config", "args": {"appId": ctd_app_id},
                     })
-                    assert rej.get("success") is False, \
-                        (f"SUBSTEP test_set_rule_walker_compare_to_device: compareToDevice + literal state "
-                         f"should hard-reject (not partial/success): {rej}")
-                    assert "cannot be combined with 'state'/'value'" in str(rej.get("error", "")), \
-                        f"SUBSTEP test_set_rule_walker_compare_to_device: reject error should name the mutual-exclusion: {rej}"
-                except (McpToolError, McpError, requests.HTTPError) as exc:
-                    # A relay 504 drops the response, so we can't tell the mutual-exclusion
-                    # reject from a real fail-loud -- the expected-failure check can't be
-                    # evaluated. Do NOT soft-pass it (that would mask the reject contract);
-                    # skip just this reject assertion.
-                    if "504" in str(exc):
-                        print("    SUBSTEP test_set_rule_walker_compare_to_device: "
-                              "reject-case assertion skipped (relay 504)")
-                    else:
-                        assert "cannot be combined with 'state'/'value'" in str(exc), \
+                    blob = str(cfg)
+                    assert ("Temperature of" in blob) or ("temperature of" in blob.lower()), \
+                        (f"SUBSTEP test_set_rule_walker_compare_to_device: rule paragraph does not render a "
+                         f"device-relative Temperature comparison: {blob[:600]}")
+                    self._delete_native(ctd_app_id)
+                    # No degradation skip for the empty device-picker option list (normal case).
+                    skipped = result.get("settingsSkipped") or []
+                    bad = [s for s in skipped if isinstance(s, dict)
+                           and s.get("key") == "compareToDevice-validation"]
+                    assert not bad, \
+                        (f"SUBSTEP test_set_rule_walker_compare_to_device: unexpected compareToDevice-validation skip "
+                         f"(empty device-picker options are normal): {bad}")
+                # (2) compareToDevice + a literal state RHS is now a HARD reject (fail-loud),
+                # not a silent literal fallback. The mutual-exclusion guard is a pre-write
+                # check inside the walker, so it must be exercised on a FRESH rule: adding a
+                # second Required Expression to a rule that already has one (this shared rule
+                # now has several) takes a different path that never reaches the per-condition
+                # walker check, masking the guard's error behind the second-RE failure. So this
+                # ONE reject case keeps its own throwaway rule -- it is the only mutation-path
+                # assertion that genuinely needs a pristine (zero-RE) rule.
+                reject_app_id = self._create_native_rule("CtdReject")
+                try:
+                    try:
+                        rej = self.client.call_tool("hub_manage_rule_machine", {
+                            "tool": "hub_set_rule",
+                            "args": {
+                                "appId": reject_app_id,
+                                "addRequiredExpression": {"conditions": [
+                                    {"capability": "Temperature", "deviceIds": [int(dev_a)],
+                                     "comparator": ">", "state": 70,
+                                     "compareToDevice": {"deviceId": int(dev_b),
+                                                         "attribute": "temperature"}}]},
+                                "confirm": True,
+                            },
+                        })
+                        assert rej.get("success") is False, \
                             (f"SUBSTEP test_set_rule_walker_compare_to_device: compareToDevice + literal state "
-                             f"fail-loud should name the mutual-exclusion: {exc}")
-            finally:
-                self._delete_native(reject_app_id)
-            self._assert_rule_healthy(app_id)
+                             f"should hard-reject (not partial/success): {rej}")
+                        assert "cannot be combined with 'state'/'value'" in str(rej.get("error", "")), \
+                            f"SUBSTEP test_set_rule_walker_compare_to_device: reject error should name the mutual-exclusion: {rej}"
+                    except (McpToolError, McpError, requests.HTTPError) as exc:
+                        # A relay 504 drops the response, so we can't tell the mutual-exclusion
+                        # reject from a real fail-loud -- the expected-failure check can't be
+                        # evaluated. Do NOT soft-pass it (that would mask the reject contract);
+                        # skip just this reject assertion. (Dedicated 504 handling: this is the
+                        # CtdReject special case, so it is NOT delegated to the _substep guard.)
+                        if "504" in str(exc):
+                            print("    SUBSTEP test_set_rule_walker_compare_to_device: "
+                                  "reject-case assertion skipped (relay 504)")
+                        else:
+                            assert "cannot be combined with 'state'/'value'" in str(exc), \
+                                (f"SUBSTEP test_set_rule_walker_compare_to_device: compareToDevice + literal state "
+                                 f"fail-loud should name the mutual-exclusion: {exc}")
+                finally:
+                    self._delete_native(reject_app_id)
+                self._assert_rule_healthy(app_id)
 
             # ===== SUBSTEP test_set_rule_action_mutations =====
             # hub_set_rule edit -> addActions (bulk) + removeAction + clearActions + replaceActions.
             # The shared rule already carries an action (from edit_trigger_and_action above);
             # this substep's own clearActions/replaceActions leave it in a known 1-action
             # state for the move substep, which clears again before it needs an exact count.
-            print("    SUBSTEP test_set_rule_action_mutations ...")
-            self._set_rule(app_id, {"addActions": [
-                {"capability": "log", "message": "one"},
-                {"capability": "log", "message": "two"},
-            ]})
-            first = self._set_rule(app_id, {"addAction": {"capability": "log", "message": "three"}})
-            if first.get("relayDropped"):
-                # The actionIndex is gone with the dropped response, so removeAction can't
-                # target it. Skip just the index-dependent removeAction; clearActions
-                # below wipes the whole list anyway, returning the rule to the known
-                # 1-action state the move substep expects (it clearActions again first).
-                print("    SUBSTEP test_set_rule_action_mutations: "
-                      "wire-format assertions skipped (relay 504; rule health verified)")
-            else:
-                idx = first.get("actionIndex")
-                assert idx is not None, \
-                    f"SUBSTEP test_set_rule_action_mutations: addAction did not return an actionIndex (contract regression): {first}"
-                self._set_rule(app_id, {"removeAction": {"index": idx}})
-            self._set_rule(app_id, {"clearActions": True})
-            self._set_rule(app_id, {"replaceActions": [{"capability": "log", "message": "final"}]})
-            self._assert_rule_healthy(app_id)
+            with self._substep("test_set_rule_action_mutations", app_id):
+                self._set_rule(app_id, {"addActions": [
+                    {"capability": "log", "message": "one"},
+                    {"capability": "log", "message": "two"},
+                ]})
+                first = self._set_rule(app_id, {"addAction": {"capability": "log", "message": "three"}})
+                if first.get("relayDropped"):
+                    # The actionIndex is gone with the dropped response, so removeAction can't
+                    # target it. Skip just the index-dependent removeAction; clearActions
+                    # below wipes the whole list anyway, returning the rule to the known
+                    # 1-action state the move substep expects (it clearActions again first).
+                    print("    SUBSTEP test_set_rule_action_mutations: "
+                          "wire-format assertions skipped (relay 504; rule health verified)")
+                else:
+                    idx = first.get("actionIndex")
+                    assert idx is not None, \
+                        f"SUBSTEP test_set_rule_action_mutations: addAction did not return an actionIndex (contract regression): {first}"
+                    self._set_rule(app_id, {"removeAction": {"index": idx}})
+                self._set_rule(app_id, {"clearActions": True})
+                self._set_rule(app_id, {"replaceActions": [{"capability": "log", "message": "final"}]})
+                self._assert_rule_healthy(app_id)
 
             # ===== SUBSTEP test_set_rule_move_action =====
             # hub_set_rule edit -> moveAction (isolated, short). On a slow hub the
@@ -1797,67 +1856,67 @@ class TestRunner:
             # call hub_set_rule directly since _set_rule would raise on success=False.
             # clearActions first so the move has an exact 3-action list (the prior
             # substep left 1) without creating a new rule.
-            print("    SUBSTEP test_set_rule_move_action ...")
-            self._set_rule(app_id, {"clearActions": True})
-            added3 = self._set_rule(app_id, {"addActions": [
-                {"capability": "log", "message": "a"},
-                {"capability": "log", "message": "b"},
-                {"capability": "log", "message": "c"},
-            ]})
-            # RM action indices are PERSISTENT per-rule counters: clearActions removes the
-            # actions but never renumbers, so on this shared rule the three fresh actions do
-            # NOT sit at 1..3 (the old standalone test only got away with index 1 because its
-            # rule was brand new). Move whatever index the addActions response reports; if
-            # that response was relay-dropped there is no trustworthy index -- skip the move.
-            _acts = added3.get("actions") or []
-            move_indices = [a.get("actionIndex") for a in _acts
-                            if isinstance(a, dict) and a.get("actionIndex") is not None]
-            if not move_indices and added3.get("actionIndex") is not None:
-                move_indices = [added3.get("actionIndex")]
-            if added3.get("relayDropped") or not move_indices:
-                print("    SUBSTEP test_set_rule_move_action: skipped (addActions response "
-                      "dropped/indexless -- no trustworthy action index to move)")
+            with self._substep("test_set_rule_move_action", app_id):
+                self._set_rule(app_id, {"clearActions": True})
+                added3 = self._set_rule(app_id, {"addActions": [
+                    {"capability": "log", "message": "a"},
+                    {"capability": "log", "message": "b"},
+                    {"capability": "log", "message": "c"},
+                ]})
+                # RM action indices are PERSISTENT per-rule counters: clearActions removes the
+                # actions but never renumbers, so on this shared rule the three fresh actions do
+                # NOT sit at 1..3 (the old standalone test only got away with index 1 because its
+                # rule was brand new). Move whatever index the addActions response reports; if
+                # that response was relay-dropped there is no trustworthy index -- skip the move.
+                _acts = added3.get("actions") or []
+                move_indices = [a.get("actionIndex") for a in _acts
+                                if isinstance(a, dict) and a.get("actionIndex") is not None]
+                if not move_indices and added3.get("actionIndex") is not None:
+                    move_indices = [added3.get("actionIndex")]
+                if added3.get("relayDropped") or not move_indices:
+                    print("    SUBSTEP test_set_rule_move_action: skipped (addActions response "
+                          "dropped/indexless -- no trustworthy action index to move)")
+                    self._assert_rule_healthy(app_id)
+                    result = {"success": True, "asyncCommitLikely": True, "relayDropped": True}
+                else:
+                    try:
+                        result = self.client.call_tool("hub_manage_rule_machine", {
+                            "tool": "hub_set_rule",
+                            "args": {"appId": app_id, "moveAction": {"index": move_indices[0], "direction": "down"}, "confirm": True},
+                        })
+                        assert result.get("success") is True or result.get("asyncCommitLikely") is True, \
+                            (f"SUBSTEP test_set_rule_move_action: moveAction must confirm the shift OR report "
+                             f"asyncCommitLikely (never a hard false-negative): {result}")
+                    except requests.HTTPError as exc:
+                        # The move click is the suite's heaviest single wizard op and rides the ~10s cloud-relay
+                        # ceiling; a 504 (after the client's own 3 retries) means the RESPONSE was lost, not that
+                        # the click wasn't delivered -- the same unknown-commit state the asyncCommitLikely soft
+                        # contract above already covers. This test never asserts the resulting order, only rule
+                        # health, so the health check below remains the real assertion. Anything non-504 is real.
+                        if "504" not in str(exc):
+                            raise
+                        print("    moveAction response lost to relay 504(s) -- same soft contract as asyncCommitLikely; verifying rule health")
                 self._assert_rule_healthy(app_id)
-                result = {"success": True, "asyncCommitLikely": True, "relayDropped": True}
-            else:
-                try:
-                    result = self.client.call_tool("hub_manage_rule_machine", {
-                        "tool": "hub_set_rule",
-                        "args": {"appId": app_id, "moveAction": {"index": move_indices[0], "direction": "down"}, "confirm": True},
-                    })
-                    assert result.get("success") is True or result.get("asyncCommitLikely") is True, \
-                        (f"SUBSTEP test_set_rule_move_action: moveAction must confirm the shift OR report "
-                         f"asyncCommitLikely (never a hard false-negative): {result}")
-                except requests.HTTPError as exc:
-                    # The move click is the suite's heaviest single wizard op and rides the ~10s cloud-relay
-                    # ceiling; a 504 (after the client's own 3 retries) means the RESPONSE was lost, not that
-                    # the click wasn't delivered -- the same unknown-commit state the asyncCommitLikely soft
-                    # contract above already covers. This test never asserts the resulting order, only rule
-                    # health, so the health check below remains the real assertion. Anything non-504 is real.
-                    if "504" not in str(exc):
-                        raise
-                    print("    moveAction response lost to relay 504(s) -- same soft contract as asyncCommitLikely; verifying rule health")
-            self._assert_rule_healthy(app_id)
 
             # ===== SUBSTEP test_set_rule_patches =====
             # hub_set_rule edit -> patches (atomic multi-op).
-            print("    SUBSTEP test_set_rule_patches ...")
-            self._set_rule(app_id, {"patches": [
-                {"addAction": {"capability": "log", "message": "p1"}},
-                {"addAction": {"capability": "log", "message": "p2"}},
-            ]})
-            self._assert_rule_healthy(app_id)
+            with self._substep("test_set_rule_patches", app_id):
+                self._set_rule(app_id, {"patches": [
+                    {"addAction": {"capability": "log", "message": "p1"}},
+                    {"addAction": {"capability": "log", "message": "p2"}},
+                ]})
+                self._assert_rule_healthy(app_id)
 
             # ===== SUBSTEP test_set_rule_raw_settings_and_button =====
             # hub_set_rule edit -> the generic raw settings + button (page-transition) path,
             # then read the value back via hub_get_app_config. (BAT-confirmed shapes.)
-            print("    SUBSTEP test_set_rule_raw_settings_and_button ...")
-            self._set_rule(app_id, {"settings": {"comments": "BAT_E2E raw settings", "logging": ["Triggers", "Actions"]}})
-            self._set_rule(app_id, {"button": "updateRule"})
-            cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
-            settings = cfg.get("settings") or {}
-            assert settings.get("comments") == "BAT_E2E raw settings", \
-                f"SUBSTEP test_set_rule_raw_settings_and_button: comments did not round-trip: {settings.get('comments')!r}"
+            with self._substep("test_set_rule_raw_settings_and_button", app_id):
+                self._set_rule(app_id, {"settings": {"comments": "BAT_E2E raw settings", "logging": ["Triggers", "Actions"]}})
+                self._set_rule(app_id, {"button": "updateRule"})
+                cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+                settings = cfg.get("settings") or {}
+                assert settings.get("comments") == "BAT_E2E raw settings", \
+                    f"SUBSTEP test_set_rule_raw_settings_and_button: comments did not round-trip: {settings.get('comments')!r}"
 
             # ===== SUBSTEP test_set_rule_addaction_missing_required_field_fails_fast =====
             # Several (capability, action) pairs were verified on a live hub to
@@ -1868,19 +1927,23 @@ class TestRunner:
             # confusing partial. Spot-check colorTemp.setColorTemp (needs 'kelvin').
             # No device is needed -- the field throw fires before any device write, and
             # before any mutation, so it leaves the shared rule's state untouched.
-            print("    SUBSTEP test_set_rule_addaction_missing_required_field_fails_fast ...")
-            try:
-                result = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_set_rule",
-                    "args": {"appId": app_id, "addAction": {"capability": "colorTemp", "action": "setColorTemp"}, "confirm": True},
-                })
-                assert result.get("success") is False, \
-                    f"SUBSTEP test_set_rule_addaction_missing_required_field_fails_fast: omitting kelvin should fail fast (not partial): {result}"
-                assert "kelvin" in str(result.get("error", "")), \
-                    f"SUBSTEP test_set_rule_addaction_missing_required_field_fails_fast: error should name 'kelvin': {result}"
-            except (McpToolError, McpError) as exc:
-                assert "kelvin" in str(exc), \
-                    f"SUBSTEP test_set_rule_addaction_missing_required_field_fails_fast: fail-fast error should name 'kelvin': {exc}"
+            with self._substep("test_set_rule_addaction_missing_required_field_fails_fast", app_id):
+                try:
+                    result = self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_set_rule",
+                        "args": {"appId": app_id, "addAction": {"capability": "colorTemp", "action": "setColorTemp"}, "confirm": True},
+                    })
+                    assert result.get("success") is False, \
+                        f"SUBSTEP test_set_rule_addaction_missing_required_field_fails_fast: omitting kelvin should fail fast (not partial): {result}"
+                    assert "kelvin" in str(result.get("error", "")), \
+                        f"SUBSTEP test_set_rule_addaction_missing_required_field_fails_fast: error should name 'kelvin': {result}"
+                except (McpToolError, McpError) as exc:
+                    # A 504 here is a dropped response, NOT the fail-fast we assert -- let the
+                    # _substep guard catch it (reset + continue) rather than mis-asserting on 'kelvin'.
+                    if "504" in str(exc):
+                        raise
+                    assert "kelvin" in str(exc), \
+                        f"SUBSTEP test_set_rule_addaction_missing_required_field_fails_fast: fail-fast error should name 'kelvin': {exc}"
 
             # ===== SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error =====
             # Same shared walker (_rmWalkConditionReveal), but reached via the doActPage
@@ -1891,52 +1954,56 @@ class TestRunner:
             # state_<N>, skips the comparator, does NOT throw, does NOT flag partial).
             # Runs LAST because it opens an IF block; it closes the block (THEN + endIf)
             # before the final whole-rule health check so the shared rule ends clean.
-            print("    SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error ...")
-            result = self._rm_call_soft({
-                "appId": app_id,
-                "addAction": {"capability": "ifThen", "expression": {"conditions": [
-                    {"capability": "Custom Attribute", "deviceIds": [sw],
-                     "attribute": "switch", "comparator": "=", "state": "on"}]}},
-                "confirm": True,
-            })
-            if result.get("relayDropped"):
-                print("    SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: "
-                      "wire-format assertions skipped (relay 504; rule health verified)")
-                # The ifThen opener may or may not have committed; appending the
-                # close-block (THEN + endIf) below to an indeterminate action list could
-                # strand an endIf without its IF and break the final health check. Reset
-                # to a clean, known-coherent action list instead of closing an unknown one.
-                self._set_rule(app_id, {"clearActions": True})
-                self._set_rule(app_id, {"replaceActions": [{"capability": "log", "message": "final"}]})
-                self._assert_rule_healthy(app_id)
-            else:
-                # The whole point: the doActPage walker no longer hard-errors on the enum attr.
-                assert result.get("success") is not False, \
-                    (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: addAction ifThen "
-                     f"hard-errored on an enum Custom Attribute (the walker bug): {result}")
-                applied = result.get("settingsApplied") or []
-                assert any(str(k).startswith("state_") for k in applied), \
-                    (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: doActPage walker "
-                     f"enum value did not land in a state_<N> field; settingsApplied={applied}")
-                skipped = result.get("settingsSkipped") or []
-                bad = [s for s in skipped if isinstance(s, dict)
-                       and (s.get("key") or "").startswith("RelrDev_")
-                       and s.get("reason") == "not_in_schema"]
-                assert not bad, \
-                    (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: unexpected "
-                     f"RelrDev_<N> not_in_schema skip on the doActPage walker enum path: {bad}")
-                assert not result.get("partial"), \
-                    (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: doActPage walker "
-                     f"enum condition falsely flagged partial: {result}")
-                # Close the IF block (THEN body + endIf) before the whole-rule health
-                # check. An ifThen opener added alone is a valid intermediate tool state,
-                # but it leaves the rule with an unclosed IF that the live hub's
-                # rule-health check correctly flags -- the enum-condition contract under
-                # test is already proven by the assertions above; completing the block is
-                # what makes the end-to-end health assertion meaningful.
-                self._set_rule(app_id, {"addAction": {"capability": "log", "message": "fired"}})
-                self._set_rule(app_id, {"addAction": {"capability": "endIf"}})
-                self._assert_rule_healthy(app_id)
+            with self._substep("test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error", app_id):
+                result = self._rm_call_soft({
+                    "appId": app_id,
+                    "addAction": {"capability": "ifThen", "expression": {"conditions": [
+                        {"capability": "Custom Attribute", "deviceIds": [sw],
+                         "attribute": "switch", "comparator": "=", "state": "on"}]}},
+                    "confirm": True,
+                })
+                if result.get("relayDropped"):
+                    print("    SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: "
+                          "wire-format assertions skipped (relay 504; rule health verified)")
+                    # The ifThen opener may or may not have committed; appending the
+                    # close-block (THEN + endIf) below to an indeterminate action list could
+                    # strand an endIf without its IF and break the final health check. Reset
+                    # to a clean, known-coherent action list instead of closing an unknown one.
+                    self._set_rule(app_id, {"clearActions": True})
+                    self._set_rule(app_id, {"replaceActions": [{"capability": "log", "message": "final"}]})
+                    self._assert_rule_healthy(app_id)
+                else:
+                    # The whole point: the doActPage walker no longer hard-errors on the enum attr.
+                    assert result.get("success") is not False, \
+                        (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: addAction ifThen "
+                         f"hard-errored on an enum Custom Attribute (the walker bug): {result}")
+                    applied = result.get("settingsApplied") or []
+                    assert any(str(k).startswith("state_") for k in applied), \
+                        (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: doActPage walker "
+                         f"enum value did not land in a state_<N> field; settingsApplied={applied}")
+                    skipped = result.get("settingsSkipped") or []
+                    bad = [s for s in skipped if isinstance(s, dict)
+                           and (s.get("key") or "").startswith("RelrDev_")
+                           and s.get("reason") == "not_in_schema"]
+                    assert not bad, \
+                        (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: unexpected "
+                         f"RelrDev_<N> not_in_schema skip on the doActPage walker enum path: {bad}")
+                    assert not result.get("partial"), \
+                        (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: doActPage walker "
+                         f"enum condition falsely flagged partial: {result}")
+                    # Close the IF block (THEN body + endIf) before the whole-rule health
+                    # check. An ifThen opener added alone is a valid intermediate tool state,
+                    # but it leaves the rule with an unclosed IF that the live hub's
+                    # rule-health check correctly flags -- the enum-condition contract under
+                    # test is already proven by the assertions above; completing the block is
+                    # what makes the end-to-end health assertion meaningful. Call the closers
+                    # so a relay-504 on EITHER one raises out to the _substep guard (which
+                    # clearActions-resets the now-dangling IF) instead of _set_rule's soft path
+                    # swallowing the drop and then failing its own in-helper health check on the
+                    # unclosed IF -- that mismatch is exactly what failed run 27407212930.
+                    self._add_action_or_raise_504(app_id, {"capability": "log", "message": "fired"})
+                    self._add_action_or_raise_504(app_id, {"capability": "endIf"})
+                    self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
 
@@ -4782,9 +4849,21 @@ def main() -> None:
         if not fresh_backup:
             print("Creating hub backup (required by safety checks; last one stale or unknown)...")
             try:
-                backup_result = client.call_tool("hub_create_backup", {"confirm": True})
-                msg = backup_result.get("message", backup_result) if isinstance(backup_result, dict) else backup_result
-                print(f"  Backup: {msg}\n")
+                # Prefer the MOCK backup: it stamps ONLY the destructive-confirm gate record
+                # (state.lastBackupTimestamp) without touching /hub/backupDB, so the gate stays
+                # satisfied with none of the real backup's hub-heavy load. An older server
+                # (no `mock` arg) ignores it and runs a real backup -- detect that by the
+                # absence of mocked==True in the response and fall back to the real call.
+                mock_result = client.call_tool("hub_create_backup", {"confirm": True, "mock": True})
+                mocked = mock_result.get("mocked") is True if isinstance(mock_result, dict) else False
+                if mocked:
+                    msg = mock_result.get("message", mock_result) if isinstance(mock_result, dict) else mock_result
+                    print(f"  Backup (MOCK -- gate stamped, no real backupDB write): {msg}\n")
+                else:
+                    print("  Server has no mock-backup support (older build) -- falling back to a REAL backup...")
+                    backup_result = client.call_tool("hub_create_backup", {"confirm": True})
+                    msg = backup_result.get("message", backup_result) if isinstance(backup_result, dict) else backup_result
+                    print(f"  Backup (REAL): {msg}\n")
             except Exception as exc:
                 print(f"  [WARN] Backup failed: {exc}")
                 print("  Tests requiring backup may fail.\n")

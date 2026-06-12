@@ -119,6 +119,36 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         result.message.toLowerCase().contains('could not be confirmed')
     }
 
+    def "hub_create_backup mock=true stamps the gate record without any backup work (developer mode)"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.enableDeveloperMode = true
+        asyncCalls.clear()
+
+        when:
+        def result = script.toolCreateHubBackup([confirm: true, mock: true])
+
+        then:
+        asyncCalls.isEmpty()                       // no /hub/backupDB trigger at all
+        result.success == true
+        result.mocked == true
+        result.message.contains('MOCK')
+        stateMap.lastBackupTimestamp != null
+    }
+
+    def "hub_create_backup mock=true is refused without Developer Mode"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.enableDeveloperMode = false
+
+        when:
+        script.toolCreateHubBackup([confirm: true, mock: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Developer Mode')
+    }
+
     def "hub_create_backup still requires confirm"() {
         given:
         settingsMap.enableWrite = true
