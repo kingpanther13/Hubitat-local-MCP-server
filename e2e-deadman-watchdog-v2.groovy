@@ -1565,8 +1565,29 @@ def adminWriteFile(args) {
 
 // hub_create_backup: copied from toolCreateHubBackup (hubitat-mcp-server.groovy 12023-12057).
 // GET /hub/backupDB?fileName=latest. Records state.lastBackupTimestamp.
+// light:true = trigger the backup WITHOUT downloading the multi-MB .lzf body through this app:
+// fire /hub/backupDB asynchronously (the async client truncates the body; the hub still creates
+// the backup) and confirm via /hub/backup/statusJson instead of the binary response. The full
+// synchronous download slurps the whole backup file through the calling app's execution -- a
+// one-off load spike implicated in tripping the platform's per-app limiter ~13 min later.
 def adminCreateBackup(args) {
     if (!args.confirm) throw new IllegalArgumentException("You must set confirm=true to create a backup.")
+    if (args.light == true) {
+        mcpAdminLog "Triggering hub backup (light mode -- async, body discarded)..."
+        try {
+            asynchttpGet("backupFired", [uri: "http://127.0.0.1:8080", path: "/hub/backupDB", query: [fileName: "latest"], timeout: 300])
+            def backupTime = now()
+            state.lastBackupTimestamp = backupTime
+            def status = null
+            try { status = hubGet("/hub/backup/statusJson", [:]) } catch (Exception ignored) { }
+            return [success: true, mode: "light",
+                    message: "Hub backup triggered asynchronously (body not downloaded). Poll /hub/backup/statusJson via hub_get_metrics or re-read statusJson for completion.",
+                    statusJson: status?.take(300), backupTimestampEpoch: backupTime]
+        } catch (Exception e) {
+            log.error "adminCreateBackup(light): ${e.message}"
+            return [success: false, error: "Light backup trigger failed: ${e.message}"]
+        }
+    }
     mcpAdminLog "Creating hub backup..."
     try {
         // hubGet swallows its own transport exception (returns null), so this try/catch alone can't see
@@ -1583,6 +1604,12 @@ def adminCreateBackup(args) {
         log.error "adminCreateBackup: ${e.message}"
         return [success: false, error: "Backup failed: ${e.message}"]
     }
+}
+
+// asynchttpGet completion sink for the light-mode backup trigger: the response body (the .lzf)
+// is deliberately ignored -- the point of light mode is that this app never holds it.
+def backupFired(response, data) {
+    try { mcpAdminLog "light backup async response: status=${response?.status}" } catch (Exception ignored) { }
 }
 
 // hub_manage_variables: thin action-dispatch gateway exposing hub_get_variable / hub_set_variable

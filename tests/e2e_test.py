@@ -367,7 +367,7 @@ class TestRunner:
         OWN device (never the shared scaffold -- the poll tests assert on that one)."""
         last_state = "off"
         blocked = False
-        while not self._canary_stop.wait(20.0):
+        while not self._canary_stop.wait(float(os.environ.get("E2E_CANARY_INTERVAL", "20"))):
             if self._canary_pause.is_set():
                 continue   # a throttle bounce has the app disabled; skip this probe
             target = "on" if last_state == "off" else "off"
@@ -4570,15 +4570,20 @@ def main() -> None:
         print(f"  ERROR: Initialize failed: {exc}")
         sys.exit(1)
 
-    # Ensure a hub backup exists — many tools require a recent backup
-    print("Creating hub backup (required by safety checks)...")
-    try:
-        backup_result = client.call_tool("hub_create_backup", {"confirm": True})
-        msg = backup_result.get("message", backup_result) if isinstance(backup_result, dict) else backup_result
-        print(f"  Backup: {msg}\n")
-    except Exception as exc:
-        print(f"  [WARN] Backup failed: {exc}")
-        print("  Tests requiring backup may fail.\n")
+    # Ensure a hub backup exists — many tools require a recent backup.
+    # E2E_SKIP_BACKUP=1 skips it (diagnostic lever: the backup runs hub-side for tens of
+    # seconds UNDER the opening test traffic, and that overlap is a load-limiter suspect).
+    if os.environ.get("E2E_SKIP_BACKUP") == "1":
+        print("Skipping hub backup (E2E_SKIP_BACKUP=1) -- destructive-confirm tests may fail without a recent backup.\n")
+    else:
+        print("Creating hub backup (required by safety checks)...")
+        try:
+            backup_result = client.call_tool("hub_create_backup", {"confirm": True})
+            msg = backup_result.get("message", backup_result) if isinstance(backup_result, dict) else backup_result
+            print(f"  Backup: {msg}\n")
+        except Exception as exc:
+            print(f"  [WARN] Backup failed: {exc}")
+            print("  Tests requiring backup may fail.\n")
 
     all_passed = runner.run(filter_group=args.group, filter_test=args.test)
     sys.exit(0 if all_passed else 1)
