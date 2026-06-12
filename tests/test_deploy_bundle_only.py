@@ -38,3 +38,24 @@ def test_deploy_guards_includes_without_a_bundle():
         f"{SCRIPT.name} dropped the bundle-coverage guard: an app that #includes libraries while the "
         "manifest declares no bundle must fail loudly, not deploy an app whose #includes can't resolve."
     )
+
+
+def test_deploy_builds_the_bundle_in_ci_instead_of_fetching_the_committed_zip():
+    """PRs no longer commit bundles/*.zip (rebuild-bundle.yml owns it on main post-merge), so the
+    deploy MUST build the PR's zip from the checkout and stage it through the watchdog -- a raw
+    URL fetch of the bundle at the PR SHA would install a STALE zip and e2e would silently test
+    outdated library code."""
+    text = SCRIPT.read_text()
+    assert "python3 tools/build-bundle.py" in text, (
+        f"{SCRIPT.name} no longer builds the bundle zip from the PR checkout -- without the in-CI "
+        "build, e2e installs whatever stale zip is committed at the PR SHA."
+    )
+    assert "http://127.0.0.1:8080/local/" in text, (
+        f"{SCRIPT.name} no longer installs the staged bundle from the hub's own /local/ URL -- the "
+        "built zip must be staged via the watchdog's base64 hub_write_file and imported locally."
+    )
+    for stale_fetch in ('BUNDLE_URL="${PR_RAW_BASE}', "BUNDLE_URL=\"$PR_RAW_BASE"):
+        assert stale_fetch not in text, (
+            f"{SCRIPT.name} builds the bundle URL from PR_RAW_BASE again -- that fetches the zip "
+            "COMMITTED at the PR SHA, which PRs no longer rebuild (stale library code)."
+        )

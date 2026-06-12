@@ -634,6 +634,100 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         'non-string'        | 42
     }
 
+    // -------- bundle-artifacts resolution (PRs no longer commit bundles/*.zip) --------
+
+    @spock.lang.Unroll
+    def "_bundleArtifactUrlForRef keys by branch or full SHA, keeping the zip basename (#desc)"() {
+        // The basename MUST survive into the artifact path: the hub appears to key the bundle
+        // entity on the zip filename, so a renamed zip imports as a SECOND entity (duplicate
+        // libraries) instead of updating the existing one.
+        expect:
+        script._bundleArtifactUrlForRef(location, 'https://b', ref) == expected
+
+        where:
+        desc                       | location                                                                | ref        || expected
+        'branch ref'               | 'https://raw.githubusercontent.com/o/r/main/bundles/mcp-libraries.zip' | 'feat/x'   || 'https://b/bundle-artifacts/branches/feat/x/mcp-libraries.zip'
+        'full-sha ref'             | 'https://raw.githubusercontent.com/o/r/main/bundles/mcp-libraries.zip' | ('a' * 40) || "https://b/bundle-artifacts/shas/${'a' * 40}/mcp-libraries.zip".toString()
+        'short sha = branch path'  | 'https://raw.githubusercontent.com/o/r/main/bundles/mcp-libraries.zip' | 'deadbee'  || 'https://b/bundle-artifacts/branches/deadbee/mcp-libraries.zip'
+        'unusable location'        | 'not-a-real-url'                                                        | 'feat/x'   || null
+    }
+
+    def "_bundleArtifactExists: integer .size marker is the only true; throws and junk bodies are false"() {
+        // _httpFetchUrl is PRIVATE (metaClass stubs silently no-op on it -- docs/testing.md
+        // dispatch table), so drive the probe through the spec-scope appExecutor.httpGet stub.
+        when: 'the marker answers with the zip byte count'
+        nextHttpStatus = 200
+        nextHttpBody = '866882'
+        then:
+        script._bundleArtifactExists('https://b/bundle-artifacts/branches/x/mcp-libraries.zip')
+
+        when: 'the fetch throws (raw 404)'
+        nextHttpThrow = new IllegalStateException('404: Not Found')
+        then:
+        !script._bundleArtifactExists('https://b/bundle-artifacts/branches/x/mcp-libraries.zip')
+
+        when: 'a 200 with a non-integer body (HTML error page, mis-routed content)'
+        nextHttpThrow = null
+        nextHttpBody = '<html>nope</html>'
+        then:
+        !script._bundleArtifactExists('https://b/bundle-artifacts/branches/x/mcp-libraries.zip')
+    }
+
+    def "bundle leg prefers the bundle-artifacts zip when the artifact exists, with no freshness warning"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        def installedUrls = []
+        script.metaClass.toolInstallBundle = { a -> installedUrls << a.importUrl; [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> [success: true] }
+        script.metaClass._bundleArtifactExists = { String u -> true }
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'feat/x', confirm: true])
+
+        then:
+        result.success == true
+        result.bundles[0].source == 'bundle-artifacts'
+        result.bundles[0].url == "${RAW}/bundle-artifacts/branches/feat/x/mcp-libraries.zip".toString()
+        installedUrls == [result.bundles[0].url]
+        result.bundleFreshnessWarning == null
+    }
+
+    def "bundle leg falls back to the committed-at-ref zip and warns on a non-main ref"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> [success: true] }
+        script.metaClass._bundleArtifactExists = { String u -> false }
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'feat/x', confirm: true])
+
+        then:
+        result.success == true
+        result.bundles[0].source == 'committed-at-ref'
+        result.bundles[0].url.endsWith('/feat/x/bundles/mcp-libraries.zip')
+        result.bundleFreshnessWarning?.contains('COMMITTED at the ref')
+    }
+
+    def "no freshness warning at ref=main even when the bundle fell back to the committed zip"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> [success: true] }
+        script.metaClass._bundleArtifactExists = { String u -> false }
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then:
+        result.success == true
+        result.bundles[0].source == 'committed-at-ref'
+        result.bundleFreshnessWarning == null
+    }
+
     // -------- dispatch happy path --------
 
     @spock.lang.Unroll

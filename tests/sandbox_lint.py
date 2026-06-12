@@ -781,12 +781,16 @@ def _extract_canonical_counts() -> dict | None:
     # it from `core`/`tools_list` for the default-catalog math -- the same way a gateway
     # sub-tool is excluded. (Issue #250 moved hub_update_package out of the hub_manage_mcp
     # gateway to exactly this: a dev-only top-level tool. It still counts in `total`.)
+    # Like the read-only set, this is an aggregator since the #209 full split: union the
+    # main getter's literals with every library-contributed _developerModeOnlyToolNames_part
+    # chunk (libraries are already concatenated into `src`).
     dev_only_names: set[str] = set()
-    dev_match = re.search(
-        r"def getDeveloperModeOnlyToolNames\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE
+    dev_bodies = re.findall(
+        r"def (?:getDeveloperModeOnlyToolNames|_developerModeOnlyToolNames_part\w+)\(\) \{(.*?)^}",
+        src, re.DOTALL | re.MULTILINE,
     )
-    if dev_match:
-        dev_only_names = set(re.findall(r"['\"]([a-z0-9_]+)['\"]", dev_match.group(1)))
+    for body in dev_bodies:
+        dev_only_names |= set(re.findall(r"['\"]([a-z0-9_]+)['\"]", body))
     dev_only_top_level = dev_only_names - proxied_names
 
     core = total - proxied - len(dev_only_top_level)
@@ -2072,14 +2076,24 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
         )
 
     # 2. getReadOnlyToolNames() -> the read-only tool set (the source of truth
-    #    that feeds the readOnlyHint annotations).
+    #    that feeds the readOnlyHint annotations). Since the #209 full split the main
+    #    getter is an AGGREGATOR: each library contributes its own tools via a
+    #    _readOnlyToolNames_part<Name>() chunk (the libraries are concatenated into
+    #    `src` above), and the main body keeps only the main-resident remainder -- so
+    #    the read set is the union of literals across the getter AND every part method.
     ro_match = re.search(r"^def getReadOnlyToolNames\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE)
     if not ro_match:
         return _fail(
             "read-write-split-no-readonly-list",
             "Could not locate getReadOnlyToolNames() return literal -- has the function shape changed?",
         )
-    read_only = set(re.findall(r'"([a-z_]+)"', re.sub(r"//[^\n]*", "", ro_match.group(1))))
+    ro_bodies = [
+        ro_match.group(1),
+        *re.findall(r"^def _readOnlyToolNames_part\w+\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE),
+    ]
+    read_only: set[str] = set()
+    for body in ro_bodies:
+        read_only |= set(re.findall(r'"([a-z_]+)"', re.sub(r"//[^\n]*", "", body)))
     if not read_only:
         return _fail(
             "read-write-split-no-readonly-list",
@@ -2247,6 +2261,25 @@ READ_WRITE_SPLIT_SELF_TEST_CASES = [
         "no getGatewayConfig() in source -- flags extractor guard (must-catch)",
         'def getReadOnlyToolNames() {\n    return [ "hub_get_device" ] as Set\n}\n',
         {"read-write-split-no-gateway-config"},
+    ),
+    (
+        "read contributed via a library _readOnlyToolNames_part method -- unioned, no finding (must-not-catch)",
+        _build_read_write_split_corpus(
+            {"hub_read_files": ["hub_list_files"],
+             "hub_manage_files": ["hub_list_files", "hub_delete_file"]},
+            [],  # main getter body keeps no literal for this tool
+            ["hub_list_files", "hub_delete_file"],
+        ) + '\ndef _readOnlyToolNames_partFiles() {\n    return ["hub_list_files"]\n}\n',
+        set(),
+    ),
+    (
+        "library part method read stranded in a manage gateway -- still flags (must-catch)",
+        _build_read_write_split_corpus(
+            {"hub_manage_files": ["hub_list_files", "hub_delete_file"]},
+            [],
+            ["hub_list_files", "hub_delete_file"],
+        ) + '\ndef _readOnlyToolNames_partFiles() {\n    return ["hub_list_files"]\n}\n',
+        {"read-write-split-stranded-read"},
     ),
     # --- Mirror invariant (B): no write tool inside a hub_read_* gateway ---
     (

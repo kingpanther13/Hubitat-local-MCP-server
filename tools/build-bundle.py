@@ -63,6 +63,62 @@ LIBS = [
         "source": LIB_DIR / "mcp-visual-rules-lib.groovy",
         "dest": f"{NAMESPACE}.McpVisualRulesLib.groovy",
     },
+    {
+        "source": LIB_DIR / "mcp-files-lib.groovy",
+        "dest": f"{NAMESPACE}.McpFilesLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-item-backups-lib.groovy",
+        "dest": f"{NAMESPACE}.McpItemBackupsLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-debug-logging-lib.groovy",
+        "dest": f"{NAMESPACE}.McpDebugLoggingLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-diagnostics-lib.groovy",
+        "dest": f"{NAMESPACE}.McpDiagnosticsLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-system-lib.groovy",
+        "dest": f"{NAMESPACE}.McpSystemLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-devices-lib.groovy",
+        "dest": f"{NAMESPACE}.McpDevicesLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-virtual-devices-lib.groovy",
+        "dest": f"{NAMESPACE}.McpVirtualDevicesLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-variables-lib.groovy",
+        "dest": f"{NAMESPACE}.McpVariablesLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-custom-rules-lib.groovy",
+        "dest": f"{NAMESPACE}.McpCustomRulesLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-code-management-lib.groovy",
+        "dest": f"{NAMESPACE}.McpCodeManagementLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-hpm-lib.groovy",
+        "dest": f"{NAMESPACE}.McpHpmLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-self-admin-lib.groovy",
+        "dest": f"{NAMESPACE}.McpSelfAdminLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-app-cloner-lib.groovy",
+        "dest": f"{NAMESPACE}.McpAppClonerLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-discovery-lib.groovy",
+        "dest": f"{NAMESPACE}.McpDiscoveryLib.groovy",
+    },
 ]
 
 # Fixed DOS-epoch timestamp + stored (uncompressed) entries make rebuilds

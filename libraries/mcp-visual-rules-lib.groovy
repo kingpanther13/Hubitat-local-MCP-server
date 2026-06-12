@@ -697,3 +697,35 @@ def _getAllToolDefinitions_partVisualRules() {
         ]
     ]
 }
+
+def _readOnlyToolNames_partVisualRules() {
+    // Read-only classification membership for this library's tools, contributed to the
+    // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
+    // the tool). A tool absent from every part list is write+destructive by default.
+    return [
+        // Visual Rules Builder (read)
+        "hub_get_visual_rule"
+    ]
+}
+
+def _idempotentWriteToolNames_partVisualRules() {
+    // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
+    // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
+    return [
+        // Visual Rules: delete-style retry finds nothing to do (clean "No
+        // installed app" envelope, no snapshot minting). hub_set_visual_rule
+        // is an upsert whose no-appId mode CREATES -- non-idempotent.
+        "hub_delete_visual_rule"
+    ]
+}
+
+def _toolDisplayMeta_partVisualRules() {
+    // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
+    // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
+    return [
+        // Visual Rules Builder
+        hub_get_visual_rule: [title: "Get Visual Rule", summary: "List Visual Rules Builder rules or read one rule's full definition."],
+        hub_set_visual_rule: [title: "Author Visual Rule", summary: "Create or edit a Visual Rules Builder rule, including rename and pause/resume."],
+        hub_delete_visual_rule: [title: "Delete Visual Rule", summary: "Delete a Visual Rules Builder rule, returning its definition for recovery."]
+    ]
+}
