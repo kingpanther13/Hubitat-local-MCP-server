@@ -170,27 +170,29 @@ jobs:
     needs: [approve]
     if: inputs.probe_only != 'true'
     runs-on: ubuntu-latest
-    # Bounds the whole job (lease wait + hold). Kept equal to the lease TTL in
-    # lease_acquire.sh: the lease is claimed only AFTER any wait, so the
-    # post-acquisition window always stays within the 30-min TTL and the job can't
-    # outlive its own lease and let another run trample state mid-test. lease_acquire.sh
-    # now WAITS for a busy lease (LEASE_WAIT_TIMEOUT_S, default 600s) and claims it when
-    # it frees instead of failing fast; that wait spends part of this same window, so a
-    # run that waits out most of it for a stuck lease times out red rather than running a
-    # truncated test.
-    timeout-minutes: 30
+    # Bounds the whole job: up to a 4h lease-queue wait (LEASE_WAIT_TIMEOUT_S in
+    # lease_acquire.sh) + the ~30-min post-acquisition run window. The lease is claimed
+    # only AFTER the wait, so the run itself always stays within the 30-min lease TTL.
+    timeout-minutes: 270
 
-    # Serialize against the shared test hub at the JOB level (not workflow level) so the
-    # `approve` gate -- which may sit waiting on a human reviewer -- never holds this
-    # group. This group is the PRIMARY serializer: it stops two CI e2e jobs from running
-    # against the single-tenant hub at once, so they never even both enter lease_acquire's
-    # wait loop. lease_acquire.sh's in-script wait (it polls a busy lease, it does NOT
-    # abort on sight) is the SECONDARY net -- it covers a manual hub session GitHub's
-    # `concurrency` can't see. Don't cancel in-progress: a running job holds the lease and
-    # needs to release it cleanly via its `if: always()` cleanup step.
+    # Serialization model: runs QUEUE ON THE LEASE, not on a global GitHub group.
+    # lease_acquire.sh is the PRIMARY serializer -- every run enters its wait loop
+    # (poll every 30s, up to 4h) and claims the hub the moment its turn comes, so
+    # several PRs can sit queued for the single shared hub and run back-to-back.
+    # It also covers a manual hub session GitHub's `concurrency` can't see.
+    #
+    # The GitHub group is PER-PR (per-ref for dispatches) and exists only to cancel
+    # SUPERSEDED runs: a new commit pushed while the previous run is still lease-waiting
+    # (or mid-test on the now-outdated commit) cancels it -- its results are stale either
+    # way. Cancellation is safe: the cleanup/restore/lease-release steps are
+    # `if: always()` (GitHub still runs those on cancellation), and a hard kill is
+    # backstopped by the dead-man watchdog's deadline restore plus the lease TTL
+    # (an unreleased lease is reclaimable after at most 30 min).
+    # Scoped at the JOB level (not workflow level) so the `approve` gate -- which may
+    # sit waiting on a human reviewer -- never holds the group.
     concurrency:
-      group: hub-e2e
-      cancel-in-progress: false
+      group: hub-e2e-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
 
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}

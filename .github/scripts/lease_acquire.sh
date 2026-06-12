@@ -4,14 +4,15 @@
 # Usage:  lease_acquire.sh <by-identifier>
 # Env:    MCP_URL — full cloud OAuth URL with access_token
 #         LEASE_WAIT_TIMEOUT_S        — max seconds to WAIT for a successfully-read but HELD
-#                                       lease to free before aborting (default 600). Set 0 to
-#                                       fail fast.
+#                                       lease to free before aborting (default 14400 = 4h: runs
+#                                       QUEUE on the lease, so several PRs can wait their turn
+#                                       on the single shared hub). Set 0 to fail fast.
 #         LEASE_UNREACHABLE_TIMEOUT_S — max seconds to tolerate the endpoint being UNREADABLE
 #                                       (5xx on every read = hub/app down, not lease held)
 #                                       before fast-failing (default 120). Much shorter than the
 #                                       held-lease budget: a down hub won't free a lease, so
 #                                       waiting it out just burns ~10min per run.
-#         LEASE_POLL_INTERVAL_S       — seconds between polls while waiting (default 15).
+#         LEASE_POLL_INTERVAL_S       — seconds between polls while waiting (default 30).
 #
 # Exits 0 on successful claim. While the lease is read as held by someone else and not
 # expired, this WAITS (polling) and claims it automatically the moment it frees or
@@ -32,9 +33,9 @@ BY="${1:?Usage: $0 <by-identifier>}"
 : "${MCP_URL:?MCP_URL env var required (full cloud OAuth URL with access_token)}"
 
 LEASE_DURATION_MIN=30
-LEASE_WAIT_TIMEOUT_S="${LEASE_WAIT_TIMEOUT_S:-600}"
+LEASE_WAIT_TIMEOUT_S="${LEASE_WAIT_TIMEOUT_S:-14400}"
 LEASE_UNREACHABLE_TIMEOUT_S="${LEASE_UNREACHABLE_TIMEOUT_S:-120}"
-LEASE_POLL_INTERVAL_S="${LEASE_POLL_INTERVAL_S:-15}"
+LEASE_POLL_INTERVAL_S="${LEASE_POLL_INTERVAL_S:-30}"
 VERIFY_SLEEP_S=2
 
 # Portable epoch helpers (date +%s%N is GNU-only — fails on BSD/macOS). Seconds are
