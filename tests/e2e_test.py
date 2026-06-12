@@ -407,6 +407,33 @@ class TestRunner:
                 print(f"    {line}")
                 self._canary_transitions.append(line)
 
+    def _wait_dispatch_alive(self, timeout_s: float = 90.0) -> bool:
+        """Block until device dispatch demonstrably works again (or timeout). Probes the
+        PERSISTENT scaffold switch -- it needs no installed() lifecycle, so it answers the
+        moment the platform's block actually lifts. Re-bounces once halfway through."""
+        sw = self.get_test_switch_id()
+        deadline = time.monotonic() + timeout_s
+        rebounced = False
+        while time.monotonic() < deadline:
+            try:
+                cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": sw, "attribute": "switch"})
+                target = "off" if (isinstance(cur, dict) and cur.get("value") == "on") else "on"
+                self.client.call_tool("hub_call_device_command", {"deviceId": sw, "command": target})
+                time.sleep(2.0)
+                rb = self.client.call_tool("hub_get_device_attribute", {"deviceId": sw, "attribute": "switch"})
+                if isinstance(rb, dict) and rb.get("value") == target:
+                    print("    [THROTTLE] dispatch verified alive again")
+                    return True
+            except Exception:
+                pass
+            if not rebounced and time.monotonic() > deadline - timeout_s / 2:
+                rebounced = True
+                print("    [THROTTLE] dispatch still blocked at half-budget -- re-bouncing once")
+                self._clear_load_throttle("dispatch still dead during recovery wait")
+            time.sleep(8.0)
+        print("    [THROTTLE] dispatch did NOT recover within the wait budget")
+        return False
+
     def _watchdog_set_app_disabled(self, disable: bool) -> bool:
         """One leg of the throttle bounce via the watchdog endpoint. True only on a
         verified flag read-back (the tool re-reads /installedapp/json after the write)."""
@@ -971,7 +998,8 @@ class TestRunner:
                     # context) -- it is broken hardware, not a command-pipeline verdict.
                     # Recreate the throwaway once and re-drive.
                     print(f"    [THROTTLE] fresh device {dev_id} appears stillborn (created inside "
-                          "the blocked window) -- recreating the throwaway once")
+                          "the blocked window) -- waiting for dispatch to recover, then recreating")
+                    self._wait_dispatch_alive()
                     try:
                         if cmd_dni:
                             self.client.call_tool("hub_manage_virtual_device", {
