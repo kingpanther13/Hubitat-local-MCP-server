@@ -19990,29 +19990,40 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")
     // Verify the action actually disappeared. RM 5.1 silently no-ops the
     // delAct click if the button-handler dispatch races with another edit.
-    // state.editAct was clear at pre-flight, so the retry loop here absorbs
-    // only click-EFFECT propagation lag -- not a stuck-state no-op.
-    //
-    // The retry loop below absorbs the async dispatch race: the click can
-    // return 200 OK before the deletion propagates to appSettings. Each
-    // attempt re-fetches the live index list; if the index is gone, we
-    // return immediately. Delays: 1s before attempt 2, 3s before attempt 3,
-    // 6s before attempt 4. Max additional wait ~10s on total failure.
-    // Four attempts (10s budget) cover typical and slow hub propagation
-    // observed in live-hub runs (two agents hit the race independently;
-    // observed propagation lag exceeded several seconds in one repro).
-    // Faster hubs return on the first or second attempt with no perceived
-    // delay since the immediate-success path skips all sleeps.
+    // state.editAct was clear at pre-flight, so the loop below absorbs the
+    // two failure modes a clean 200 on the click can hide:
+    //   (a) propagation lag -- the click committed but appSettings updates
+    //       asynchronously (observed at several seconds in live repros);
+    //   (b) a silently DROPPED first click -- RM 5.1 occasionally no-ops the
+    //       first delAct entirely (live-measured 2/2 on a quiet hub,
+    //       2026-06-12), so nothing ever propagates.
+    // The old loop (1s/3s/6s backoff) treated both the same: it burned the
+    // whole ~10s budget, pushed the op past the ~10s cloud-relay ceiling
+    // (10.4s direct-timed on a QUIET hub, so every cloud caller got a 504),
+    // and then threw -- while its own error text prescribed the verified
+    // re-click performed below. Now: short early polls absorb (a); if the
+    // index is STILL present at ~2.5s, that is the dropped-click signature
+    // (b) -- re-click ONCE (the immediately-preceding presence check is the
+    // verified-non-commit evidence that makes the second click duplicate-
+    // safe) and keep polling. Success lands ~4-7s even on a dropped first
+    // click, back under the relay ceiling.
     def afterIndices = null
-    def retryDelaysMs = [1000, 3000, 6000]
-    for (int attempt = 0; attempt < 4; attempt++) {
+    def reclicked = false
+    def retryDelaysMs = [1000, 1500, 2000, 3000]
+    for (int attempt = 0; attempt < 5; attempt++) {
         if (attempt > 0) pauseExecution(retryDelaysMs[attempt - 1] as Integer)
         afterIndices = _rmCollectActionIndices(appId)
         if (!afterIndices.contains(actionIdx)) {
-            return [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
+            def out = [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
+            if (reclicked) out.reclicked = true
+            return out
+        }
+        if (!reclicked && attempt == 2) {
+            reclicked = true
+            _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")
         }
     }
-    throw new IllegalStateException("removeAction(${actionIdx}): after the delAct click and ~10s of polling, action ${actionIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). state.editAct was clear at pre-flight, so the most likely cause is a DROPPED first wizard click -- RM 5.1 occasionally silently no-ops the first delAct click, in which case the action was NOT removed and nothing is pending. Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check action ${actionIdx}. If still present -> the click dropped; safe to call removeAction(index:${actionIdx}) again. If gone -> the original click committed late (rare extreme lag); the removal already succeeded, do not retry. Indices shift on deletion, so retrying without this check can delete the wrong action.")
+    throw new IllegalStateException("removeAction(${actionIdx}): after the delAct click, one verified re-click, and ~8s of polling, action ${actionIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). state.editAct was clear at pre-flight and the re-click also failed to land. Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check action ${actionIdx}. If still present -> safe to call removeAction(index:${actionIdx}) again. If gone -> a click committed late (rare extreme lag); the removal already succeeded, do not retry. Indices shift on deletion, so retrying without this check can delete the wrong action.")
 }
 
 /**
@@ -20059,40 +20070,51 @@ private Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
     // Including the form-context fields in POST 1 (the path
     // _rmClickAppButton takes when pageName is provided) makes RM treat
     // the click as a settings-save; the deletion intent gets dropped.
-    _rmClickAppButton(appId, triggerIdx.toString(), "deleteCon")
-    // POST 2: page-save commit. Pull version from the just-fetched config
-    // (cheap; we already have it locally if we want to reuse, but a fresh
-    // fetch keeps the helper self-contained).
-    def cfgForVersion = null
-    try { cfgForVersion = _rmFetchConfigJson(appId, "selectTriggers") } catch (Exception verExc) {
-        mcpLog("warn", "rm-native", "_rmRemoveTrigger: version fetch for app ${appId} failed (${verExc.message}) -- POSTing commit without version field; hub may reject with a version-conflict error on concurrent edits")
+    def fireDeleteSequence = {
+        _rmClickAppButton(appId, triggerIdx.toString(), "deleteCon")
+        // POST 2: page-save commit. Pull version from the just-fetched config
+        // (cheap; we already have it locally if we want to reuse, but a fresh
+        // fetch keeps the helper self-contained).
+        def cfgForVersion = null
+        try { cfgForVersion = _rmFetchConfigJson(appId, "selectTriggers") } catch (Exception verExc) {
+            mcpLog("warn", "rm-native", "_rmRemoveTrigger: version fetch for app ${appId} failed (${verExc.message}) -- POSTing commit without version field; hub may reject with a version-conflict error on concurrent edits")
+        }
+        def commitBody = [
+            id: appId.toString(),
+            formAction: "update",
+            currentPage: "selectTriggers",
+            pageBreadcrumbs: '["mainPage"]'
+        ]
+        if (cfgForVersion?.app?.version != null) commitBody.version = cfgForVersion.app.version.toString()
+        try { hubInternalPostForm("/installedapp/update/json", commitBody) } catch (Exception postExc) {
+            mcpLog("warn", "rm-native", "_rmRemoveTrigger: page-save commit failed for app ${appId} trigger ${triggerIdx} (${postExc.message}) -- the deletion may not have committed; the verify retry loop below will catch it.")
+        }
     }
-    def commitBody = [
-        id: appId.toString(),
-        formAction: "update",
-        currentPage: "selectTriggers",
-        pageBreadcrumbs: '["mainPage"]'
-    ]
-    if (cfgForVersion?.app?.version != null) commitBody.version = cfgForVersion.app.version.toString()
-    try { hubInternalPostForm("/installedapp/update/json", commitBody) } catch (Exception postExc) {
-        mcpLog("warn", "rm-native", "_rmRemoveTrigger: page-save commit failed for app ${appId} trigger ${triggerIdx} (${postExc.message}) -- the deletion may not have committed; the verify retry loop below will catch it.")
-    }
-    // Verify the trigger actually disappeared. RM 5.1 processes the button
-    // click asynchronously; the click returns 200 OK before the deletion
-    // propagates to appSettings. Each attempt re-fetches the live index list;
-    // if the index is gone, we return immediately. Delays: 1s before attempt
-    // 2, 3s before attempt 3, 6s before attempt 4. Max additional wait ~10s
-    // on total failure. Faster hubs return on the first attempt with no delay.
+    fireDeleteSequence()
+    // Verify the trigger actually disappeared -- same two failure modes and same
+    // verified re-click recovery as _rmDeleteAction's delAct (see the comment
+    // there): short early polls absorb async propagation lag; an index still
+    // present at ~2.5s is the silently-DROPPED-first-click signature, so the
+    // full click+commit sequence re-fires ONCE (the immediately-preceding
+    // presence check is the verified-non-commit evidence that makes it
+    // duplicate-safe), keeping the op under the ~10s cloud-relay ceiling.
     def afterIndices = null
-    def retryDelaysMs = [1000, 3000, 6000]
-    for (int attempt = 0; attempt < 4; attempt++) {
+    def reclicked = false
+    def retryDelaysMs = [1000, 1500, 2000, 3000]
+    for (int attempt = 0; attempt < 5; attempt++) {
         if (attempt > 0) pauseExecution(retryDelaysMs[attempt - 1] as Integer)
         afterIndices = _rmCollectTriggerIndices(appId)
         if (!afterIndices.contains(triggerIdx)) {
-            return [success: true, removedIndex: triggerIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
+            def out = [success: true, removedIndex: triggerIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
+            if (reclicked) out.reclicked = true
+            return out
+        }
+        if (!reclicked && attempt == 2) {
+            reclicked = true
+            fireDeleteSequence()
         }
     }
-    throw new IllegalStateException("removeTrigger(${triggerIdx}): after the delete click and ~10s of polling, trigger ${triggerIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). The most likely cause is a DROPPED first wizard click (RM 5.1 occasionally silently no-ops it), in which case the trigger was NOT removed and nothing is pending. Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check trigger ${triggerIdx}. If still present -> safe to call removeTrigger(index:${triggerIdx}) again. If gone -> the original click committed late (rare); the removal already succeeded, do not retry. If a retry also fails, hub_restore_backup to the pre-operation snapshot. Indices shift on deletion, so retrying without this check can delete the wrong trigger.")
+    throw new IllegalStateException("removeTrigger(${triggerIdx}): after the delete click, one verified re-click, and ~8s of polling, trigger ${triggerIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check trigger ${triggerIdx}. If still present -> safe to call removeTrigger(index:${triggerIdx}) again. If gone -> a click committed late (rare); the removal already succeeded, do not retry. If a retry also fails, hub_restore_backup to the pre-operation snapshot. Indices shift on deletion, so retrying without this check can delete the wrong trigger.")
 }
 
 /**
@@ -26908,10 +26930,10 @@ def _applyNativeAppEdit(args) {
             // commit case is handled by the structured envelope above.
             // removeAction stays on the legacy flat shape because it's single-
             // row and the dropped-click race is rarer in practice. Detected by
-            // the distinctive "DROPPED first wizard click" phrase in
-            // _rmDeleteAction's exhaustion throw (BUG-13 rewrote this from the
-            // old, misleading "deletion may commit post-response" wording).
-            def isRetryExhaustion = e.message?.contains("DROPPED first wizard click")
+            // the distinctive "one verified re-click" phrase in _rmDeleteAction's
+            // exhaustion throw (which fires only after the in-helper re-click
+            // also failed to land; BUG-13 had rewritten the original wording).
+            def isRetryExhaustion = e.message?.contains("one verified re-click")
             if (isRetryExhaustion) {
                 result.restoreHint = "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')."
                 result.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
@@ -26984,6 +27006,9 @@ def _applyNativeAppEdit(args) {
             removedIndex: removeResult?.removedIndex,
             beforeIndices: removeResult?.beforeIndices,
             afterIndices: removeResult?.afterIndices,
+            // True when the first delAct click silently no-oped and the helper's
+            // verified re-click is what landed the removal (see _rmDeleteAction).
+            reclicked: removeResult?.reclicked,
             health: health,
             updateRuleFailed: updateRuleFailed,
             subscriptionsNotLive: subscriptionsNotLive,
@@ -27030,10 +27055,11 @@ def _applyNativeAppEdit(args) {
             // live-verified and the replace-half data-loss case justifies the
             // richer recovery contract. Trigger-mutation exhaustion is rare and
             // single-row, so the flat shape stays sufficient here. Detected by the
-            // distinctive "DROPPED first wizard click" phrase in removeTrigger's
-            // exhaustion throw (BUG-13 rewrote the old "deletion may commit
-            // post-response" wording on both the action and trigger paths).
-            def isRetryExhaustion = e.message?.contains("DROPPED first wizard click")
+            // distinctive "one verified re-click" phrase in removeTrigger's
+            // exhaustion throw (which fires only after the in-helper re-click
+            // also failed to land; BUG-13 had rewritten the original wording on
+            // both the action and trigger paths).
+            def isRetryExhaustion = e.message?.contains("one verified re-click")
             def trigResult = [
                 success: false,
                 appId: appId,

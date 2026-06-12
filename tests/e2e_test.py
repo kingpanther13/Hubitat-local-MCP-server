@@ -2101,18 +2101,18 @@ class TestRunner:
         # whatever index the addActions response reports -- never a hardcoded 1.
         app_id = self._create_native_rule("MoveAct")
         try:
-            added3 = self._set_rule(app_id, {"addActions": [
-                {"capability": "log", "message": "a"},
-                {"capability": "log", "message": "b"},
-                {"capability": "log", "message": "c"},
-            ]}, strict=True)
-            _acts = added3.get("actions") or []
-            move_indices = [a.get("actionIndex") for a in _acts
-                            if isinstance(a, dict) and a.get("actionIndex") is not None]
-            if not move_indices and added3.get("actionIndex") is not None:
-                move_indices = [added3.get("actionIndex")]
+            # Three SINGLE addAction calls, not one bulk addActions: the bulk walk runs
+            # ~2.5-4s per item in ONE request (direct-timed 7.6s for 2 items on a quiet
+            # hub), so 3 items rides over the ~10s relay ceiling and 504s under CI load
+            # (run 27427314399 -- both strict attempts). Singles are ~5s each, all under
+            # the ceiling; bulk-addActions coverage lives in test_set_rule_action_mutations.
+            move_indices = []
+            for msg in ("a", "b", "c"):
+                added = self._set_rule(app_id, {"addAction": {"capability": "log", "message": msg}}, strict=True)
+                if added.get("actionIndex") is not None:
+                    move_indices.append(added.get("actionIndex"))
             assert move_indices, \
-                f"addActions returned no action indices to move (contract regression): {added3}"
+                "addAction returned no action indices to move (contract regression)"
             # The move-arrow click is the suite's heaviest single wizard op and rides the
             # ~10s cloud-relay ceiling even on a healthy hub. On a slow hub it can commit
             # late; the tool does one short re-check then returns a soft asyncCommitLikely
