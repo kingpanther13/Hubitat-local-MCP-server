@@ -1223,12 +1223,12 @@ def getGatewayConfig() {
             description: "DESTRUCTIVE hub operations: reboot, shutdown, and permanent device deletion. All operations are irreversible or cause significant downtime — confirm with user first.",
             tools: ["hub_reboot", "hub_shutdown", "hub_delete_device"],
             summaries: [
-                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). Args: confirm=true",
+                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime); updatePlatform=true installs the pending platform update instead. Args: confirm=true",
                 hub_shutdown: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
                 hub_delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true"
             ],
             searchHints: [
-                hub_reboot: "restart reset power cycle",
+                hub_reboot: "restart reset power cycle update platform firmware upgrade",
                 hub_shutdown: "power off turn off stop halt",
                 hub_delete_device: "remove ghost orphan zwave zigbee stuck failed pairing"
             ]
@@ -1828,7 +1828,7 @@ def getToolDisplayMeta() {
         hub_delete_room: [title: "Delete Room", summary: "Permanently delete a room."],
         hub_update_room: [title: "Rename Room", summary: "Rename an existing room."],
         // Destructive hub ops
-        hub_reboot: [title: "Reboot Hub", summary: "Reboot the hub (1-3 minutes of downtime)."],
+        hub_reboot: [title: "Reboot Hub", summary: "Reboot the hub (1-3 minutes of downtime), optionally installing the pending platform update first."],
         hub_shutdown: [title: "Shut Down Hub", summary: "Power the hub off; a physical restart is required afterwards."],
         // Diagnostics + logs
         hub_get_logs: [title: "Get Hub Logs", summary: "Hub log entries with level, source, regex, and time-window filters."],
@@ -3844,13 +3844,15 @@ Requires Write master + confirm. This is the only write tool that doesn't requir
         [
             name: "hub_reboot",
             description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop).
+updatePlatform=true installs the hub's PENDING platform update instead (download + install + self-reboot, 5-10 min); check/confirm versions via hub_get_update_status.
 
 PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true
 Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
+                    updatePlatform: [type: "boolean", description: "true = install the pending platform update (the hub reboots itself when the install completes) instead of a plain reboot."]
                 ],
                 required: ["confirm"]
             ],
@@ -3859,6 +3861,7 @@ Requires Write master.""",
                 properties: [
                     success: [type: "boolean", description: "Whether the reboot was initiated"],
                     message: [type: "string", description: "Human-readable result"],
+                    checkForUpdate: [type: "string", description: "Hub's checkForUpdate response (updatePlatform mode only)"],
                     lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
                     warning: [type: "string", description: "Downtime warning"],
                     response: [type: "string", description: "Truncated hub response body"]
@@ -12638,6 +12641,34 @@ def toolCreateHubBackup(args) {
 
 def toolRebootHub(args) {
     requireDestructiveConfirm(args.confirm)
+
+    if (args.updatePlatform == true) {
+        // Install the hub's PENDING platform update instead of a plain reboot -- the admin UI's own
+        // path (/hub/cloud/updatePlatform downloads + installs; the hub reboots itself when done).
+        // Folded into hub_reboot rather than a new tool: the operation IS a reboot with the update
+        // taken on the way down, and it inherits the same destructive gate. Status/progress is the
+        // existing read tool hub_get_update_status.
+        mcpLog("warn", "hub-admin", "Hub platform update initiated by MCP (install + self-reboot)")
+        try {
+            def check = hubInternalGet("/hub/cloud/checkForUpdate", null, 60)
+            def responseText = hubInternalGet("/hub/cloud/updatePlatform", null, 60)
+            return [
+                success: true,
+                message: "Platform update initiated. The hub downloads and installs the pending update, then reboots itself (5-10 minutes total).",
+                checkForUpdate: check?.take(500),
+                lastBackup: formatTimestamp(state.lastBackupTimestamp),
+                warning: "All automations and device communications stop during the install and reboot. Confirm the new version afterwards via hub_get_update_status or hub_get_info.",
+                response: responseText?.take(500)
+            ]
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "Hub platform update failed", e)
+            return [
+                success: false,
+                error: "Platform update failed: ${e.message}",
+                note: "The update command could not be sent. Check Hub Security credentials or apply the update from the hub UI."
+            ]
+        }
+    }
 
     mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP")
 
@@ -29073,7 +29104,7 @@ All Write master tools require these steps:
 
 ### Tool-Specific Requirements
 
-**hub_reboot** - 1-3 min downtime, all automations stop, scheduled jobs lost, radios restart. Only when user explicitly requests.
+**hub_reboot** - 1-3 min downtime, all automations stop, scheduled jobs lost, radios restart. Only when user explicitly requests. updatePlatform=true installs the pending platform update instead (install + self-reboot, 5-10 min).
 
 **hub_shutdown** - Powers OFF completely, requires physical restart. NOT a reboot. Only when user explicitly requests.
 

@@ -92,6 +92,75 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         result.response == 'ok'
     }
 
+    def "hub_reboot updatePlatform=true fires checkForUpdate then updatePlatform (no plain-reboot POST)"() {
+        given:
+        enableWrite()
+        def gets = []
+        hubGet.register('/hub/cloud/checkForUpdate') { params -> gets << '/hub/cloud/checkForUpdate'; '{"version":"2.5.0.157","upgrade":true}' }
+        hubGet.register('/hub/cloud/updatePlatform') { params -> gets << '/hub/cloud/updatePlatform'; '{"success":"true"}' }
+        def postedPath = null
+        script.metaClass.hubInternalPost = { String path, Map body = null -> postedPath = path; 'ok' }
+
+        when:
+        def result = script.toolRebootHub([confirm: true, updatePlatform: true])
+
+        then:
+        gets == ['/hub/cloud/checkForUpdate', '/hub/cloud/updatePlatform']
+        postedPath == null                       // platform-update mode must NOT plain-reboot
+        result.success == true
+        result.message.contains('Platform update')
+        result.checkForUpdate.contains('2.5.0.157')
+        result.warning.contains('hub_get_update_status')
+    }
+
+    def "hub_reboot updatePlatform=true still requires the destructive confirm gate"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolRebootHub([updatePlatform: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('SAFETY CHECK FAILED')
+    }
+
+    def "hub_reboot updatePlatform=true surfaces an update failure instead of false-greening"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/cloud/checkForUpdate') { params -> '{"upgrade":true}' }
+        hubGet.register('/hub/cloud/updatePlatform') { params -> throw new RuntimeException('boom') }
+
+        when:
+        def result = script.toolRebootHub([confirm: true, updatePlatform: true])
+
+        then:
+        result.success == false
+        result.error.contains('Platform update failed')
+    }
+
+    @spock.lang.Unroll
+    def "hub_reboot via dispatch applies the platform update (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        hubGet.register('/hub/cloud/checkForUpdate') { params -> '{"upgrade":true}' }
+        hubGet.register('/hub/cloud/updatePlatform') { params -> '{"success":"true"}' }
+
+        when:
+        def response = mcpDriver.callTool('hub_reboot', [confirm: true, updatePlatform: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.message.contains('Platform update')
+
+        where:
+        useGateways << [true, false]
+    }
+
     @spock.lang.Unroll
     def "hub_reboot via dispatch posts and reports success (useGateways=#useGateways)"() {
         given:

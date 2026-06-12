@@ -1098,22 +1098,6 @@ class TestRunner:
         self._untrack_native_app(app_id)
 
     @test("native_apps")
-    def test_set_native_app_allows_walkstep(self) -> None:
-        # The rmOnly reject on walkStep was removed: it's a generic classic-
-        # dynamicPage walker that routes to the shared edit engine and works on
-        # any classic app. The introspect op itself doesn't modify the app
-        # (a pre-walkStep backup snapshot is still written).
-        app_id = self._create_native_rule("WalkStep")
-        try:
-            result = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appId": app_id, "walkStep": {"page": "mainPage", "operation": "introspect"}, "confirm": True},
-            })
-            assert result.get("page") == "mainPage", f"walkStep should route through the native-app tool, got: {result}"
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
     def test_set_native_app_basic_rule_lifecycle(self) -> None:
         # basic_rule is a registered appType (a classic dynamicPage app, not a
         # Vue SPA). Create via generic createchild, edit a setting -- which must
@@ -1247,28 +1231,6 @@ class TestRunner:
                 except (McpToolError, McpError) as exc:
                     print(f"  [WARN] button-rule e2e cleanup: delete device {button_dni} failed: {exc}")
 
-    @test("native_apps")
-    def test_set_rule_addaction_missing_required_field_fails_fast(self) -> None:
-        # Several (capability, action) pairs were verified on a live hub to
-        # register the action row but NEVER bake when their key field is omitted
-        # (mainPage keeps the 'Define Actions' placeholder) -- a latent silent
-        # failure. The build now throws up front; the single-addAction edit path
-        # surfaces it as success:false + a field-naming error instead of a
-        # confusing partial. Spot-check colorTemp.setColorTemp (needs 'kelvin').
-        # No device is needed -- the field throw fires before any device write.
-        app_id = self._create_native_rule("CondReq")
-        try:
-            result = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {"appId": app_id, "addAction": {"capability": "colorTemp", "action": "setColorTemp"}, "confirm": True},
-            })
-            assert result.get("success") is False, f"omitting kelvin should fail fast (not partial): {result}"
-            assert "kelvin" in str(result.get("error", "")), f"error should name 'kelvin': {result}"
-        except (McpToolError, McpError) as exc:
-            assert "kelvin" in str(exc), f"fail-fast error should name 'kelvin': {exc}"
-        finally:
-            self._delete_native(app_id)
-
     # ---- shared helpers for the native-authoring coverage below ----
 
     def _create_native_rule(self, suffix: str) -> Any:
@@ -1303,33 +1265,85 @@ class TestRunner:
         self.client.call_tool(gateway, {"tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True}})
         self._untrack_native_app(app_id)
 
-    # ---- one test per shortcut category that the new tools route to ----
+    # ---- one MEGA test that exercises every hub_set_rule mutation-path shortcut on a
+    #      SINGLE shared rule (one create, one delete) to slash per-run hub load. Each
+    #      former standalone test is preserved as a clearly-labelled SUBSTEP whose
+    #      assertions are verbatim and whose docstring knowledge is kept as a comment
+    #      (those comments pin wire-format regressions -- do not drop them). A failing
+    #      substep names the exact old coverage via the SUBSTEP <name> assertion prefix.
+    #      Sub-steps are ordered so earlier ones can't poison later ones; where a step
+    #      needs a pristine action list it clearActions first rather than creating a new
+    #      rule. Tests that assert create/delete/lifecycle contracts themselves stay
+    #      SEPARATE below (test_set_rule_native_lifecycle, *_create_with_required_expression,
+    #      *_addaction_missing_required_field_fails_fast, *_discover_meta,
+    #      delete_native_app_from_native_gateway, and the set_native_app/* tests).
 
     @test("native_apps")
-    def test_set_rule_edit_trigger_and_action(self) -> None:
-        # hub_set_rule edit -> the device-state addTrigger + addAction wizard paths.
+    def test_set_rule_mega_mutations(self) -> None:
+        # Mega-test: one shared native RM rule, every mutation-path shortcut as a substep.
         sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("Trig_Act")
-        self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
-        self._set_rule(app_id, {"addAction": {"capability": "switch", "action": "on", "deviceIds": [sw]}})
-        self._assert_rule_healthy(app_id)
-        self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_custom_attribute_enum_no_false_partial(self) -> None:
-        # hub_set_rule edit -> addTrigger Custom Attribute on an ENUM-recognized
-        # attribute. A virtual switch's 'switch' attribute is the canonical enum
-        # case: picking it reveals the enum value picker (tstate<N>) and HIDES the
-        # free comparator field (ReltDev<N>). The value must land in tstate<N>, and
-        # the now-absent ReltDev<N> must NOT be written -- an unconditional comparator
-        # write there is rejected not_in_schema and spuriously flips partial=true even
-        # though the trigger built correctly. This pins the no-false-partial contract
-        # the Spock regression specs guard, end-to-end against a live hub. Covers BOTH
-        # the trigger row (_rmAddTrigger, ReltDev<N>) and the conditional-trigger
-        # condition (_rmBuildCondition, RelrDev_<N>) -- the two share the enum bug.
-        sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("CustEnum")
+        app_id = self._create_native_rule("MegaMut")
         try:
+            # ===== SUBSTEP test_set_rule_walkstep_introspect =====
+            # hub_set_rule edit -> walkStep (schema-aware single-step walker), read-only op.
+            print("    SUBSTEP test_set_rule_walkstep_introspect ...")
+            ws = self._set_rule(app_id, {"walkStep": {"page": "selectTriggers", "operation": "introspect"}})
+            assert isinstance(ws, dict), f"SUBSTEP test_set_rule_walkstep_introspect: walkStep introspect returned non-dict: {ws}"
+
+            # ===== SUBSTEP test_set_native_app_allows_walkstep =====
+            # The rmOnly reject on walkStep was removed: it's a generic classic-
+            # dynamicPage walker that routes to the shared edit engine and works on
+            # any classic app. The introspect op itself doesn't modify the app
+            # (a pre-walkStep backup snapshot is still written). Routes through the
+            # GENERIC native-app tool (hub_set_native_app), not hub_set_rule.
+            print("    SUBSTEP test_set_native_app_allows_walkstep ...")
+            wsn = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": app_id, "walkStep": {"page": "mainPage", "operation": "introspect"}, "confirm": True},
+            })
+            assert wsn.get("page") == "mainPage", \
+                f"SUBSTEP test_set_native_app_allows_walkstep: walkStep should route through the native-app tool, got: {wsn}"
+
+            # ===== SUBSTEP test_set_rule_edit_trigger_and_action =====
+            # hub_set_rule edit -> the device-state addTrigger + addAction wizard paths.
+            print("    SUBSTEP test_set_rule_edit_trigger_and_action ...")
+            self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
+            self._set_rule(app_id, {"addAction": {"capability": "switch", "action": "on", "deviceIds": [sw]}})
+            self._assert_rule_healthy(app_id)
+
+            # ===== SUBSTEP test_set_rule_trigger_mutations =====
+            # hub_set_rule edit -> modifyTrigger (state) + removeTrigger. Self-cleaning:
+            # it adds its OWN trigger, reads the returned index, mutates and removes THAT
+            # trigger (never a hardcoded index), so the trigger left by the substep above
+            # is untouched and this can't poison later steps.
+            print("    SUBSTEP test_set_rule_trigger_mutations ...")
+            added = self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
+            tidx = added.get("triggerIndex")
+            assert tidx is not None, \
+                f"SUBSTEP test_set_rule_trigger_mutations: addTrigger did not return a triggerIndex (contract regression): {added}"
+            mod = self._set_rule(app_id, {"modifyTrigger": {"index": tidx, "mods": {"state": "off"}}})
+            # modifyTrigger now reads the PERSISTED tstate (configure/json), so
+            # verifiedState echoes the new value instead of always being null
+            # (the old readback hit the closed selectTriggers wizard page).
+            if mod.get("verificationFetchFailed") is not True:
+                assert mod.get("verifiedState") == "off", \
+                    (f"SUBSTEP test_set_rule_trigger_mutations: modifyTrigger verifiedState should echo the "
+                     f"persisted new state 'off', got {mod.get('verifiedState')!r}: {mod}")
+            self._set_rule(app_id, {"removeTrigger": {"index": tidx}})
+            self._assert_rule_healthy(app_id)
+
+            # ===== SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial =====
+            # hub_set_rule edit -> addTrigger Custom Attribute on an ENUM-recognized
+            # attribute. A virtual switch's 'switch' attribute is the canonical enum
+            # case: picking it reveals the enum value picker (tstate<N>) and HIDES the
+            # free comparator field (ReltDev<N>). The value must land in tstate<N>, and
+            # the now-absent ReltDev<N> must NOT be written -- an unconditional comparator
+            # write there is rejected not_in_schema and spuriously flips partial=true even
+            # though the trigger built correctly. This pins the no-false-partial contract
+            # the Spock regression specs guard, end-to-end against a live hub. Covers BOTH
+            # the trigger row (_rmAddTrigger, ReltDev<N>) and the conditional-trigger
+            # condition (_rmBuildCondition, RelrDev_<N>) -- the two share the enum bug.
+            print("    SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial ...")
             # --- trigger row: tCustomAttr<N> / tstate<N> / ReltDev<N> ---
             result = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule",
@@ -1340,22 +1354,26 @@ class TestRunner:
                     "confirm": True,
                 },
             })
-            assert result.get("success") is not False, f"addTrigger reported failure: {result}"
+            assert result.get("success") is not False, \
+                f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: addTrigger reported failure: {result}"
             # The enum value landed in the value picker (tstate<N>) ...
             applied = result.get("settingsApplied") or []
             assert any(str(k).startswith("tstate") for k in applied), \
-                f"enum value did not land in a tstate field; settingsApplied={applied}"
+                (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: enum value did not land in a "
+                 f"tstate field; settingsApplied={applied}")
             # ... and the hidden comparator was NOT written, so no ReltDev not_in_schema
             # skip was produced -- the false-positive not_in_schema partial this guards.
             skipped = result.get("settingsSkipped") or []
             bad = [s for s in skipped if isinstance(s, dict)
                    and (s.get("key") or "").startswith("ReltDev")
                    and s.get("reason") == "not_in_schema"]
-            assert not bad, f"unexpected ReltDev not_in_schema skip (the enum false-partial bug): {bad}"
+            assert not bad, \
+                (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: unexpected ReltDev not_in_schema "
+                 f"skip (the enum false-partial bug): {bad}")
             # The contract discriminator: partial stays falsy.
             assert not result.get("partial"), \
-                f"trigger falsely flagged partial despite building correctly: {result}"
-
+                (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: trigger falsely flagged partial "
+                 f"despite building correctly: {result}")
             # --- condition path: a conditional trigger whose condition is the same
             #     enum Custom Attribute (rCustomAttr_<N> / state_<N> / RelrDev_<N>) ---
             cond_result = self.client.call_tool("hub_manage_rule_machine", {
@@ -1369,34 +1387,38 @@ class TestRunner:
                 },
             })
             assert cond_result.get("success") is not False, \
-                f"conditional addTrigger reported failure: {cond_result}"
+                f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: conditional addTrigger reported failure: {cond_result}"
             cond_applied = cond_result.get("settingsApplied") or []
             assert any(str(k).startswith("state_") for k in cond_applied), \
-                f"condition enum value did not land in a state_<N> field; settingsApplied={cond_applied}"
+                (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: condition enum value did not land "
+                 f"in a state_<N> field; settingsApplied={cond_applied}")
             cond_skipped = cond_result.get("settingsSkipped") or []
             cond_bad = [s for s in cond_skipped if isinstance(s, dict)
                         and (s.get("key") or "").startswith("RelrDev_")
                         and s.get("reason") == "not_in_schema"]
             assert not cond_bad, \
-                f"unexpected RelrDev_<N> not_in_schema skip on the condition path: {cond_bad}"
+                (f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: unexpected RelrDev_<N> "
+                 f"not_in_schema skip on the condition path: {cond_bad}")
             assert not cond_result.get("partial"), \
-                f"conditional trigger falsely flagged partial: {cond_result}"
-
+                f"SUBSTEP test_set_rule_custom_attribute_enum_no_false_partial: conditional trigger falsely flagged partial: {cond_result}"
             self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
 
-    @test("native_apps")
-    def test_set_rule_walker_custom_attribute_enum_no_hard_error(self) -> None:
-        # hub_set_rule edit -> addRequiredExpression (STPage reveal walker) with an
-        # ENUM-recognized Custom Attribute condition. The walker pre-fix THREW
-        # ("RelrDev_<N> not revealed") because the enum re-render hides the comparator
-        # and reveals state_<N> directly. The fix branches to the enum path: it writes
-        # the value to state_<N>, skips the comparator, does NOT throw, and does NOT
-        # flag partial. This pins the walker enum contract end-to-end on a live hub.
-        sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("WalkEnum")
-        try:
+            # ===== SUBSTEP test_set_rule_required_expression_and_local_var =====
+            # hub_set_rule edit -> addLocalVariable + addRequiredExpression (STPage) wizards.
+            print("    SUBSTEP test_set_rule_required_expression_and_local_var ...")
+            self._set_rule(app_id, {"addLocalVariable": {"name": "batCounter", "type": "Number", "value": 0}})
+            self._set_rule(app_id, {"addRequiredExpression": {"conditions": [
+                {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}})
+            self._assert_rule_healthy(app_id)
+
+            # ===== SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error =====
+            # hub_set_rule edit -> addRequiredExpression (STPage reveal walker) with an
+            # ENUM-recognized Custom Attribute condition. The walker pre-fix THREW
+            # ("RelrDev_<N> not revealed") because the enum re-render hides the comparator
+            # and reveals state_<N> directly. The fix branches to the enum path: it writes
+            # the value to state_<N>, skips the comparator, does NOT throw, and does NOT
+            # flag partial. This pins the walker enum contract end-to-end on a live hub.
+            print("    SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error ...")
             result = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule",
                 "args": {
@@ -1409,81 +1431,35 @@ class TestRunner:
             })
             # The whole point: the walker no longer hard-errors on the enum attribute.
             assert result.get("success") is not False, \
-                f"addRequiredExpression hard-errored on an enum Custom Attribute (the walker bug): {result}"
+                (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: addRequiredExpression "
+                 f"hard-errored on an enum Custom Attribute (the walker bug): {result}")
             applied = result.get("settingsApplied") or []
             assert any(str(k).startswith("state_") for k in applied), \
-                f"walker enum value did not land in a state_<N> field; settingsApplied={applied}"
+                (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: walker enum value did not "
+                 f"land in a state_<N> field; settingsApplied={applied}")
             skipped = result.get("settingsSkipped") or []
             bad = [s for s in skipped if isinstance(s, dict)
                    and (s.get("key") or "").startswith("RelrDev_")
                    and s.get("reason") == "not_in_schema"]
-            assert not bad, f"unexpected RelrDev_<N> not_in_schema skip on the walker enum path: {bad}"
+            assert not bad, \
+                (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: unexpected RelrDev_<N> "
+                 f"not_in_schema skip on the walker enum path: {bad}")
             assert not result.get("partial"), \
-                f"walker enum condition falsely flagged partial: {result}"
+                f"SUBSTEP test_set_rule_walker_custom_attribute_enum_no_hard_error: walker enum condition falsely flagged partial: {result}"
             self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
 
-    @test("native_apps")
-    def test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error(self) -> None:
-        # Same shared walker (_rmWalkConditionReveal), but reached via the doActPage
-        # surface (addAction ifThen) rather than STPage (addRequiredExpression). The
-        # 4th of the four wizard surfaces that carry the enum-recognized Custom
-        # Attribute bug. The enum re-render hides the comparator RelrDev_<N> and
-        # reveals state_<N> directly; the fix branches to the enum path (writes
-        # state_<N>, skips the comparator, does NOT throw, does NOT flag partial).
-        sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("WalkEnumAct")
-        try:
-            result = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {
-                    "appId": app_id,
-                    "addAction": {"capability": "ifThen", "expression": {"conditions": [
-                        {"capability": "Custom Attribute", "deviceIds": [sw],
-                         "attribute": "switch", "comparator": "=", "state": "on"}]}},
-                    "confirm": True,
-                },
-            })
-            # The whole point: the doActPage walker no longer hard-errors on the enum attr.
-            assert result.get("success") is not False, \
-                f"addAction ifThen hard-errored on an enum Custom Attribute (the walker bug): {result}"
-            applied = result.get("settingsApplied") or []
-            assert any(str(k).startswith("state_") for k in applied), \
-                f"doActPage walker enum value did not land in a state_<N> field; settingsApplied={applied}"
-            skipped = result.get("settingsSkipped") or []
-            bad = [s for s in skipped if isinstance(s, dict)
-                   and (s.get("key") or "").startswith("RelrDev_")
-                   and s.get("reason") == "not_in_schema"]
-            assert not bad, f"unexpected RelrDev_<N> not_in_schema skip on the doActPage walker enum path: {bad}"
-            assert not result.get("partial"), \
-                f"doActPage walker enum condition falsely flagged partial: {result}"
-            # Close the IF block (THEN body + endIf) before the whole-rule health
-            # check. An ifThen opener added alone is a valid intermediate tool state,
-            # but it leaves the rule with an unclosed IF that the live hub's
-            # rule-health check correctly flags -- the enum-condition contract under
-            # test is already proven by the assertions above; completing the block is
-            # what makes the end-to-end health assertion meaningful.
-            self._set_rule(app_id, {"addAction": {"capability": "log", "message": "fired"}})
-            self._set_rule(app_id, {"addAction": {"capability": "endIf"}})
-            self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_walker_compare_to_device(self) -> None:
-        # hub_set_rule edit -> addRequiredExpression (STPage reveal walker) with a
-        # device-relative compareToDevice condition. This is the only automated guard
-        # against wire-format drift for two client-observable behaviours this feature
-        # changes: (1) the device-relative RHS now actually lands (isDev_<N> toggles,
-        # relDevice_<N> is written, the rule renders "Temperature of A is > B - 2.0"),
-        # and (2) a literal RHS (state/value) combined with compareToDevice is now a hard
-        # reject, not a silent literal fallback. The unit Spock suite proves the logic in
-        # isolation; this proves it end-to-end against a live hub, where the feature was
-        # unit-green but live-wrong before the wire-up fix.
-        dev_a, dev_b = self.get_test_temperature_ids()
-        app_id = self._create_native_rule("CtdWalk")
-        try:
+            # ===== SUBSTEP test_set_rule_walker_compare_to_device =====
+            # hub_set_rule edit -> addRequiredExpression (STPage reveal walker) with a
+            # device-relative compareToDevice condition. This is the only automated guard
+            # against wire-format drift for two client-observable behaviours this feature
+            # changes: (1) the device-relative RHS now actually lands (isDev_<N> toggles,
+            # relDevice_<N> is written, the rule renders "Temperature of A is > B - 2.0"),
+            # and (2) a literal RHS (state/value) combined with compareToDevice is now a hard
+            # reject, not a silent literal fallback. The unit Spock suite proves the logic in
+            # isolation; this proves it end-to-end against a live hub, where the feature was
+            # unit-green but live-wrong before the wire-up fix.
+            print("    SUBSTEP test_set_rule_walker_compare_to_device ...")
+            dev_a, dev_b = self.get_test_temperature_ids()
             result = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule",
                 "args": {
@@ -1498,33 +1474,39 @@ class TestRunner:
             })
             # (1) The device-relative condition committed cleanly.
             assert result.get("success") is not False, \
-                f"compareToDevice addRequiredExpression reported failure: {result}"
+                f"SUBSTEP test_set_rule_walker_compare_to_device: compareToDevice addRequiredExpression reported failure: {result}"
             assert not result.get("partial"), \
-                f"compareToDevice condition falsely flagged partial (the live-wrong false-partial): {result}"
+                (f"SUBSTEP test_set_rule_walker_compare_to_device: compareToDevice condition falsely flagged "
+                 f"partial (the live-wrong false-partial): {result}")
             applied = result.get("settingsApplied") or []
             assert any(str(k).startswith("isDev_") for k in applied), \
-                f"isDev_<N> toggle did not land -- the device-relative RHS was not wired: {applied}"
+                (f"SUBSTEP test_set_rule_walker_compare_to_device: isDev_<N> toggle did not land -- the "
+                 f"device-relative RHS was not wired: {applied}")
             assert any(str(k).startswith("relDevice_") for k in applied), \
-                f"relDevice_<N> reference picker did not land: {applied}"
+                f"SUBSTEP test_set_rule_walker_compare_to_device: relDevice_<N> reference picker did not land: {applied}"
             # The rule renders device-relative text, NOT a literal threshold / "A > 0".
             cfg = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": app_id},
             })
             blob = str(cfg)
             assert ("Temperature of" in blob) or ("temperature of" in blob.lower()), \
-                f"rule paragraph does not render a device-relative Temperature comparison: {blob[:600]}"
+                (f"SUBSTEP test_set_rule_walker_compare_to_device: rule paragraph does not render a "
+                 f"device-relative Temperature comparison: {blob[:600]}")
             # No degradation skip for the empty device-picker option list (normal case).
             skipped = result.get("settingsSkipped") or []
             bad = [s for s in skipped if isinstance(s, dict)
                    and s.get("key") == "compareToDevice-validation"]
-            assert not bad, f"unexpected compareToDevice-validation skip (empty device-picker options are normal): {bad}"
-
+            assert not bad, \
+                (f"SUBSTEP test_set_rule_walker_compare_to_device: unexpected compareToDevice-validation skip "
+                 f"(empty device-picker options are normal): {bad}")
             # (2) compareToDevice + a literal state RHS is now a HARD reject (fail-loud),
             # not a silent literal fallback. The mutual-exclusion guard is a pre-write
-            # check inside the walker, so exercise it on a FRESH rule: adding a second
-            # Required Expression to a rule that already has one (the first-RE committed
-            # above) takes a different path that never reaches the per-condition walker
-            # check, masking the guard's error behind the second-RE failure.
+            # check inside the walker, so it must be exercised on a FRESH rule: adding a
+            # second Required Expression to a rule that already has one (this shared rule
+            # now has several) takes a different path that never reaches the per-condition
+            # walker check, masking the guard's error behind the second-RE failure. So this
+            # ONE reject case keeps its own throwaway rule -- it is the only mutation-path
+            # assertion that genuinely needs a pristine (zero-RE) rule.
             reject_app_id = self._create_native_rule("CtdReject")
             try:
                 try:
@@ -1541,29 +1523,165 @@ class TestRunner:
                         },
                     })
                     assert rej.get("success") is False, \
-                        f"compareToDevice + literal state should hard-reject (not partial/success): {rej}"
+                        (f"SUBSTEP test_set_rule_walker_compare_to_device: compareToDevice + literal state "
+                         f"should hard-reject (not partial/success): {rej}")
                     assert "cannot be combined with 'state'/'value'" in str(rej.get("error", "")), \
-                        f"reject error should name the mutual-exclusion: {rej}"
+                        f"SUBSTEP test_set_rule_walker_compare_to_device: reject error should name the mutual-exclusion: {rej}"
                 except (McpToolError, McpError) as exc:
                     assert "cannot be combined with 'state'/'value'" in str(exc), \
-                        f"compareToDevice + literal state fail-loud should name the mutual-exclusion: {exc}"
+                        (f"SUBSTEP test_set_rule_walker_compare_to_device: compareToDevice + literal state "
+                         f"fail-loud should name the mutual-exclusion: {exc}")
             finally:
                 self._delete_native(reject_app_id)
+            self._assert_rule_healthy(app_id)
 
+            # ===== SUBSTEP test_set_rule_action_mutations =====
+            # hub_set_rule edit -> addActions (bulk) + removeAction + clearActions + replaceActions.
+            # The shared rule already carries an action (from edit_trigger_and_action above);
+            # this substep's own clearActions/replaceActions leave it in a known 1-action
+            # state for the move substep, which clears again before it needs an exact count.
+            print("    SUBSTEP test_set_rule_action_mutations ...")
+            self._set_rule(app_id, {"addActions": [
+                {"capability": "log", "message": "one"},
+                {"capability": "log", "message": "two"},
+            ]})
+            first = self._set_rule(app_id, {"addAction": {"capability": "log", "message": "three"}})
+            idx = first.get("actionIndex")
+            assert idx is not None, \
+                f"SUBSTEP test_set_rule_action_mutations: addAction did not return an actionIndex (contract regression): {first}"
+            self._set_rule(app_id, {"removeAction": {"index": idx}})
+            self._set_rule(app_id, {"clearActions": True})
+            self._set_rule(app_id, {"replaceActions": [{"capability": "log", "message": "final"}]})
+            self._assert_rule_healthy(app_id)
+
+            # ===== SUBSTEP test_set_rule_move_action =====
+            # hub_set_rule edit -> moveAction (isolated, short). On a slow hub the
+            # move-arrow click can commit late; the tool does one short re-check then
+            # returns a soft asyncCommitLikely envelope instead of a hard
+            # false-negative. Accept either a confirmed shift OR the soft envelope --
+            # call hub_set_rule directly since _set_rule would raise on success=False.
+            # clearActions first so the move has an exact 3-action list (the prior
+            # substep left 1) without creating a new rule.
+            print("    SUBSTEP test_set_rule_move_action ...")
+            self._set_rule(app_id, {"clearActions": True})
+            self._set_rule(app_id, {"addActions": [
+                {"capability": "log", "message": "a"},
+                {"capability": "log", "message": "b"},
+                {"capability": "log", "message": "c"},
+            ]})
+            try:
+                result = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_rule",
+                    "args": {"appId": app_id, "moveAction": {"index": 1, "direction": "down"}, "confirm": True},
+                })
+                assert result.get("success") is True or result.get("asyncCommitLikely") is True, \
+                    (f"SUBSTEP test_set_rule_move_action: moveAction must confirm the shift OR report "
+                     f"asyncCommitLikely (never a hard false-negative): {result}")
+            except requests.HTTPError as exc:
+                # The move click is the suite's heaviest single wizard op and rides the ~10s cloud-relay
+                # ceiling; a 504 (after the client's own 3 retries) means the RESPONSE was lost, not that
+                # the click wasn't delivered -- the same unknown-commit state the asyncCommitLikely soft
+                # contract above already covers. This test never asserts the resulting order, only rule
+                # health, so the health check below remains the real assertion. Anything non-504 is real.
+                if "504" not in str(exc):
+                    raise
+                print("    moveAction response lost to relay 504(s) -- same soft contract as asyncCommitLikely; verifying rule health")
+            self._assert_rule_healthy(app_id)
+
+            # ===== SUBSTEP test_set_rule_patches =====
+            # hub_set_rule edit -> patches (atomic multi-op).
+            print("    SUBSTEP test_set_rule_patches ...")
+            self._set_rule(app_id, {"patches": [
+                {"addAction": {"capability": "log", "message": "p1"}},
+                {"addAction": {"capability": "log", "message": "p2"}},
+            ]})
+            self._assert_rule_healthy(app_id)
+
+            # ===== SUBSTEP test_set_rule_raw_settings_and_button =====
+            # hub_set_rule edit -> the generic raw settings + button (page-transition) path,
+            # then read the value back via hub_get_app_config. (BAT-confirmed shapes.)
+            print("    SUBSTEP test_set_rule_raw_settings_and_button ...")
+            self._set_rule(app_id, {"settings": {"comments": "BAT_E2E raw settings", "logging": ["Triggers", "Actions"]}})
+            self._set_rule(app_id, {"button": "updateRule"})
+            cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+            settings = cfg.get("settings") or {}
+            assert settings.get("comments") == "BAT_E2E raw settings", \
+                f"SUBSTEP test_set_rule_raw_settings_and_button: comments did not round-trip: {settings.get('comments')!r}"
+
+            # ===== SUBSTEP test_set_rule_addaction_missing_required_field_fails_fast =====
+            # Several (capability, action) pairs were verified on a live hub to
+            # register the action row but NEVER bake when their key field is omitted
+            # (mainPage keeps the 'Define Actions' placeholder) -- a latent silent
+            # failure. The build now throws up front; the single-addAction edit path
+            # surfaces it as success:false + a field-naming error instead of a
+            # confusing partial. Spot-check colorTemp.setColorTemp (needs 'kelvin').
+            # No device is needed -- the field throw fires before any device write, and
+            # before any mutation, so it leaves the shared rule's state untouched.
+            print("    SUBSTEP test_set_rule_addaction_missing_required_field_fails_fast ...")
+            try:
+                result = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_rule",
+                    "args": {"appId": app_id, "addAction": {"capability": "colorTemp", "action": "setColorTemp"}, "confirm": True},
+                })
+                assert result.get("success") is False, \
+                    f"SUBSTEP test_set_rule_addaction_missing_required_field_fails_fast: omitting kelvin should fail fast (not partial): {result}"
+                assert "kelvin" in str(result.get("error", "")), \
+                    f"SUBSTEP test_set_rule_addaction_missing_required_field_fails_fast: error should name 'kelvin': {result}"
+            except (McpToolError, McpError) as exc:
+                assert "kelvin" in str(exc), \
+                    f"SUBSTEP test_set_rule_addaction_missing_required_field_fails_fast: fail-fast error should name 'kelvin': {exc}"
+
+            # ===== SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error =====
+            # Same shared walker (_rmWalkConditionReveal), but reached via the doActPage
+            # surface (addAction ifThen) rather than STPage (addRequiredExpression). The
+            # 4th of the four wizard surfaces that carry the enum-recognized Custom
+            # Attribute bug. The enum re-render hides the comparator RelrDev_<N> and
+            # reveals state_<N> directly; the fix branches to the enum path (writes
+            # state_<N>, skips the comparator, does NOT throw, does NOT flag partial).
+            # Runs LAST because it opens an IF block; it closes the block (THEN + endIf)
+            # before the final whole-rule health check so the shared rule ends clean.
+            print("    SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error ...")
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "appId": app_id,
+                    "addAction": {"capability": "ifThen", "expression": {"conditions": [
+                        {"capability": "Custom Attribute", "deviceIds": [sw],
+                         "attribute": "switch", "comparator": "=", "state": "on"}]}},
+                    "confirm": True,
+                },
+            })
+            # The whole point: the doActPage walker no longer hard-errors on the enum attr.
+            assert result.get("success") is not False, \
+                (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: addAction ifThen "
+                 f"hard-errored on an enum Custom Attribute (the walker bug): {result}")
+            applied = result.get("settingsApplied") or []
+            assert any(str(k).startswith("state_") for k in applied), \
+                (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: doActPage walker "
+                 f"enum value did not land in a state_<N> field; settingsApplied={applied}")
+            skipped = result.get("settingsSkipped") or []
+            bad = [s for s in skipped if isinstance(s, dict)
+                   and (s.get("key") or "").startswith("RelrDev_")
+                   and s.get("reason") == "not_in_schema"]
+            assert not bad, \
+                (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: unexpected "
+                 f"RelrDev_<N> not_in_schema skip on the doActPage walker enum path: {bad}")
+            assert not result.get("partial"), \
+                (f"SUBSTEP test_set_rule_walker_custom_attribute_enum_doactpage_no_hard_error: doActPage walker "
+                 f"enum condition falsely flagged partial: {result}")
+            # Close the IF block (THEN body + endIf) before the whole-rule health
+            # check. An ifThen opener added alone is a valid intermediate tool state,
+            # but it leaves the rule with an unclosed IF that the live hub's
+            # rule-health check correctly flags -- the enum-condition contract under
+            # test is already proven by the assertions above; completing the block is
+            # what makes the end-to-end health assertion meaningful.
+            self._set_rule(app_id, {"addAction": {"capability": "log", "message": "fired"}})
+            self._set_rule(app_id, {"addAction": {"capability": "endIf"}})
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
 
-    @test("native_apps")
-    def test_set_rule_required_expression_and_local_var(self) -> None:
-        # hub_set_rule edit -> addLocalVariable + addRequiredExpression (STPage) wizards.
-        sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("RE_Var")
-        self._set_rule(app_id, {"addLocalVariable": {"name": "batCounter", "type": "Number", "value": 0}})
-        self._set_rule(app_id, {"addRequiredExpression": {"conditions": [
-            {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}})
-        self._assert_rule_healthy(app_id)
-        self._delete_native(app_id)
+    # ---- tests that keep their OWN rule (create/delete/lifecycle contracts) ----
 
     @test("native_apps")
     def test_set_rule_create_with_required_expression(self) -> None:
@@ -1600,105 +1718,6 @@ class TestRunner:
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_action_mutations(self) -> None:
-        # hub_set_rule edit -> addActions (bulk) + removeAction + clearActions + replaceActions.
-        app_id = self._create_native_rule("Act_Mut")
-        self._set_rule(app_id, {"addActions": [
-            {"capability": "log", "message": "one"},
-            {"capability": "log", "message": "two"},
-        ]})
-        first = self._set_rule(app_id, {"addAction": {"capability": "log", "message": "three"}})
-        idx = first.get("actionIndex")
-        assert idx is not None, f"addAction did not return an actionIndex (contract regression): {first}"
-        self._set_rule(app_id, {"removeAction": {"index": idx}})
-        self._set_rule(app_id, {"clearActions": True})
-        self._set_rule(app_id, {"replaceActions": [{"capability": "log", "message": "final"}]})
-        self._assert_rule_healthy(app_id)
-        self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_move_action(self) -> None:
-        # hub_set_rule edit -> moveAction (isolated, short). On a slow hub the
-        # move-arrow click can commit late; the tool does one short re-check then
-        # returns a soft asyncCommitLikely envelope instead of a hard
-        # false-negative. Accept either a confirmed shift OR the soft envelope --
-        # call hub_set_rule directly since _set_rule would raise on success=False.
-        app_id = self._create_native_rule("Move")
-        self._set_rule(app_id, {"addActions": [
-            {"capability": "log", "message": "a"},
-            {"capability": "log", "message": "b"},
-            {"capability": "log", "message": "c"},
-        ]})
-        try:
-            result = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {"appId": app_id, "moveAction": {"index": 1, "direction": "down"}, "confirm": True},
-            })
-            assert result.get("success") is True or result.get("asyncCommitLikely") is True, \
-                f"moveAction must confirm the shift OR report asyncCommitLikely (never a hard false-negative): {result}"
-        except requests.HTTPError as exc:
-            # The move click is the suite's heaviest single wizard op and rides the ~10s cloud-relay
-            # ceiling; a 504 (after the client's own 3 retries) means the RESPONSE was lost, not that
-            # the click wasn't delivered -- the same unknown-commit state the asyncCommitLikely soft
-            # contract above already covers. This test never asserts the resulting order, only rule
-            # health, so the health check below remains the real assertion. Anything non-504 is real.
-            if "504" not in str(exc):
-                raise
-            print("    moveAction response lost to relay 504(s) -- same soft contract as asyncCommitLikely; verifying rule health")
-        self._assert_rule_healthy(app_id)
-        self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_trigger_mutations(self) -> None:
-        # hub_set_rule edit -> modifyTrigger (state) + removeTrigger.
-        sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("Trig_Mut")
-        added = self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
-        tidx = added.get("triggerIndex")
-        assert tidx is not None, f"addTrigger did not return a triggerIndex (contract regression): {added}"
-        mod = self._set_rule(app_id, {"modifyTrigger": {"index": tidx, "mods": {"state": "off"}}})
-        # modifyTrigger now reads the PERSISTED tstate (configure/json), so
-        # verifiedState echoes the new value instead of always being null
-        # (the old readback hit the closed selectTriggers wizard page).
-        if mod.get("verificationFetchFailed") is not True:
-            assert mod.get("verifiedState") == "off", \
-                f"modifyTrigger verifiedState should echo the persisted new state 'off', got {mod.get('verifiedState')!r}: {mod}"
-        self._set_rule(app_id, {"removeTrigger": {"index": tidx}})
-        self._assert_rule_healthy(app_id)
-        self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_patches(self) -> None:
-        # hub_set_rule edit -> patches (atomic multi-op).
-        app_id = self._create_native_rule("Patches")
-        self._set_rule(app_id, {"patches": [
-            {"addAction": {"capability": "log", "message": "p1"}},
-            {"addAction": {"capability": "log", "message": "p2"}},
-        ]})
-        self._assert_rule_healthy(app_id)
-        self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_raw_settings_and_button(self) -> None:
-        # hub_set_rule edit -> the generic raw settings + button (page-transition) path,
-        # then read the value back via hub_get_app_config. (BAT-confirmed shapes.)
-        app_id = self._create_native_rule("Raw")
-        self._set_rule(app_id, {"settings": {"comments": "BAT_E2E raw settings", "logging": ["Triggers", "Actions"]}})
-        self._set_rule(app_id, {"button": "updateRule"})
-        cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
-        settings = cfg.get("settings") or {}
-        assert settings.get("comments") == "BAT_E2E raw settings", f"comments did not round-trip: {settings.get('comments')!r}"
-        self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_walkstep_introspect(self) -> None:
-        # hub_set_rule edit -> walkStep (schema-aware single-step walker), read-only op.
-        app_id = self._create_native_rule("Walk")
-        result = self._set_rule(app_id, {"walkStep": {"page": "selectTriggers", "operation": "introspect"}})
-        assert isinstance(result, dict), f"walkStep introspect returned non-dict: {result}"
-        self._delete_native(app_id)
 
     @test("native_apps")
     def test_set_rule_discover_meta(self) -> None:
