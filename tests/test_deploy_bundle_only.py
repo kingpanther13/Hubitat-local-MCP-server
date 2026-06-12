@@ -50,9 +50,9 @@ def test_deploy_builds_the_bundle_in_ci_instead_of_fetching_the_committed_zip():
         f"{SCRIPT.name} no longer builds the bundle zip from the PR checkout -- without the in-CI "
         "build, e2e installs whatever stale zip is committed at the PR SHA."
     )
-    assert "http://127.0.0.1:8080/local/" in text, (
-        f"{SCRIPT.name} no longer installs the staged bundle from the hub's own /local/ URL -- the "
-        "built zip must be staged via the watchdog's base64 hub_write_file and imported locally."
+    assert "/bundle-artifacts/shas/" in text, (
+        f"{SCRIPT.name} no longer resolves the bundle from the bundle-artifacts branch -- without "
+        "it, a library-touching PR has no URL serving its fresh zip (PRs do not commit the zip)."
     )
     for stale_fetch in ('BUNDLE_URL="${PR_RAW_BASE}', "BUNDLE_URL=\"$PR_RAW_BASE"):
         assert stale_fetch not in text, (
