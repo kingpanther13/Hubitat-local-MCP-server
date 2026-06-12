@@ -810,4 +810,56 @@ class WatchdogV2Spec extends Specification {
         written?.restoreResult == 'restored'
         deletedBundles == []        // degraded list -> skip cleanup, never blind-delete
     }
+
+    // ---- hub_update_platform: apply the pending platform update (test-hub maintenance) ----
+
+    def "adminUpdatePlatform refuses to apply without confirm"() {
+        when:
+        script.adminUpdatePlatform([:])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("confirm=true")
+    }
+
+    def "adminUpdatePlatform statusOnly polls checkUpdateStatus without confirm"() {
+        given:
+        def paths = []
+        script.metaClass.hubGet = { String p, Map q -> paths << p; '{"status":"IDLE"}' }
+
+        when:
+        def r = script.adminUpdatePlatform([statusOnly: true])
+
+        then:
+        r.success == true
+        paths == ["/hub/cloud/checkUpdateStatus"]
+    }
+
+    def "adminUpdatePlatform confirm=true fires checkForUpdate then updatePlatform"() {
+        given:
+        def paths = []
+        script.metaClass.hubGet = { String p, Map q -> paths << p; '{"ok":true}' }
+
+        when:
+        def r = script.adminUpdatePlatform([confirm: true])
+
+        then:
+        r.success == true
+        paths == ["/hub/cloud/checkForUpdate", "/hub/cloud/updatePlatform"]
+    }
+
+    def "adminUpdatePlatform surfaces an updatePlatform failure instead of false-greening"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q ->
+            if (p == "/hub/cloud/updatePlatform") throw new RuntimeException("boom")
+            '{"ok":true}'
+        }
+
+        when:
+        def r = script.adminUpdatePlatform([confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains("updatePlatform failed")
+    }
 }

@@ -588,6 +588,7 @@ def executeAdminTool(String toolName, Map args) {
         case "hub_force_delete_app": return adminForceDeleteInstalledApp(args)
         case "hub_set_app_disabled": return adminSetAppDisabled(args)
         case "hub_get_metrics":      return adminGetMetrics(args)
+        case "hub_update_platform":  return adminUpdatePlatform(args)
         case "hub_get_memory_history": return adminGetMemoryHistory(args)
         case "hub_get_hub_logs":     return adminGetHubLogs(args)
         case "hub_list_app_instances": return adminListAppInstances(args)
@@ -1122,6 +1123,28 @@ def adminGetMetrics(args) {
         }
     } catch (Exception e) { logDebug "adminGetMetrics hubData: ${e.message}" }
     return [current: current, healthAlerts: healthAlerts]
+}
+
+// hub_update_platform: apply the hub's pending platform update via the admin UI's own endpoints
+// (/hub/cloud/updatePlatform fires the download+install; the hub reboots itself when the install
+// completes). Test-hub maintenance tooling: keeps the test hub current without UI access, and the
+// reboot legitimately resets the platform's per-app load counters. statusOnly:true polls
+// /hub/cloud/checkUpdateStatus without confirm (read); the apply leg requires confirm=true.
+def adminUpdatePlatform(args) {
+    if (args?.statusOnly == true) {
+        def st = null
+        try { st = hubGet("/hub/cloud/checkUpdateStatus", [:]) } catch (Exception e) { return [success: false, error: "checkUpdateStatus failed: ${e.message}"] }
+        return [success: true, status: st]
+    }
+    if (args?.confirm != true) {
+        throw new IllegalArgumentException("SAFETY CHECK FAILED: set confirm=true to apply the platform update (downloads + installs + REBOOTS the hub). Use statusOnly:true to poll progress without confirm.")
+    }
+    def check = null
+    try { check = hubGet("/hub/cloud/checkForUpdate", [:]) } catch (Exception e) { return [success: false, error: "checkForUpdate failed: ${e.message}"] }
+    def resp = null
+    try { resp = hubGet("/hub/cloud/updatePlatform", [:]) } catch (Exception e) { return [success: false, error: "updatePlatform failed: ${e.message}", checkForUpdate: check] }
+    return [success: true, checkForUpdate: check, updateResponse: resp,
+            note: "The hub downloads, installs, then reboots itself. Poll hub_update_platform(statusOnly:true) for progress; expect the endpoint to go dark during the reboot (~5-10 min total), then verify firmwareVersion via hub_get_info."]
 }
 
 // hub_get_memory_history: /hub/advanced/freeOSMemoryHistory parse, mirroring the main server's
@@ -1686,6 +1709,7 @@ def getAdminToolDefinitions() {
         [name: "hub_set_app_disabled", description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
         [name: "hub_get_metrics", description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
+        [name: "hub_update_platform", description: "Apply the hub's pending platform update (downloads + installs + REBOOTS the hub; requires confirm=true). statusOnly=true polls update progress without confirm.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true to apply (the hub reboots itself)."], statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only; no confirm needed."]]]],
         [name: "hub_get_memory_history", description: "Free-memory / CPU-load history rows from the hub. Args: limit (default 60). Read-only.",
          inputSchema: [type: "object", properties: [limit: [type: "integer"]]]],
         [name: "hub_get_hub_logs", description: "Most-recent hub system log entries. Args: level (error/warn/info), limit (default 50). Read-only.",
