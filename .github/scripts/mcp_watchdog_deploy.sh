@@ -101,6 +101,76 @@ if [ "${#INCLUDES[@]}" -gt 0 ] && [ -z "$BUNDLE_BASENAMES" ]; then
 fi
 echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- delivered via the package bundle (section 2), the HPM way (no redundant per-library install)."
 
+# ---------------------------------------------------------------------------
+# verify_includes_current <probe|enforce> -- check every #include'd library on
+# the hub: exactly ONE copy per namespace+name (two = the duplicate-library
+# trap; the app's #include binds to only one, so a bundle update can land in
+# the wrong copy -- a hard error in BOTH modes, an install cannot heal it) and
+# an on-hub source length equal to the checkout file's (the bundle stores the
+# file verbatim; totalLength is a CHARACTER count = UTF-16 units, and wc -m
+# matches for the repo's all-BMP/ASCII source). enforce = the post-install
+# gate: any mismatch is a hard ::error:: + exit. probe = the pre-skip check:
+# a mismatch (or an unreadable hub list) returns 1 so the caller installs --
+# fail-safe toward installing + verifying, never toward a false skip.
+# Uses the INCLUDES array (section 1) and REPO_DIR (section 2) globals.
+# ---------------------------------------------------------------------------
+verify_includes_current() {
+  local MODE="$1"
+  [ "${#INCLUDES[@]}" -eq 0 ] && return 0
+  # Idempotent read via call_tool_retry, then an explicit empty-guard: a relay drop must
+  # surface as "could not read the list", never masquerade as "library not on hub".
+  local LIBLIST_TEXT
+  LIBLIST_TEXT=$(call_tool_retry '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}')
+  if [ -z "$LIBLIST_TEXT" ]; then
+    if [ "$MODE" = "probe" ]; then
+      echo "  probe: could not read hub_list_libraries (relay drop after retries) -- treating the hub as not current."
+      return 1
+    fi
+    echo "::error::could not read hub_list_libraries to verify the #include'd libraries (relay drop after retries) -- re-run the job."
+    exit 1
+  fi
+  local TOKEN NS NAME IDS N_IDS LIB_ID LIB_FILE EXPECTED_CHARS SRC_RPC SRC_TEXT HUB_CHARS
+  for TOKEN in "${INCLUDES[@]}"; do
+    NS="${TOKEN%%.*}"; NAME="${TOKEN#*.}"
+    IDS=$(printf '%s' "$LIBLIST_TEXT" | jq -r --arg ns "$NS" --arg nm "$NAME" \
+      '.libraries[]? | select(.namespace == $ns and .name == $nm) | .id' 2>/dev/null || true)
+    N_IDS=$(printf '%s' "$IDS" | grep -c . || true)
+    if [ "$N_IDS" -eq 0 ]; then
+      if [ "$MODE" = "probe" ]; then
+        echo "  probe: library ${TOKEN} is not on the hub."
+        return 1
+      fi
+      echo "::error::library ${TOKEN} is NOT on the hub after the bundle step -- the app's #include cannot resolve."
+      exit 1
+    fi
+    if [ "$N_IDS" -gt 1 ]; then
+      echo "::error::library ${TOKEN} exists ${N_IDS} times on the hub (ids: $(printf '%s' "$IDS" | tr '\n' ' ')) -- the duplicate-library trap: the app's #include binds to only ONE copy, so a bundle update can land in the wrong one. Delete the extra copies on the hub (Libraries Code) and re-run."
+      exit 1
+    fi
+    LIB_ID=$(printf '%s' "$IDS" | head -n1)
+    LIB_FILE=$(grep -l -E "^library\(.*name: \"${NAME}\"" "$REPO_DIR"/libraries/*.groovy | head -n1)
+    if [ -z "$LIB_FILE" ]; then
+      echo "::error::no libraries/*.groovy in the checkout declares name \"${NAME}\" -- cannot verify ${TOKEN}."
+      exit 1
+    fi
+    EXPECTED_CHARS=$(LC_ALL=C.UTF-8 wc -m < "$LIB_FILE" | tr -d '[:space:]')
+    SRC_RPC=$(jq -nc --arg id "$LIB_ID" \
+      '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"library",id:($id|tonumber),length:1,noSave:true}}}')
+    SRC_TEXT=$(call_tool_retry "$SRC_RPC")
+    HUB_CHARS=$(printf '%s' "$SRC_TEXT" | jq -r '.totalLength // empty' 2>/dev/null || true)
+    if [ "$HUB_CHARS" != "$EXPECTED_CHARS" ]; then
+      if [ "$MODE" = "probe" ]; then
+        echo "  probe: library ${TOKEN} (id ${LIB_ID}) differs: ${HUB_CHARS:-unknown} chars on the hub vs the checkout's ${EXPECTED_CHARS}."
+        return 1
+      fi
+      echo "::error::library ${TOKEN} (id ${LIB_ID}) is STALE on the hub: ${HUB_CHARS:-unknown} chars vs the PR file's ${EXPECTED_CHARS} ($(basename "$LIB_FILE")). The bundle step did not land this library -- the app would compile against old library code."
+      exit 1
+    fi
+    echo "  ${TOKEN}: id ${LIB_ID}, ${HUB_CHARS} chars -- matches the PR file."
+  done
+  return 0
+}
+
 # ===========================================================================
 # 2) BUNDLE -- build the PR's bundle zip IN CI, then install it the HPM way
 #    (HPM "install bundles", run BEFORE "install apps"). Delivery is UNIFIED on
@@ -110,8 +180,18 @@ echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- deli
 #    SAME mechanism, branch, and filename users ride, with bytes that are
 #    deterministic-build-identical to what branches/main/ will serve once the
 #    PR merges. There is no committed zip. Resolution order, lightest first:
-#      a. SKIP -- the built zip is byte-identical to canonical main's (the
-#         libraries never leave main's bytes; no install, no recompile wave).
+#      a. SKIP -- the built zip is byte-identical to canonical main's AND a
+#         live probe proves every #include'd library on the hub matches the
+#         checkout (no install, no recompile wave). Byte-equality alone is NOT
+#         enough: the dead-man restore reinstates the main that was canonical
+#         when its run ARMED, so a merge landing mid-run moves main ahead and
+#         leaves the hub one merge behind -- a later PR whose zip equals the
+#         NEW main would then skip while the hub still carries the OLD main's
+#         libraries, and the app compiles against stale library code. When the
+#         probe finds the hub stale, this run HEALS it: install canonical
+#         main's own artifact (already byte-verified against the CI build),
+#         which still counts as "unchanged" for the restore marker -- the end
+#         state IS canonical main.
 #      b. bundle-artifacts -- the publish-bundle-artifact workflow stored this
 #         exact SHA's zip on the bot-only bundle-artifacts branch; the hub
 #         fetches it straight from the raw URL (no hub-side staging at all).
@@ -134,6 +214,7 @@ else
   echo "Building the PR's bundle zip from the checkout's libraries/ ..."
   ( cd "$REPO_DIR" && python3 tools/build-bundle.py )
   ANY_BUNDLE_DIFFERS="false"
+  ANY_BUNDLE_INSTALLED="false"
   while IFS= read -r BASENAME; do
     [ -z "$BASENAME" ] && continue
     BUNDLE_PATH="$REPO_DIR/bundles/${BASENAME}"
@@ -143,13 +224,10 @@ else
     fi
     # (a) The bundle build is DETERMINISTIC (tools/build-bundle.py pins create_system), so
     # byte-equality of the BUILT zip against canonical main's bundle-artifacts entry proves
-    # the PR ships the same libraries users already have. When equal, installing is a pure
-    # waste -- the hub already carries those exact library bytes and the install would only
-    # fire a dependent-recompile wave of the ~1.8MB app. Recorded run-scoped on the hub
-    # (marker below) so the dead-man restore can skip its mirror reinstall for the same
-    # reason. A resolver miss falls through to the install path -- fail-safe toward
-    # installing + verifying, never toward a false skip.
+    # the PR ships the same libraries users already have. A resolver miss falls through to
+    # the install path -- fail-safe toward installing + verifying, never toward a false skip.
     BUNDLE_SAME="false"
+    MAIN_BUNDLE_URL=""
     if [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA:-}" ] \
        && MAIN_BUNDLE_URL=$(resolve_main_bundle_artifact_url "$BASENAME"); then
       MAIN_ZIP_TMP="$(mktemp)"
@@ -159,31 +237,44 @@ else
       fi
       rm -f "$MAIN_ZIP_TMP"
     fi
-    if [ "$BUNDLE_SAME" = "true" ]; then
-      echo "Bundle '${BASENAME}' is byte-identical to canonical main's -- skipping the install (hub already carries these exact library bytes; no recompile wave)."
-      continue
-    fi
-    ANY_BUNDLE_DIFFERS="true"
-
-    # (b) bundle-artifacts: published by this SHA's push; runner-verified byte-identical to the
-    # CI build before the hub is pointed at it.
-    ART_URL="${PR_RAW_BASE}/bundle-artifacts/shas/${PR_HEAD_SHA_RESOLVED}/${BASENAME}"
     BUNDLE_URL=""
-    ART_TMP="$(mktemp)"
-    if curl -fsSL "$ART_URL" -o "$ART_TMP" 2>/dev/null && cmp -s "$BUNDLE_PATH" "$ART_TMP"; then
-      BUNDLE_URL="$ART_URL"
-      echo "Bundle '${BASENAME}': using the bundle-artifacts zip for this SHA (byte-verified against the CI build)."
-    fi
-    rm -f "$ART_TMP"
+    if [ "$BUNDLE_SAME" = "true" ]; then
+      # Byte-equality with canonical main says the PR ships nothing new -- but only the HUB
+      # knows whether it actually carries those bytes (see the resolution-order note above:
+      # a mid-run merge leaves a restored hub one merge behind). Probe before skipping; on a
+      # stale hub, heal with canonical main's own artifact -- the cmp above just proved it
+      # byte-identical to the CI build, so the install is already byte-verified. Either way
+      # the end state is canonical main's bytes, so this bundle stays "unchanged" for the
+      # restore marker (ANY_BUNDLE_DIFFERS is not set).
+      echo "Bundle '${BASENAME}' is byte-identical to canonical main's -- probing the hub's #include'd libraries before skipping the install ..."
+      if verify_includes_current probe; then
+        echo "Bundle '${BASENAME}': hub libraries verify current -- skipping the install (no recompile wave)."
+        continue
+      fi
+      echo "Bundle '${BASENAME}': hub libraries are NOT current despite byte-equality with main -- healing with canonical main's artifact."
+      BUNDLE_URL="$MAIN_BUNDLE_URL"
+    else
+      ANY_BUNDLE_DIFFERS="true"
 
-    # No matching artifact: HARD error with the remedy. The hub can only install a bundle by
-    # FETCHING a URL (the HPM way); without an artifact there is no URL anywhere that serves
-    # this SHA's libraries (the zip committed at the SHA is stale by design now). Same-repo
-    # branches get an artifact automatically on push (publish-bundle-artifact.yml); a fork PR
-    # that changes libraries needs the branch pushed to the base repo by a maintainer.
-    if [ -z "$BUNDLE_URL" ]; then
-      echo "::error::no bundle-artifacts zip for SHA ${PR_HEAD_SHA_RESOLVED} (looked at ${ART_URL}) and the PR's libraries differ from main -- there is no URL serving this PR's bundle. Same-repo branches publish one automatically on push (publish-bundle-artifact.yml; re-run if this run raced the publish). For a fork PR, push the branch to the base repo."
-      exit 1
+      # (b) bundle-artifacts: published by this SHA's push; runner-verified byte-identical to the
+      # CI build before the hub is pointed at it.
+      ART_URL="${PR_RAW_BASE}/bundle-artifacts/shas/${PR_HEAD_SHA_RESOLVED}/${BASENAME}"
+      ART_TMP="$(mktemp)"
+      if curl -fsSL "$ART_URL" -o "$ART_TMP" 2>/dev/null && cmp -s "$BUNDLE_PATH" "$ART_TMP"; then
+        BUNDLE_URL="$ART_URL"
+        echo "Bundle '${BASENAME}': using the bundle-artifacts zip for this SHA (byte-verified against the CI build)."
+      fi
+      rm -f "$ART_TMP"
+
+      # No matching artifact: HARD error with the remedy. The hub can only install a bundle by
+      # FETCHING a URL (the HPM way); without an artifact there is no URL anywhere that serves
+      # this SHA's libraries (the zip committed at the SHA is stale by design now). Same-repo
+      # branches get an artifact automatically on push (publish-bundle-artifact.yml); a fork PR
+      # that changes libraries needs the branch pushed to the base repo by a maintainer.
+      if [ -z "$BUNDLE_URL" ]; then
+        echo "::error::no bundle-artifacts zip for SHA ${PR_HEAD_SHA_RESOLVED} (looked at ${ART_URL}) and the PR's libraries differ from main -- there is no URL serving this PR's bundle. Same-repo branches publish one automatically on push (publish-bundle-artifact.yml; re-run if this run raced the publish). For a fork PR, push the branch to the base repo."
+        exit 1
+      fi
     fi
 
     echo "Installing package bundle '${BASENAME}' from ${BUNDLE_URL} via hub_install_bundle ..."
@@ -194,6 +285,7 @@ else
       echo "::error::hub_install_bundle did not report success for '${BASENAME}' -- HPM would fail to deliver this package's bundle. Hub verbatim: $(err_of "$BUN_TEXT") -- full: $(printf '%s' "$BUN_TEXT" | jq -c '{success,error,endpoint,rawResponse}' 2>/dev/null || printf '%s' "$BUN_TEXT" | head -c 400)"
       exit 1
     fi
+    ANY_BUNDLE_INSTALLED="true"
     echo "Bundle '${BASENAME}' installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint,message}' 2>/dev/null || true)"
   done <<< "$BUNDLE_BASENAMES"
   # Run-scoped bundle-state marker for the dead-man restore: "<runId>:unchanged" lets restorePackage
@@ -212,56 +304,22 @@ else
   echo "Bundle state marker: ${GITHUB_RUN_ID:-unknown}:${BUNDLE_STATE}"
 
   # -------------------------------------------------------------------------
-  # 2b) VERIFY every #include'd library is CURRENT on the hub. Run 27322480301
-  #     proved hub_install_bundle can report success while leaving pre-existing
-  #     libraries stale (the app then compiles against old library code and
-  #     fails at runtime with MissingMethodException). For each #include:
-  #     exactly ONE library with that namespace+name may exist (two = the
-  #     duplicate-library trap -- the app's #include binds to only one), and
-  #     its on-hub source length must equal the PR file's (the bundle stores
-  #     the file verbatim). Runs on the skip path too -- it proves the hub's
-  #     libraries match the PR regardless of how they got there.
+  # 2b) VERIFY every #include'd library is CURRENT on the hub after an
+  #     install. Run 27322480301 proved hub_install_bundle can report success
+  #     while leaving pre-existing libraries stale (the app then compiles
+  #     against old library code and fails at runtime with
+  #     MissingMethodException). The skip path needs no second pass here: its
+  #     probe IS this same check (verify_includes_current), and a bundle only
+  #     skips after the probe passed.
   # -------------------------------------------------------------------------
   if [ "${#INCLUDES[@]}" -gt 0 ]; then
-    echo "Verifying all ${#INCLUDES[@]} #include'd libraries are current on the hub (single copy, exact length) ..."
-    # Idempotent read via call_tool_retry, then an explicit empty-guard: a relay drop must
-    # surface as "could not read the list", never masquerade as "library not on hub".
-    LIBLIST_TEXT=$(call_tool_retry '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_list_libraries","arguments":{}}}')
-    if [ -z "$LIBLIST_TEXT" ]; then
-      echo "::error::could not read hub_list_libraries to verify the #include'd libraries (relay drop after retries) -- re-run the job."
-      exit 1
+    if [ "$ANY_BUNDLE_INSTALLED" = "true" ]; then
+      echo "Verifying all ${#INCLUDES[@]} #include'd libraries are current on the hub (single copy, exact length) ..."
+      verify_includes_current enforce
+      echo "All #include'd libraries verified current."
+    else
+      echo "All #include'd libraries already verified current by the skip-path probe (no bundle installed this run)."
     fi
-    for TOKEN in "${INCLUDES[@]}"; do
-      NS="${TOKEN%%.*}"; NAME="${TOKEN#*.}"
-      IDS=$(printf '%s' "$LIBLIST_TEXT" | jq -r --arg ns "$NS" --arg nm "$NAME" \
-        '.libraries[]? | select(.namespace == $ns and .name == $nm) | .id' 2>/dev/null || true)
-      N_IDS=$(printf '%s' "$IDS" | grep -c . || true)
-      if [ "$N_IDS" -eq 0 ]; then
-        echo "::error::library ${TOKEN} is NOT on the hub after the bundle step -- the app's #include cannot resolve."
-        exit 1
-      fi
-      if [ "$N_IDS" -gt 1 ]; then
-        echo "::error::library ${TOKEN} exists ${N_IDS} times on the hub (ids: $(printf '%s' "$IDS" | tr '\n' ' ')) -- the duplicate-library trap: the app's #include binds to only ONE copy, so a bundle update can land in the wrong one. Delete the extra copies on the hub (Libraries Code) and re-run."
-        exit 1
-      fi
-      LIB_ID=$(printf '%s' "$IDS" | head -n1)
-      LIB_FILE=$(grep -l -E "^library\(.*name: \"${NAME}\"" "$REPO_DIR"/libraries/*.groovy | head -n1)
-      if [ -z "$LIB_FILE" ]; then
-        echo "::error::no libraries/*.groovy in the checkout declares name \"${NAME}\" -- cannot verify ${TOKEN}."
-        exit 1
-      fi
-      EXPECTED_CHARS=$(LC_ALL=C.UTF-8 wc -m < "$LIB_FILE" | tr -d '[:space:]')
-      SRC_RPC=$(jq -nc --arg id "$LIB_ID" \
-        '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_get_source",arguments:{type:"library",id:($id|tonumber),length:1,noSave:true}}}')
-      SRC_TEXT=$(call_tool_retry "$SRC_RPC")
-      HUB_CHARS=$(printf '%s' "$SRC_TEXT" | jq -r '.totalLength // empty' 2>/dev/null || true)
-      if [ "$HUB_CHARS" != "$EXPECTED_CHARS" ]; then
-        echo "::error::library ${TOKEN} (id ${LIB_ID}) is STALE on the hub: ${HUB_CHARS:-unknown} chars vs the PR file's ${EXPECTED_CHARS} ($(basename "$LIB_FILE")). The bundle step did not land this library -- the app would compile against old library code."
-        exit 1
-      fi
-      echo "  ${TOKEN}: id ${LIB_ID}, ${HUB_CHARS} chars -- matches the PR file."
-    done
-    echo "All #include'd libraries verified current."
   fi
 fi
 
