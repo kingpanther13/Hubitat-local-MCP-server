@@ -72,3 +72,31 @@ def test_deploy_verifies_landed_libraries_after_the_bundle_step():
             f"{SCRIPT.name} dropped the post-install library verification piece {marker!r} -- without "
             "it a success-but-stale bundle install only surfaces as a runtime MissingMethodException."
         )
+
+
+def test_deploy_probes_the_hub_before_skipping_and_heals_when_stale():
+    """The PR's headline deploy-side fix: a bundle byte-identical to canonical main no longer skips
+    BLIND. It first probes the hub (verify_includes_current probe) and, when the hub is stale (a merge
+    landed mid-run, leaving a restored hub a merge behind), HEALS in-run by pointing the install at
+    canonical main's own artifact instead of skipping. The post-install enforce pass runs only when a
+    bundle actually installed; on the all-skip path the per-skip probe IS the verification. Without
+    these pins, a revert to skip-on-byte-equality -- the exact staleness this PR fixes -- leaves every
+    other deploy guard green (the marker test above survives because its strings merely moved into the
+    verify function), and the live e2e only trips on the byte-equal+hub-stale race, which a given run
+    may never hit."""
+    text = SCRIPT.read_text()
+    assert "verify_includes_current probe" in text, (
+        f"{SCRIPT.name}: the skip path no longer probes the hub before skipping -- a byte-equal-to-main "
+        "bundle would skip blind while the hub is a merge behind (the staleness this PR fixes)."
+    )
+    assert "verify_includes_current enforce" in text, (
+        f"{SCRIPT.name}: the post-install enforce verification is gone."
+    )
+    assert 'BUNDLE_URL="$MAIN_BUNDLE_URL"' in text, (
+        f"{SCRIPT.name}: the stale-hub heal no longer points the install at canonical main's artifact -- "
+        "a stale hub would be left stale instead of healed in-run."
+    )
+    assert "ANY_BUNDLE_INSTALLED" in text, (
+        f"{SCRIPT.name}: the enforce pass is no longer gated on whether a bundle actually installed -- "
+        "on the all-skip path the per-skip probe is the verification, not a second enforce pass."
+    )
