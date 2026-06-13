@@ -1918,6 +1918,102 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_set_rule_trigger_custom_attribute_enum_changed_routes(self) -> None:
+        # hub_set_rule edit -> addTrigger Custom Attribute on an ENUM-recognized
+        # attribute with a no-value state-change comparator ('*changed*'). A virtual
+        # switch's 'switch' attribute is enum-recognized: RM reveals the value picker
+        # (tstate<N>) and HIDES the free comparator field (ReltDev<N>). On the TRIGGER
+        # surface, the live hub's tstate<N> picker DOES offer a change-equivalent option,
+        # so the fix routes '*changed*' into the value picker: the change token lands in
+        # tstate<N>, the trigger renders "<device> reports switch *changed*", and it is a
+        # healthy trigger with no skip and partial:false. This proves the original
+        # "switch null" silent-drop bug is fixed -- the change token actually landed --
+        # pinned end-to-end against a live hub. (The unrepresentable-skip branch fires on
+        # the Required Expression surface instead, where the picker has no change option;
+        # see the sibling RE scenario.)
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("CustEnumChangedTrig")
+        try:
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "appId": app_id,
+                    "addTrigger": {"capability": "Custom Attribute", "deviceIds": [sw],
+                                   "attribute": "switch", "comparator": "*changed*"},
+                    "confirm": True,
+                },
+            })
+            assert result.get("success") is not False, f"addTrigger reported failure: {result}"
+            # The route branch: the change token lands in the value picker (tstate<N>) ...
+            applied = result.get("settingsApplied") or []
+            assert any(str(k).startswith("tstate") for k in applied), \
+                f"change token did not land in a tstate field (route branch): settingsApplied={applied}"
+            # ... NOT a not-representable skip, and partial stays falsy (healthy trigger).
+            skipped = result.get("settingsSkipped") or []
+            not_repr = [s for s in skipped if isinstance(s, dict)
+                        and s.get("reason") == "comparator_not_representable_for_enum_attribute"]
+            assert not not_repr, \
+                f"trigger surface should ROUTE, not skip; unexpected not-representable skip: {not_repr}"
+            assert not result.get("partial"), \
+                f"trigger falsely flagged partial despite routing the change token: {result}"
+            # Independent verification: the persisted tstate<N> carries the change token.
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+            settings = cfg.get("settings") or {}
+            tstate_vals = [v for k, v in settings.items() if str(k).startswith("tstate")]
+            assert any(str(v) == "*changed*" for v in tstate_vals), \
+                f"persisted tstate did not carry the change token; tstate values={tstate_vals}"
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_re_custom_attribute_enum_changed_not_representable(self) -> None:
+        # hub_set_rule edit -> addRequiredExpression with an ENUM-recognized Custom
+        # Attribute condition and a no-value state-change comparator ('*changed*'). On
+        # the Required Expression surface, the live hub's value picker offers on/off only
+        # (NO change-equivalent option), so '*changed*' is genuinely unrepresentable: the
+        # fix records a comparator_not_representable_for_enum_attribute skip, flips
+        # partial:true, and emits an actionable repairHint, never silently dropping the
+        # comparator as a clean success. The comparator field (RelrDev_<N>) is never
+        # falsely claimed applied. This is the client-observable not-representable
+        # behaviour, pinned end-to-end against a live hub. (The TRIGGER surface routes
+        # instead, because its picker has a change option; see the sibling trigger scenario.)
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("CustEnumChangedRE")
+        try:
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {
+                    "appId": app_id,
+                    "addRequiredExpression": {"conditions": [
+                        {"capability": "Custom Attribute", "deviceIds": [sw],
+                         "attribute": "switch", "comparator": "*changed*"}]},
+                    "confirm": True,
+                },
+            })
+            # The add still commits the rest of the condition (success is not a hard failure) ...
+            assert result.get("success") is not False, f"addRequiredExpression reported failure: {result}"
+            # ... but the unrepresentable comparator must NOT be falsely claimed applied.
+            applied = result.get("settingsApplied") or []
+            assert not any(str(k).startswith("RelrDev") for k in applied), \
+                f"unrepresentable comparator was falsely claimed applied: settingsApplied={applied}"
+            # The discriminating contract: a genuine not-representable skip flips partial.
+            skipped = result.get("settingsSkipped") or []
+            not_repr = [s for s in skipped if isinstance(s, dict)
+                        and s.get("reason") == "comparator_not_representable_for_enum_attribute"]
+            assert not_repr, \
+                f"missing comparator_not_representable_for_enum_attribute skip (the silent-drop bug): {result}"
+            assert result.get("partial") is True, \
+                f"unrepresentable comparator did not flip partial=true (silent false-success): {result}"
+            # An actionable repair hint must be present and name the cause.
+            hints = result.get("repairHints") or []
+            assert any("cannot be represented" in str(h) for h in hints), \
+                f"missing actionable repairHint for the unrepresentable comparator: hints={hints}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_walker_enum_required_expression(self) -> None:
         # hub_set_rule edit -> addRequiredExpression (STPage reveal walker) with an
         # ENUM-recognized Custom Attribute condition. The walker pre-fix THREW
