@@ -111,6 +111,13 @@ RETARGETED="false"
 ARM_APP_URL=$(printf '%s' "$MANIFEST_JSON" | jq -r '.app.url // empty')
 if [[ "$ARM_APP_URL" =~ ^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([0-9a-f]{40})/ ]]; then
   GH_OWNER="${BASH_REMATCH[1]}"; GH_REPO="${BASH_REMATCH[2]}"; ARM_MAIN_SHA="${BASH_REMATCH[3]}"
+  # SSRF guard: every URL we fetch below comes from the hub flag manifest (read back, not trusted),
+  # so each app/bundle entry is pinned to this exact raw.githubusercontent.com/<owner>/<repo>/ prefix
+  # (the host+owner+repo the FIRST app url proved) before any curl, and every curl runs --max-redirs 0
+  # so a 3xx cannot bounce the fetch off-host. A manifest entry pointing anywhere else abandons the
+  # re-target and keeps the arm-time manifest. The whole prefix is quoted in the case pattern so
+  # owner/repo are matched LITERALLY (never as a glob) and only the trailing path is wildcarded.
+  EXPECT_PREFIX="https://raw.githubusercontent.com/${GH_OWNER}/${GH_REPO}/"
   CUR_MAIN_SHA=$(git ls-remote "https://github.com/${GH_OWNER}/${GH_REPO}.git" refs/heads/main 2>/dev/null | awk 'NR==1{print $1}' || true)
   if ! printf '%s' "$CUR_MAIN_SHA" | grep -qE '^[0-9a-f]{40}$'; then
     echo "::warning::Disarm re-target: could not resolve current main's SHA (git ls-remote failed) -- restoring the arm-time main (${ARM_MAIN_SHA}); the next run's deploy probe heals any gap."
@@ -128,11 +135,15 @@ if [[ "$ARM_APP_URL" =~ ^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([0
       A_ID=$(printf '%s' "$APP_REC" | jq -r '.classId')
       A_URL=$(printf '%s' "$APP_REC" | jq -r '.url')
       case "$A_URL" in
+        "$EXPECT_PREFIX"*) ;;
+        *) echo "::warning::Disarm re-target: app ${A_ID} url is not under the expected ${EXPECT_PREFIX} (${A_URL}) -- keeping the arm-time manifest."; RT_OK="false"; break ;;
+      esac
+      case "$A_URL" in
         *"$ARM_MAIN_SHA"*) ;;
         *) echo "::warning::Disarm re-target: app ${A_ID} url does not embed the arm-time SHA (${A_URL}) -- cannot re-anchor; keeping the arm-time manifest."; RT_OK="false"; break ;;
       esac
       N_URL="${A_URL//$ARM_MAIN_SHA/$CUR_MAIN_SHA}"
-      N_CHARS=$(curl -fsSL --max-time 60 "$N_URL" 2>/dev/null | LC_ALL=C.UTF-8 wc -m | tr -d '[:space:]' || true)
+      N_CHARS=$(curl -fsSL --max-redirs 0 --max-time 60 "$N_URL" 2>/dev/null | LC_ALL=C.UTF-8 wc -m | tr -d '[:space:]' || true)
       if ! printf '%s' "$N_CHARS" | grep -qE '^[0-9]+$' || [ "$N_CHARS" -lt 1000 ]; then
         echo "::warning::Disarm re-target: could not measure ${N_URL} (chars=${N_CHARS:-<none>}) -- keeping the arm-time manifest."
         RT_OK="false"; break
@@ -152,18 +163,22 @@ if [[ "$ARM_APP_URL" =~ ^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([0
       while IFS= read -r B_REC; do
         [ -z "$B_REC" ] && continue
         B_URL=$(printf '%s' "$B_REC" | jq -r '.url')
+        case "$B_URL" in
+          "$EXPECT_PREFIX"*) ;;
+          *) echo "::warning::Disarm re-target: bundle url is not under the expected ${EXPECT_PREFIX} (${B_URL}) -- keeping the arm-time manifest."; RT_OK="false"; break ;;
+        esac
         B_BASE="${B_URL##*/}"
         REPO_BASE="https://raw.githubusercontent.com/${GH_OWNER}/${GH_REPO}"
         N_BURL=""
         for CAND in "${REPO_BASE}/bundle-artifacts/shas/${CUR_MAIN_SHA}/${B_BASE}" "${REPO_BASE}/bundle-artifacts/branches/main/${B_BASE}"; do
-          if curl -fsSL --max-time 30 -o /dev/null "${CAND}.size" 2>/dev/null; then N_BURL="$CAND"; break; fi
+          if curl -fsSL --max-redirs 0 --max-time 30 -o /dev/null "${CAND}.size" 2>/dev/null; then N_BURL="$CAND"; break; fi
         done
         if [ -z "$N_BURL" ]; then
           echo "::warning::Disarm re-target: no bundle-artifacts entry for ${B_BASE} at ${CUR_MAIN_SHA} (publish race?) -- keeping the arm-time manifest."
           RT_OK="false"; break
         fi
         OLD_TMP="$(mktemp)"; NEW_TMP="$(mktemp)"
-        if ! curl -fsSL --max-time 60 "$B_URL" -o "$OLD_TMP" 2>/dev/null || ! curl -fsSL --max-time 60 "$N_BURL" -o "$NEW_TMP" 2>/dev/null; then
+        if ! curl -fsSL --max-redirs 0 --max-time 60 "$B_URL" -o "$OLD_TMP" 2>/dev/null || ! curl -fsSL --max-redirs 0 --max-time 60 "$N_BURL" -o "$NEW_TMP" 2>/dev/null; then
           rm -f "$OLD_TMP" "$NEW_TMP"
           echo "::warning::Disarm re-target: could not download the arm-time/current bundle to compare -- keeping the arm-time manifest."
           RT_OK="false"; break

@@ -51,3 +51,23 @@ def test_disarm_falls_back_to_the_arm_time_manifest():
         f"{SCRIPT.name} lost the arm-time-manifest fallback on a re-target obstacle -- a partial "
         "rewrite must never reach the watchdog (apps at one SHA, bundle at another)."
     )
+
+
+def test_disarm_pins_fetched_urls_to_the_expected_host_owner_repo():
+    """SSRF guard: the app/bundle URLs are read back from the hub flag manifest (untrusted), so each
+    entry must be validated against the raw.githubusercontent.com/<owner>/<repo>/ prefix the first app
+    url proved BEFORE any curl, and every fetch must run --max-redirs 0 so a 3xx cannot bounce off-host.
+    The substring SHA check alone (a url like https://evil/<sha>/x) is not enough."""
+    text = SCRIPT.read_text()
+    assert 'EXPECT_PREFIX="https://raw.githubusercontent.com/${GH_OWNER}/${GH_REPO}/"' in text, (
+        f"{SCRIPT.name} dropped the host+owner+repo prefix pin -- a poisoned apps[]/bundles[] entry "
+        "could redirect a re-target fetch to an attacker-controlled host (SSRF)."
+    )
+    assert text.count('"$EXPECT_PREFIX"*) ;;') >= 2, (
+        f"{SCRIPT.name} no longer validates BOTH the app and bundle urls against EXPECT_PREFIX before "
+        "fetching them."
+    )
+    assert "curl -fsSL --max-time" not in text, (
+        f"{SCRIPT.name} has a re-target curl without --max-redirs 0 -- a redirect could bounce the "
+        "fetch off the pinned host (redirect-based SSRF)."
+    )
