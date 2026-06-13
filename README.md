@@ -1552,6 +1552,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.3.3** - fix: enum-shadowing Custom Attribute + no-value *changed* comparator (#195). PRs: [#271](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/271)
 - **v2.3.2** - ci: make the e2e bundle skip honest — verify/heal the hub, and re-target the restore at current main. PRs: [#275](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/275)
 - **v2.3.1** - ci: unify bundle delivery on the bundle-artifacts branch so e2e installs exactly what HPM serves. PRs: [#274](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/274)
 - **v2.3.0** - refactor: split every remaining tool domain into #include libraries with co-located per-tool metadata (#209); fix: rebuild-bundle pushes with the release deploy key + carry the rebuilt 18-library zip. PRs: [#269](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/269), [#273](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/273)
