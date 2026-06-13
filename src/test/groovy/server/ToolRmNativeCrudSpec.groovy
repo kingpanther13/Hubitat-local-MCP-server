@@ -17493,7 +17493,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "validation error surfaces in result.error (toolSetRule catches IAE from _rmAddAction)"
         result.success == false
-        result.error?.contains("requires 'value' (numeric constant) or 'sourceVariable'")
+        result.error?.contains("requires exactly one source mode")
+        result.error?.contains("'value' (numeric constant)")
     }
 
     def "addAction setVariable rejects when both value and sourceVariable are provided"() {
@@ -17520,7 +17521,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "mutual-exclusion error surfaces in result.error (toolSetRule catches IAE from _rmAddAction)"
         result.success == false
-        result.error?.contains("provide 'value' OR 'sourceVariable', not both")
+        result.error?.contains("exactly one source mode")
+        result.error?.contains("value, sourceVariable")
     }
 
     def "addAction mode with modeName and empty location.modes fails fast with empty available list"() {
@@ -18927,6 +18929,1273 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("2 candidate")
         result.error?.contains("xVar3.1")
         result.error?.contains("xVar4.1")
+    }
+
+    // setVariable fromDevice (numOp="device attribute")
+
+    def "addAction setVariable fromDevice writes numOp=device attribute then discovers customDev + filtered tCustomAttr"() {
+        // RM 5.1 live-verified wire: numOp="device attribute" reveals customDev.<N> (a
+        // capability.* single-device picker), and writing the device reveals tCustomAttr.<N>
+        // (an attribute enum FILTERED to that device). Both fields are schema-gated.
+        // The stub gates customDev.1 on numOp=device attribute, and tCustomAttr.1 on the
+        // device write -- so a regression that skips the numOp write or writes the device
+        // before revealing customDev fails the fail-loud guards (result.success==false).
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        // customDev.1 gated on numOp=device attribute; tCustomAttr.1 gated on customDev.1 write.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "device attribute"
+            def devWritten = writtenFields["customDev.1"]?.toString() == "72"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["temp": "temp"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "device attribute": "Device attribute"]],
+                [name: "valNumber.1", type: "number"]
+            ]
+            if (numOpWritten) {
+                extra << [name: "customDev.1", type: "capability.*", multiple: false, options: [:]]
+            }
+            if (numOpWritten && devWritten) {
+                // Attribute enum FILTERED to device 72 -- only 'temperature' offered.
+                extra << [name: "tCustomAttr.1", type: "enum", options: ["temperature": "temperature"]]
+            }
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "temp", fromDevice: [deviceId: 72, attribute: "temperature"]],
+            confirm: true
+        ])
+
+        then: "numOp routes to the device-attribute mode"
+        writtenFields["numOp.1"] == "device attribute"
+
+        and: "the device id lands in the schema-revealed customDev.1 picker"
+        writtenFields["customDev.1"]?.toString() == "72"
+
+        and: "the attribute lands in the device-filtered tCustomAttr.1 enum; no constant value written"
+        writtenFields["tCustomAttr.1"] == "temperature"
+        !writtenFields.containsKey("valNumber.1")
+
+        and: "action bakes cleanly"
+        result.success == true
+        result.partial != true
+    }
+
+    def "addAction setVariable fromDevice rejects attribute not in the device's filtered enum"() {
+        // The tCustomAttr.<N> enum is filtered to the device's live attributes. An attribute
+        // outside that set must fail loud with the available list, not silently drop.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "device attribute"
+            def devWritten = writtenFields["customDev.1"]?.toString() == "72"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["temp": "temp"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "device attribute": "Device attribute"]]
+            ]
+            if (numOpWritten) extra << [name: "customDev.1", type: "capability.*", multiple: false, options: [:]]
+            if (numOpWritten && devWritten) extra << [name: "tCustomAttr.1", type: "enum", options: ["temperature": "temperature"]]
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "temp", fromDevice: [deviceId: 72, attribute: "humidity"]],
+            confirm: true
+        ])
+
+        then: "the unknown attribute is rejected with the available list"
+        result.success == false
+        // Pin the rejection frame, not just the two attr tokens (which a different message
+        // could also contain) -- this asserts it failed at the filtered-attribute-enum check.
+        result.error?.contains("is not in the device's attribute enum")
+        result.error?.contains("humidity")
+        result.error?.contains("temperature")
+    }
+
+    def "addAction setVariable fromDevice rejects missing deviceId"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "temp", fromDevice: [attribute: "temperature"]],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.error?.contains("fromDevice requires 'deviceId'")
+    }
+
+    def "addAction setVariable fromDevice rejects non-numeric deviceId: #badId"() {
+        // Non-numeric, fractional, and non-positive ids are rejected (a whole-number BigDecimal
+        // like 72.0 is accepted -- covered by its own spec).
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "temp", fromDevice: [deviceId: badId, attribute: "temperature"]],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.error?.contains("positive integer device id")
+
+        where:
+        badId << ["abc", 72.5, 0, -3]
+    }
+
+    // setVariable math (numOp="variable math")
+
+    def "addAction setVariable math binary op writes operands, operator, and second operand"() {
+        // Binary op (var + constant): numOp=variable math reveals xVar3.1 + valMathOp.1;
+        // writing the '+' operator reveals xVar4.1; a numeric right operand becomes (constant)
+        // and reveals valConst2.1. The stub gates each reveal on the prior write, so a
+        // regression that skips a step fails the fail-loud guards.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "variable math"
+            def opWritten = writtenFields["valMathOp.1"] == "+"
+            def secondConst = writtenFields["xVar4.1"] == "(constant)"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["result": "result"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable math": "Variable math"]]
+            ]
+            if (numOpWritten) {
+                extra << [name: "xVar3.1", type: "enum", options: ["(constant)": "(constant)", "base": "base"]]
+                extra << [name: "valMathOp.1", type: "enum", options: ["+": "+", "-": "-", "negate": "negate"]]
+            }
+            if (opWritten) {
+                extra << [name: "xVar4.1", type: "enum", options: ["(constant)": "(constant)", "base": "base"]]
+            }
+            if (secondConst) {
+                extra << [name: "valConst2.1", type: "number"]
+            }
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "base", op: "+", right: 10]],
+            confirm: true
+        ])
+
+        then: "numOp routes to variable math"
+        writtenFields["numOp.1"] == "variable math"
+
+        and: "first operand is the variable name, operator is the binary +"
+        writtenFields["xVar3.1"] == "base"
+        writtenFields["valMathOp.1"] == "+"
+
+        and: "numeric right operand becomes (constant) + valConst2.1"
+        writtenFields["xVar4.1"] == "(constant)"
+        writtenFields["valConst2.1"].toString() == "10"
+
+        and: "action bakes cleanly"
+        result.success == true
+        result.partial != true
+    }
+
+    def "addAction setVariable math unary op writes operator and no second operand"() {
+        // Unary op (absolute of a constant): numOp=variable math reveals xVar3.1 + valMathOp.1;
+        // a numeric left operand becomes (constant)+valConst.1; the unary 'absolute' op takes NO
+        // second operand, so xVar4.1/valConst2.1 must never be written.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "variable math"
+            def leftConst = writtenFields["xVar3.1"] == "(constant)"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["result": "result"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable math": "Variable math"]]
+            ]
+            if (numOpWritten) {
+                extra << [name: "xVar3.1", type: "enum", options: ["(constant)": "(constant)"]]
+                extra << [name: "valMathOp.1", type: "enum", options: ["absolute": "absolute", "+": "+"]]
+            }
+            if (leftConst) {
+                extra << [name: "valConst.1", type: "number"]
+            }
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: -5, op: "absolute"]],
+            confirm: true
+        ])
+
+        then: "numeric left operand becomes (constant) + valConst.1"
+        writtenFields["xVar3.1"] == "(constant)"
+        writtenFields["valConst.1"].toString() == "-5"
+
+        and: "operator is the unary absolute"
+        writtenFields["valMathOp.1"] == "absolute"
+
+        and: "no second operand is written for a unary op"
+        !writtenFields.containsKey("xVar4.1")
+        !writtenFields.containsKey("valConst2.1")
+
+        and: "action bakes cleanly"
+        result.success == true
+        result.partial != true
+    }
+
+    def "addAction setVariable math rejects binary op missing right operand (arity)"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "base", op: "+"]],
+            confirm: true
+        ])
+
+        then: "binary op without 'right' fails fast on arity"
+        result.success == false
+        result.error?.contains("binary operator '+' requires 'right'")
+    }
+
+    def "addAction setVariable math rejects unary op given a right operand (arity)"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "base", op: "absolute", right: 3]],
+            confirm: true
+        ])
+
+        then: "unary op with 'right' fails fast on arity"
+        result.success == false
+        result.error?.contains("unary operator 'absolute' takes no second operand")
+    }
+
+    def "addAction setVariable math rejects unrecognized operator"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "base", op: "^", right: 2]],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.error?.contains("operator '^' is not recognized")
+    }
+
+    def "addAction setVariable math rejects unknown variable operand"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        // 'ghostVar' is not on the hub -- the math var-operand existence check must reject it.
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "ghostVar", op: "+", right: 1]],
+            confirm: true
+        ])
+
+        then: "the unknown variable operand is rejected naming the role"
+        result.success == false
+        result.error?.contains("left operand variable 'ghostVar' not found")
+    }
+
+    def "addAction setVariable math rejects unknown RIGHT variable operand"() {
+        // Mirror of the left-operand existence check on the second operand.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        // 'base' exists; 'ghostRight' does not -- the right-operand check must reject it.
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "base", op: "+", right: "ghostRight"]],
+            confirm: true
+        ])
+
+        then: "the unknown right operand is rejected naming the role"
+        result.success == false
+        result.error?.contains("right operand variable 'ghostRight' not found")
+    }
+
+    def "addAction setVariable math rejects non-number non-string operand (e.g. boolean)"() {
+        // A Boolean operand must be rejected up-front as a bad type, NOT coerced to the string
+        // "false" and blamed as a nonexistent variable.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: false, op: "absolute"]],
+            confirm: true
+        ])
+
+        then: "the boolean operand is rejected as a bad type, not blamed as a missing variable"
+        result.success == false
+        result.error?.contains("left operand must be a number or a hub variable name")
+        !result.error?.contains("not found")
+    }
+
+    def "addAction setVariable math binary op with VARIABLE right operand writes xVar4=varname (no valConst2)"() {
+        // The xVar4=<varname> path (variable second operand) -- distinct from the (constant) path.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0], "other": [name: "other", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "variable math"
+            def opWritten = writtenFields["valMathOp.1"] == "+"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["result": "result"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable math": "Variable math"]]
+            ]
+            if (numOpWritten) {
+                extra << [name: "xVar3.1", type: "enum", options: ["(constant)": "(constant)", "base": "base", "other": "other"]]
+                extra << [name: "valMathOp.1", type: "enum", options: ["+": "+", "negate": "negate"]]
+            }
+            if (opWritten) {
+                extra << [name: "xVar4.1", type: "enum", options: ["(constant)": "(constant)", "base": "base", "other": "other"]]
+            }
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "base", op: "+", right: "other"]],
+            confirm: true
+        ])
+
+        then: "the variable right operand lands in xVar4.1 as the name, not (constant)"
+        writtenFields["xVar4.1"] == "other"
+        !writtenFields.containsKey("valConst2.1")
+
+        and: "action bakes cleanly"
+        result.success == true
+        result.partial != true
+    }
+
+    def "addAction setVariable math binary op with NUMERIC left operand writes both valConst and valConst2"() {
+        // Constant-left + constant-right path: (5 + 10). Both valConst.1 and valConst2.1 land.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "variable math"
+            def leftConst = writtenFields["xVar3.1"] == "(constant)"
+            def opWritten = writtenFields["valMathOp.1"] == "+"
+            def secondConst = writtenFields["xVar4.1"] == "(constant)"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["result": "result"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable math": "Variable math"]]
+            ]
+            if (numOpWritten) {
+                extra << [name: "xVar3.1", type: "enum", options: ["(constant)": "(constant)"]]
+                extra << [name: "valMathOp.1", type: "enum", options: ["+": "+", "negate": "negate"]]
+            }
+            if (leftConst) {
+                extra << [name: "valConst.1", type: "number"]
+            }
+            if (opWritten) {
+                extra << [name: "xVar4.1", type: "enum", options: ["(constant)": "(constant)"]]
+            }
+            if (secondConst) {
+                extra << [name: "valConst2.1", type: "number"]
+            }
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: 5, op: "+", right: 10]],
+            confirm: true
+        ])
+
+        then: "both operands resolve to (constant) and both constant slots land"
+        writtenFields["xVar3.1"] == "(constant)"
+        writtenFields["valConst.1"].toString() == "5"
+        writtenFields["xVar4.1"] == "(constant)"
+        writtenFields["valConst2.1"].toString() == "10"
+
+        and: "action bakes cleanly"
+        result.success == true
+        result.partial != true
+    }
+
+    // setVariable math: enum-option validation (requested operand/operator not in revealed enum)
+
+    def "addAction setVariable math fails loud when first-operand variable absent from revealed xVar3 enum"() {
+        // xVar3.1 is revealed after numOp, but its enum does NOT contain the requested variable
+        // (a name that passes the getAllGlobalVars pre-check but is absent from RM's live picker).
+        // Mirrors the sourceVariable "not in revealed enum" guard.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        // Both vars exist on the hub (pre-check passes), but RM's xVar3 enum below omits 'base'.
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "variable math"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["result": "result"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable math": "Variable math"]]
+            ]
+            if (numOpWritten) {
+                // xVar3.1 revealed but enum lacks 'base' (only the sentinel offered).
+                extra << [name: "xVar3.1", type: "enum", options: ["(constant)": "(constant)"]]
+                extra << [name: "valMathOp.1", type: "enum", options: ["+": "+", "negate": "negate"]]
+            }
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "base", op: "+", right: 1]],
+            confirm: true
+        ])
+
+        then: "first-operand-not-in-revealed-enum fails loud naming the field"
+        result.success == false
+        result.error?.contains("first operand 'base' is not in the revealed enum for 'xVar3.1'")
+    }
+
+    def "addAction setVariable math fails loud when operator absent from revealed valMathOp enum"() {
+        // valMathOp.1 is revealed but its enum does not contain the requested operator (a
+        // firmware that dropped it). The operator passes the static _rmMathBinaryOps partition
+        // but the live enum is the authority -- the safety net rejects it.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "variable math"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["result": "result"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable math": "Variable math"]]
+            ]
+            if (numOpWritten) {
+                extra << [name: "xVar3.1", type: "enum", options: ["(constant)": "(constant)", "base": "base"]]
+                // valMathOp.1 revealed but enum lacks '+' (only '-' offered) -- the requested op is gone.
+                extra << [name: "valMathOp.1", type: "enum", options: ["-": "-", "negate": "negate"]]
+            }
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "base", op: "+", right: 1]],
+            confirm: true
+        ])
+
+        then: "operator-not-in-revealed-enum fails loud naming the field"
+        result.success == false
+        result.error?.contains("operator '+' is not in the revealed enum for 'valMathOp.1'")
+    }
+
+    def "addAction setVariable math fails loud when second-operand variable absent from revealed xVar4 enum"() {
+        // xVar4.1 is revealed after the binary op, but its enum omits the requested right variable.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0], "other": [name: "other", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "variable math"
+            def opWritten = writtenFields["valMathOp.1"] == "+"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["result": "result"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable math": "Variable math"]]
+            ]
+            if (numOpWritten) {
+                extra << [name: "xVar3.1", type: "enum", options: ["(constant)": "(constant)", "base": "base", "other": "other"]]
+                extra << [name: "valMathOp.1", type: "enum", options: ["+": "+", "negate": "negate"]]
+            }
+            if (opWritten) {
+                // xVar4.1 revealed but enum omits 'other' (the requested right operand).
+                extra << [name: "xVar4.1", type: "enum", options: ["(constant)": "(constant)", "base": "base"]]
+            }
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "base", op: "+", right: "other"]],
+            confirm: true
+        ])
+
+        then: "second-operand-not-in-revealed-enum fails loud naming the field"
+        result.success == false
+        result.error?.contains("second operand 'other' is not in the revealed enum for 'xVar4.1'")
+    }
+
+    def "addAction setVariable math accepts operands/operator when options are a List of value-Maps"() {
+        // Regression guard for routing the math option extractor through _rmReadPickerOptionStrings:
+        // RM can return enum options as a LIST of value-key Maps ([value:'+', text:'+'], ...) rather
+        // than a Map container. The old it?.toString() extractor turned those into "[value:+, text:+]"
+        // so a valid operator/operand was rejected. The canonical reader reads o.value, so a valid
+        // request is ACCEPTED. binary (var + (constant)) exercises xVar3, valMathOp, and xVar4.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        // All enum options here are List-of-value-Maps, the shape the old extractor mishandled.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "variable math"
+            def opWritten = writtenFields["valMathOp.1"] == "+"
+            def secondConst = writtenFields["xVar4.1"] == "(constant)"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["result": "result"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable math": "Variable math"]]
+            ]
+            if (numOpWritten) {
+                extra << [name: "xVar3.1", type: "enum", options: [[value: "(constant)", text: "(constant)"], [value: "base", text: "base"]]]
+                extra << [name: "valMathOp.1", type: "enum", options: [[value: "+", text: "+"], [value: "negate", text: "negate"]]]
+            }
+            if (opWritten) {
+                extra << [name: "xVar4.1", type: "enum", options: [[value: "(constant)", text: "(constant)"], [value: "base", text: "base"]]]
+            }
+            if (secondConst) {
+                extra << [name: "valConst2.1", type: "number"]
+            }
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "base", op: "+", right: 10]],
+            confirm: true
+        ])
+
+        then: "value-Map options are read correctly; the valid operand/operator are accepted and written"
+        writtenFields["xVar3.1"] == "base"
+        writtenFields["valMathOp.1"] == "+"
+        writtenFields["xVar4.1"] == "(constant)"
+        writtenFields["valConst2.1"].toString() == "10"
+
+        and: "action bakes cleanly"
+        result.success == true
+        result.partial != true
+    }
+
+    def "addAction setVariable fromDevice accepts attribute when tCustomAttr options are a List of value-Maps"() {
+        // Regression guard for routing the fromDevice attribute extractor through
+        // _rmReadPickerOptionStrings: a value-Map List ([value:'switch', text:'switch']) must be
+        // read via o.value so a valid attribute is ACCEPTED, not rejected as a stringified Map.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "device attribute"
+            def devWritten = writtenFields["customDev.1"]?.toString() == "72"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["temp": "temp"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "device attribute": "Device attribute"]]
+            ]
+            if (numOpWritten) extra << [name: "customDev.1", type: "capability.*", multiple: false, options: [:]]
+            // tCustomAttr options as a List of value-Maps (the shape the old extractor mishandled).
+            if (numOpWritten && devWritten) extra << [name: "tCustomAttr.1", type: "enum", options: [[value: "switch", text: "switch"], [value: "level", text: "level"]]]
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "temp", fromDevice: [deviceId: 72, attribute: "switch"]],
+            confirm: true
+        ])
+
+        then: "value-Map attribute options are read correctly; the valid attribute is accepted and written"
+        writtenFields["tCustomAttr.1"] == "switch"
+
+        and: "action bakes cleanly"
+        result.success == true
+        result.partial != true
+    }
+
+    def "addAction setVariable math fails loud when revealed valMathOp has empty options (no enumerable options)"() {
+        // assertInEnum's empty-options branch: valMathOp.1 is revealed but its options are empty,
+        // so the operator cannot be validated. Mirrors the runCommand/sourceVariable empty-options
+        // guards. The canonical reader returns [] for empty options, which the guard treats as
+        // unvalidatable and throws the "no enumerable options" error.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "variable math"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["result": "result"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable math": "Variable math"]]
+            ]
+            if (numOpWritten) {
+                extra << [name: "xVar3.1", type: "enum", options: ["(constant)": "(constant)", "base": "base"]]
+                // valMathOp.1 revealed but with NO enumerable options (empty map).
+                extra << [name: "valMathOp.1", type: "enum", options: [:]]
+            }
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "base", op: "+", right: 1]],
+            confirm: true
+        ])
+
+        then: "the empty-options branch fails loud with the no-enumerable-options message"
+        result.success == false
+        result.error?.contains("revealed field 'valMathOp.1' has no enumerable options -- cannot validate operator")
+    }
+
+    // setVariable math: reveal-miss fail-loud (field withheld after the gating write)
+
+    def "addAction setVariable math fails loud when xVar3/valMathOp not revealed after numOp write"() {
+        // numOp=variable math lands, but the operand/operator fields never appear (firmware gap).
+        // The static stub never adds xVar3.1/valMathOp.1 -- the reveal-miss guard must throw.
+        // The seq lambda MUST advance ({ ++fetchSeq }, not a static { 1 }): _rmWriteSettingOnPage
+        // re-fetches after each POST and compares the render seq to decide the write landed. A
+        // never-changing seq makes numOp.1 look silently rejected, so the precise-attribution
+        // guard ("numOp.1 ... did not land") fires FIRST and the reveal-miss throw is never reached.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        // numOp.1 lands (render shifts via the advancing seq paragraph) but the BODY is static --
+        // xVar3.1/valMathOp.1 never appear -- so the downstream reveal-miss guard fires.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            modeActsDoActPageJson(100, [
+                [name: "xVarV.1", type: "enum", options: ["result": "result"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable math": "Variable math"]]
+            ], { ++fetchSeq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "base", op: "+", right: 1]],
+            confirm: true
+        ])
+
+        then: "the operand/operator reveal-miss fails loud"
+        result.success == false
+        result.error?.contains("were not revealed after writing numOp=variable math")
+    }
+
+    def "addAction setVariable math fails loud when xVar4 not revealed after a binary operator write"() {
+        // numOp + xVar3 + valMathOp all land, but the binary operator does not reveal xVar4.1.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        // xVar3.1 + valMathOp.1 appear after numOp, but xVar4.1 NEVER appears (no opWritten branch).
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "variable math"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["result": "result"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable math": "Variable math"]]
+            ]
+            if (numOpWritten) {
+                extra << [name: "xVar3.1", type: "enum", options: ["(constant)": "(constant)", "base": "base"]]
+                extra << [name: "valMathOp.1", type: "enum", options: ["+": "+", "negate": "negate"]]
+            }
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "base", op: "+", right: 1]],
+            confirm: true
+        ])
+
+        then: "the second-operand reveal-miss fails loud"
+        result.success == false
+        result.error?.contains("second-operand field 'xVar4.1' was not revealed after writing binary operator")
+    }
+
+    // setVariable fromDevice: reveal-miss fail-loud + BigDecimal deviceId
+
+    def "addAction setVariable fromDevice fails loud when customDev not revealed after numOp write"() {
+        // numOp="device attribute" lands but the device picker never appears.
+        // The seq lambda MUST advance ({ ++fetchSeq }, not a static { 1 }): a never-changing
+        // seq makes numOp.1 look silently rejected, so the precise-attribution guard fires first
+        // and the customDev reveal-miss throw this spec asserts is never reached.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        // numOp.1 lands (render shifts via the advancing seq paragraph) but the BODY is static --
+        // customDev.1 never appears -- so the device-picker reveal-miss guard fires.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            modeActsDoActPageJson(100, [
+                [name: "xVarV.1", type: "enum", options: ["temp": "temp"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "device attribute": "Device attribute"]]
+            ], { ++fetchSeq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "temp", fromDevice: [deviceId: 72, attribute: "switch"]],
+            confirm: true
+        ])
+
+        then: "the device-picker reveal-miss fails loud"
+        result.success == false
+        result.error?.contains("device picker 'customDev.1' was not revealed")
+    }
+
+    def "addAction setVariable fromDevice fails loud when tCustomAttr not revealed after device write"() {
+        // customDev.1 reveals after numOp and the device is written, but tCustomAttr.1 never appears.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        // customDev.1 appears after numOp, but tCustomAttr.1 NEVER appears (no devWritten branch).
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "device attribute"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["temp": "temp"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "device attribute": "Device attribute"]]
+            ]
+            if (numOpWritten) extra << [name: "customDev.1", type: "capability.*", multiple: false, options: [:]]
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "temp", fromDevice: [deviceId: 72, attribute: "switch"]],
+            confirm: true
+        ])
+
+        then: "the attribute-enum reveal-miss fails loud"
+        result.success == false
+        result.error?.contains("attribute enum 'tCustomAttr.1' was not revealed")
+    }
+
+    def "addAction setVariable fromDevice accepts a whole-number BigDecimal deviceId (72.0)"() {
+        // A deviceId that arrives as a BigDecimal with no fractional part must be accepted and
+        // normalized to "72" for the customDev write -- not false-rejected by an isInteger() gate.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "device attribute"
+            def devWritten = writtenFields["customDev.1"]?.toString() == "72"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["temp": "temp"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "device attribute": "Device attribute"]]
+            ]
+            if (numOpWritten) extra << [name: "customDev.1", type: "capability.*", multiple: false, options: [:]]
+            if (numOpWritten && devWritten) extra << [name: "tCustomAttr.1", type: "enum", options: ["switch": "switch"]]
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "temp", fromDevice: [deviceId: 72.0, attribute: "switch"]],
+            confirm: true
+        ])
+
+        then: "the BigDecimal whole-number id is accepted and normalized to the integer string"
+        writtenFields["customDev.1"]?.toString() == "72"
+        writtenFields["tCustomAttr.1"] == "switch"
+        result.success == true
+        result.partial != true
+    }
+
+    // setVariable source-mode mutual exclusivity (all four modes)
+
+    def "addAction setVariable rejects more than one source mode: #label"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["counter": [name: "counter", type: "Number", value: 0], "src": [name: "src", type: "Number", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "counter"] + extraModes,
+            confirm: true
+        ])
+
+        then: "exactly-one-source-mode rule rejects the multi-mode spec"
+        result.success == false
+        result.error?.contains("exactly one source mode")
+        // Pin the count form the >1 branch emits ("got N (...)") -- distinct from the empty
+        // branch, which also says "exactly one source mode" but never "got N".
+        result.error?.contains("got 2")
+
+        where:
+        label                          | extraModes
+        "value + sourceVariable"       | [value: 1, sourceVariable: "src"]
+        "value + fromDevice"           | [value: 1, fromDevice: [deviceId: 72, attribute: "temperature"]]
+        "value + math"                 | [value: 1, math: [left: "src", op: "+", right: 1]]
+        "fromDevice + math"            | [fromDevice: [deviceId: 72, attribute: "temperature"], math: [left: "src", op: "+", right: 1]]
+        "sourceVariable + fromDevice"  | [sourceVariable: "src", fromDevice: [deviceId: 72, attribute: "temperature"]]
+        "sourceVariable + math"        | [sourceVariable: "src", math: [left: "src", op: "+", right: 1]]
     }
 
     // mode action modeName resolution

@@ -753,6 +753,21 @@ class TestRunner:
         except (McpToolError, McpError) as exc:
             return "not found" in str(exc).lower()
 
+    def _hub_variable_visible_in_bulk(self, name: str) -> bool:
+        """True if `name` appears in hub_list_variables' bulk read.
+
+        hub_list_variables is backed by getAllGlobalVars() -- the SAME surface the setVariable
+        target validator consults -- so its hubVariables list is an exact proxy for what the
+        validator sees (hub_get_variable uses a different single-name lookup that can lag the
+        bulk read differently). Returns False on any read error so the caller keeps polling."""
+        try:
+            result = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_list_variables", "args": {}})
+        except (McpToolError, McpError, requests.HTTPError):
+            return False
+        hub_vars = (result or {}).get("hubVariables") or []
+        return any((v or {}).get("name") == name for v in hub_vars)
+
     def _delete_variable_safe(self, name: str) -> None:
         try:
             # confirm=true is required by Hub Admin Write gate; without it the
@@ -2111,6 +2126,108 @@ class TestRunner:
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_setvariable_from_device_and_math(self) -> None:
+        # hub_set_rule edit -> addAction setVariable in the two schema-gated source modes
+        # added alongside value/sourceVariable: fromDevice (numOp="device attribute",
+        # reveals customDev.<N> then a device-FILTERED tCustomAttr.<N>) and math
+        # (numOp="variable math", reveals xVar3/valMathOp, a binary op reveals xVar4, a
+        # numeric operand becomes (constant)+valConst/valConst2). The unit Spock suite proves
+        # the reveal logic in isolation; this pins it end-to-end on a live hub, where the
+        # gated field names are RM-assigned and discovered from the live schema, not hardcoded.
+        # STRICT: pristine throwaway rule deleted in finally; _run_one re-runs on a 504 so no
+        # wire-format assertion is ever skipped on a soft envelope.
+        # fromDevice into a NUMBER var must read a NUMERIC attribute: RM's "Set Variable from
+        # device attribute" picker filters tCustomAttr to attributes compatible with the target
+        # var's type, so a Number target offers only numeric attributes (a switch's enum on/off
+        # attribute is filtered out -> empty tCustomAttr). Use a virtual temperature sensor.
+        temp_id = int(self.get_test_temperature_ids()[0])
+        var_name = f"{PREFIX}sv_modes"
+        # Create explicitly via hub_create_variable (guaranteed to CREATE a missing var in the
+        # hub namespace, unlike hub_set_variable whose missing-var semantics are ambiguous), then
+        # wait for the new var to become visible to the BULK getAllGlobalVars() read. The
+        # setVariable handler validates the target against getAllGlobalVars(), and hub_list_variables
+        # reads that SAME surface -- so polling it is an exact proxy for what the validator sees. A
+        # fresh var can be created but not yet returned by the bulk read for a beat (the known
+        # create_variable post-write visibility race); without this wait the very next setVariable
+        # call rightly fails-loud on a var it cannot see (the feature is correct; the test must wait).
+        self.created_variable_names.append(var_name)
+        try:
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_create_variable",
+                "args": {"name": var_name, "type": "Number", "value": "0", "confirm": True}})
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            # hub_create_variable can spuriously error ("wizard completed but not visible via
+            # getGlobalVar") or drop its response to a relay 504 while still committing. The
+            # visibility poll below is the authoritative gate -- it confirms the var actually
+            # landed in the bulk read -- so tolerate the create error here and let the poll
+            # decide. A genuine non-creation is surfaced by the poll's timeout AssertionError.
+            print(f"    hub_create_variable({var_name}) raised ({exc}); the visibility poll is authoritative")
+        # Poll the bulk getAllGlobalVars() surface (via hub_list_variables) until the new var is
+        # visible -- the SAME read the setVariable target validator consults. Times out loud so a
+        # genuine non-creation surfaces rather than looping silently.
+        deadline = time.time() + 15.0
+        while not self._hub_variable_visible_in_bulk(var_name):
+            if time.time() >= deadline:
+                raise AssertionError(
+                    f"hub variable {var_name!r} created but never appeared in the bulk "
+                    f"getAllGlobalVars() read within 15s (the create_variable post-write "
+                    f"visibility race did not settle) -- setVariable validation cannot proceed")
+            time.sleep(1.0)
+        app_id = self._create_native_rule("SetVarModes")
+        try:
+            # fromDevice: read the temperature sensor's numeric 'temperature' attribute into the var.
+            fd = self._rm_call_soft({
+                "appId": app_id,
+                "addAction": {"capability": "setVariable", "variable": var_name,
+                              "fromDevice": {"deviceId": temp_id, "attribute": "temperature"}},
+                "confirm": True,
+            }, strict=True)
+            assert fd.get("success") is not False, \
+                f"setVariable fromDevice hard-errored: {fd}"
+            fd_applied = fd.get("settingsApplied") or []
+            assert any(str(k).startswith("customDev.") for k in fd_applied), \
+                f"fromDevice device picker (customDev.<N>) did not land; settingsApplied={fd_applied}"
+            assert any(str(k).startswith("tCustomAttr.") for k in fd_applied), \
+                f"fromDevice attribute enum (tCustomAttr.<N>) did not land; settingsApplied={fd_applied}"
+            assert not fd.get("partial"), f"fromDevice action falsely flagged partial: {fd}"
+
+            # math binary: variable + 1 (numeric right operand becomes (constant)+valConst2).
+            mb = self._rm_call_soft({
+                "appId": app_id,
+                "addAction": {"capability": "setVariable", "variable": var_name,
+                              "math": {"left": var_name, "op": "+", "right": 1}},
+                "confirm": True,
+            }, strict=True)
+            assert mb.get("success") is not False, f"setVariable math binary hard-errored: {mb}"
+            mb_applied = mb.get("settingsApplied") or []
+            assert any(str(k).startswith("valMathOp.") for k in mb_applied), \
+                f"math operator (valMathOp.<N>) did not land; settingsApplied={mb_applied}"
+            assert any(str(k).startswith("valConst2.") for k in mb_applied), \
+                f"math binary second constant (valConst2.<N>) did not land; settingsApplied={mb_applied}"
+            assert not mb.get("partial"), f"math binary action falsely flagged partial: {mb}"
+
+            # math unary: absolute of the variable (NO second operand).
+            mu = self._rm_call_soft({
+                "appId": app_id,
+                "addAction": {"capability": "setVariable", "variable": var_name,
+                              "math": {"left": var_name, "op": "absolute"}},
+                "confirm": True,
+            }, strict=True)
+            assert mu.get("success") is not False, f"setVariable math unary hard-errored: {mu}"
+            mu_applied = mu.get("settingsApplied") or []
+            assert any(str(k).startswith("valMathOp.") for k in mu_applied), \
+                f"math unary operator (valMathOp.<N>) did not land; settingsApplied={mu_applied}"
+            assert not any(str(k).startswith("xVar4.") or str(k).startswith("valConst2.")
+                           for k in mu_applied), \
+                f"math unary wrongly wrote a second operand; settingsApplied={mu_applied}"
+            assert not mu.get("partial"), f"math unary action falsely flagged partial: {mu}"
+
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+            self._delete_variable_safe(var_name)
 
     @test("native_apps")
     def test_set_rule_walker_enum_required_expression(self) -> None:

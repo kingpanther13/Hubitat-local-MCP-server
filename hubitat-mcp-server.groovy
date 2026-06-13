@@ -6750,13 +6750,15 @@ private Map _rmActionSchemaForDiscover() {
             [
                 name: "setVariable",
                 family: "hub",
-                notes: "Set a hub variable to a constant value or copy it from another hub variable. Also accepted as capability='variable'.",
+                notes: "Set a hub variable to a constant, copy it from another hub variable, read it from a device attribute, or compute it with structured variable math. Also accepted as capability='variable'. Exactly ONE source mode (value | sourceVariable | fromDevice | math) per action.",
                 requiredFields: [
                     [name: "variable", type: "String", description: "Hub variable name to write (the target). Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state."]
                 ],
                 optionalFields: [
-                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide this OR sourceVariable (not both). String, boolean, and datetime hub-variable targets are not supported via 'value'; use 'sourceVariable', or set those types via rawSettings."],
-                    [name: "sourceVariable", type: "String", description: "Hub variable name to read from (the source) -- provide this OR value (not both). Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. Schema-gated: the source-variable field is only revealed by RM after the numOp=variable write; fails loud (success=false) if the hub does not reveal it. See docs/rm_wire_format.md for the wire sequence."],
+                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. String, boolean, and datetime hub-variable targets are not supported via 'value'; use 'sourceVariable', or set those types via rawSettings."],
+                    [name: "sourceVariable", type: "String", description: "Hub variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. Schema-gated: the source-variable field is only revealed by RM after the numOp=variable write; fails loud (success=false) if the hub does not reveal it. See docs/rm_wire_format.md for the wire sequence."],
+                    [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Maps to numOp='device attribute'. deviceId may be ANY hub device (RM's device picker spans all hub devices, not just the MCP-selected set); it is validated only as a positive integer id, not against the MCP device set. The device picker and the attribute enum are schema-gated and revealed in sequence (deviceId reveals an attribute enum FILTERED to that device's live attributes); fails loud (success=false) if the device picker is not revealed. An attribute not in the device's filtered enum is rejected with success=false and the device's available-attribute list. See docs/rm_wire_format.md for the wire sequence."],
+                    [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Maps to numOp='variable math'. A Number operand becomes a constant; a String operand is treated as a hub variable name. Binary operators (+ - * / %) require 'right'; unary operators (negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees) reject 'right'. Operand fields are schema-gated and revealed in sequence; fails loud (success=false) if a required field is not revealed. See docs/rm_wire_format.md for the wire sequence."],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
                 ]
@@ -8734,34 +8736,105 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
     } else if (cap == "variable" || cap == "setVariable") {
         // modeActs/getSetVariable -- Set Hub Variable to a value.
         // Verified wire format (RM 5.1, actType=modeActs, actSubType=getSetVariable):
-        //   xVarV.<N>       = hub variable name (enum from hub variables list)
-        //   numOp.<N>       = source mode enum: "number" (constant), "variable" (from variable),
-        //                     "date" (current date/time string), etc. Default: "number"
+        //   xVarV.<N>       = hub variable name (enum from hub variables list). GATES the
+        //                     numOp.<N> reveal -- numOp does not render until xVarV is set, so
+        //                     xVarV must be written before numOp.
+        //   numOp.<N>       = source mode enum. Supported here: "number" (constant),
+        //                     "variable" (copy from another variable), "device attribute"
+        //                     (read a device's attribute), "variable math" (structured math).
+        //                     Default: "number"
         //   valNumber.<N>   = value when numOp=number (constant form)
-        //   xVar3.<N>       = source variable name when numOp=variable (copy-from-variable form)
-        //                     The field is schema-gated: RM only reveals xVar3.<N> AFTER
-        //                     numOp.<N>="variable" is written. The exact field name (xVar3 vs
-        //                     a future incarnation) is always discovered from the live schema,
-        //                     not hardcoded. Uses the __setVariableSourceVar post-write block.
-        // Constant-number form (Set <var> to <value>) is the primary supported path.
-        // Variable-from-variable (numOp=variable) is also wired when `sourceVariable` is given.
+        //   xVar3.<N>       = source variable name when numOp=variable (copy-from-variable form).
+        //                     Schema-gated: RM only reveals xVar3.<N> AFTER numOp.<N>="variable".
+        //                     Discovered from the live schema, not hardcoded. Post-write block:
+        //                     __setVariableSourceVar.
+        //   customDev.<N>   = source device when numOp="device attribute" (capability.* single-
+        //                     device picker, multiple=false). Reveals tCustomAttr.<N>.
+        //   tCustomAttr.<N> = source attribute (enum FILTERED to the selected device's live
+        //                     attributes). Both are schema-gated after numOp; post-write block:
+        //                     __setVariableFromDevice.
+        //   xVar3.<N>/valConst.<N> + valMathOp.<N> + xVar4.<N>/valConst2.<N> = structured math
+        //                     operands when numOp="variable math". xVar3/valMathOp reveal after
+        //                     numOp; a binary operator reveals the second operand. Operand value
+        //                     "(constant)" reveals the matching valConst slot. Post-write block:
+        //                     __setVariableMath.
+        // Source mode is exactly one of value | sourceVariable | fromDevice | math.
         actType = "modeActs"
         actSubType = "getSetVariable"
         if (!actionSpec.variable) {
             throw new IllegalArgumentException("setVariable action requires 'variable' (hub variable name)")
         }
         // != null (not truthiness): value=0 is a valid numeric constant that a truthy-check would wrongly reject.
-        if (actionSpec.value != null && actionSpec.sourceVariable != null) {
-            throw new IllegalArgumentException("setVariable action: provide 'value' OR 'sourceVariable', not both")
+        // Count the source modes provided: exactly one is required.
+        def srcModes = []
+        if (actionSpec.value != null) srcModes << "value"
+        if (actionSpec.sourceVariable != null) srcModes << "sourceVariable"
+        if (actionSpec.fromDevice != null) srcModes << "fromDevice"
+        if (actionSpec.math != null) srcModes << "math"
+        if (srcModes.size() > 1) {
+            throw new IllegalArgumentException("setVariable action: provide exactly one source mode (value, sourceVariable, fromDevice, or math); got ${srcModes.size()} (${srcModes.join(', ')})")
         }
-        if (actionSpec.value == null && actionSpec.sourceVariable == null) {
-            throw new IllegalArgumentException("setVariable action requires 'value' (numeric constant) or 'sourceVariable' (hub variable name to copy from)")
+        if (srcModes.isEmpty()) {
+            throw new IllegalArgumentException("setVariable action requires exactly one source mode: 'value' (numeric constant), 'sourceVariable' (hub variable name to copy from), 'fromDevice' ({deviceId, attribute}), or 'math' ({left, op, right})")
         }
         // valNumber.<N> is a numeric field; writing a non-numeric value produces a broken action
         // that RM silently accepts but renders incorrectly. Reject early so the caller gets a
         // clear message rather than a broken rule.
         if (actionSpec.value != null && !(actionSpec.value instanceof Number)) {
             throw new IllegalArgumentException("setVariable: 'value' must be a numeric constant (Integer, Long, BigDecimal, etc.); got '${actionSpec.value}' -- use a number literal, not a string")
+        }
+        // fromDevice shape + math shape/arity validation happen up-front so bad inputs fail
+        // before any hub write, mirroring the runCommand parameter pre-validation pattern.
+        def mathLeft = null, mathOp = null, mathRight = null
+        boolean mathRightProvided = false
+        if (actionSpec.fromDevice != null) {
+            if (!(actionSpec.fromDevice instanceof Map)) {
+                throw new IllegalArgumentException("setVariable: 'fromDevice' must be a Map {deviceId, attribute}; got '${actionSpec.fromDevice}'")
+            }
+            def fdDev = actionSpec.fromDevice.deviceId
+            def fdAttr = actionSpec.fromDevice.attribute
+            if (fdDev == null) throw new IllegalArgumentException("setVariable fromDevice requires 'deviceId' (the source device id)")
+            if (!fdAttr?.toString()?.trim()) throw new IllegalArgumentException("setVariable fromDevice requires 'attribute' (the device attribute name to read)")
+            // deviceId must be a positive WHOLE-number id. Not validated against findDevice():
+            // RM's customDev.<N> picker spans ALL hub devices, while findDevice() only sees the
+            // MCP-exposed selectedDevices set -- gating here would falsely reject a valid hub
+            // device. RM's filtered picker is the authoritative check (post-write reveal).
+            // Accept any whole number regardless of how it arrives -- a bare Integer/Long, a
+            // BigDecimal with no fractional part (72.0), or a digit string -- via _rmAsPositiveDeviceId,
+            // which returns null for non-integers / non-positive / non-numeric so only those are rejected.
+            if (_rmAsPositiveDeviceId(fdDev) == null) {
+                throw new IllegalArgumentException("setVariable fromDevice: 'deviceId' must be a positive integer device id; got '${fdDev}'")
+            }
+        }
+        if (actionSpec.math != null) {
+            if (!(actionSpec.math instanceof Map)) {
+                throw new IllegalArgumentException("setVariable: 'math' must be a Map {left, op, right}; got '${actionSpec.math}'")
+            }
+            mathLeft = actionSpec.math.left
+            mathOp = actionSpec.math.op?.toString()?.trim()
+            mathRightProvided = actionSpec.math.containsKey("right") && actionSpec.math.right != null
+            mathRight = actionSpec.math.right
+            if (mathLeft == null) throw new IllegalArgumentException("setVariable math requires 'left' (a hub variable name or a number)")
+            if (!mathOp) throw new IllegalArgumentException("setVariable math requires 'op' (an operator). Binary: ${_rmMathBinaryOps().join(' ')}; Unary: ${_rmMathUnaryOps().join(' ')}")
+            boolean isBinary = _rmMathBinaryOps().contains(mathOp)
+            boolean isUnary = _rmMathUnaryOps().contains(mathOp)
+            if (!isBinary && !isUnary) {
+                throw new IllegalArgumentException("setVariable math: operator '${mathOp}' is not recognized. Binary: ${_rmMathBinaryOps().join(' ')}; Unary: ${_rmMathUnaryOps().join(' ')}")
+            }
+            if (isBinary && !mathRightProvided) {
+                throw new IllegalArgumentException("setVariable math: binary operator '${mathOp}' requires 'right' (the second operand)")
+            }
+            if (isUnary && mathRightProvided) {
+                throw new IllegalArgumentException("setVariable math: unary operator '${mathOp}' takes no second operand -- remove 'right'")
+            }
+            // Each operand is either a number (becomes a constant) or a String (a hub variable
+            // name). Reject any other type (e.g. Boolean, Map, List) up-front with a precise
+            // message rather than coercing it to a string and blaming a nonexistent variable.
+            [[role: "left", operand: mathLeft], [role: "right", operand: mathRight]].each { o ->
+                if (o.operand != null && !(o.operand instanceof Number) && !(o.operand instanceof CharSequence)) {
+                    throw new IllegalArgumentException("setVariable math: ${o.role} operand must be a number or a hub variable name; got '${o.operand}'")
+                }
+            }
         }
         // Validate target variable and sourceVariable exist in the hub's variable enum.
         // Fail loud: an unknown variable name causes the hub to silently reject the write,
@@ -8791,6 +8864,19 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
                     throw new IllegalArgumentException("setVariable: sourceVariable '${srcVar}' not found. Available hub variables: ${available}")
                 }
             }
+            // Math operands that are variable names (non-Number operands) must also exist.
+            // A Number operand becomes a (constant) and needs no variable-list check.
+            if (actionSpec.math != null) {
+                [[role: "left", operand: mathLeft], [role: "right", operand: mathRight]].each { o ->
+                    if (o.operand != null && !(o.operand instanceof Number)) {
+                        def opVar = o.operand.toString()
+                        if (!allVarNames.any { it?.toString() == opVar }) {
+                            def available = allVarNames.isEmpty() ? emptyDisplay : allVarNames.sort().join(', ')
+                            throw new IllegalArgumentException("setVariable math: ${o.role} operand variable '${opVar}' not found. Available hub variables: ${available}")
+                        }
+                    }
+                }
+            }
         }
         fields = ["xVarV.@N": actionSpec.variable.toString()]
         if (actionSpec.sourceVariable != null) {
@@ -8800,6 +8886,25 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             // __setVariableSourceVar post-write block below (after fields.each).
             fields["numOp.@N"] = "variable"
             actionSpec.__setVariableSourceVar = actionSpec.sourceVariable.toString()
+        } else if (actionSpec.fromDevice != null) {
+            // Write numOp="device attribute". The device picker (customDev.<N>) and the
+            // attribute enum (tCustomAttr.<N>) are schema-gated and revealed in sequence after
+            // numOp lands. Discovery and writes happen in the __setVariableFromDevice block.
+            fields["numOp.@N"] = "device attribute"
+            // Normalize to the canonical integer string so customDev gets "72", not "72.0".
+            actionSpec.__setVariableFromDevice = [
+                deviceId: _rmAsPositiveDeviceId(actionSpec.fromDevice.deviceId).toString(),
+                attribute: actionSpec.fromDevice.attribute.toString()
+            ]
+        } else if (actionSpec.math != null) {
+            // Write numOp="variable math". The operand fields (xVar3/valConst, valMathOp,
+            // xVar4/valConst2) are schema-gated and revealed in sequence after numOp lands.
+            // Discovery and writes happen in the __setVariableMath block. Binary-ness is
+            // recomputed in that block from the operator via _rmMathBinaryOps().
+            fields["numOp.@N"] = "variable math"
+            actionSpec.__setVariableMath = [
+                left: mathLeft, op: mathOp, right: mathRight
+            ]
         } else {
             fields["numOp.@N"] = "number"
             fields["valNumber.@N"] = actionSpec.value
@@ -9746,6 +9851,152 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         _rmWriteSettingOnPage(appId, "doActPage", xVar3Field, srcVar, applied, null, skipped)
     }
 
+    // setVariable from-device: the device picker (customDev.<N>) and the attribute enum
+    // (tCustomAttr.<N>) are schema-gated. RM reveals customDev.<N> only after
+    // numOp.<N>="device attribute" lands, and tCustomAttr.<N> only after the device is
+    // written (the attribute enum is FILTERED to the selected device's live attributes).
+    // Field names are validated against the live schema before writing (existence check
+    // gates each write). The names are fixed by RM's UI contract for these slots, so they
+    // are hardcoded -- unlike __setVariableSourceVar, whose copy-variable slot number can
+    // vary by firmware and is therefore regex-discovered.
+    if (actionSpec.__setVariableFromDevice != null) {
+        def fd = actionSpec.__setVariableFromDevice
+        def fdDeviceId = fd.deviceId.toString()
+        def fdAttr = fd.attribute.toString()
+        // numOp must have landed for the gated fields to appear. If the numOp write was
+        // skipped, attribute the failure precisely here rather than blaming a firmware gap.
+        def numOpKey = "numOp.${idx}".toString()
+        if (!applied.contains(numOpKey) && skipped.any { it?.key?.toString() == numOpKey }) {
+            def numOpSkip = skipped.find { it?.key?.toString() == numOpKey }
+            throw new IllegalArgumentException("setVariable: numOp.${idx} write did not land (reason: ${numOpSkip?.reason}) -- device-attribute reveal cannot proceed. Verify the doActPage schema includes numOp.${idx} at this action position.")
+        }
+        // Step 1: customDev.<N> (capability.* single-device picker) must be revealed.
+        def devCfg = _rmFetchConfigJson(appId, "doActPage")
+        def devInputs = (devCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
+        def customDevField = "customDev.${idx}".toString()
+        def customDevInput = devInputs.find { it?.name?.toString() == customDevField }
+        if (!customDevInput) {
+            def visibleNames = devInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
+            throw new IllegalArgumentException("setVariable: device picker '${customDevField}' was not revealed after writing numOp=device attribute for action ${idx} -- hub may not support read-from-device at this action position. Visible fields: ${visibleNames}")
+        }
+        // Write the device id. The writer reads multiple=false from the schema and emits the
+        // capability.* single-device 3-field contract. RM's picker spans all hub devices, so an
+        // unknown id silently fails to land -- surfaced via the skipped list (partial=true).
+        _rmWriteSettingOnPage(appId, "doActPage", customDevField, [fdDeviceId], applied, null, skipped)
+        // Step 2: tCustomAttr.<N> (attribute enum, filtered to the device) appears after the
+        // device write. Validate the requested attribute against the revealed enum.
+        def attrCfg = _rmFetchConfigJson(appId, "doActPage")
+        def attrInputs = (attrCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
+        def tCustomAttrField = "tCustomAttr.${idx}".toString()
+        def tCustomAttrInput = attrInputs.find { it?.name?.toString() == tCustomAttrField }
+        if (!tCustomAttrInput) {
+            def visibleNames = attrInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
+            throw new IllegalArgumentException("setVariable: attribute enum '${tCustomAttrField}' was not revealed after writing device '${fdDeviceId}' for action ${idx} -- the device id may not be in RM's picker (RM's customDev picker spans all hub devices; confirm the id exists). Visible fields: ${visibleNames}")
+        }
+        // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps).
+        def attrOpts = _rmReadPickerOptionStrings(tCustomAttrInput)
+        if (attrOpts == null || attrOpts.isEmpty()) {
+            throw new IllegalArgumentException("setVariable: revealed attribute enum '${tCustomAttrField}' has no enumerable options -- cannot validate attribute '${fdAttr}'. Device '${fdDeviceId}' may expose no readable attributes at this action position.")
+        }
+        if (!attrOpts.any { it == fdAttr }) {
+            throw new IllegalArgumentException("setVariable fromDevice: attribute '${fdAttr}' is not in the device's attribute enum for action ${idx}. Available: ${attrOpts.sort().join(', ')}")
+        }
+        _rmWriteSettingOnPage(appId, "doActPage", tCustomAttrField, fdAttr, applied, null, skipped)
+    }
+
+    // setVariable variable-math: operands are schema-gated. RM reveals the first operand
+    // (xVar3.<N>) and the operator (valMathOp.<N>) after numOp.<N>="variable math" lands.
+    // A "(constant)" first operand reveals valConst.<N>. A binary operator reveals the second
+    // operand (xVar4.<N>); a "(constant)" second operand reveals valConst2.<N>. Unary operators
+    // take no second operand. Field names are validated against the live schema before writing
+    // (existence check gates each write). The names are fixed by RM's UI contract for these
+    // math slots, so they are hardcoded (unlike __setVariableSourceVar's regex-discovered slot).
+    if (actionSpec.__setVariableMath != null) {
+        def m = actionSpec.__setVariableMath
+        def numOpKey = "numOp.${idx}".toString()
+        if (!applied.contains(numOpKey) && skipped.any { it?.key?.toString() == numOpKey }) {
+            def numOpSkip = skipped.find { it?.key?.toString() == numOpKey }
+            throw new IllegalArgumentException("setVariable: numOp.${idx} write did not land (reason: ${numOpSkip?.reason}) -- variable-math reveal cannot proceed. Verify the doActPage schema includes numOp.${idx} at this action position.")
+        }
+        // The "(constant)" sentinel is RM's enum option that switches an operand to a literal.
+        def constSentinel = "(constant)"
+        // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps),
+        // returning [] for absent/unreadable options. assertInEnum's empty-list guard covers that.
+        def optsOf = { inp -> _rmReadPickerOptionStrings(inp) }
+        // Fail loud if the requested operand/operator value is not in the revealed field's enum,
+        // mirroring the sibling source-var/attribute validation. An unvalidated write would bake
+        // a silently-broken action with the wrong (or no) operand/operator. role describes the slot.
+        def assertInEnum = { String field, Object input, String wanted, String role ->
+            def opts = optsOf(input)
+            if (opts == null || opts.isEmpty()) {
+                throw new IllegalArgumentException("setVariable math: revealed field '${field}' has no enumerable options -- cannot validate ${role} '${wanted}'. Hub may not expose the ${role} list at this action position.")
+            }
+            if (!opts.any { it == wanted }) {
+                throw new IllegalArgumentException("setVariable math: ${role} '${wanted}' is not in the revealed enum for '${field}'. Available: ${opts.sort().join(', ')}")
+            }
+        }
+        // Step 1: first operand (xVar3.<N>) + operator (valMathOp.<N>) appear after numOp.
+        def mCfg = _rmFetchConfigJson(appId, "doActPage")
+        def mInputs = (mCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
+        def xVar3Field = "xVar3.${idx}".toString()
+        def xVar3Input = mInputs.find { it?.name?.toString() == xVar3Field }
+        def valMathOpField = "valMathOp.${idx}".toString()
+        def valMathOpInput = mInputs.find { it?.name?.toString() == valMathOpField }
+        if (!xVar3Input || !valMathOpInput) {
+            def visibleNames = mInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
+            throw new IllegalArgumentException("setVariable: variable-math operand/operator fields ('${xVar3Field}' + '${valMathOpField}') were not revealed after writing numOp=variable math for action ${idx} -- hub may not support variable math at this action position. Visible fields: ${visibleNames}")
+        }
+        // Validate the operator against valMathOp's options up-front (the field is already
+        // revealed). _rmMathBinaryOps/_rmMathUnaryOps is the project's known partition, but the
+        // live enum is the hub's authority -- a firmware that drops an operator is caught here.
+        assertInEnum(valMathOpField, valMathOpInput, m.op.toString(), "operator")
+        // Write the first operand: a Number becomes (constant)+valConst.<N>, else the var name.
+        // Validate the chosen xVar3 option (the (constant) sentinel or the variable name) first.
+        if (m.left instanceof Number) {
+            assertInEnum(xVar3Field, xVar3Input, constSentinel, "first operand")
+            _rmWriteSettingOnPage(appId, "doActPage", xVar3Field, constSentinel, applied, null, skipped)
+            def lcCfg = _rmFetchConfigJson(appId, "doActPage")
+            def lcInputs = (lcCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
+            def valConstField = "valConst.${idx}".toString()
+            if (!lcInputs.find { it?.name?.toString() == valConstField }) {
+                def visibleNames = lcInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
+                throw new IllegalArgumentException("setVariable math: first-constant field '${valConstField}' was not revealed after selecting (constant) for action ${idx}. Visible fields: ${visibleNames}")
+            }
+            _rmWriteSettingOnPage(appId, "doActPage", valConstField, m.left, applied, null, skipped)
+        } else {
+            assertInEnum(xVar3Field, xVar3Input, m.left.toString(), "first operand")
+            _rmWriteSettingOnPage(appId, "doActPage", xVar3Field, m.left.toString(), applied, null, skipped)
+        }
+        // Write the operator. (Validated against the live enum above; arity in the handler.)
+        _rmWriteSettingOnPage(appId, "doActPage", valMathOpField, m.op.toString(), applied, null, skipped)
+        // Binary operator: write the second operand (xVar4.<N>), revealed after the op write.
+        if (_rmMathBinaryOps().contains(m.op.toString())) {
+            def soCfg = _rmFetchConfigJson(appId, "doActPage")
+            def soInputs = (soCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
+            def xVar4Field = "xVar4.${idx}".toString()
+            def xVar4Input = soInputs.find { it?.name?.toString() == xVar4Field }
+            if (!xVar4Input) {
+                def visibleNames = soInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
+                throw new IllegalArgumentException("setVariable math: second-operand field '${xVar4Field}' was not revealed after writing binary operator '${m.op}' for action ${idx}. Visible fields: ${visibleNames}")
+            }
+            if (m.right instanceof Number) {
+                assertInEnum(xVar4Field, xVar4Input, constSentinel, "second operand")
+                _rmWriteSettingOnPage(appId, "doActPage", xVar4Field, constSentinel, applied, null, skipped)
+                def rcCfg = _rmFetchConfigJson(appId, "doActPage")
+                def rcInputs = (rcCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
+                def valConst2Field = "valConst2.${idx}".toString()
+                if (!rcInputs.find { it?.name?.toString() == valConst2Field }) {
+                    def visibleNames = rcInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
+                    throw new IllegalArgumentException("setVariable math: second-constant field '${valConst2Field}' was not revealed after selecting (constant) for action ${idx}. Visible fields: ${visibleNames}")
+                }
+                _rmWriteSettingOnPage(appId, "doActPage", valConst2Field, m.right, applied, null, skipped)
+            } else {
+                assertInEnum(xVar4Field, xVar4Input, m.right.toString(), "second operand")
+                _rmWriteSettingOnPage(appId, "doActPage", xVar4Field, m.right.toString(), applied, null, skipped)
+            }
+        }
+    }
+
     // Caller escape hatch.
     if (actionSpec.rawSettings instanceof Map) {
         actionSpec.rawSettings.each { k, v ->
@@ -10136,6 +10387,41 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
 
     // Condition ID equals the trigger index that "owned" its setup.
     return idx
+}
+
+// RM 5.1 setVariable "variable math" operator vocabulary (numOp="variable math").
+// Binary operators take a second operand (reveal xVar4.<N>/valConst2.<N>); unary
+// operators take only the first operand. Single source of truth: the addAction
+// math-arity validator and the __setVariableMath post-write block must agree on
+// this partition, so both read it from here rather than restating the list.
+def _rmMathBinaryOps() { ["+", "-", "*", "/", "%"] }
+def _rmMathUnaryOps() {
+    ["negate", "absolute", "round", "random", "sqrt", "sin", "cos", "tan",
+     "asin", "acos", "atan", "log", "toRadians", "toDegrees"]
+}
+
+// Coerce a caller-supplied device-id value to its canonical positive-integer string,
+// or null if it is not a positive whole number. Accepts a bare Integer/Long, a
+// BigDecimal/BigInteger with no fractional part (72.0 -> "72"), or a digit string;
+// rejects fractional numbers, non-positive values, and non-numeric input. Used to gate
+// fromDevice.deviceId without false-rejecting a valid whole-number id that arrives as a
+// BigDecimal or exceeds Integer range. ASCII-only; no reflection (sandbox-safe).
+def _rmAsPositiveDeviceId(Object raw) {
+    if (raw == null) return null
+    if (raw instanceof Number) {
+        // Reject a fractional value (72.5); accept a whole-valued BigDecimal/Long/Integer.
+        BigDecimal bd
+        try { bd = raw as BigDecimal } catch (Exception ignored) { return null }
+        if (bd.stripTrailingZeros().scale() > 0) return null
+        BigInteger bi = bd.toBigInteger()
+        return bi > 0 ? bi.toString() : null
+    }
+    def s = raw.toString().trim()
+    // A plain run of digits (no sign, no decimal point) is a positive whole number.
+    if (!s.matches(/\d+/)) return null
+    BigInteger bi
+    try { bi = new BigInteger(s) } catch (Exception ignored) { return null }
+    return bi > 0 ? bi.toString() : null
 }
 
 /**
@@ -16628,7 +16914,7 @@ For the live machine-readable per-field schema (action enums, required and optio
 - **Shade/blind** (`capability='shade'`): `open`/`close`/`stop` + `deviceIds`. `setPosition` + `deviceIds` + `position` (0–100).
 - **Fan** (`capability='fan'`): `setSpeed` + `deviceIds` + `speed` (low/med/high/auto/etc.). `cycle` + `deviceIds`.
 - **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) OR `modeName` (String, case-insensitive). When `modeName` is supplied it is resolved to the numeric mode ID via `location.modes` before the write; an unknown name fails fast with the list of valid mode names. Use `hub_list_modes` to inspect available modes first. Note: `addAction` mode uses the `modeName` field for explicit name-based resolution; `addTrigger` mode uses the generic `state` field instead because triggers cover a superset of device-state events where a single field serves multiple capability types -- `modeName` vs `state` is an intentional surface difference, not a typo.
-- **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` + `value` (numeric constant) OR `sourceVariable` (copy from another hub variable). Both `variable` and `sourceVariable` must be existing hub variable names -- unknown names are rejected before any write. `value` and `sourceVariable` are mutually exclusive; providing both is rejected. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
+- **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` (target) + exactly ONE source mode -- `value` (numeric constant), `sourceVariable` (copy from another hub variable), `fromDevice` (`{deviceId, attribute}` -- read a device attribute), or `math` (`{left, op, right}` -- structured variable math). All variable names (`variable`, `sourceVariable`, `math` var-operands) must be existing hub variable names -- unknown names are rejected before any write. The four source modes are mutually exclusive; providing more than one is rejected. `math` binary operators (`+ - * / %`) require `right`; unary operators (`negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees`) reject `right`. A `math` operand that is a number becomes a literal constant; a string operand is a variable name. `fromDevice` reads from any hub device (not just MCP-selected); an attribute not in the device's filtered enum is rejected with `success=false` and the device's available-attribute list. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
 - **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
 - **Music/Sound** (`capability='volume'`/`'mute'`/`'chime'`/`'siren'`): `volume + deviceIds + level`. `mute + action='mute'/'unmute' + deviceIds`. `chime + deviceIds + optional playStop/soundNumber`. `siren + deviceIds + optional sirenAction`.
 - **Rules** (`capability='privateBoolean'`/`'runRule'`/`'cancelTimers'`/`'pauseRule'`): `privateBoolean + ruleIds + value (Boolean)`. `runRule + ruleIds` (runs actions). `cancelTimers + ruleIds`. `pauseRule + action='pause'/'resume' + ruleIds`.
