@@ -148,7 +148,12 @@ verify_includes_current() {
       exit 1
     fi
     LIB_ID=$(printf '%s' "$IDS" | head -n1)
-    LIB_FILE=$(grep -l -E "^library\(.*name: \"${NAME}\"" "$REPO_DIR"/libraries/*.groovy | head -n1)
+    # `|| true`: grep -l exits 1 on no match, and under `set -euo pipefail` a bare command-substitution
+    # assignment with a failed pipeline aborts the script -- in enforce mode (a non-conditional call) that
+    # would kill the deploy at this line BEFORE the explicit empty-LIB_FILE guard below can print its
+    # precise error. The `|| true` keeps the assignment succeeding so the guard runs; 2>/dev/null drops
+    # grep's no-such-file noise when the glob matches nothing.
+    LIB_FILE=$(grep -l -E "^library\(.*name: \"${NAME}\"" "$REPO_DIR"/libraries/*.groovy 2>/dev/null | head -n1 || true)
     if [ -z "$LIB_FILE" ]; then
       echo "::error::no libraries/*.groovy in the checkout declares name \"${NAME}\" -- cannot verify ${TOKEN}."
       exit 1
@@ -308,9 +313,11 @@ else
   #     install. Run 27322480301 proved hub_install_bundle can report success
   #     while leaving pre-existing libraries stale (the app then compiles
   #     against old library code and fails at runtime with
-  #     MissingMethodException). The skip path needs no second pass here: its
-  #     probe IS this same check (verify_includes_current), and a bundle only
-  #     skips after the probe passed.
+  #     MissingMethodException). This enforce pass runs only when something
+  #     installed this run (ANY_BUNDLE_INSTALLED); when every bundle skipped,
+  #     each skip already ran `verify_includes_current probe` over the full
+  #     #include set and only reached `continue` after it passed, so no second
+  #     pass is needed.
   # -------------------------------------------------------------------------
   if [ "${#INCLUDES[@]}" -gt 0 ]; then
     if [ "$ANY_BUNDLE_INSTALLED" = "true" ]; then

@@ -5,8 +5,12 @@
 # v2's disarm is not just "stop the timer": the watchdog treats intent=disarm as a request to restore
 # the whole MCP package from the canonical main install URLs in the flag manifest ONCE per runId (it
 # stamps restoreFor=runId so it never repeats). This step writes {armed:false, intent:"disarm", runId,
-# ...manifest...} (carrying the SAME manifest + canonicalMainSha the arm flag holds, so the watchdog
-# knows what to install and how to stamp the canonical-main marker), reads the flag back to assert
+# ...manifest...} for the watchdog to install from. The manifest is NORMALLY re-targeted at CURRENT main
+# first (section 1.5 re-resolves main's SHA and rewrites the app/bundle URLs + app chars + canonicalMainSha,
+# because main moves while runs are in flight); only on a re-target obstacle does it fall back to the
+# arm-time manifest + canonicalMainSha unchanged. Either way the flag carries a self-consistent
+# manifest + canonicalMainSha so the watchdog knows what to install and how to stamp the canonical-main
+# marker. The step then reads the flag back to assert
 # armed=false + intent=disarm landed AND that the restore-critical manifest survived the write, reaps
 # deferred native-rule fixtures, and EXITS. CI does NOT wait for the restore: the watchdog runs it
 # asynchronously (its adminWriteFile kick fires checkDeadman ~2s after the flag write) -- it installs
@@ -196,8 +200,17 @@ if [[ "$ARM_APP_URL" =~ ^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([0
     # a torn one).
     if [ "$RT_OK" = "true" ] && [ "$BUNDLE_BYTES_MOVED" = "true" ]; then
       FORCE_RPC=$(jq -nc --arg c "${GITHUB_RUN_ID}:changed" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:"e2e-pr-bundle-state.txt",content:$c,confirm:true}}}')
-      if ! mcp_tool_call_text "hub_write_file (force bundle-state changed)" "$FORCE_RPC" >/dev/null; then
-        echo "::warning::Disarm re-target: could not force the bundle-state marker to 'changed' -- keeping the arm-time manifest (a consistent arm-time restore beats apps-new/libraries-old)."
+      # mcp_tool_call_text returns rc 0 on a TOOL-level failure -- it only returns nonzero on a relay
+      # drop (5 non-JSON retries) or a JSON-RPC error envelope, NOT on a hub_write_file that returned
+      # {success:false} inside a valid result body. So `if ! ...` alone would let a silent write
+      # rejection (confirm gate, File Manager IO/quota, hub busy) pass while the marker stays
+      # '<runId>:unchanged' -- the watchdog restore would then skip the bundle leg under the stale
+      # marker while the apps land at the NEW main, recreating the apps-new/libraries-old staleness
+      # this force exists to close. Capture the body and assert tool-level .success, mirroring the
+      # deploy's matching marker write and the disarm flag read-back below.
+      FORCE_TEXT=$(mcp_tool_call_text "hub_write_file (force bundle-state changed)" "$FORCE_RPC" || true)
+      if [ "$(printf '%s' "$FORCE_TEXT" | jq -r '.success // false' 2>/dev/null || echo false)" != "true" ]; then
+        echo "::warning::Disarm re-target: could not force the bundle-state marker to 'changed' (hub verbatim: $(printf '%s' "$FORCE_TEXT" | jq -r '.error // .message // empty' 2>/dev/null || true)) -- keeping the arm-time manifest (a consistent arm-time restore beats apps-new/libraries-old)."
         RT_OK="false"
       fi
     fi
