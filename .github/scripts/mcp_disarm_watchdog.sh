@@ -94,6 +94,109 @@ fi
 if [ -n "$FLAG_RUN_ID" ] && [ "$FLAG_RUN_ID" != "$GITHUB_RUN_ID" ]; then
   echo "::warning::Disarm: the flag's runId ($FLAG_RUN_ID) != this run ($GITHUB_RUN_ID). Reusing its manifest to restore main anyway, but arm may not have run this run -- investigate if this recurs."
 fi
+# --- 1.5) Re-target the restore at CURRENT canonical main (main moves while runs are in flight) -----
+# The arm pins the restore to main-as-of-arm via immutable shas/ URLs (a mid-run merge cannot tear the
+# restore's bytes mid-download). But when a merge DOES land mid-run, restoring the arm-time main leaves
+# the hub one merge behind current main. The disarm is CI-driven and runs at teardown, so it can do what
+# the hub-side dead-man cannot: re-resolve main NOW and rewrite the manifest's app/bundle URLs (plus the
+# expected char counts and canonicalMainSha) to the current main SHA before flipping the flag -- the
+# restore then lands what canonical main IS, not what it WAS at arm. Every rewrite obstacle falls back
+# to the arm-time manifest unchanged: restoring SOME main beats failing the teardown, and the next run's
+# deploy probe verifies-or-heals any residual gap. The dead-man CRASH path keeps the arm-time manifest
+# by design -- when CI is dead nothing can re-resolve, and the next run's arm heal + deploy probe cover
+# it. The libraries keep-set stays arm-time either way: a library NEW at current main gets its id only
+# when the restore's bundle install creates it, the reconcile's delete of it is refused by the hub's
+# "library in use" guard (the restored app #includes it), and the next run's arm records it properly.
+RETARGETED="false"
+ARM_APP_URL=$(printf '%s' "$MANIFEST_JSON" | jq -r '.app.url // empty')
+if [[ "$ARM_APP_URL" =~ ^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([0-9a-f]{40})/ ]]; then
+  GH_OWNER="${BASH_REMATCH[1]}"; GH_REPO="${BASH_REMATCH[2]}"; ARM_MAIN_SHA="${BASH_REMATCH[3]}"
+  CUR_MAIN_SHA=$(git ls-remote "https://github.com/${GH_OWNER}/${GH_REPO}.git" refs/heads/main 2>/dev/null | awk 'NR==1{print $1}' || true)
+  if ! printf '%s' "$CUR_MAIN_SHA" | grep -qE '^[0-9a-f]{40}$'; then
+    echo "::warning::Disarm re-target: could not resolve current main's SHA (git ls-remote failed) -- restoring the arm-time main (${ARM_MAIN_SHA}); the next run's deploy probe heals any gap."
+  elif [ "$CUR_MAIN_SHA" = "$ARM_MAIN_SHA" ]; then
+    echo "Disarm re-target: main has not moved since arm (${ARM_MAIN_SHA}) -- the arm-time manifest IS current main."
+  else
+    echo "Main moved while this run was in flight: arm-time ${ARM_MAIN_SHA} -> current ${CUR_MAIN_SHA}. Rewriting the restore manifest to current main..."
+    RT_OK="true"
+    # (a) Apps: same path re-anchored at the new SHA, expected chars re-measured CI-side (the
+    # watchdog's landing assert compares against them). A 404/short fetch (file renamed at the new
+    # main?) abandons the whole rewrite -- a torn manifest must never reach the watchdog.
+    NEW_APPS="[]"
+    while IFS= read -r APP_REC; do
+      [ -z "$APP_REC" ] && continue
+      A_ID=$(printf '%s' "$APP_REC" | jq -r '.classId')
+      A_URL=$(printf '%s' "$APP_REC" | jq -r '.url')
+      case "$A_URL" in
+        *"$ARM_MAIN_SHA"*) ;;
+        *) echo "::warning::Disarm re-target: app ${A_ID} url does not embed the arm-time SHA (${A_URL}) -- cannot re-anchor; keeping the arm-time manifest."; RT_OK="false"; break ;;
+      esac
+      N_URL="${A_URL//$ARM_MAIN_SHA/$CUR_MAIN_SHA}"
+      N_CHARS=$(curl -fsSL --max-time 60 "$N_URL" 2>/dev/null | LC_ALL=C.UTF-8 wc -m | tr -d '[:space:]' || true)
+      if ! printf '%s' "$N_CHARS" | grep -qE '^[0-9]+$' || [ "$N_CHARS" -lt 1000 ]; then
+        echo "::warning::Disarm re-target: could not measure ${N_URL} (chars=${N_CHARS:-<none>}) -- keeping the arm-time manifest."
+        RT_OK="false"; break
+      fi
+      NEW_APPS=$(jq -nc --argjson acc "$NEW_APPS" --arg id "$A_ID" --arg url "$N_URL" --arg chars "$N_CHARS" '$acc + [{classId:$id, url:$url, mainChars:$chars}]')
+    done < <(printf '%s' "$MANIFEST_JSON" | jq -c '.apps[]?')
+    if [ "$RT_OK" = "true" ] && [ "$(printf '%s' "$NEW_APPS" | jq -r 'length')" -lt 1 ]; then
+      echo "::warning::Disarm re-target: the arm-time manifest carries no apps[] entries (old-format flag?) -- keeping it unchanged."
+      RT_OK="false"
+    fi
+    # (b) Bundles: re-resolve each on the bundle-artifacts branch at the new SHA (branches/main
+    # fallback for a publish race), and byte-compare old vs new so (c) knows whether the bundle
+    # leg actually moved with main.
+    NEW_BUNDLES="[]"
+    BUNDLE_BYTES_MOVED="false"
+    if [ "$RT_OK" = "true" ]; then
+      while IFS= read -r B_REC; do
+        [ -z "$B_REC" ] && continue
+        B_URL=$(printf '%s' "$B_REC" | jq -r '.url')
+        B_BASE="${B_URL##*/}"
+        REPO_BASE="https://raw.githubusercontent.com/${GH_OWNER}/${GH_REPO}"
+        N_BURL=""
+        for CAND in "${REPO_BASE}/bundle-artifacts/shas/${CUR_MAIN_SHA}/${B_BASE}" "${REPO_BASE}/bundle-artifacts/branches/main/${B_BASE}"; do
+          if curl -fsSL --max-time 30 -o /dev/null "${CAND}.size" 2>/dev/null; then N_BURL="$CAND"; break; fi
+        done
+        if [ -z "$N_BURL" ]; then
+          echo "::warning::Disarm re-target: no bundle-artifacts entry for ${B_BASE} at ${CUR_MAIN_SHA} (publish race?) -- keeping the arm-time manifest."
+          RT_OK="false"; break
+        fi
+        OLD_TMP="$(mktemp)"; NEW_TMP="$(mktemp)"
+        if ! curl -fsSL --max-time 60 "$B_URL" -o "$OLD_TMP" 2>/dev/null || ! curl -fsSL --max-time 60 "$N_BURL" -o "$NEW_TMP" 2>/dev/null; then
+          rm -f "$OLD_TMP" "$NEW_TMP"
+          echo "::warning::Disarm re-target: could not download the arm-time/current bundle to compare -- keeping the arm-time manifest."
+          RT_OK="false"; break
+        fi
+        cmp -s "$OLD_TMP" "$NEW_TMP" || BUNDLE_BYTES_MOVED="true"
+        rm -f "$OLD_TMP" "$NEW_TMP"
+        NEW_BUNDLES=$(jq -nc --argjson acc "$NEW_BUNDLES" --argjson b "$B_REC" --arg url "$N_BURL" '$acc + [($b + {url:$url})]')
+      done < <(printf '%s' "$MANIFEST_JSON" | jq -c '.bundles[]?')
+    fi
+    # (c) The deploy's run-scoped "<runId>:unchanged" marker means "the hub's libraries == main-at-
+    # DEPLOY-time bytes". If the bundle bytes moved with main, that marker would let the restore skip
+    # the bundle leg while the apps land at the NEW main -- recreating the very apps-new/libraries-old
+    # staleness this re-target exists to close. Force it to "changed" BEFORE flipping the flag; if the
+    # force does not confirm, fall back to the arm-time manifest (a consistent old-main restore beats
+    # a torn one).
+    if [ "$RT_OK" = "true" ] && [ "$BUNDLE_BYTES_MOVED" = "true" ]; then
+      FORCE_RPC=$(jq -nc --arg c "${GITHUB_RUN_ID}:changed" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:"e2e-pr-bundle-state.txt",content:$c,confirm:true}}}')
+      if ! mcp_tool_call_text "hub_write_file (force bundle-state changed)" "$FORCE_RPC" >/dev/null; then
+        echo "::warning::Disarm re-target: could not force the bundle-state marker to 'changed' -- keeping the arm-time manifest (a consistent arm-time restore beats apps-new/libraries-old)."
+        RT_OK="false"
+      fi
+    fi
+    if [ "$RT_OK" = "true" ]; then
+      MANIFEST_JSON=$(jq -nc --argjson m "$MANIFEST_JSON" --argjson apps "$NEW_APPS" --argjson bundles "$NEW_BUNDLES" '$m + {apps:$apps, app:($apps[0]), bundles:$bundles}')
+      CANONICAL_MAIN_SHA="$CUR_MAIN_SHA"
+      RETARGETED="true"
+      echo "Restore manifest re-targeted at current main ${CUR_MAIN_SHA} (bundle bytes moved: ${BUNDLE_BYTES_MOVED})."
+    fi
+  fi
+else
+  echo "::warning::Disarm re-target: manifest app url is not a SHA-anchored raw.githubusercontent URL (${ARM_APP_URL:-<empty>}) -- keeping the arm-time manifest."
+fi
+
 # --- 2) Write {armed:false, intent:"disarm", ...manifest...}, then READ IT BACK and assert ----------
 # `date +%s` * 1000 (not %s%3N): %3N is a GNU-only extension; portable + sub-second precision is moot.
 DISARMED_AT_MS=$(( $(date +%s) * 1000 ))
@@ -206,5 +309,5 @@ fi
 # bundle is re-established only when the PR bundle differs from main, so a byte-identical-to-main bundle
 # stranded on the hub is the one residual gap). A dead watchdog surfaces loudly next run (the arm's
 # health check), not by burning minutes in every teardown.
-echo "WATCHDOG_DISARMED runId=$GITHUB_RUN_ID (restore fired asynchronously; not polling -- the watchdog stamps the canonical-main marker on success, and the next run's full-repair install overwrites the apps regardless)."
+echo "WATCHDOG_DISARMED runId=$GITHUB_RUN_ID retargeted=$RETARGETED (restore fired asynchronously; not polling -- the watchdog stamps the canonical-main marker on success, and the next run's full-repair install overwrites the apps regardless)."
 exit 0
