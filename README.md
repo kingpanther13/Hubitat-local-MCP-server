@@ -1552,6 +1552,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.3.1** - ci: unify bundle delivery on the bundle-artifacts branch so e2e installs exactly what HPM serves. PRs: [#274](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/274)
 - **v2.3.0** - refactor: split every remaining tool domain into #include libraries with co-located per-tool metadata (#209); fix: rebuild-bundle pushes with the release deploy key + carry the rebuilt 18-library zip. PRs: [#269](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/269), [#273](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/273)
 - **v2.2.2** - fix: VRB-first rule guidance; rebuild e2e restore on the HPM importUrl path. PRs: [#268](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/268)
 - **v2.2.1** - feat: per-app JSON reads, direct-alias app resolution, and hub_call_device_swap. PRs: [#267](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/267)
