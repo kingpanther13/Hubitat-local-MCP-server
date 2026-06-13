@@ -1,28 +1,28 @@
 name: Publish bundle artifact
-# Builds the production bundle zip on every library-touching push and stores it on the
-# bot-only `bundle-artifacts` branch, keyed by branch name AND full commit SHA:
+# THE bundle delivery pipeline. Builds the production bundle zip on EVERY push and
+# stores it on the bot-only `bundle-artifacts` branch, keyed by branch name AND full
+# commit SHA:
 #
 #   branches/<branch>/mcp-libraries.zip (+ .size marker)
 #   shas/<full-sha>/mcp-libraries.zip   (+ .size marker)
 #
-# This is what lets hub_update_package install an UNMERGED ref's libraries commit by
-# commit: PRs no longer commit bundles/*.zip (per-PR binary rebuilds made any two
-# library-touching PRs conflict on it -- rebuild-bundle.yml owns the committed zip on
-# main post-merge), so the tool's bundle leg resolves artifact-first from this branch
-# and falls back to the zip committed at the ref. The zip keeps its production basename
-# inside each keyed directory: the hub appears to key the bundle entity on the zip
-# filename, so a renamed zip would import as a SECOND bundle entity (duplicate
-# libraries) instead of updating the existing one. The .size marker is the cheap
-# existence/integrity probe (the tool reads ~10 bytes instead of the ~1MB zip).
+# packageManifest.json's bundles[].location points at branches/main/ -- HPM users
+# install from this branch. The e2e deploy installs the PR's shas/<sha>/ entry (byte-
+# verified against its own CI build), and the dead-man restore installs shas/<MAIN_SHA>/
+# -- so every consumer rides the ONE mechanism e2e proves on every run; there is no
+# committed zip and no separate post-merge rebuild. No paths filter: every push (incl.
+# release-bot bookkeeping commits) gets a shas/ entry, so a restore pinned to any main
+# SHA always resolves. The zip keeps its production basename inside each keyed
+# directory: the hub appears to key the bundle entity on the zip filename, so a renamed
+# zip can import as a SECOND bundle entity (duplicate libraries) instead of updating
+# the existing one. The .size marker is the cheap existence/integrity probe (~10 bytes
+# instead of the ~1MB zip).
 #
 # Nobody rebases bundle-artifacts, so it has zero merge-conflict surface; identical
 # zips across commits dedupe to one git blob.
 on:
   push:
     branches-ignore: [bundle-artifacts]
-    paths:
-      - 'libraries/**'
-      - 'tools/build-bundle.py'
   workflow_dispatch:
 
 permissions:

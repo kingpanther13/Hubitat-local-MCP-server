@@ -51,3 +51,7 @@ tests/diag_*.py
 
 # Working-artifact diff dumps (never commit; six were accidentally tracked once)
 .diff_*.txt
+
+# Built HPM bundle output -- delivery is the bundle-artifacts branch (publish-bundle-artifact.yml);
+# nothing under bundles/ is committed.
+/bundles/

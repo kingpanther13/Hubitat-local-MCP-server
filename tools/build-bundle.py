@@ -23,13 +23,13 @@ On HPM install/update the hub extracts each .groovy into Libraries Code under
 the declared namespace + name, making each resolvable via its `#include`
 (e.g. `#include mcp.McpRoomsLib`).
 
-Hosting: this repo serves the bundle from a stable raw-main URL (see
-packageManifest.json `bundles[]`), exactly as it already serves the app .groovy
-files. The committed ZIP on main is owned by the post-merge rebuild-bundle.yml
-workflow; PRs do NOT rebuild or commit it, and per-push zips for unmerged refs
-are published to the bundle-artifacts branch by publish-bundle-artifact.yml.
-The build is deterministic (fixed DOS epoch, stored entries) so any two builds
-of the same library source are byte-identical and can be compared directly.
+Hosting: delivery is UNIFIED on the bundle-artifacts branch, fed by
+publish-bundle-artifact.yml on every push (branches/<branch>/ + shas/<sha>/
+entries). packageManifest.json's `bundles[]` location points at branches/main/
+-- the same mechanism the e2e deploy installs and byte-verifies on every run.
+Nothing under bundles/ is committed (the output dir is gitignored). The build
+is deterministic (fixed DOS epoch, stored entries) so any two builds of the
+same library source are byte-identical and can be compared directly.
 
 Run:  python3 tools/build-bundle.py
 """

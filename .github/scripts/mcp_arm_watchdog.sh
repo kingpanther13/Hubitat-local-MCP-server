@@ -47,6 +47,11 @@ ARM_WINDOW_MS=2100000   # 35 minutes -- deliberately > the 30-min job timeout-mi
                         # never mid-live-run. The always() disarm clears it in seconds on every
                         # normal run, so the long window only matters when the session truly dies.
 
+# Shared helpers (resolve_main_bundle_artifact_url -- the canonical-main bundle resolver this
+# script and the deploy's skip-compare both use). The lib's call wrappers are NOT used here;
+# this script keeps its own (below) with their longer arm-specific retry budget.
+source "$(dirname "$0")/mcp_watchdog_lib.sh"
+
 # --- helpers copied verbatim from mcp_deploy_source.sh (the proven cloud-gateway wrappers) -------
 # Every call here targets $WATCHDOG_URL (the watchdog's own MCP endpoint), not the main $MCP_URL.
 
@@ -189,13 +194,26 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
   MAIN_RAW_PREFIX="${MAIN_SOURCE_URL%/*}"
   MAIN_PKG_MANIFEST=$(curl -fsSL "${MAIN_RAW_PREFIX}/packageManifest.json" 2>/dev/null || true)
   if [ -n "$MAIN_PKG_MANIFEST" ]; then
-    MAIN_BUNDLE_RELS=$(printf '%s' "$MAIN_PKG_MANIFEST" | jq -r '.bundles[]?.location // empty' 2>/dev/null \
-      | sed -E 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+/##')
-    if [ -n "$MAIN_BUNDLE_RELS" ]; then
-      while IFS= read -r BREL; do
-        [ -z "$BREL" ] && continue
-        BURL="${MAIN_RAW_PREFIX}/${BREL}"
-        echo "Refreshing main's bundle onto the hub (canonical-main libraries): ${BURL} ..."
+    MAIN_BUNDLE_LOCS=$(printf '%s' "$MAIN_PKG_MANIFEST" | jq -r '.bundles[]?.location // empty' 2>/dev/null)
+    if [ -n "$MAIN_BUNDLE_LOCS" ]; then
+      while IFS= read -r BLOC; do
+        [ -z "$BLOC" ] && continue
+        if printf '%s' "$BLOC" | grep -q "/bundle-artifacts/"; then
+          # Unified delivery: the manifest points at the bundle-artifacts branch. Pin the
+          # restore to the SHA-keyed entry for MAIN_SHA (immutable -- a mid-run merge to main
+          # cannot shift the restore bytes), falling back to branches/main for SHAs that
+          # predate publish-on-every-push. Same resolver the deploy's skip-compare uses.
+          if ! BURL=$(resolve_main_bundle_artifact_url "$(basename "$BLOC")"); then
+            echo "::error::e2e HALT: no bundle-artifacts entry resolves for canonical main (tried shas/${MAIN_SHA} and branches/main for $(basename "$BLOC")) -- the restore would have no bundle source. Check the publish-bundle-artifact workflow; re-run."
+            exit 1
+          fi
+        else
+          # Legacy in-tree location (pre-unification manifest at this MAIN_SHA): re-anchor the
+          # repo-relative path to MAIN_SHA -- the committed zip exists at that SHA forever.
+          BREL=$(printf '%s' "$BLOC" | sed -E 's#^https?://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+/##')
+          BURL="${MAIN_RAW_PREFIX}/${BREL}"
+        fi
+        echo "Resolving main's bundle identity (canonical-main libraries): ${BURL} ..."
         # Identity first (CI-side download; no hub impact): the zip's own install.txt (line 1 =
         # namespace, line 2 = name) is exactly what the hub registers in /hub2/userBundles -- the
         # restore KEEPS this identity and deletes everything else. Reading the hub list instead would
@@ -210,7 +228,7 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
         B_NM="$(printf '%s\n' "$B_INSTALL_TXT" | sed -n '2p' | tr -d '[:space:]')"
         rm -f "$ZIP_TMP"
         if [ -z "$B_NS" ] || [ -z "$B_NM" ]; then
-          echo "::error::e2e HALT: could not parse install.txt namespace/name from ${BREL} -- the restore keep-set would be incomplete. Re-run."
+          echo "::error::e2e HALT: could not parse install.txt namespace/name from ${BURL} -- the restore keep-set would be incomplete. Re-run."
           exit 1
         fi
         # Record the bundle identity + its CANONICAL https URL at MAIN_SHA. No zip caching, no
@@ -220,7 +238,7 @@ if [ -n "${MAIN_CHARS:-}" ] && [ -n "${MAIN_SOURCE_URL:-}" ] && [ -n "${MAIN_SHA
         # /hub2/userLibraries wedging hub-wide.)
         MAIN_BUNDLES_JSON="$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -c --arg ns "$B_NS" --arg nm "$B_NM" --arg url "$BURL" '. + [{namespace:$ns, name:$nm, url:$url}]')"
         echo "Recorded main bundle ${B_NS}/${B_NM} -> restore installs from ${BURL}"
-      done <<< "$MAIN_BUNDLE_RELS"
+      done <<< "$MAIN_BUNDLE_LOCS"
     else
       echo "::notice::main packageManifest.json declares no bundles -- app-only canonical main (no bundle to record)."
     fi
@@ -316,19 +334,55 @@ if [ "$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -r 'length')" = "0" ] && [ "${#INC
   echo "::error::e2e HALT: main #includes ${#INCLUDE_TOKENS[@]} library(ies) but declares NO bundle to deliver them at restore -- packaging error."
   exit 1
 fi
-LIB_MANIFEST_JSON="[]"   # JSON array of {id,namespace,name} accumulated for the manifest
-for TOKEN in "${INCLUDE_TOKENS[@]:-}"; do
-  [ -z "$TOKEN" ] && continue
-  NS="${TOKEN%%.*}"
-  NM="${TOKEN#*.}"
-  LIB_ID=$(echo "$LIBLIST_TEXT" | jq -r     --arg ns "$NS" --arg nm "$NM"     '.libraries[]? | select((.namespace == $ns) and (.name == $nm)) | .id' | head -n1)
-  if [ -z "$LIB_ID" ] || [ "$LIB_ID" = "null" ]; then
-    echo "::error::e2e HALT: the app #includes '$TOKEN' but no installed library matches namespace=$NS name=$NM (hub_list_libraries). Refusing to arm."
+# Two-pass with a ONE-SHOT heal: a crashed prior run's restore can leave the hub's
+# installed-library set behind main's #includes (seen live: a stale-bundle restore's
+# member-sync removed libraries, after which EVERY subsequent run halted here and the
+# deploy -- the only thing that installs libraries -- never got to run; a deadlock no
+# amount of re-running fixes). When includes are missing, install canonical main's own
+# bundle (the exact restore URL recorded above -- the HPM install path) once, then
+# re-check. Still missing after the heal -> genuine packaging/hub problem -> HALT.
+resolve_lib_manifest() {
+  local liblist="$1" token ns nm lib_id
+  MISSING_TOKENS=()
+  LIB_MANIFEST_JSON="[]"
+  for token in "${INCLUDE_TOKENS[@]:-}"; do
+    [ -z "$token" ] && continue
+    ns="${token%%.*}"
+    nm="${token#*.}"
+    lib_id=$(echo "$liblist" | jq -r --arg ns "$ns" --arg nm "$nm" '.libraries[]? | select((.namespace == $ns) and (.name == $nm)) | .id' | head -n1)
+    if [ -z "$lib_id" ] || [ "$lib_id" = "null" ]; then
+      MISSING_TOKENS+=("$token")
+      continue
+    fi
+    LIB_MANIFEST_JSON=$(jq -nc --argjson acc "$LIB_MANIFEST_JSON" --arg id "$lib_id" --arg ns "$ns" --arg name "$nm" '$acc + [{id:$id, namespace:$ns, name:$name}]')
+  done
+}
+resolve_lib_manifest "$LIBLIST_TEXT"
+if [ "${#MISSING_TOKENS[@]}" -gt 0 ]; then
+  HEAL_URL=$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -r '.[0].url // empty')
+  if [ -z "$HEAL_URL" ]; then
+    echo "::error::e2e HALT: ${#MISSING_TOKENS[@]} #include'd library(ies) missing from the hub (${MISSING_TOKENS[*]}) and main declares no bundle to heal from. Refusing to arm."
     exit 1
   fi
-  LIB_MANIFEST_JSON=$(jq -nc     --argjson acc "$LIB_MANIFEST_JSON"     --arg id "$LIB_ID" --arg ns "$NS" --arg name "$NM"     '$acc + [{id:$id, namespace:$ns, name:$name}]')
-  echo "Library $TOKEN (id=$LIB_ID) recorded (delivered by the bundle at restore)."
-done
+  echo "::warning::${#MISSING_TOKENS[@]} of main's #include'd libraries are missing from the hub (${MISSING_TOKENS[*]}) -- a prior run's restore likely left the hub behind main. Healing once by installing canonical main's bundle: ${HEAL_URL}"
+  HEAL_RPC=$(jq -nc --arg url "$HEAL_URL" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_install_bundle",arguments:{importUrl:$url,confirm:true}}}')
+  if ! HEAL_TEXT=$(mcp_tool_call_text "hub_install_bundle (arm baseline heal)" "$HEAL_RPC") \
+     || [ "$(printf '%s' "$HEAL_TEXT" | jq -r '.success // empty' 2>/dev/null)" != "true" ]; then
+    echo "::error::e2e HALT: the baseline-heal bundle install did not report success (verbatim: $(printf '%s' "$HEAL_TEXT" | head -c 300 | tr '\n' ' ')). Refusing to arm."
+    exit 1
+  fi
+  if ! LIBLIST_TEXT=$(mcp_tool_call_text "hub_list_libraries (post-heal re-check)" "$LIBLIST_RPC"); then
+    echo "::error::e2e HALT: hub_list_libraries unreadable after the baseline heal. Re-run the job."
+    exit 1
+  fi
+  resolve_lib_manifest "$LIBLIST_TEXT"
+  if [ "${#MISSING_TOKENS[@]}" -gt 0 ]; then
+    echo "::error::e2e HALT: ${#MISSING_TOKENS[@]} library(ies) STILL missing after installing canonical main's bundle (${MISSING_TOKENS[*]}) -- the bundle does not deliver what main #includes (packaging error), or the hub is wedged. Refusing to arm."
+    exit 1
+  fi
+  echo "Baseline healed: all ${#INCLUDE_TOKENS[@]} #include'd libraries now resolve."
+fi
+echo "All ${#INCLUDE_TOKENS[@]} #include'd libraries recorded (delivered by the bundle at restore)."
 
 # 3e) Resolve the CHILD app class id (mcp:MCP Rule). Full HPM repair redeploys EVERY manifest app,
 # so the restore must install the child too; its URL + expected chars were recorded in 2c-ii.
