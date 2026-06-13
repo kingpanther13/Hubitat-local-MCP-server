@@ -47,6 +47,11 @@ ARM_WINDOW_MS=2100000   # 35 minutes -- deliberately > the 30-min job timeout-mi
                         # never mid-live-run. The always() disarm clears it in seconds on every
                         # normal run, so the long window only matters when the session truly dies.
 
+# Shared helpers (resolve_main_bundle_artifact_url -- the canonical-main bundle resolver this
+# script and the deploy's skip-compare both use). The lib's call wrappers are NOT used here;
+# this script keeps its own (below) with their longer arm-specific retry budget.
+source "$(dirname "$0")/mcp_watchdog_lib.sh"
+
 # --- helpers copied verbatim from mcp_deploy_source.sh (the proven cloud-gateway wrappers) -------
 # Every call here targets $WATCHDOG_URL (the watchdog's own MCP endpoint), not the main $MCP_URL.
 
@@ -329,19 +334,55 @@ if [ "$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -r 'length')" = "0" ] && [ "${#INC
   echo "::error::e2e HALT: main #includes ${#INCLUDE_TOKENS[@]} library(ies) but declares NO bundle to deliver them at restore -- packaging error."
   exit 1
 fi
-LIB_MANIFEST_JSON="[]"   # JSON array of {id,namespace,name} accumulated for the manifest
-for TOKEN in "${INCLUDE_TOKENS[@]:-}"; do
-  [ -z "$TOKEN" ] && continue
-  NS="${TOKEN%%.*}"
-  NM="${TOKEN#*.}"
-  LIB_ID=$(echo "$LIBLIST_TEXT" | jq -r     --arg ns "$NS" --arg nm "$NM"     '.libraries[]? | select((.namespace == $ns) and (.name == $nm)) | .id' | head -n1)
-  if [ -z "$LIB_ID" ] || [ "$LIB_ID" = "null" ]; then
-    echo "::error::e2e HALT: the app #includes '$TOKEN' but no installed library matches namespace=$NS name=$NM (hub_list_libraries). Refusing to arm."
+# Two-pass with a ONE-SHOT heal: a crashed prior run's restore can leave the hub's
+# installed-library set behind main's #includes (seen live: a stale-bundle restore's
+# member-sync removed libraries, after which EVERY subsequent run halted here and the
+# deploy -- the only thing that installs libraries -- never got to run; a deadlock no
+# amount of re-running fixes). When includes are missing, install canonical main's own
+# bundle (the exact restore URL recorded above -- the HPM install path) once, then
+# re-check. Still missing after the heal -> genuine packaging/hub problem -> HALT.
+resolve_lib_manifest() {
+  local liblist="$1" token ns nm lib_id
+  MISSING_TOKENS=()
+  LIB_MANIFEST_JSON="[]"
+  for token in "${INCLUDE_TOKENS[@]:-}"; do
+    [ -z "$token" ] && continue
+    ns="${token%%.*}"
+    nm="${token#*.}"
+    lib_id=$(echo "$liblist" | jq -r --arg ns "$ns" --arg nm "$nm" '.libraries[]? | select((.namespace == $ns) and (.name == $nm)) | .id' | head -n1)
+    if [ -z "$lib_id" ] || [ "$lib_id" = "null" ]; then
+      MISSING_TOKENS+=("$token")
+      continue
+    fi
+    LIB_MANIFEST_JSON=$(jq -nc --argjson acc "$LIB_MANIFEST_JSON" --arg id "$lib_id" --arg ns "$ns" --arg name "$nm" '$acc + [{id:$id, namespace:$ns, name:$name}]')
+  done
+}
+resolve_lib_manifest "$LIBLIST_TEXT"
+if [ "${#MISSING_TOKENS[@]}" -gt 0 ]; then
+  HEAL_URL=$(printf '%s' "$MAIN_BUNDLES_JSON" | jq -r '.[0].url // empty')
+  if [ -z "$HEAL_URL" ]; then
+    echo "::error::e2e HALT: ${#MISSING_TOKENS[@]} #include'd library(ies) missing from the hub (${MISSING_TOKENS[*]}) and main declares no bundle to heal from. Refusing to arm."
     exit 1
   fi
-  LIB_MANIFEST_JSON=$(jq -nc     --argjson acc "$LIB_MANIFEST_JSON"     --arg id "$LIB_ID" --arg ns "$NS" --arg name "$NM"     '$acc + [{id:$id, namespace:$ns, name:$name}]')
-  echo "Library $TOKEN (id=$LIB_ID) recorded (delivered by the bundle at restore)."
-done
+  echo "::warning::${#MISSING_TOKENS[@]} of main's #include'd libraries are missing from the hub (${MISSING_TOKENS[*]}) -- a prior run's restore likely left the hub behind main. Healing once by installing canonical main's bundle: ${HEAL_URL}"
+  HEAL_RPC=$(jq -nc --arg url "$HEAL_URL" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_install_bundle",arguments:{importUrl:$url,confirm:true}}}')
+  if ! HEAL_TEXT=$(mcp_tool_call_text "hub_install_bundle (arm baseline heal)" "$HEAL_RPC") \
+     || [ "$(printf '%s' "$HEAL_TEXT" | jq -r '.success // empty' 2>/dev/null)" != "true" ]; then
+    echo "::error::e2e HALT: the baseline-heal bundle install did not report success (verbatim: $(printf '%s' "$HEAL_TEXT" | head -c 300 | tr '\n' ' ')). Refusing to arm."
+    exit 1
+  fi
+  if ! LIBLIST_TEXT=$(mcp_tool_call_text "hub_list_libraries (post-heal re-check)" "$LIBLIST_RPC"); then
+    echo "::error::e2e HALT: hub_list_libraries unreadable after the baseline heal. Re-run the job."
+    exit 1
+  fi
+  resolve_lib_manifest "$LIBLIST_TEXT"
+  if [ "${#MISSING_TOKENS[@]}" -gt 0 ]; then
+    echo "::error::e2e HALT: ${#MISSING_TOKENS[@]} library(ies) STILL missing after installing canonical main's bundle (${MISSING_TOKENS[*]}) -- the bundle does not deliver what main #includes (packaging error), or the hub is wedged. Refusing to arm."
+    exit 1
+  fi
+  echo "Baseline healed: all ${#INCLUDE_TOKENS[@]} #include'd libraries now resolve."
+fi
+echo "All ${#INCLUDE_TOKENS[@]} #include'd libraries recorded (delivered by the bundle at restore)."
 
 # 3e) Resolve the CHILD app class id (mcp:MCP Rule). Full HPM repair redeploys EVERY manifest app,
 # so the restore must install the child too; its URL + expected chars were recorded in 2c-ii.
