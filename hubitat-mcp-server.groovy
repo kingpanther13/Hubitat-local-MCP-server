@@ -2271,7 +2271,7 @@ PARTIAL-SUCCESS: partial:true / expressionNotLive / wizardStuck can accompany su
 
 Replace an EXISTING Rule Machine 5.1 Required Expression IN PLACE (same appId, no clone). Same spec shape as addRequiredExpression -- {conditions:[...], operator|operators} -- so the new expression can be single-condition, multi-condition, or nested. Use this when a rule ALREADY has a Required Expression and you want to change it; to ADD one to a rule that has none, use addRequiredExpression instead. The tool deletes the whole committed expression, then builds the new condition(s) through the same validated walker addRequiredExpression uses, and fires updateRule. Semantics are WHOLE-expression replace, matching addRequiredExpression's add semantics. Per-condition spec fields and extended capability shapes are identical to addRequiredExpression (guide:true for the full reference).
 
-replaceRequiredExpression refuses (success:false, requiredExpressionMissing:true) when there is no committed expression to replace, so the replace-vs-add intent is never silently swapped. On success returns requiredExpressionReplaced:true plus the same conditionIndices / settingsApplied / settingsSkipped / partial envelope as addRequiredExpression. PARTIAL-SUCCESS / failure fields mirror addRequiredExpression (partial / expressionNotLive / updateRuleFailed / hubRenderError + repairHints). The delete is destructive, but the entire spec is validated BEFORE it so a malformed spec leaves the existing expression intact; any failure AFTER the delete auto-restores the pre-op backup (requiredExpressionRestored:true) -- a failed replace is never silent data loss.[[/FLAT_TRIM]]"""
+replaceRequiredExpression refuses (success:false, requiredExpressionMissing:true) when there is no committed expression to replace, so the replace-vs-add intent is never silently swapped. On a clean success returns requiredExpressionReplaced:true plus the same conditionIndices / settingsApplied / settingsSkipped / partial envelope as addRequiredExpression. The delete is destructive, but the entire spec is validated BEFORE it so a malformed spec leaves the existing expression intact; UNLIKE addRequiredExpression the replace path never leaves a committed-but-not-live result -- any failure AFTER the delete (including a rejected trailing updateRule) auto-restores the pre-op backup and returns requiredExpressionReplaced:false. Auto-restore reports requiredExpressionRestored:true when the original expression was put back in place, or false when it could not be (no backup / unconfirmed replay, rule may be left ungated / recreated under requiredExpressionRestoredAs). A failed replace is always reported, never silent data loss.[[/FLAT_TRIM]]"""
                     ],
 
                     addActions: [
@@ -2429,7 +2429,7 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
                     conditionIndices: [type: "array", description: "addRequiredExpression/replaceRequiredExpression: condition indices", items: [type: "integer"]],
                     expressionNotLive: [type: "boolean", description: "addRequiredExpression/replaceRequiredExpression: not live after update"],
                     requiredExpressionAlreadyExists: [type: "boolean", description: "addRequiredExpression: the rule already has a Required Expression (success:false with actionable error); to change it use replaceRequiredExpression"],
-                    requiredExpressionReplaced: [type: "boolean", description: "replaceRequiredExpression: a new Required Expression was COMMITTED (the replace built it); may not be live if updateRuleFailed -- check expressionNotLive. false when the rebuild failed"],
+                    requiredExpressionReplaced: [type: "boolean", description: "replaceRequiredExpression: true = a new Required Expression was COMMITTED and finalized live. false when the rebuild failed OR the trailing updateRule was rejected -- a rejected updateRule auto-restores the pre-op backup (see requiredExpressionRestored), it does NOT leave a committed-but-not-live RE"],
                     requiredExpressionMissing: [type: "boolean", description: "replaceRequiredExpression: no committed Required Expression to replace (success:false, RE intact); use addRequiredExpression to add one"],
                     requiredExpressionRestored: [type: "boolean", description: "replaceRequiredExpression: post-delete rebuild failed; true = original Required Expression auto-restored in place from backup, false = NOT recovered in place (check requiredExpressionRestoredAs, else manual hub_restore_backup needed)"],
                     requiredExpressionRestoredAs: [type: "integer", description: "replaceRequiredExpression: present when auto-restore could not reuse the original appId and recreated the rule under this NEW id -- the original appId is dead; use this id and delete the husk"],
@@ -14582,6 +14582,17 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Object bac
     // throws (a failed read returns a degraded ok:false verdict), so a direct call is safe.
     def baselineHealth = _rmCheckRuleHealth(appId)
 
+    // Outer safety net for the WHOLE post-delete region: the explicit branches below
+    // route their known failures (click throw, re-read throw, silent reject, rebuild
+    // throw/non-Map/structured-fail, finalize) through restoreAfterDelete. This catch
+    // covers any OTHER throw that escapes them once the destructive cancelST may have
+    // landed -- without it such a throw would propagate to the dispatcher's catch, which
+    // assumes every throw is PRE-delete and would wrongly report the RE "intact" while it
+    // was actually deleted. Routing through restoreAfterDelete restores the pre-op backup
+    // and returns the honest deleted/restored envelope. (Pre-delete throws -- Step 0
+    // validation, the STPage read, the missing-RE refusal, the backup resolution -- stay
+    // ABOVE this try, so they still propagate and the dispatcher's "intact" message holds.)
+    try {
     // Step 2. Click cancelST ("Delete Required Expression") to remove the whole
     // committed expression. THIS IS THE DESTRUCTIVE STEP -- the committed gate is
     // gone the instant the click lands. From here on, EVERY failure path auto-restores
@@ -14682,6 +14693,13 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Object bac
     // apply inside a batch.
     return _rmFinalizeRequiredExpressionWrite(appId, addMap, backup, "replaced", true, restoreAfterDelete,
         [baselineHealth: baselineHealth, deferUpdateRule: deferFinalize])
+    } catch (Exception postDeleteExc) {
+        // An unexpected throw none of the explicit post-delete branches handled. The
+        // cancelST delete may already have landed, so route through restoreAfterDelete:
+        // it restores the pre-op backup and returns the honest deleted/restored envelope
+        // rather than letting the dispatcher mislabel a deleted RE as "intact".
+        return restoreAfterDelete("replaceRequiredExpression: unexpected post-delete failure for app ${appId} (${postDeleteExc.message ?: postDeleteExc}).")
+    }
 }
 
 
@@ -15392,7 +15410,11 @@ def _applyNativeAppEdit(args) {
         // replace was the SOLE op in the batch, on a health regression vs the baseline. On the
         // updateRule-failure path the entries restore in insertion order; because each op's
         // snapshot was taken just before that op deleted, it already captures every preceding
-        // committed op, so restoring one op preserves the preceding ops' work.
+        // committed op, so restoring one op preserves the preceding ops' work. Ops that ran AFTER
+        // the replace in the same batch ARE reverted by that restore (the snapshot predates them);
+        // acceptable because a batch-end updateRule failure means the whole batch is not live, and
+        // restoring the irreversibly-deleted RE outranks the additive post-replace ops -- the
+        // pre-batch backup remains the caller's full handle.
         def deferredReReplaces = []
         // A rule has exactly ONE Required Expression, so only one replaceRequiredExpression is
         // valid per batch; a second would replace the first (and its additive restore would land
