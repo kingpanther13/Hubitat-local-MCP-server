@@ -1552,6 +1552,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.3.4** - feat: add replaceRequiredExpression shortcut to hub_set_rule. PRs: [#270](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/270)
 - **v2.3.3** - fix: enum-shadowing Custom Attribute + no-value *changed* comparator (#195). PRs: [#271](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/271)
 - **v2.3.2** - ci: make the e2e bundle skip honest — verify/heal the hub, and re-target the restore at current main. PRs: [#275](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/275)
 - **v2.3.1** - ci: unify bundle delivery on the bundle-artifacts branch so e2e installs exactly what HPM serves. PRs: [#274](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/274)
