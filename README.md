@@ -1552,6 +1552,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.3.6** - feat: add device-attribute and variable-math source modes to setVariable. PRs: [#277](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/277)
 - **v2.3.5** - fix: align replaceRequiredExpression result-contract docs with behavior + post-delete safety net. PRs: [#278](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/278)
 - **v2.3.4** - feat: add replaceRequiredExpression shortcut to hub_set_rule. PRs: [#270](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/270)
 - **v2.3.3** - fix: enum-shadowing Custom Attribute + no-value *changed* comparator (#195). PRs: [#271](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/271)
