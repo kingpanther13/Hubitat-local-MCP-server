@@ -2164,9 +2164,12 @@ class TestRunner:
             poll_secs = 12.0
             for attempt in range(1, max_attempts + 1):
                 try:
+                    # A String var MUST get a NON-EMPTY value: an empty-string value does not
+                    # persist a String hub variable (the wizard reports complete but nothing lands
+                    # -> the var never becomes visible to getGlobalVar). Numeric vars take "0".
                     self.client.call_tool("hub_manage_variables", {
                         "tool": "hub_create_variable",
-                        "args": {"name": name, "type": var_type, "value": "0" if var_type == "Number" else "", "confirm": True}})
+                        "args": {"name": name, "type": var_type, "value": "0" if var_type == "Number" else "init", "confirm": True}})
                 except (McpError, McpToolError, requests.HTTPError) as exc:
                     # A create error is itself a race symptom (or a relay 504 that still committed).
                     # Don't fail here -- the visibility poll below is the authoritative gate; a
