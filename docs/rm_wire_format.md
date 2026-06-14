@@ -141,15 +141,29 @@ Maps to `actType=modeActs`, `actSubType=getSetVariable`.
 | Field | Value | Notes |
 |---|---|---|
 | `xVarV.<N>` | hub variable name | Target variable (enum from hub variables list). Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. |
-| `numOp.<N>` | `"number"` or `"variable"` | `"number"` = constant-value form; `"variable"` (full word) = copy-from-variable form. Live-verified: the short form `"var"` is NOT accepted by RM 5.1 and causes the action to bake without a source variable. |
+| `numOp.<N>` | `"number"`, `"variable"`, `"device attribute"`, or `"variable math"` | The source-mode enum. `"number"` = constant; `"variable"` (full word) = copy-from-variable; `"device attribute"` = read a device attribute; `"variable math"` = structured math. Live-verified: the short form `"var"` is NOT accepted by RM 5.1 and causes the action to bake without a source. `numOp` is gated by `xVarV.<N>` -- it does not render until the target variable is written, so `xVarV` is always written first. The `"device attribute"` and `"variable math"` options render ONLY for a Number/Decimal target variable (live-verified); for a String/Boolean/DateTime target `numOp` offers no such source, so the addAction path rejects `fromDevice`/`math` into a non-numeric target up-front with `success=false` rather than writing a numOp that never reveals. |
 | `valNumber.<N>` | numeric constant | Written when `numOp=number`. Only numeric constants are supported; string/boolean/datetime targets require `sourceVariable` or `rawSettings`. |
-| `xVar3.<N>` | source variable name | Written when `numOp=variable` (the `sourceVariable` form). Schema-gated: this field is only revealed by RM after `numOp=variable` is written. The field name `xVar3` is live-verified for RM 5.1; the implementation discovers it from the live schema rather than hardcoding. Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. |
+| `xVar3.<N>` | source variable name | Written when `numOp=variable` (the `sourceVariable` form). Schema-gated: revealed by RM only after `numOp=variable` is written. The field name `xVar3` is live-verified for RM 5.1; discovered from the live schema rather than hardcoded. Must be an existing hub variable name -- an unknown name is rejected before the hub write. |
+| `customDev.<N>` | source device id | Written when `numOp="device attribute"` (the `fromDevice` form). `capability.*` single-device picker (`multiple=false`), stored as an id->label map. Schema-gated: revealed after `numOp="device attribute"`. RM's picker spans ALL hub devices. |
+| `tCustomAttr.<N>` | source attribute name | Written after `customDev.<N>` (the `fromDevice` form). Enum FILTERED to the selected device's live attributes; revealed only after the device is written. An attribute outside the filtered enum is rejected with the available list. |
+| `xVar3.<N>` / `valConst.<N>` | first math operand | Written when `numOp="variable math"` (the `math` form). The first operand: a hub variable name (`xVar3.<N>`), or the sentinel `"(constant)"` in `xVar3.<N>` which reveals `valConst.<N>` for a literal number. Revealed after `numOp="variable math"`. A variable-name operand is existence-validated against the hub variable list before the write (an unknown name is rejected up-front); the chosen `xVar3` option (the variable name or the `(constant)` sentinel) is also validated against the field's revealed enum before writing. |
+| `valMathOp.<N>` | operator | Written when `numOp="variable math"`. Binary: `+ - * / %`; unary: `negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees`. A binary operator reveals the second operand; a unary operator takes no second operand. The operator is validated against the field's revealed enum before writing. |
+| `xVar4.<N>` / `valConst2.<N>` | second math operand | Written for BINARY operators only. Revealed after the binary `valMathOp.<N>` is written. Same shape as the first operand: a variable name in `xVar4.<N>`, or `"(constant)"` revealing `valConst2.<N>`. A variable-name operand is existence-validated against the hub variable list before the write; the chosen `xVar4` option is also validated against the field's revealed enum. |
 
-`value` and `sourceVariable` are mutually exclusive; providing both is rejected.
-The `value` path always writes `numOp=number` + `valNumber` -- the hub's wire
-format does not expose separate type-specific constant slots for string/boolean/datetime
-at this subtype. Use `sourceVariable` to copy from a variable of any type, or
-`rawSettings` to supply advanced wire fields directly.
+`value`, `sourceVariable`, `fromDevice`, and `math` are mutually exclusive; exactly
+one source mode is required. The `value` path always writes `numOp=number` +
+`valNumber` -- the hub's wire format does not expose separate type-specific constant
+slots for string/boolean/datetime at this subtype. Use `sourceVariable` to copy from a
+variable of any type, or `rawSettings` to supply advanced wire fields directly.
+
+**Reveal order (all source modes write `xVarV.<N>` then `numOp.<N>` first):**
+- `fromDevice`: `numOp="device attribute"` -> reveals `customDev.<N>`; write device -> reveals `tCustomAttr.<N>` (filtered) -> write attribute.
+- `math`: `numOp="variable math"` -> reveals `xVar3.<N>` + `valMathOp.<N>`; a `(constant)` first operand reveals `valConst.<N>`; a binary operator reveals `xVar4.<N>`; a `(constant)` second operand reveals `valConst2.<N>`. Unary operators stop after the operator write.
+
+**Orphan-field note:** RM does NOT auto-clean mode-specific keys when `numOp` changes
+(e.g. `customDev.<N>` lingers after switching to `variable math`). The addAction path
+builds each action fresh, so this is harmless here; a future setVariable-EDIT path must
+clear stale mode keys.
 
 ---
 
