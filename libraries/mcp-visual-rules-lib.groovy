@@ -279,6 +279,29 @@ def toolGetVisualRule(args) {
 }
 
 def toolSetVisualRule(args) {
+    // Attach the unified rule-health report to every response (success AND failure) that
+    // resolves to a concrete rule id, mirroring hub_set_rule (issue #254 follow-up). For a
+    // graph Visual Rule _rmCheckRuleHealth reads validationErrors as the broken verdict; the
+    // confirm pre-flight throw is left to propagate (it must surface as -32602, not a result).
+    // We re-call _rmCheckRuleHealth (one or two extra localhost GETs for a graph rule) rather
+    // than synthesizing the report from the data _toolSetVisualRuleImpl already holds: that keeps
+    // a SINGLE source of truth for the health shape (no drift), and the cost is a cheap localhost
+    // read on an infrequent write.
+    def result = _toolSetVisualRuleImpl(args)
+    try {
+        // Prefer the id the impl resolved; fall back to the caller-supplied appId so an EDIT
+        // failure whose error map omits appId (e.g. a graph-save rejection) still carries health
+        // for the rule the caller named (codex review). Only an early CREATE failure — no appId
+        // given and no id resolved — legitimately gets none.
+        def rid = result?.appId ?: args?.appId
+        if (rid != null && result instanceof Map && !result.containsKey("health")) {
+            result.health = _rmCheckRuleHealth(rid as Integer)
+        }
+    } catch (Exception ignored) { /* best effort — never let a health read mask the tool result */ }
+    return result
+}
+
+private Map _toolSetVisualRuleImpl(args) {
     requireDestructiveConfirm(args?.confirm as Boolean)
     def name = args?.name?.toString()?.trim()
     def hasDefinition = args?.definition != null
@@ -663,6 +686,7 @@ def _getAllToolDefinitions_partVisualRules() {
                     previousDefinition: [type: "object", description: "The definition before a full replacement (recovery aid)"],
                     validationErrors: [type: "array", description: "Hub-side validation problems; the rule saved but may not run"],
                     hubNativeFormat: [type: "string"],
+                    health: [type: "object", description: "Rule-health report (same shape as hub_get_rule_health's output) attached to every response that resolves to a rule id — early CREATE failures (format mismatch, save-after-create) carry no appId and omit it. For a graph Visual Rule broken=true means non-empty validationErrors."],
                     error: [type: "string"],
                     note: [type: "string"]
                 ],

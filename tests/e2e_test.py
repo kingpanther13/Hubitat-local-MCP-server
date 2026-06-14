@@ -1490,6 +1490,15 @@ class TestRunner:
             cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {"appId": app_id}})
             assert (cfg.get("app") or {}).get("name") == "Basic Rule-1.0", f"unexpected Basic Rule config: {cfg}"
 
+            # HEALTH on a classic app (issue #254): hub_get_rule_health covers Basic Rule via the
+            # generic configPage checks and names it in ruleFormat (broken is null -- no compiled
+            # boolean for non-RM classic apps).
+            bh = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert bh.get("ruleFormat") == "basic-rule", \
+                f"hub_get_rule_health should classify a Basic Rule as basic-rule: {bh}"
+            assert bh.get("broken") is None, f"a classic app has no compiled broken boolean: {bh}"
+
             # EDIT: write the Notes field. NO updateRule click fires (Basic Rule
             # is submitOnChange), so the render stays clean. On a 504 the response
             # (configPageError/success) is gone; verify the note landed via read-back
@@ -1595,6 +1604,15 @@ class TestRunner:
                 f"buttonDev did not persist on controller {controller_id} "
                 f"(settings.buttonDev={persisted!r})"
             )
+
+            # HEALTH on a live Button Controller (issue #254): hub_get_rule_health classifies it
+            # as button-controller (a classic app, broken=null) -- the only live proof of the
+            # button-controller classification branch against a real ruleBuilderJson body.
+            ch = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_get_rule_health", "args": {"appId": controller_id}})
+            assert ch.get("ruleFormat") == "button-controller", \
+                f"controller {controller_id} should classify as button-controller: {ch}"
+            assert ch.get("broken") is None, f"a classic app has no compiled broken boolean: {ch}"
 
             # Create the button rule (button 1 pushed) through the controller.
             br = self.client.call_tool("hub_manage_native_rules_and_apps", {
@@ -1820,6 +1838,35 @@ class TestRunner:
             })
             assert wsn.get("page") == "mainPage", \
                 f"walkStep should route through the native-app tool, got: {wsn}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rule_health_prefers_rulebuilderjson(self) -> None:
+        # issue #254: hub_get_rule_health now reads the rule's compiled atomicState
+        # (GET /app/ruleBuilderJson) for an authoritative `broken` boolean, with the
+        # HTML configure-json render scan RETAINED as a cross-check + fallback. A
+        # freshly-created healthy rule must report broken:false from the JSON source,
+        # and `source` must show the preferred path contributed under default auto mode.
+        app_id = self._create_native_rule("RuleHealthSrc")
+        try:
+            auto = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id},
+            })
+            assert auto.get("ok") is True, f"fresh rule should be healthy: {auto}"
+            assert auto.get("broken") is False, \
+                f"ruleBuilderJson should report broken:false for a healthy rule: {auto}"
+            assert "ruleBuilderJson" in str(auto.get("source") or ""), \
+                f"auto mode should read the preferred ruleBuilderJson source: {auto}"
+
+            # The retained legacy path stays selectable and must NOT read the JSON source.
+            html = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id, "source": "configPage"},
+            })
+            assert html.get("source") == "configPage", \
+                f"source=configPage must force the HTML-only path: {html}"
+            assert html.get("broken") is None, \
+                f"the HTML path does not produce the compiled-state boolean: {html}"
         finally:
             self._delete_native(app_id)
 
@@ -2983,6 +3030,17 @@ class TestRunner:
                 f"no trigger node in the {fmt} read-back: {got}"
             assert int(switch_id) in (trigger_node.get("deviceIds") or []), \
                 f"trigger device {switch_id} not in the trigger node's deviceIds: {trigger_node}"
+
+            # HEALTH on a Visual Rule (issue #254): hub_get_rule_health must NOT reject a VRB
+            # rule -- it reports the engine-native verdict. ruleFormat identifies which engine
+            # answered (vrb-graph reports broken from validationErrors; vrb-classic has none).
+            vh = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert vh.get("ruleFormat") in ("vrb-graph", "vrb-classic"), \
+                f"hub_get_rule_health did not recognize VRB rule {app_id} (ruleFormat={vh.get('ruleFormat')!r}): {vh}"
+            if vh.get("ruleFormat") == "vrb-graph":
+                assert isinstance(vh.get("broken"), bool), \
+                    f"graph VRB health should carry a boolean broken (from validationErrors): {vh}"
 
             # LIST: no-args mode must include the new rule.
             listed = self._get_visual_rule()
