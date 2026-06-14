@@ -495,6 +495,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.broken == null
         h.source == "none"
         h.issues.any { it.contains("appId is null") }
+        h.brokenMarkerCounts == [:]   // faithful subset of the normal shape (the gate reads this key)
         hubGet.calls.isEmpty()   // no /app/ruleBuilderJson/null or /installedapp/configure/json/null
     }
 

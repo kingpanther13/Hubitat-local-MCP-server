@@ -2482,7 +2482,7 @@ hub_set_rule attaches this report as `health` on every response (success AND err
                 type: "object",
                 properties: [
                     ok: [type: "boolean", description: "True when no issues found"],
-                    broken: [type: "boolean", description: "Authoritative compiled-state broken verdict (RM `broken`, or graph VRB validationErrors non-empty); null when no boolean applies"],
+                    broken: [type: "boolean", description: "Authoritative compiled-state broken verdict (RM `broken`, or graph VRB validationErrors non-empty); null when no boolean applies. Disambiguate via ruleFormat: null+ruleFormat='vrb-classic'/'basic-rule'/'button-controller'/'classic-app' is a healthy rule with no compiled boolean; null+ruleFormat=null means undetermined (source unavailable / read failed)."],
                     source: [type: "string", description: "Which source(s) contributed: 'ruleBuilderJson', 'ruleBuilder20Json', 'configPage', a '+'-join, or 'none'"],
                     ruleFormat: [type: "string", description: "What was inspected: 'rm', 'vrb-graph', 'vrb-classic', 'basic-rule', 'button-controller', 'classic-app' (other classic apps via configPage), or null when unrecognized"],
                     label: [type: "string", description: "Rule label (RM); null when the JSON-only path answered (HTML scan skipped)"],
@@ -2492,7 +2492,7 @@ hub_set_rule attaches this report as `health` on every response (success AND err
                     multipleFlagPoison: [type: "array", description: "Poisoned setting names; always present, empty when none", items: [type: "string"]],
                     structuralIssues: [type: "array", description: "Structural issues; always present, empty when none", items: [type: "string"]],
                     validationErrors: [type: "array", description: "Graph Visual Rule validation errors; always present, empty when none", items: [type: "string"]],
-                    predicate: [type: "object", description: "Compiled required-expression summary from ruleBuilderJson: {hasPredicate, predCapabs}. Present only when read (RM rule with a predicate)."],
+                    predicate: [type: "object", description: "Compiled required-expression summary from ruleBuilderJson: {hasPredicate, predCapabs}. Present only when the compiled RM state carried the predicate fields (hasPredicate may be false)."],
                     issues: [type: "array", description: "All issues; ok is false iff non-empty", items: [type: "string"]]
                 ],
                 required: ["ok"]
@@ -10042,7 +10042,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         def filteredIssues = ((health.issues as List) ?: []).findAll {
             !(it?.toString()?.startsWith("structural imbalance in action block nesting"))
         }
-        health = health + [structuralIssues: [], issues: filteredIssues, ok: filteredIssues.isEmpty()]
+        // Recompute ok with the SAME predicate _rmCheckRuleHealth uses (issues + broken +
+        // validationErrors), not issues alone, so the two ok derivations can't drift if the
+        // broken/validationErrors issue strings ever change.
+        health = health + [structuralIssues: [], issues: filteredIssues,
+                           ok: filteredIssues.isEmpty() && health.broken != true && ((health.validationErrors as List) ?: []).isEmpty()]
     }
 
     // Post-commit silent-failure detection. Same class of issue as
@@ -11074,8 +11078,9 @@ private Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // that just throw — short-circuit to a clean unhealthy verdict instead. (Gemini review, PR #276.)
     if (appId == null) {
         return [ok: false, broken: null, source: "none", ruleFormat: null,
-                label: null, configPageError: null, brokenMarkers: [], multipleFlagPoison: [],
-                structuralIssues: [], validationErrors: [], issues: ["health check failed: appId is null"]]
+                label: null, configPageError: null, brokenMarkers: [], brokenMarkerCounts: [:],
+                multipleFlagPoison: [], structuralIssues: [], validationErrors: [],
+                issues: ["health check failed: appId is null"]]
     }
     def issues = []
     def label = null
@@ -11086,8 +11091,9 @@ private Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     def validationErrors = []      // VRB graph-rule validation problems (its `broken` equivalent)
     Boolean broken = null          // authoritative boolean: RM compiled state, or VRB validationErrors non-empty
     def predicate = null           // compact {hasPredicate, predCapabs} from ruleBuilderJson (RM)
-    String ruleFormat = null       // "rm" | "vrb-graph" | "vrb-classic" — which engine answered
+    String ruleFormat = null       // rm | vrb-graph | vrb-classic | basic-rule | button-controller | classic-app — what was inspected
     def sourcesUsed = []
+    def compiledReadError = null   // a thrown/bad-200 compiled-state read, surfaced if the HTML path also fails
     boolean useRuleBuilder = (source != "configPage")
     boolean useConfigPage = (source != "ruleBuilderJson")
 
@@ -11095,6 +11101,7 @@ private Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // (classic RM `broken` boolean, graph Visual Rule validationErrors, classic Visual Rule).
     if (useRuleBuilder) {
         def cs = _ruleCompiledState(appId)
+        if (cs != null && cs.ruleFormat == null && cs.readError) compiledReadError = cs.readError
         if (cs != null && cs.ruleFormat != null) {
             ruleFormat = cs.ruleFormat
             sourcesUsed << cs.endpoint
@@ -11192,7 +11199,10 @@ private Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
                 issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — if you are still building this rule (adding an IF/ELSE or Repeat block across separate calls), this is EXPECTED until you add the closer, and the fix is simply to add it via addAction(capability='endIf'|'stopRepeat') — do NOT restore. Only if the rule was already complete does this indicate damage (a raw settings write or a mutation that committed post-response), in which case use hub_restore_backup to roll back.".toString())
             }
         } catch (Exception e) {
-            issues << "health check failed: ${e.message}".toString()
+            // Both sources down: include the compiled-state read failure too so the dual-failure
+            // diagnostic is complete (auth/connectivity often breaks both localhost reads at once).
+            def also = compiledReadError ? " (compiled-state read also failed: ${compiledReadError})" : ""
+            issues << "health check failed: ${e.message}${also}".toString()
         }
     }
     // Cross-check the two RM sources when both ran. They can legitimately disagree in a

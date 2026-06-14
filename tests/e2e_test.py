@@ -1871,6 +1871,54 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_rule_health_broken_true_on_dangling_trigger(self) -> None:
+        # issue #254 headline: the compiled-state `broken` boolean must fire TRUE on a genuinely
+        # broken rule, not only false on healthy ones. Build a rule whose trigger references a
+        # virtual switch, delete the switch so the trigger dangles, render the config page to force
+        # RM to re-validate (the boolean lags the *BROKEN* label until a render), then assert the
+        # authoritative broken:true verdict from /app/ruleBuilderJson. Proves the marquee path live.
+        dev_id = self._create_virtual_switch_device(f"{PREFIX}RHBrokenDev")
+        assert dev_id, "could not create the trigger device"
+        dni = ""
+        vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+        for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+            if str(d.get("id")) == str(dev_id):
+                dni = str(d.get("deviceNetworkId") or d.get("dni") or "")
+                break
+        assert dni, f"could not resolve DNI for trigger device {dev_id}"
+        self.created_device_dnis.append(dni)  # teardown safety net (harmless if already deleted mid-test)
+
+        app_id = self._create_native_rule(
+            "RHBroken",
+            extra={"addTrigger": {"capability": "Switch", "deviceIds": [int(dev_id)], "state": "on"}},
+        )
+        try:
+            # Sanity: healthy while the trigger device exists.
+            pre = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert pre.get("broken") is False, f"rule should start healthy before we break it: {pre}"
+
+            # Break it: delete the trigger device so the trigger reference dangles.
+            self.client.call_tool("hub_manage_virtual_device", {
+                "action": "delete", "deviceNetworkId": dni, "confirm": True})
+
+            # The compiled `broken` boolean lags the *BROKEN* label until the rule re-validates;
+            # rendering the config page forces that re-validation.
+            self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id}})
+
+            h = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert h.get("broken") is True, \
+                f"compiled-state broken must fire True on a dangling-trigger rule: {h}"
+            assert h.get("ruleFormat") == "rm", f"expected ruleFormat 'rm': {h}"
+            assert h.get("ok") is False, f"a broken rule must report ok:false: {h}"
+            assert "ruleBuilderJson" in str(h.get("source") or ""), \
+                f"the broken verdict should come from the compiled-state source: {h}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_trigger_mutations(self) -> None:
         # hub_set_rule edit -> the device-state addTrigger + addAction wizard paths, then
         # modifyTrigger (state) + removeTrigger driven by the RETURNED triggerIndex
@@ -3039,8 +3087,10 @@ class TestRunner:
             assert vh.get("ruleFormat") in ("vrb-graph", "vrb-classic"), \
                 f"hub_get_rule_health did not recognize VRB rule {app_id} (ruleFormat={vh.get('ruleFormat')!r}): {vh}"
             if vh.get("ruleFormat") == "vrb-graph":
-                assert isinstance(vh.get("broken"), bool), \
-                    f"graph VRB health should carry a boolean broken (from validationErrors): {vh}"
+                # Freshly created + healthy, so the validationErrors-derived boolean must be False
+                # (isinstance(bool) accepted either verdict and wouldn't catch an always-true regression).
+                assert vh.get("broken") is False, \
+                    f"a freshly-created healthy graph VRB rule should report broken:false: {vh}"
 
             # LIST: no-args mode must include the new rule.
             listed = self._get_visual_rule()
