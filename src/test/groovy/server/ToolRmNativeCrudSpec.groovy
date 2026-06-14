@@ -17281,7 +17281,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
         // Pre-write validation checks the variable exists against the hub variable list; stub supplies it.
-        script.metaClass.getAllGlobalVars = { -> ["counter": [name: "counter", type: "Number", value: 0], "temp": [name: "temp", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["counter": [name: "counter", type: "integer", value: 0], "temp": [name: "temp", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -17337,7 +17337,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
         // Pre-write validation checks the variable exists against the hub variable list; stub supplies it.
-        script.metaClass.getAllGlobalVars = { -> ["myVar": [name: "myVar", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["myVar": [name: "myVar", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -17392,7 +17392,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
         // Pre-write validation: both variables exist on the hub.
-        script.metaClass.getAllGlobalVars = { -> ["dest": [name: "dest", type: "Number", value: 0], "source": [name: "source", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["dest": [name: "dest", type: "integer", value: 0], "source": [name: "source", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -18276,7 +18276,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
         // Hub has "knownVar" but NOT "unknownTarget"
-        script.metaClass.getAllGlobalVars = { -> ["knownVar": [name: "knownVar", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["knownVar": [name: "knownVar", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -18309,7 +18309,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
         // Hub has "target" but NOT "ghostSource"
-        script.metaClass.getAllGlobalVars = { -> ["target": [name: "target", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["target": [name: "target", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -18433,7 +18433,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "Number", value: 0], "src": [name: "src", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "integer", value: 0], "src": [name: "src", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -18484,7 +18484,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "Number", value: 0], "src": [name: "src", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "integer", value: 0], "src": [name: "src", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -18541,7 +18541,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The hub's xVar3 enum (live schema) does NOT include "ghostSrc" -- the enum is
         // the authoritative list; a mismatch here means the variable was deleted between
         // the getAllGlobalVars call and the schema re-introspect, or the hub restricts scope.
-        script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "Number", value: 0], "ghostSrc": [name: "ghostSrc", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "integer", value: 0], "ghostSrc": [name: "ghostSrc", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -18624,7 +18624,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def writtenFields = [:]
-        script.metaClass.getAllGlobalVars = { -> ["counter": [name: "counter", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["counter": [name: "counter", type: "integer", value: 0]] }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
@@ -18830,7 +18830,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def writtenFields = [:]
-        script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "Number", value: 0], "src": [name: "src", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "integer", value: 0], "src": [name: "src", type: "integer", value: 0]] }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
@@ -18882,7 +18882,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def writtenFields = [:]
-        script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "Number", value: 0], "src": [name: "src", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["dst": [name: "dst", type: "integer", value: 0], "src": [name: "src", type: "integer", value: 0]] }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (path == "/installedapp/update/json") {
@@ -18955,7 +18955,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -19024,7 +19024,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -19069,7 +19069,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19097,7 +19097,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19141,7 +19141,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -19213,7 +19213,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -19269,7 +19269,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19285,7 +19285,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "binary op without 'right' fails fast on arity"
         result.success == false
-        result.error?.contains("binary operator '+' requires 'right'")
+        result.error?.contains("binary operator '+' requires a second operand (right)")
     }
 
     def "addAction setVariable math rejects unary op given a right operand (arity)"() {
@@ -19295,7 +19295,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19321,7 +19321,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19348,7 +19348,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
         // 'ghostVar' is not on the hub -- the math var-operand existence check must reject it.
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19376,7 +19376,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
         // 'base' exists; 'ghostRight' does not -- the right-operand check must reject it.
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19404,7 +19404,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19433,7 +19433,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19461,7 +19461,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19488,7 +19488,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19515,7 +19515,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19543,7 +19543,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19572,7 +19572,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19600,7 +19600,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19627,7 +19627,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
@@ -19644,6 +19644,371 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error?.contains("fromDevice requires 'attribute'")
+    }
+
+    def "addAction setVariable fromDevice rejects a non-numeric (String) target variable"() {
+        // The device-attribute source mode is Number/Decimal-target-only: RM renders the numOp
+        // source-mode picker only for a numeric target var, so fromDevice into a String var is
+        // rejected up-front (before any hub write) with the clear numeric-target requirement,
+        // NOT a deep not-in-schema reveal failure.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        // The target var exists but is a String -- the numeric-target guard must reject fromDevice.
+        // getAllGlobalVars reports the INTERNAL token "string" (not the UI label "String").
+        script.metaClass.getAllGlobalVars = { -> ["msg": [name: "msg", type: "string", value: ""]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "msg", fromDevice: [deviceId: 72, attribute: "temperature"]],
+            confirm: true
+        ])
+
+        then: "the String target is rejected naming the Number/Decimal requirement and the type"
+        result.success == false
+        result.error?.contains("device-attribute (fromDevice) source mode requires a Number or Decimal target variable")
+        result.error?.contains("'msg' is string")
+    }
+
+    def "addAction setVariable math rejects a non-numeric (String) target variable"() {
+        // Sibling of the fromDevice numeric-target guard: variable-math is also Number/Decimal-only,
+        // so math into a String target is rejected up-front with the same clear requirement.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        // INTERNAL tokens: "string" target (rejected), "integer" operand var (the Number token).
+        script.metaClass.getAllGlobalVars = { -> ["msg": [name: "msg", type: "string", value: ""], "base": [name: "base", type: "integer", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "msg", math: [left: "base", op: "+", right: 1]],
+            confirm: true
+        ])
+
+        then: "the String target is rejected naming the Number/Decimal requirement and the type"
+        result.success == false
+        result.error?.contains("variable-math (math) source mode requires a Number or Decimal target variable")
+        result.error?.contains("'msg' is string")
+    }
+
+    def "addAction setVariable fromDevice rejects a Boolean target variable"() {
+        // Negative-pin for the non-numeric non-string type: a Boolean target (live token "boolean")
+        // must be rejected up-front. Confirms the guard excludes every non-numeric kind, not just String.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["flag": [name: "flag", type: "boolean", value: false]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "flag", fromDevice: [deviceId: 72, attribute: "temperature"]],
+            confirm: true
+        ])
+
+        then: "the Boolean target is rejected naming the Number/Decimal requirement and the type"
+        result.success == false
+        result.error?.contains("device-attribute (fromDevice) source mode requires a Number or Decimal target variable")
+        result.error?.contains("'flag' is boolean")
+    }
+
+    def "addAction setVariable math rejects a DateTime target variable"() {
+        // Negative-pin for DateTime (live token "datetime") via the math mode: must be rejected
+        // up-front. Completes the reject set {string, boolean, datetime} against accept {integer, bigdecimal}.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["when": [name: "when", type: "datetime", value: 0], "base": [name: "base", type: "integer", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "when", math: [left: "base", op: "+", right: 1]],
+            confirm: true
+        ])
+
+        then: "the DateTime target is rejected naming the Number/Decimal requirement and the type"
+        result.success == false
+        result.error?.contains("variable-math (math) source mode requires a Number or Decimal target variable")
+        result.error?.contains("'when' is datetime")
+    }
+
+    def "addAction setVariable fromDevice accepts an integer (Number) target variable"() {
+        // REGRESSION GUARD for the live-token bug: getAllGlobalVars reports a Number var as the
+        // INTERNAL token "integer" (not the UI label "Number"). If the numeric-target guard omits
+        // "integer" from its accepted set, this happy path FALSELY fails -- so this spec going RED
+        // is the canary. fromDevice into a Number var must proceed to the reveal walk and bake.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "device attribute"
+            def devWritten = writtenFields["customDev.1"]?.toString() == "72"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["temp": "temp"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "device attribute": "Device attribute"]]
+            ]
+            if (numOpWritten) extra << [name: "customDev.1", type: "capability.*", multiple: false, options: [:]]
+            if (numOpWritten && devWritten) extra << [name: "tCustomAttr.1", type: "enum", options: ["temperature": "temperature"]]
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "temp", fromDevice: [deviceId: 72, attribute: "temperature"]],
+            confirm: true
+        ])
+
+        then: "the integer (Number) target is accepted -- the numeric-target guard does not fire"
+        result.success == true
+        writtenFields["tCustomAttr.1"] == "temperature"
+        result.partial != true
+    }
+
+    def "addAction setVariable fromDevice accepts a bigdecimal (Decimal) target variable"() {
+        // The must-not-catch side for Decimal: getAllGlobalVars reports a Decimal var as the INTERNAL
+        // token "bigdecimal" (not the UI label "Decimal"). It is numeric, so the guard must NOT fire.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "bigdecimal", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "device attribute"
+            def devWritten = writtenFields["customDev.1"]?.toString() == "72"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["temp": "temp"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "device attribute": "Device attribute"]]
+            ]
+            if (numOpWritten) extra << [name: "customDev.1", type: "capability.*", multiple: false, options: [:]]
+            if (numOpWritten && devWritten) extra << [name: "tCustomAttr.1", type: "enum", options: ["temperature": "temperature"]]
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "temp", fromDevice: [deviceId: 72, attribute: "temperature"]],
+            confirm: true
+        ])
+
+        then: "the bigdecimal (Decimal) target is accepted -- the numeric-target guard does not fire"
+        result.success == true
+        writtenFields["tCustomAttr.1"] == "temperature"
+        result.partial != true
+    }
+
+    def "addAction setVariable fromDevice rejects a target whose type token is absent (fail closed)"() {
+        // Fail-CLOSED guard: the target var EXISTS (name validates) but its type token is null/absent.
+        // We cannot prove it is numeric, so fromDevice must reject up-front rather than silently allow
+        // an un-typeable target through to a doomed reveal walk.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        // The var is present (so the name check passes) but carries no type token.
+        script.metaClass.getAllGlobalVars = { -> ["mystery": [name: "mystery", value: 0]] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "mystery", fromDevice: [deviceId: 72, attribute: "temperature"]],
+            confirm: true
+        ])
+
+        then: "an un-typeable target is rejected (fail closed), naming the unknown type"
+        result.success == false
+        result.error?.contains("device-attribute (fromDevice) source mode requires a Number or Decimal target variable")
+        result.error?.contains("'mystery' is an unknown type")
+    }
+
+    def "addAction setVariable math trims whitespace around a variable operand"() {
+        // P6: a variable operand with surrounding whitespace (' base ') resolves to 'base' before
+        // existence validation and the xVar3 write -- mirroring op.trim().
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "variable math"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["result": "result"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable math": "Variable math"]]
+            ]
+            if (numOpWritten) {
+                extra << [name: "xVar3.1", type: "enum", options: ["(constant)": "(constant)", "base": "base"]]
+                extra << [name: "valMathOp.1", type: "enum", options: ["absolute": "absolute", "+": "+"]]
+            }
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "result", math: [left: "  base  ", op: "absolute"]],
+            confirm: true
+        ])
+
+        then: "the trimmed variable name lands in xVar3 (not the whitespace-padded form)"
+        result.success == true
+        writtenFields["xVar3.1"] == "base"
+        result.partial != true
+    }
+
+    def "addAction setVariable fromDevice matches the attribute case-insensitively and writes the canonical casing"() {
+        // P8: the caller passes 'temperature' (lowercase) but the device enum offers 'Temperature'
+        // (the hub's casing). The match is case-insensitive AND the CANONICAL option is written, so
+        // RM stores a value its enum actually contains.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) writtenFields[key] = v
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "device attribute"
+            def devWritten = writtenFields["customDev.1"]?.toString() == "72"
+            def extra = [
+                [name: "xVarV.1", type: "enum", options: ["temp": "temp"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "device attribute": "Device attribute"]]
+            ]
+            if (numOpWritten) extra << [name: "customDev.1", type: "capability.*", multiple: false, options: [:]]
+            // Device enum offers the CAPITALIZED attribute; the caller passes lowercase.
+            if (numOpWritten && devWritten) extra << [name: "tCustomAttr.1", type: "enum", options: ["Temperature": "Temperature"]]
+            modeActsDoActPageJson(100, extra, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setVariable", variable: "temp", fromDevice: [deviceId: 72, attribute: "temperature"]],
+            confirm: true
+        ])
+
+        then: "the canonical hub casing 'Temperature' is written, not the caller's lowercase"
+        result.success == true
+        writtenFields["tCustomAttr.1"] == "Temperature"
+        result.partial != true
     }
 
     def "addAction setVariable math binary op with VARIABLE right operand writes xVar4=varname (no valConst2)"() {
@@ -19663,7 +20028,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0], "other": [name: "other", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0], "other": [name: "other", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -19722,7 +20087,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -19796,7 +20161,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
         // Both vars exist on the hub (pre-check passes), but RM's xVar3 enum below omits 'base'.
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -19850,7 +20215,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -19902,7 +20267,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0], "other": [name: "other", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0], "other": [name: "other", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -19962,7 +20327,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -20030,7 +20395,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -20087,7 +20452,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -20146,7 +20511,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -20192,7 +20557,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -20246,7 +20611,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -20300,7 +20665,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "Number", value: 0], "base": [name: "base", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["result": [name: "result", type: "integer", value: 0], "base": [name: "base", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -20362,7 +20727,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -20408,7 +20773,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -20459,7 +20824,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -20512,7 +20877,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["temp": [name: "temp", type: "integer", value: 0]] }
 
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -20556,7 +20921,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
-        script.metaClass.getAllGlobalVars = { -> ["counter": [name: "counter", type: "Number", value: 0], "src": [name: "src", type: "Number", value: 0]] }
+        script.metaClass.getAllGlobalVars = { -> ["counter": [name: "counter", type: "integer", value: 0], "src": [name: "src", type: "integer", value: 0]] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])

@@ -2139,14 +2139,17 @@ class TestRunner:
         # STRICT: the matrix is split across several small pristine rules (each created + deleted in
         # its own finally) to stay under the per-app load limiter; _run_one re-runs on a 504 so no
         # wire-format assertion is ever skipped on a soft envelope.
-        # fromDevice into a NUMBER var must read a NUMERIC attribute: RM's "Set Variable from
-        # device attribute" picker filters tCustomAttr to attributes compatible with the target
-        # var's type, so a Number target offers only numeric attributes (a switch's enum on/off
-        # attribute is filtered out -> empty tCustomAttr). Use a virtual temperature sensor.
+        # fromDevice/math are NUMERIC-TARGET-ONLY (verified live on the hub): RM renders the numOp
+        # source-mode picker only for a Number/Decimal target var, so fromDevice/math into a String
+        # var is rejected up-front (Rule C). For a Number target, fromDevice's tCustomAttr is further
+        # filtered to attributes compatible with the var's type, so a Number target offers only
+        # numeric attributes -- an enum-only attribute like a switch's on/off is filtered out (the
+        # negative case, Rule D). Use a virtual temperature sensor for the numeric happy path.
         temp_id = int(self.get_test_temperature_ids()[0])
         switch_id = int(self.get_test_switch_id())
         var_name = f"{PREFIX}sv_modes"          # Number target
-        str_var_name = f"{PREFIX}sv_str"        # String target (for the type-filter INVERSE case)
+        str_var_name = f"{PREFIX}sv_str"        # String target (numeric-target-only reject)
+        bool_var_name = f"{PREFIX}sv_bool"      # Boolean target (numeric-target-only reject)
 
         # Create a var via hub_create_variable (guaranteed to CREATE a missing var in the hub
         # namespace, unlike hub_set_variable whose missing-var semantics are ambiguous), then wait
@@ -2167,10 +2170,12 @@ class TestRunner:
                 try:
                     # A String var MUST get a NON-EMPTY value: an empty-string value does not
                     # persist a String hub variable (the wizard reports complete but nothing lands
-                    # -> the var never becomes visible to getGlobalVar). Numeric vars take "0".
+                    # -> the var never becomes visible to getGlobalVar). Numeric vars take "0", a
+                    # Boolean takes "false", everything else a non-empty placeholder.
+                    init_value = {"Number": "0", "Boolean": "false"}.get(var_type, "init")
                     self.client.call_tool("hub_manage_variables", {
                         "tool": "hub_create_variable",
-                        "args": {"name": name, "type": var_type, "value": "0" if var_type == "Number" else "init", "confirm": True}})
+                        "args": {"name": name, "type": var_type, "value": init_value, "confirm": True}})
                 except (McpError, McpToolError, requests.HTTPError) as exc:
                     # A create error is itself a race symptom (or a relay 504 that still committed).
                     # Don't fail here -- the visibility poll below is the authoritative gate; a
@@ -2196,6 +2201,7 @@ class TestRunner:
 
         _create_and_wait(var_name, "Number")
         _create_and_wait(str_var_name, "String")
+        _create_and_wait(bool_var_name, "Boolean")
         # The matrix is split across SMALL rules (<=3 setVariable actions each): the classic wizard
         # re-POSTs the FULL rule page per submitOnChange, so piling many actions into one rule trips
         # the hub's per-app load limiter (a 5th action lands numOp.<N> as not_in_schema). Each rule
@@ -2227,6 +2233,13 @@ class TestRunner:
                     "tool": "hub_get_app_config", "args": {"appId": app_a, "includeSettings": True}}).get("settings") or {})
                 assert settings_a.get(f"tCustomAttr.{fd_idx}") == "temperature", \
                     f"fromDevice attribute persisted with the wrong value; settings={settings_a}"
+                # Read back the device-id VALUE too (customDev stores the selected device id), not
+                # just key presence -- a wrong device would still land the key. RM may serialize the
+                # capability picker as a bare id or an id-keyed map, so assert the id appears in the
+                # persisted value's string form rather than pinning one serialization.
+                customdev_val = str(settings_a.get(f"customDev.{fd_idx}"))
+                assert str(temp_id) in customdev_val, \
+                    f"fromDevice device id {temp_id} not in persisted customDev value {customdev_val!r}; settings={settings_a}"
                 self._assert_rule_healthy(app_a)
             finally:
                 self._delete_native(app_a)
@@ -2268,8 +2281,23 @@ class TestRunner:
                 assert not mb2.get("partial"), f"math var-minus-var action falsely flagged partial: {mb2}"
                 mb2_idx = mb2.get("actionIndex")
 
+                # math binary with a DECIMAL constant operand (var + 5.5): proves decimal-constant
+                # serialization end-to-end -- the constant must persist verbatim as "5.5", never
+                # integer-stripped (which would corrupt the intended value).
+                md = self._rm_call_soft({
+                    "appId": app_b,
+                    "addAction": {"capability": "setVariable", "variable": var_name,
+                                  "math": {"left": var_name, "op": "+", "right": 5.5}},
+                    "confirm": True,
+                }, strict=True)
+                assert md.get("success") is not False, f"setVariable math decimal-constant hard-errored: {md}"
+                assert not md.get("partial"), f"math decimal-constant action falsely flagged partial: {md}"
+                md_idx = md.get("actionIndex")
+
                 settings_b = (self.client.call_tool("hub_read_apps_code", {
                     "tool": "hub_get_app_config", "args": {"appId": app_b, "includeSettings": True}}).get("settings") or {})
+                assert settings_b.get(f"xVar3.{mb_idx}") == var_name, \
+                    f"math first-operand variable persisted with the wrong value; settings={settings_b}"
                 assert settings_b.get(f"valMathOp.{mb_idx}") == "+", \
                     f"math binary operator persisted with the wrong value; settings={settings_b}"
                 assert str(settings_b.get(f"valConst2.{mb_idx}")) == "10", \
@@ -2278,12 +2306,15 @@ class TestRunner:
                     f"math var-minus-var operator persisted with the wrong value; settings={settings_b}"
                 assert settings_b.get(f"xVar4.{mb2_idx}") == var_name, \
                     f"math var second operand persisted with the wrong value; settings={settings_b}"
+                # The decimal constant must persist verbatim -- "5.5", not "5" or "6".
+                assert str(settings_b.get(f"valConst2.{md_idx}")) == "5.5", \
+                    f"math decimal constant persisted with the wrong value (expected 5.5); settings={settings_b}"
                 self._assert_rule_healthy(app_b)
             finally:
                 self._delete_native(app_b)
 
-            # Rule C: math unary (no second operand) + the INVERSE type-filter case.
-            app_c = self._create_native_rule("SetVarMathUnaryInv")
+            # Rule C: math unary (no second operand) + the String- and Boolean-target rejection cases.
+            app_c = self._create_native_rule("SetVarMathUnaryStr")
             try:
                 # math unary: absolute of the variable (NO second operand).
                 mu = self._rm_call_soft({
@@ -2301,28 +2332,38 @@ class TestRunner:
                     f"math unary wrongly wrote a second operand; settingsApplied={mu_applied}"
                 assert not mu.get("partial"), f"math unary action falsely flagged partial: {mu}"
 
-                # INVERSE type-filter case (proves the filter INCLUDES, not just excludes): a STRING
-                # target var offers enum attributes, so reading a switch's enum 'switch' attribute
-                # into the String var must SUCCEED. The complement of the NEGATIVE case in Rule D.
-                inv = self._rm_call_soft({
+                # String-TARGET rejection: the device-attribute (fromDevice) and variable-math (math)
+                # source modes are Number/Decimal-target-only -- RM renders the numOp source-mode
+                # picker only for a numeric target var, so fromDevice/math into a String var is not an
+                # RM-supported operation and is rejected up-front (success=false) with the clear
+                # numeric-target requirement, NOT the cryptic deep not-in-schema reveal failure.
+                # (The "filter INCLUDES valid attributes" point is already proven by the Rule A
+                # happy-path fd: Number var + temperature -> tCustomAttr offered and lands.)
+                str_reject = self._rm_call_soft({
                     "appId": app_c,
                     "addAction": {"capability": "setVariable", "variable": str_var_name,
                                   "fromDevice": {"deviceId": switch_id, "attribute": "switch"}},
                     "confirm": True,
                 }, strict=True)
-                assert inv.get("success") is not False, \
-                    f"setVariable fromDevice into a String var (enum attribute) hard-errored -- the " \
-                    f"type filter wrongly excluded an enum attribute for a String target: {inv}"
-                inv_applied = inv.get("settingsApplied") or []
-                assert any(str(k).startswith("tCustomAttr.") for k in inv_applied), \
-                    f"String-var fromDevice attribute enum did not land; settingsApplied={inv_applied}"
-                assert not inv.get("partial"), f"String-var fromDevice action falsely flagged partial: {inv}"
-                inv_idx = inv.get("actionIndex")
+                assert str_reject.get("success") is False, \
+                    f"fromDevice into a String var should be rejected (numeric-target-only mode), got: {str_reject}"
+                assert "requires a Number or Decimal target variable" in (str_reject.get("error") or ""), \
+                    f"String-target rejection did not name the Number/Decimal requirement: {str_reject}"
 
-                settings_c = (self.client.call_tool("hub_read_apps_code", {
-                    "tool": "hub_get_app_config", "args": {"appId": app_c, "includeSettings": True}}).get("settings") or {})
-                assert settings_c.get(f"tCustomAttr.{inv_idx}") == "switch", \
-                    f"String-var fromDevice attribute persisted with the wrong value; settings={settings_c}"
+                # Boolean target reject: the same numeric-target-only guard rejects a Boolean target
+                # (live token "boolean") -- proves the guard excludes every non-numeric kind, not
+                # just String. DateTime is left to the Spock suite (its create has a visibility race
+                # that would make this live path flaky).
+                bool_reject = self._rm_call_soft({
+                    "appId": app_c,
+                    "addAction": {"capability": "setVariable", "variable": bool_var_name,
+                                  "fromDevice": {"deviceId": switch_id, "attribute": "switch"}},
+                    "confirm": True,
+                }, strict=True)
+                assert bool_reject.get("success") is False, \
+                    f"fromDevice into a Boolean var should be rejected (numeric-target-only mode), got: {bool_reject}"
+                assert "requires a Number or Decimal target variable" in (bool_reject.get("error") or ""), \
+                    f"Boolean-target rejection did not name the Number/Decimal requirement: {bool_reject}"
                 self._assert_rule_healthy(app_c)
             finally:
                 self._delete_native(app_c)
@@ -2359,6 +2400,7 @@ class TestRunner:
         finally:
             self._delete_variable_safe(var_name)
             self._delete_variable_safe(str_var_name)
+            self._delete_variable_safe(bool_var_name)
 
     @test("native_apps")
     def test_set_rule_walker_enum_required_expression(self) -> None:
