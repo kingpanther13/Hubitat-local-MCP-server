@@ -789,6 +789,68 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         ex.message.contains('Nothing to change')
     }
 
+    def "set attaches the unified rule-health report (graph rule: validationErrors drive health.broken) -- issue #254"() {
+        given:
+        enableWrite()
+        def graphState = [name: 'Hall light', rulePaused: false, ruleJson: '{"version":1,"nodes":[],"edges":[]}',
+                          validationErrors: ['Trigger device missing']]
+        // _vrbDetect + read-back read the graph endpoint; the health wrapper reads ruleBuilderJson
+        // first (a graph app answers with non-rule state) and then falls through to the graph endpoint.
+        hubGet.register('/app/ruleBuilder20Json/9') { params -> json(graphState) }
+        hubGet.register('/app/ruleBuilderJson/9') { params -> json([graphAppState: true]) }
+        hubGet.register('/app/ruleBuilderPause/9/true') { params -> graphState.rulePaused = true; '{"success":true}' }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 9, paused: true, confirm: true])
+
+        then:
+        result.success == true
+        result.format == 'graph'
+        result.health != null
+        result.health.ruleFormat == 'vrb-graph'
+        result.health.broken == true
+        result.health.validationErrors == ['Trigger device missing']
+        result.health.ok == false
+    }
+
+    def "set attaches health on a FAILURE response that still resolves a rule id (format mismatch) -- issue #254"() {
+        given:
+        enableWrite()
+        def graphState = [name: 'Hall light', rulePaused: false, ruleJson: '{"version":1,"nodes":[],"edges":[]}',
+                          validationErrors: []]
+        hubGet.register('/app/ruleBuilder20Json/9') { params -> json(graphState) }
+        hubGet.register('/app/ruleBuilderJson/9') { params -> json([graphAppState: true]) }
+
+        when: "editing a graph rule with a classic-format definition -> success:false but appId is known"
+        def result = script.toolSetVisualRule([appId: 9, definition: classicDefinition(), confirm: true])
+
+        then:
+        result.success == false
+        result.appId == 9
+        result.health != null            // health attaches on the failure response too
+        result.health.ruleFormat == 'vrb-graph'
+    }
+
+    def "set attaches health via the caller's appId when an edit-failure map omits appId (graph-save reject) -- codex review"() {
+        given:
+        enableWrite()
+        def graphState = [name: 'Hall light', rulePaused: false, ruleJson: '{"version":1,"nodes":[],"edges":[]}',
+                          validationErrors: []]
+        hubGet.register('/app/ruleBuilder20Json/9') { params -> json(graphState) }
+        hubGet.register('/app/ruleBuilderJson/9') { params -> json([graphAppState: true]) }
+        // The hub rejects the graph SAVE -> _vrbApplySave returns success:false with NO appId.
+        stubPostJson { path, body -> [success: false, errorMessage: "hub rejected", validationErrors: ["bad node"]] }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 9, definition: graphDefinition(), confirm: true])
+
+        then:
+        result.success == false
+        result.appId == null             // the impl's reject map omits appId...
+        result.health != null            // ...but health still attaches via the caller's appId (fallback)
+        result.health.ruleFormat == 'vrb-graph'
+    }
+
     def "edit with a definition format that mismatches the rule's format returns success=false without saving"() {
         given: 'rule 42 is classic; caller supplies a graph definition'
         enableWrite()
