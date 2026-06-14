@@ -2151,34 +2151,44 @@ class TestRunner:
         # namespace, unlike hub_set_variable whose missing-var semantics are ambiguous), then wait
         # for it to become visible to the BULK getAllGlobalVars() read. The setVariable handler
         # validates the target against getAllGlobalVars(), and hub_list_variables reads that SAME
-        # surface -- so polling it is an exact proxy for what the validator sees. A fresh var can be
-        # created but not yet returned by the bulk read for a beat (the known create_variable
-        # post-write visibility race); without this wait the very next setVariable call rightly
-        # fails-loud on a var it cannot see (the feature is correct; the test must wait).
+        # surface -- so polling it is an exact proxy for what the validator sees.
+        #
+        # hub_create_variable has a known intermittent post-write visibility race: it spuriously
+        # errors ("wizard completed but not visible via getGlobalVar") or commits but the var does
+        # not appear in the bulk read for a beat -- and a fresh CREATE settles it. So each attempt
+        # is create-then-poll, and on a race (create error OR poll-miss) the WHOLE create is
+        # re-issued, up to a few times with short backoff. Only an exhausted retry budget fails.
         def _create_and_wait(name: str, var_type: str) -> None:
             self.created_variable_names.append(name)
-            try:
-                self.client.call_tool("hub_manage_variables", {
-                    "tool": "hub_create_variable",
-                    "args": {"name": name, "type": var_type, "value": "0" if var_type == "Number" else "", "confirm": True}})
-            except (McpError, McpToolError, requests.HTTPError) as exc:
-                # hub_create_variable can spuriously error ("wizard completed but not visible via
-                # getGlobalVar") or drop its response to a relay 504 while still committing. The
-                # visibility poll below is the authoritative gate -- it confirms the var actually
-                # landed in the bulk read -- so tolerate the create error here and let the poll
-                # decide. A genuine non-creation is surfaced by the poll's timeout AssertionError.
-                print(f"    hub_create_variable({name}) raised ({exc}); the visibility poll is authoritative")
-            # Poll the bulk getAllGlobalVars() surface (via hub_list_variables) until the new var is
-            # visible -- the SAME read the setVariable target validator consults. Times out loud so a
-            # genuine non-creation surfaces rather than looping silently.
-            deadline = time.time() + 15.0
-            while not self._hub_variable_visible_in_bulk(name):
-                if time.time() >= deadline:
-                    raise AssertionError(
-                        f"hub variable {name!r} created but never appeared in the bulk "
-                        f"getAllGlobalVars() read within 15s (the create_variable post-write "
-                        f"visibility race did not settle) -- setVariable validation cannot proceed")
-                time.sleep(1.0)
+            max_attempts = 3
+            poll_secs = 12.0
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    self.client.call_tool("hub_manage_variables", {
+                        "tool": "hub_create_variable",
+                        "args": {"name": name, "type": var_type, "value": "0" if var_type == "Number" else "", "confirm": True}})
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    # A create error is itself a race symptom (or a relay 504 that still committed).
+                    # Don't fail here -- the visibility poll below is the authoritative gate; a
+                    # genuine non-creation surfaces as a poll-miss and triggers a re-create.
+                    print(f"    hub_create_variable({name}) attempt {attempt}/{max_attempts} raised "
+                          f"({exc}); the visibility poll is authoritative")
+                # Poll the bulk getAllGlobalVars() surface (via hub_list_variables) until the new var
+                # is visible -- the SAME read the setVariable target validator consults.
+                deadline = time.time() + poll_secs
+                while time.time() < deadline:
+                    if self._hub_variable_visible_in_bulk(name):
+                        return
+                    time.sleep(1.0)
+                if attempt < max_attempts:
+                    print(f"    hub variable {name!r} not visible in the bulk read after attempt "
+                          f"{attempt}/{max_attempts} (create_variable post-write visibility race); "
+                          f"re-issuing the create")
+                    time.sleep(2.0)
+            raise AssertionError(
+                f"hub variable {name!r} never appeared in the bulk getAllGlobalVars() read after "
+                f"{max_attempts} create attempts (the create_variable post-write visibility race "
+                f"did not settle) -- setVariable validation cannot proceed")
 
         _create_and_wait(var_name, "Number")
         _create_and_wait(str_var_name, "String")
