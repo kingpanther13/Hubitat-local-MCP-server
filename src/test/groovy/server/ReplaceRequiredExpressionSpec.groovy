@@ -1633,4 +1633,27 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("conditions[0] is not a Map")
     }
+
+    def "_rmIsCommittedRETell: two-field cancelST+editST tell for replace, three-field (+stopOnST) for the add-path guard"() {
+        // The committed-RE marker the replace path detects + deletes against. requireStopOnST=false
+        // (replace path): cancelST+editST with NO inline new-condition selector uniquely identifies
+        // a committed RE. requireStopOnST=true (the add path's existing-RE refusal guard): the
+        // stricter three-field tell, so a transient cancelST+editST render WITHOUT stopOnST does not
+        // trip the add refusal. The !newCondSelector half rules out the delete-and-rebuild hybrid
+        // render (cancelST+editST AND a cond/rCapab_ selector) so it is never misread as a survived
+        // RE. This pins the relaxation directly -- previously it was only exercised transitively.
+        expect:
+        script._rmIsCommittedRETell(names as Set, requireStopOnST) == expected
+
+        where:
+        names                                      | requireStopOnST || expected
+        ["cancelST", "editST", "doneST"]           | false           || true
+        ["cancelST", "editST", "cond"]             | false           || false
+        ["cancelST", "editST", "rCapab_2"]         | false           || false
+        ["doneST"]                                 | false           || false
+        null                                       | false           || false
+        ["cancelST", "editST"]                     | true            || false
+        ["cancelST", "editST", "stopOnST"]         | true            || true
+        ["cancelST", "editST", "stopOnST", "cond"] | true            || false
+    }
 }
