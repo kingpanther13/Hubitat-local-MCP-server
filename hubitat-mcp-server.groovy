@@ -9881,7 +9881,8 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         }
         // Write the device id. The writer reads multiple=false from the schema and emits the
         // capability.* single-device 3-field contract. RM's picker spans all hub devices, so an
-        // unknown id silently fails to land -- surfaced via the skipped list (partial=true).
+        // unknown id does not land; the next step's tCustomAttr reveal then fails loud
+        // (success=false) because the attribute enum never appears without a selected device.
         _rmWriteSettingOnPage(appId, "doActPage", customDevField, [fdDeviceId], applied, null, skipped)
         // Step 2: tCustomAttr.<N> (attribute enum, filtered to the device) appears after the
         // device write. Validate the requested attribute against the revealed enum.

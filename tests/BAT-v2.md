@@ -3256,15 +3256,15 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ```json
 {
-  "setup_prompt": "the Write master is enabled. Create hub variable 'bat_sv_fd' (numeric, value 0). Note a BAT_E2E_ virtual switch device id (or any device with a readable attribute). Create RM rule 'BAT SetVariable FromDevice Test'.",
-  "test_prompt": "Add an action to 'BAT SetVariable FromDevice Test': capability='setVariable', variable='bat_sv_fd', fromDevice={deviceId:<switch id>, attribute:'switch'}. Then call hub_get_rule_health and confirm no broken markers.",
+  "setup_prompt": "the Write master is enabled. Create hub variable 'bat_sv_fd' (numeric, value 0). Note a BAT_E2E_ virtual temperature sensor device id (or any device exposing a numeric 'temperature' attribute). Create RM rule 'BAT SetVariable FromDevice Test'.",
+  "test_prompt": "Add an action to 'BAT SetVariable FromDevice Test': capability='setVariable', variable='bat_sv_fd', fromDevice={deviceId:<temperature sensor id>, attribute:'temperature'}. Then call hub_get_rule_health and confirm no broken markers.",
   "teardown_prompt": "Delete 'BAT SetVariable FromDevice Test'. Delete hub variable bat_sv_fd."
 }
 ```
 
-**Expected**: `hub_set_rule(addAction={capability:'setVariable', variable:'bat_sv_fd', fromDevice:{deviceId:<id>, attribute:'switch'}})` completes with `success=true` and `partial=false`. RM wire: `numOp.N='device attribute'`, `customDev.N=<id>` (capability.* single-device picker, schema-gated -- revealed after numOp), `tCustomAttr.N='switch'` (attribute enum FILTERED to the device, revealed after the device is written). `settingsApplied` includes `customDev.<N>` and `tCustomAttr.<N>`. `hub_get_rule_health` reports no broken markers. An attribute the device does not expose returns `success=false` with the device's available-attribute list.
+**Expected**: `hub_set_rule(addAction={capability:'setVariable', variable:'bat_sv_fd', fromDevice:{deviceId:<id>, attribute:'temperature'}})` completes with `success=true` and `partial=false`. The numeric target var requires a numeric source attribute: RM filters `tCustomAttr` to attributes compatible with the target var's type, so a Number var offers numeric attributes like `temperature` (an enum-only attribute such as a switch's `switch` is filtered out for a numeric var -- see the negative case below). RM wire: `numOp.N='device attribute'`, `customDev.N=<id>` (capability.* single-device picker, schema-gated -- revealed after numOp), `tCustomAttr.N='temperature'` (attribute enum FILTERED to the device, revealed after the device is written). `settingsApplied` includes `customDev.<N>` and `tCustomAttr.<N>`. `hub_get_rule_health` reports no broken markers. An attribute outside the device's type-filtered enum (e.g. requesting a switch's enum `switch` attribute into this numeric var) returns `success=false` with the available-attribute list.
 
-**Failure modes**: customDev not revealed (numOp dropped or wrong value). tCustomAttr not filtered to the device (wrong enum). An invalid attribute accepted silently and produces a broken action. deviceId validated against the MCP-selected set instead of all hub devices (false rejection of a valid hub device).
+**Failure modes**: customDev not revealed (numOp dropped or wrong value). tCustomAttr not filtered to the device or to the target var's type (wrong enum). An invalid attribute accepted silently and produces a broken action. deviceId validated against the MCP-selected set instead of all hub devices (false rejection of a valid hub device).
 
 ### T648 — addAction setVariable math form (structured variable math, binary + unary arity)
 
