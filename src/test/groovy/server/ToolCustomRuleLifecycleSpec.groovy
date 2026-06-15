@@ -17,6 +17,59 @@ import support.ToolSpecBase
  */
 class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
 
+    // ---- schema: type enums (issue #258) ------------------------------------
+
+    def "hub_create_custom_rule schema enums stay in lockstep with the create-path validators"() {
+        // Issue #258 moved the trigger/condition/action type lists OUT of the description
+        // prose and INTO items.properties.type.enum (the structural home per AGENTS.md "use
+        // enum for a fixed set"). The create path (toolCreateRule/toolUpdateRule in this lib)
+        // gates every type through validateTrigger/validateCondition/validateAction in
+        // hubitat-mcp-server.groovy. This guard reads those validators' ACTUAL `case` labels
+        // from source and asserts each enum equals the accepted set -- so a strict client can
+        // never reject a type the create path accepts (the exact regression caught in review,
+        // where the enum was derived from runtime dispatch and missed validator-only cases),
+        // and a newly-added validator case can't silently drift from the enum.
+        // Exceptions: 'expression' is validate-REJECTED (Eval.me banned in the sandbox) so it
+        // is excluded from conditions; sunrise/sunset/sun are normalizeTrigger INPUT aliases
+        // (normalized to type:'time' before validateTrigger) added on top of the trigger cases;
+        // minutes/hours/days are the nested periodic-UNIT switch inside validateTrigger, not
+        // trigger types.
+        given:
+        settingsMap.enableCustomRuleEngine = true
+        def src = new File('hubitat-mcp-server.groovy').text
+        def caseLabels = { String fnSig ->
+            int start = src.indexOf(fnSig)
+            assert start >= 0 : "could not find ${fnSig} in hubitat-mcp-server.groovy -- validator moved/renamed?"
+            int end = src.indexOf('\ndef ', start + fnSig.length())
+            def body = src.substring(start, end < 0 ? src.length() : end)
+            // /[a-z_]+/ matches the lowercase_underscore type labels the validators use. A future
+            // label with a digit/uppercase (e.g. "set_hvac2") would be missed here -- but then the
+            // guard fails in the SAFE direction (the enum carries it, the parsed set doesn't =>
+            // inequality => RED), so it degrades to a loud failure, never a silent miss.
+            (body =~ /case\s+"([a-z_]+)"/).collect { it[1] } as Set
+        }
+        def triggerCases = caseLabels('def validateTrigger(trigger) {') - ['minutes', 'hours', 'days']
+        def conditionCases = caseLabels('def validateCondition(condition) {') - ['expression']
+        def actionCases = caseLabels('def validateAction(action) {')
+
+        def def_ = script.getAllToolDefinitions().find { it.name == 'hub_create_custom_rule' }
+        def triggerEnum = def_.inputSchema.properties.triggers.items.properties.type.enum as Set
+        def conditionEnum = def_.inputSchema.properties.conditions.items.properties.type.enum as Set
+        def actionEnum = def_.inputSchema.properties.actions.items.properties.type.enum as Set
+
+        expect: 'the validators actually parsed (guard is not vacuous)'
+        triggerCases.contains('device_event') && conditionCases.contains('device_state') && actionCases.contains('device_command')
+
+        and: 'trigger enum = validateTrigger cases + the normalizeTrigger sun aliases'
+        triggerEnum == (triggerCases + ['sunrise', 'sunset', 'sun'])
+
+        and: 'condition enum = validateCondition cases (minus the rejected expression type)'
+        conditionEnum == conditionCases
+
+        and: 'action enum = validateAction cases exactly'
+        actionEnum == actionCases
+    }
+
     // ---- toolCreateRule -----------------------------------------------------
 
     def "toolCreateRule creates rule via addChildApp and returns the child app id"() {

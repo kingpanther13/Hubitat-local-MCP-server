@@ -820,13 +820,7 @@ def _getAllToolDefinitions_partCustomRules() {
             name: "hub_create_custom_rule",
             description: """*** LEGACY: the custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. For default rule creation requests ("create a Rule Machine rule," "Hubitat rule," anything the user wants visible in Hubitat's RM app list / web UI), use hub_manage_rule_machine hub_set_rule instead. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. ***
 
-Create a new automation rule (MCP sandbox engine). Call `hub_get_tool_guide(section='rules')` for structure, syntax, and examples.
-
-[[FLAT_TRIM]]
-Trigger types: device_event (supports duration, multi-device), button_event, time (HH:mm/sunrise/sunset+offset), periodic, mode_change, hsm_change
-Condition types: device_state, device_was, time_range, mode, variable, days_of_week, sun_position, hsm_status
-Action types: device_command, toggle_device, activate_scene, set_variable, set_local_variable, set_mode, set_hsm, delay, if_then_else, cancel_delayed, repeat, stop, log, set_thermostat, http_request, speak, comment, set_valve, set_fan_speed, set_shade, variable_math
-[[/FLAT_TRIM]]
+Create a new automation rule (MCP sandbox engine). Call `hub_get_tool_guide(section='rules')` for the trigger/condition/action type lists, per-type fields, structure, syntax, and examples.
 
 Verify rule after creation.""",
             inputSchema: [
@@ -836,10 +830,10 @@ Verify rule after creation.""",
                     description: [type: "string", description: "Optional human-readable rule description"],
                     enabled: [type: "boolean", description: "Enable rule immediately on creation", default: true],
                     testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion. Use for temporary/experimental rules.", default: false],
-                    triggers: [type: "array", description: "Trigger objects (at least one required), each a {type, ...} object. See the type list in the tool description and hub_get_tool_guide(section='rules') for per-type fields, e.g. {\"type\":\"time\",\"time\":\"sunset\"}."],
-                    conditions: [type: "array", description: "Optional condition objects gating the actions, each {type, ...}. See type list above and the rules guide, e.g. {\"type\":\"mode\",\"mode\":\"Night\"}."],
+                    triggers: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_event", "button_event", "time", "sunrise", "sunset", "sun", "periodic", "mode_change", "hsm_change"]]]], description: "Trigger objects (at least one required), each a {type, ...} object — the `type` enum lists the kinds (sunrise/sunset/sun are shortcuts for a time trigger). Per-type fields + examples: hub_get_tool_guide(section='rules'). e.g. {\"type\":\"time\",\"time\":\"sunset\"}."],
+                    conditions: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_state", "device_was", "time_range", "mode", "variable", "days_of_week", "sun_position", "hsm_status", "presence", "lock", "thermostat_mode", "thermostat_state", "illuminance", "power"]]]], description: "Optional condition objects gating the actions, each {type, ...}. Per-type fields: hub_get_tool_guide(section='rules'). e.g. {\"type\":\"mode\",\"mode\":\"Night\"}."],
                     conditionLogic: [type: "string", enum: ["all", "any"], description: "How to combine multiple conditions: 'all' = AND, 'any' = OR.", default: "all"],
-                    actions: [type: "array", description: "Action objects to run when triggered (at least one required), each {type, ...}. See type list above and the rules guide, e.g. {\"type\":\"device_command\",\"deviceId\":\"42\",\"command\":\"on\"}."]
+                    actions: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_command", "toggle_device", "activate_scene", "set_variable", "set_local_variable", "set_mode", "set_hsm", "delay", "if_then_else", "cancel_delayed", "repeat", "stop", "log", "set_level", "set_color", "set_color_temperature", "lock", "unlock", "capture_state", "restore_state", "send_notification", "set_thermostat", "http_request", "speak", "comment", "set_valve", "set_fan_speed", "set_shade", "variable_math"]]]], description: "Action objects to run when triggered (at least one required), each {type, ...}. Per-type fields: hub_get_tool_guide(section='rules'). e.g. {\"type\":\"device_command\",\"deviceId\":\"42\",\"command\":\"on\"}."]
                 ],
                 required: ["name", "triggers", "actions"]
             ],

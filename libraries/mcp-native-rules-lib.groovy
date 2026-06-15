@@ -136,7 +136,7 @@ Requires the Write master + confirm=true + recent hub backup.""",
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.[[FLAT_TRIM]] Routes through the controller's add-button flow; returns buttonRuleId with the Button trigger auto-seeded — author its actions via hub_set_rule(appId=buttonRuleId, addAction=...). The controller must already have a button device assigned.[[/FLAT_TRIM]]", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    walkStep: [type: "object", description: "Generic classic-dynamicPage walker.[[FLAT_TRIM]] introspect/write/click/done, one step per call, for stateful multi-page classic apps; same shape as hub_set_rule's walkStep — see hub_get_tool_guide(section='set_rule_reference'). For Rule Machine RULES use hub_set_rule.[[/FLAT_TRIM]]"],
+                    walkStep: [type: "object", description: "Generic classic-dynamicPage walker for stateful multi-page classic apps -- introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep (see hub_get_tool_guide(section='set_rule_reference')). For Rule Machine RULES use hub_set_rule."],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
@@ -194,74 +194,47 @@ Requires the Write master + confirm=true + recent hub backup.""",
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add a Rule Machine TRIGGER to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'switch', ...}` will get "addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.". Pass `addTrigger: {discover: true}` for the live per-capability schema, or call `hub_get_tool_guide(section='set_rule_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally -- discovers next index, opens editor, walks the schema-aware writes, commits via hasAll, and auto-finalizes the residual isCondTrig prompt. Returns the assigned trigger index in result.triggerIndex. updateRule fires automatically after the commit so subscriptions populate immediately -- no separate button call needed.[[FLAT_TRIM]] (Exception: if updateRule itself is rejected the response carries `subscriptionsNotLive: true` -- see PARTIAL-SUCCESS HANDLING for the recovery path.)[[/FLAT_TRIM]] (Bulk addTriggers[] fires updateRule once at the end of the batch.)
+                        description: """Add a Rule Machine TRIGGER via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- `{type: 'switch', ...}` is rejected with "addTrigger.capability is required". Pass `addTrigger: {discover: true}` for the live per-capability schema, or `hub_get_tool_guide(section='set_rule_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally (discover index, walk the schema-aware writes, commit, auto-finalize the residual isCondTrig prompt) and fires updateRule so subscriptions populate; returns result.triggerIndex. Bulk addTriggers[] fires updateRule once at the end.
 
-[[FLAT_TRIM]]
-Capability families (NAMES here; full per-field specs via addTrigger:{discover:true} or hub_get_tool_guide(section='set_rule_reference')): Device-state (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source) = capability + deviceIds + state, optional allOfThese for "all of these"; Numeric (Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints) = capability + deviceIds + comparator + value; Button = capability='Button' + deviceIds + buttonNumber + state; Custom Attribute = capability='Custom Attribute' + deviceIds + attribute + comparator + value; Time / Sunrise / Sunset = capability='Certain Time (and optional date)' + time + atTime ('HH:mm' = daily-recurring, full ISO datetime = one-shot dated) + offset; Mode = capability='Mode' + state (name) or modeIds; Periodic Schedule = capability='Periodic Schedule' + periodic={frequency, everyN, ...}. Modifier: andStays={hours,minutes,seconds} on any device-state/numeric trigger.
-[[/FLAT_TRIM]]
+Capability families (NAMES; full per-field specs via discover:true or the guide): Device-state (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source), Numeric (Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints), Button, Custom Attribute, Time / Sunrise / Sunset, Mode, Periodic Schedule. Modifiers: andStays, allOfThese.
 
-Optional fields on every spec:
-  - conditional (default false) — sets isCondTrig.<N>=true. Combine with `condition` below to bind the conditional-trigger gate in one call; or set conditional=true alone to leave the gate empty for later.
-  - condition — Map driving the conditional-trigger sub-wizard: {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?} (handled inline; no separate call). `conditional` is implied true when set. Custom Attribute needs attribute+comparator[[FLAT_TRIM]] (for an enum-recognized attribute RM routes the value to the picker and omits the comparator -- correct, not a lost value)[[/FLAT_TRIM]]; Variable needs variable (+ compareToVariable for a variable-vs-variable RHS, mutually exclusive with value).[[FLAT_TRIM]] NOTE: trigger.condition supports a NARROWER set than addRequiredExpression/addAction — Variable, Custom Attribute, and enum/numeric device-state only; Mode-via-picker, Between two times, and compareToDevice are NOT supported here (use addRequiredExpression for those).[[/FLAT_TRIM]] Wire-format details: guide:true.
-  - rawSettings — escape hatch dict {fieldName: value} for advanced fields not yet mapped (e.g. ButtontDev<N> overrides, alternative attribute pickers, etc.). Use `@N` token to substitute the auto-assigned trigger/condition index — e.g. {'xVar@N': 'myVar'} writes `xVar1` when the trigger lands at index 1.
+Optional on every spec:
+  - conditional — sets isCondTrig.<N>; combine with `condition` to bind the conditional-trigger gate in one call, or set alone to leave it empty.
+  - condition — Map {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?} (selectTriggers supports a NARROWER set than addRequiredExpression/addAction — see guide).
+  - rawSettings — escape hatch {fieldName: value} using the `@N` token for the auto-assigned index, e.g. {'xVar@N': 'myVar'} writes `xVar1` when the trigger lands at index 1.
 
-Trigger index is auto-assigned (next available). The wizard's auto-finalize via isCondTrig.<N>=false fires unless conditional=true. One add_trigger call replaces the 6-8 calls of the manual wizard flow.
-
-PARTIAL-SUCCESS: success:true can come with partial:true -- check partial/repairHints in the response (full protocol: guide:true).[[FLAT_TRIM]] DETAIL: success:true = the call completed and the trigger skeleton was written; partial:true (orthogonal) = some fields didn't land or the row carries a *BROKEN* marker — the trigger exists but needs repair via repairHints. Common repair: pass missing fields via rawSettings and re-add, or walkStep introspect on selectTriggers to see the live fields. Don't treat partial as failure — exhaust tool-only repair first. On a rejected trailing updateRule the trigger is written but not subscribed (subscriptionsNotLive:true) — retry hub_set_rule(button='updateRule', confirm=true). Full slot reference: guide:true.[[/FLAT_TRIM]]"""
+PARTIAL-SUCCESS: success:true can come with partial:true — check partial/repairHints; on a rejected trailing updateRule the trigger is written but not subscribed (subscriptionsNotLive:true), retry hub_set_rule(button='updateRule', confirm=true). Full protocol: guide:true or hub_get_tool_guide(section='set_rule_reference')."""
                     ],
                     addTriggers: [
                         type: "array",
-                        description: "Bulk-add multiple triggers in one tool call. Each item is the same shape as addTrigger. updateRule fires ONCE at the end (not after each trigger), so subscriptions populate from a fully-loaded rule. Pairs naturally with addActions for building a complete rule in a single call. Empty/omitted falls back to the single addTrigger path. On a rejected post-bulk updateRule the adds are committed but not subscribed (subscriptionsNotLive:true) — retry hub_set_rule(button='updateRule', confirm=true); full slot reference: guide:true.",
+                        description: "Bulk-add multiple triggers in one call (each item the same shape as addTrigger). updateRule fires ONCE at the end, so subscriptions populate from a fully-loaded rule; pairs with addActions to build a whole rule in one call. Empty/omitted falls back to single addTrigger. On a rejected post-bulk updateRule: subscriptionsNotLive:true — retry hub_set_rule(button='updateRule', confirm=true).",
                         items: [type: "object"]
                     ],
                     addRequiredExpression: [
                         type: "object",
-                        description: """Add a Rule Machine 5.1 Required Expression (RM's pre-trigger gate that conditions whether the rule is allowed to fire) via the high-level structured API. The tool orchestrates STPage's full wizard internally (per-condition reveal walk, hasAll/hasRule commit, back-nav Done) and fires updateRule. Returns the assigned condition indices in result.conditionIndices.
+                        description: """Add a Rule Machine 5.1 Required Expression (RM's pre-trigger gate conditioning whether the rule may fire) via the high-level structured API. The tool orchestrates STPage's full wizard internally and fires updateRule; returns result.conditionIndices.
 
-Spec: {conditions:[{capability, deviceIds?, state?, comparator?, value?, attribute?, not?}, ...], operator:'AND'|'OR'|'XOR' OR operators:[...] (one per gap)}. For per-condition field rules, all extended per-capability shapes (Mode, Between two times, Variable incl. compareToVariable, device-relative compareToDevice, nested subExpression), the full STPage capability list, and the partial-success/failure contract, pass guide:true or hub_get_tool_guide(section='set_rule_reference').
-[[FLAT_TRIM]]
-RM 5.1 spec: AND/OR/XOR have equal precedence, evaluated left-to-right. Use `operators` (list) for mixed-operator expressions like 'P1 AND P2 OR P3 XOR P4'.
+Spec: {conditions:[{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}, ...], operator:'AND'|'OR'|'XOR' OR operators:[...] (one per gap, for mixed expressions; equal precedence, left-to-right)}. comparator is REQUIRED with attribute for Custom Attribute, and with variable+value for Variable (ASCII !=/<>/== auto-map to RM glyphs). For the full STPage capability list, all extended per-capability shapes (Mode, Between two times, Variable incl. compareToVariable, device-relative compareToDevice, nested subExpression) and the partial-success/failure contract, pass guide:true or hub_get_tool_guide(section='set_rule_reference').
 
-Per-condition spec fields:
-  - capability — required (full STPage capability list: guide:true).
-  - deviceIds — required for device capabilities (Switch / Motion / Contact / Lock / Temperature / etc.); omit for non-device capabilities (Mode, Private Boolean, Last Event Device, time-based).
-  - state — enum value matching the capability ('on'/'off' Switch, 'active'/'inactive' Motion, 'open'/'closed' Contact, 'locked'/'unlocked' Lock, etc.); omit for numeric.
-  - comparator — numeric capabilities ('=', '<', '>', '<=', '>=', '!='); REQUIRED together with attribute for Custom Attribute, and with variable+value for Variable (ASCII !=/<>/== auto-map to RM glyphs).
-  - value — numeric threshold paired with comparator.
-  - attribute — Custom Attribute name (e.g. 'humidity'); REQUIRED and paired with comparator. Example: {capability:'Custom Attribute', deviceIds:[N], attribute:'water', comparator:'=', state:'empty'}. For an attribute the hub recognizes as an ENUM (switch/motion/contact/lock/...), RM routes the value to the enum picker and omits the comparator -- that is correct for a value comparator, not a lost value. A no-RHS state-change comparator (`*changed*`/`*became*`) cannot be represented on an enum attribute (no comparator slot, no value); use the device's native capability instead (e.g. capability:'Switch'), or a non-built-in attribute name (see hub_get_tool_guide section='set_rule_reference').
-  - not — boolean (default false), inverts the condition.
-  - rawSettings — escape hatch {fieldName: value} for fields not yet mapped.
-
-The wizard walks each condition's reveal sequence (cond=a -> rCapab_<N> -> rDev_<N> -> state_<N> / numeric comparator -> optional NOT), commits via hasAll, writes the joining operator between conditions, finalizes via hasRule, and submits the back-nav Done. The expression text on mainPage renders as e.g. "Switch1 is on" (single) or "Switch1 is on AND Motion1 is active" (multi). updateRule fires after the expression commits so the rule's evaluator picks up the gate immediately. The cond counter is shared at the Rule Machine parent app's atomicState level (the parent app's id varies per hub) -- condition indices may not start at 1 (verified live on the second rule of a session: cond=['2'] is normal, not a bug).
-
-PARTIAL-SUCCESS: partial:true / expressionNotLive / wizardStuck can accompany success -- check repairHints. partial:true means some condition fields didn't land (settingsSkipped names them); repairHints names the next step -- pass missing fields via rawSettings on the affected condition. On a rejected trailing updateRule the expression is committed but not live (expressionNotLive:true) -- retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true the wizard couldn't auto-cancel -- call hub_set_rule(button='cancelCapab', pageName='STPage', confirm=true) first (restoreHint has the exact command). Discrete-event sensor state names (wet/dry, detected/clear, etc.) and the full settingsSkipped-sentinel reference: guide:true.[[/FLAT_TRIM]]"""
+PARTIAL-SUCCESS: partial:true / expressionNotLive / wizardStuck can accompany success — check repairHints; on a rejected trailing updateRule the expression is committed but not live (expressionNotLive:true), retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true call hub_set_rule(button='cancelCapab', pageName='STPage', confirm=true) first (restoreHint has the exact command)."""
                     ],
                     replaceRequiredExpression: [
                         type: "object",
-                        description: """Replace an existing RM 5.1 Required Expression in place (same appId, no clone) -- whole-expression replace. Same spec as addRequiredExpression ({conditions:[...], operator|operators}); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing if there is nothing to replace). For per-capability condition shapes and the full partial-success/failure contract pass guide:true or hub_get_tool_guide(section='set_rule_reference').[[FLAT_TRIM]]
-
-Replace an EXISTING Rule Machine 5.1 Required Expression IN PLACE (same appId, no clone). Same spec shape as addRequiredExpression -- {conditions:[...], operator|operators} -- so the new expression can be single-condition, multi-condition, or nested. Use this when a rule ALREADY has a Required Expression and you want to change it; to ADD one to a rule that has none, use addRequiredExpression instead. The tool deletes the whole committed expression, then builds the new condition(s) through the same validated walker addRequiredExpression uses, and fires updateRule. Semantics are WHOLE-expression replace, matching addRequiredExpression's add semantics. Per-condition spec fields and extended capability shapes are identical to addRequiredExpression (guide:true for the full reference).
-
-replaceRequiredExpression refuses (success:false, requiredExpressionMissing:true) when there is no committed expression to replace, so the replace-vs-add intent is never silently swapped. On a clean success returns requiredExpressionReplaced:true plus the same conditionIndices / settingsApplied / settingsSkipped / partial envelope as addRequiredExpression. The delete is destructive, but the entire spec is validated BEFORE it so a malformed spec leaves the existing expression intact; UNLIKE addRequiredExpression the replace path never leaves a committed-but-not-live result -- any failure AFTER the delete (including a rejected trailing updateRule) auto-restores the pre-op backup and returns requiredExpressionReplaced:false. Auto-restore reports requiredExpressionRestored:true when the original expression was put back in place, or false when it could not be (no backup / unconfirmed replay, rule may be left ungated / recreated under requiredExpressionRestoredAs). A failed replace is always reported, never silent data loss.[[/FLAT_TRIM]]"""
+                        description: """Replace an existing RM 5.1 Required Expression in place (same appId, no clone) -- whole-expression replace. Same spec as addRequiredExpression ({conditions:[...], operator|operators}); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing if there is nothing to replace). The delete is destructive, but the entire spec is validated BEFORE it (a malformed spec leaves the existing expression intact) and any failure after the delete -- including a rejected trailing updateRule -- auto-restores the pre-op backup (requiredExpressionRestored): a failed replace is always reported, never silent data loss. Per-condition shapes and the full partial-success/failure contract: guide:true or hub_get_tool_guide(section='set_rule_reference')."""
                     ],
 
                     addActions: [
                         type: "array",
-                        description: "Bulk-add multiple actions in one tool call. Each item is the same shape as addAction. updateRule fires ONCE at the end (not after each action), so subscriptions populate from a fully-loaded rule (actions self-bake via doActPage->selectActions per-item). Pairs naturally with addTriggers -- pass both to add many triggers + many actions in a single tool call. On a rejected post-bulk updateRule the adds are committed but not subscribed (subscriptionsNotLive:true) — retry hub_set_rule(button='updateRule', confirm=true); full slot reference: guide:true.",
+                        description: "Bulk-add multiple actions in one call (each item the same shape as addAction; actions self-bake via doActPage). updateRule fires ONCE at the end. Pairs with addTriggers to add many triggers + actions in one call. On a rejected post-bulk updateRule: subscriptionsNotLive:true — retry hub_set_rule(button='updateRule', confirm=true).",
                         items: [type: "object"]
                     ],
                     addLocalVariable: [
                         type: "object",
-                        description: """Add a local variable to the rule. Spec: {name, type, value} where:
-  - name: variable name (used as %name% in actions/expressions)
-  - type: 'Number' | 'Decimal' | 'String' | 'Boolean' | 'DateTime' (case-insensitive)
-  - value: initial value matching the type (Number/Decimal want numeric; String wants text; Boolean wants true/false; DateTime wants ISO timestamp)
-
-Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/statusJson/<appId>'s appState.allLocalVars to verify. Returns success=false with repair hints if value/type mismatch causes RM to silently reject. Verified live for all 5 types."""
+                        description: "Add a local variable. Spec: {name, type, value} where type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive) and value matches the type (DateTime wants an ISO timestamp). Used as %name% in actions/expressions; stored in state.allLocalVars (verify via statusJson appState.allLocalVars, not appSettings). Returns success=false with repair hints if a value/type mismatch makes RM silently reject."
                     ],
                     patches: [
                         type: "array",
-                        description: """Atomic multi-mutation. Each item is a sub-spec dict with one operation key chosen from: settings, button, addTrigger, addTriggers, addAction, addActions, addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction. Operations run sequentially; updateRule fires ONCE at the end. Useful for combined "add RE + add action + edit local var" patterns. Each patch's result is reported in patches[i] with its op name and outcome — failures on individual ops don't abort the rest.""",
+                        description: "Atomic multi-mutation: each item is a sub-spec with ONE operation key (settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction). Operations run sequentially; updateRule fires ONCE at the end. Per-op outcome in patches[i]; an individual op failing doesn't abort the rest.",
                         items: [type: "object"]
                     ],
                     removeAction: [
@@ -270,11 +243,11 @@ Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/s
                     ],
                     clearActions: [
                         type: "boolean",
-                        description: "Pass true to delete every action on the rule (highest index first). Useful for the 'wipe and rebuild' pattern. The delete commits synchronously (a full selectActions page-form submit runs RM's trashActs handler in-band), so the actions are gone when the call returns. updateRule fires after the clear. Defensive recovery (rare): if the response carries asyncCommitLikely:true the clear may have committed late — verify via hub_get_app_config(appId) and do NOT call cancelTrash (it can commit pending deletes); full protocol: guide:true."
+                        description: "Pass true to delete every action (highest index first) -- the 'wipe and rebuild' pattern. The delete commits synchronously; updateRule fires after. Rare late-commit recovery (asyncCommitLikely:true): verify via hub_get_app_config(appId), do NOT call cancelTrash (it can commit pending deletes); full protocol: guide:true."
                     ],
                     replaceActions: [
                         type: "array",
-                        description: "Atomically replace the rule's entire action list. Internally: clears all existing actions (synchronous trashActs submit), then bulk-adds every spec in this list (same shape as addAction items), then fires updateRule once. Useful for updating existing actions or reordering by passing actions in the new order. Pass [] to clear all actions without adding new ones (equivalent to clearActions=true). Defensive recovery (rare): if the response carries asyncCommitLikely:true the inner clear may have committed late and the add half is skipped (original specs echoed as pendingActionsToAdd) — verify via hub_get_app_config(appId), re-add the echoed specs if the clear committed, and do NOT call cancelTrash; full protocol: guide:true.",
+                        description: "Atomically replace the rule's entire action list: clears all existing actions, bulk-adds every spec here (same shape as addAction items), then fires updateRule once. Useful for editing or reordering; pass [] to clear all (equivalent to clearActions=true). Rare late-commit recovery (asyncCommitLikely:true): verify via hub_get_app_config(appId), re-add the echoed pendingActionsToAdd, do NOT call cancelTrash; full protocol: guide:true.",
                         items: [type: "object"]
                     ],
                     moveAction: [
@@ -287,56 +260,29 @@ Variables live in state.allLocalVars (NOT appSettings); read via /installedapp/s
                     ],
                     modifyTrigger: [
                         type: "object",
-                        description: "Change the state field of an existing trigger. Pass {index: <N>, mods: {state: '<new-state>'}}. Opens the editCond wizard for that trigger, writes tstate<N>, commits via hasAll, and fires updateRule. Scope: only the 'state' field is supported. To change a trigger's capability or deviceIds, use removeTrigger + addTrigger instead. Note: only device-state triggers (Switch, Motion, Contact, Lock, Presence, etc.) expose a state field. Time, Periodic Schedule, and Mode triggers don't have a state value -- attempting modifyTrigger on those will throw with a descriptive error suggesting removeTrigger + addTrigger as the workaround."
+                        description: "Change the state field of an existing trigger: {index: <N>, mods: {state: '<new-state>'}}. Opens editCond, writes tstate<N>, commits, fires updateRule. Only the 'state' field is supported, and only device-state triggers (Switch, Motion, Contact, Lock, Presence, ...) expose one -- Time/Periodic/Mode triggers throw with a removeTrigger+addTrigger workaround hint. To change capability or deviceIds, use removeTrigger + addTrigger."
                     ],
                     walkStep: [
                         type: "object",
-                        description: """Schema-aware single-step wizard walker. Use this when the high-level addAction/addTrigger helpers don't cover the capability you need (e.g. Periodic Schedule sub-pages, conditional trigger binding, IF/THEN/ELSE flow control, RM features added in a later firmware). Each call performs one operation on one wizard page and returns a structured snapshot — schema before/after, schema diff (which inputs appeared/disappeared), value-echo (catches silent enum case normalization), sub-page hrefs, list-count change for actions/triggers (disambiguates 'committed' from 'broke and lost the row'), full health check.
+                        description: """Schema-aware wizard walker -- the escape hatch when the high-level addAction/addTrigger helpers don't cover the capability (Periodic Schedule sub-pages, conditional-trigger binding, IF/THEN/ELSE flow control, later-firmware features).
 
-Spec shape:
-  {
-    page: <page name>,           // e.g. "selectTriggers", "selectActions", "doActPage", "mainPage", "periodic"
-    operation: "introspect" | "write" | "click" | "navigate" | "done",
-    write?: {<schemaFieldName>: <value>},          // exactly one key per call
-    click?: {name: <btnName>, stateAttribute?},    // for buttons
-    navigate?: {targetPage: <page>},               // forward sub-page entry via href
-    validateEnum?: <bool>,                         // when true, reject writes whose value isn't in the input's options list
-    hrefContext?: {fromPage, hrefName, hrefParams?, hrefIndex?}  // sub-page state + back-nav target
-  }
+PREFERRED -- operation='drive' runs the whole loop in ONE call: pass steps=[ {operation, page?, write?/click?/navigate?/done?, hrefContext?}, ... ] and the tool performs them in order (introspect → navigate into a sub-page → write each field → done → finalize), carrying the page forward across navigate/done and stopping at the first failed step (stopOnError=false to continue). Returns {steps:[per-step diff/valueEcho/health], success, health}. This does the progressive loop for you instead of issuing N separate calls.
 
-Operations:
+Single-step operations (the primitives drive composes; call directly for fine control): introspect (fetch schema, no mutation) | write (one field, exactly one key per call) | click (a regular button: cancelCapab, hasAll, moreCond, ...) | navigate (forward into a sub-page via its href) | done (BACK-navigate to the parent via _action_previous=Done, carrying the sub-page's settings; REQUIRED for sub-pages like Periodic whose parent row otherwise renders "?" -- pass hrefContext={fromPage:<parent>, hrefParams:{n:<idx>}}).
 
-[[FLAT_TRIM]]
-  - introspect: fetch schema; no mutation
-  - write: write one field's value (with hrefContext for sub-pages)
-  - click: click a regular button (cancelCapab, hasAll, moreCond, etc.)
-  - navigate: forward into a sub-page via its href
-[[/FLAT_TRIM]]
-  - done: BACK-NAVIGATE from a sub-page to its parent via _action_previous=Done. Carries ALL the sub-page's current settings in the form. REQUIRED for sub-pages (Periodic Schedule, etc.) whose parent's row description otherwise renders as "?". Pass hrefContext={fromPage: <parent>, hrefParams: {n: <idx>}} so RM routes correctly.
-
-Recommended driving loop (introspect to see fields -> navigate into a sub-page if exposed -> write each required field -> inspect diff.appeared/valueEcho.match/silentRejection -> done to bake the row -> click hasAll/actionDone to finalize): full walkthrough via guide:true or hub_get_tool_guide(section='set_rule_reference').
-
-Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the response — these are the fail-loud signals."""
+Spec: {page, operation, write?:{<field>:<value>}, click?:{name, stateAttribute?}, navigate?:{targetPage}, validateEnum?, hrefContext?:{fromPage, hrefName, hrefParams?, hrefIndex?}, steps?:[...] (drive)}; page is e.g. selectTriggers/selectActions/doActPage/mainPage/periodic. Always check `silentRejection`, `valueEcho.match`, `health.ok` -- the fail-loud signals. Full reference: guide:true or hub_get_tool_guide(section='set_rule_reference')."""
                     ],
                     addAction: [
                         type: "object",
-                        description: """Add a Rule Machine ACTION to the rule via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- callers passing `{type: 'log', ...}` will get "addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.". Per-capability field specs: docs/rm_action_subtype_schemas.md (or pass `addAction: {discover: true}` for the live structured schema -- returns immediately, no hub mutation). Parallel to addTrigger but for the doActPage wizard. The tool orchestrates the full RM 5.1 action-wizard internally -- initializes state.actNdx, discovers the next action index, opens the editor (button=N with the correctly-concatenated stateAttribute=doActN), walks the schema-aware writes for category-specific fields, and commits via actionDone. Returns the assigned action index in result.actionIndex. No trailing updateRule call is needed from the caller: doActPage->selectActions navigation self-bakes the action into the rule's actions[] map.
+                        description: """Add a Rule Machine ACTION via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- `{type: 'log', ...}` is rejected with "addAction.capability is required (e.g. 'switch')". Pass `addAction: {discover: true}` for the live per-field schema (returns immediately, no hub mutation), or see docs/rm_action_subtype_schemas.md / hub_get_tool_guide(section='set_rule_reference'). The tool orchestrates the full RM 5.1 action wizard internally; returns result.actionIndex (no trailing updateRule needed -- doActPage self-bakes the action).
 
-[[FLAT_TRIM]]
-Capability families (NAMES here; full per-field specs via addAction:{discover:true} or hub_get_tool_guide(section='set_rule_reference')): switch (on/off/toggle/flash, setPerMode/choosePerMode); dimmer (setLevel/toggle/adjust/fade/stopFade/startRaiseLower/stopChanging/setLevelPerMode); color; colorTemp; button (push/pushPerMode/choosePerMode); runCommand (any driver command + deviceIds + parameters, literal or hub-variable-sourced); lock; thermostat; shade; fan; mode (setMode + modeName or modeId); setVariable (variable + value or sourceVariable); log / notification / httpGet / httpPost / ping; volume / mute / chime / siren; privateBoolean / runRule / cancelTimers / pauseRule (+ ruleIds); capture / restore / refresh / poll / disableDevice; fileWrite / fileAppend / fileDelete; zwavePoll; flow control (delay [hours/minutes/seconds or a variable-sourced seconds] / delayPerMode / cancelDelay / repeat / stopRepeat / repeatWhile / waitExpression / waitEvents / ifThen / elseIf / else / endIf / exitRule / comment). Most take deviceIds + action + fields; the expression-based ones (ifThen / elseIf / repeatWhile / waitExpression) take expression={conditions:[...], operator|operators}.
-[[/FLAT_TRIM]] LIMIT: only ONE waitEvents action per rule (RM stores wait events globally, not per-action).
+Capability families (NAMES; full per-field specs via discover:true or the guide): switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, shade, fan, mode, setVariable, log / notification / httpGet / httpPost / ping, volume / mute / chime / siren, privateBoolean / runRule / cancelTimers / pauseRule, capture / restore / refresh / poll / disableDevice, fileWrite / fileAppend / fileDelete, zwavePoll, and flow control (delay / delayPerMode / cancelDelay / repeat / stopRepeat / repeatWhile / waitExpression / waitEvents / ifThen / elseIf / else / endIf / exitRule / comment). The expression-based ones (ifThen / elseIf / repeatWhile / waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents action per rule (RM stores wait events globally, not per-action).
 
-  Per-condition shape inside any expression:
-    {capability: <RM-condition-cap>, deviceIds?: [<id>], state?: <enum-value>, comparator?: <op>, value?: <num>, attribute?: <name>, not?: true, rawSettings?: {...}}[[FLAT_TRIM]]
-    Convenience: pass singular deviceId: N instead of deviceIds: [N] -- the dispatcher normalizes because RM 5.1 expects the array form in rDev_<N> (bare integer bypasses pre-validation and silently stores {N: null}, rule renders but never fires). If both are provided, deviceIds wins.[[/FLAT_TRIM]]
-    [[FLAT_TRIM]]Nested subExpression: NOT supported on addAction -- rejected with a targeted error. Use addRequiredExpression for nested expressions, or flatten. The doActPage walker rejects nested subExpression with the message "nested subExpression on this row is not yet supported"; the addAction pre-pass also rejects to surface a clear error before any wizard write. addRequiredExpression supports nesting of arbitrary depth today.[[/FLAT_TRIM]]
-    Extended per-capability shapes (Mode, Between two times, Variable, Custom Attribute, compareToDevice) and discrete-event sensor state names: pass guide:true or hub_get_tool_guide(section='set_rule_reference') -- the shared walker _rmWalkConditionReveal handles all per-capability reveal sequences here; result envelopes differ per tool (see PARTIAL-SUCCESS HANDLING below).
+Per-condition shape inside any expression: {capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}. Pass singular deviceId:N or deviceIds:[N] (array form preferred -- a bare integer silently stores {N: null}). Nested subExpression is NOT supported here (use addRequiredExpression). Extended per-capability shapes (Mode, Between two times, Variable, Custom Attribute, compareToDevice) and discrete-event state names: guide:true.
 
-Optional on any spec: delay {hours, minutes, seconds, cancelable}; rawSettings {fieldName: value, ...} escape hatch — use the '@N' token for the auto-assigned action index (e.g. {'flashRate.@N': 750}). Action index is auto-assigned. Variable-sourced values (dimmer setLevel levelVariable, delay variable), the HSM/Garage/Valve "not yet mapped" rawSettings workarounds, and the doActPage wire-format quirks the helper handles are in the guide (guide:true).
+Optional on any spec: delay {hours, minutes, seconds, cancelable}; rawSettings {fieldName: value} escape hatch using the '@N' token for the auto-assigned action index (e.g. {'flashRate.@N': 750}). Variable-sourced values and the not-yet-mapped capability workarounds (HSM/Garage/Valve): guide:true.
 
-PARTIAL-SUCCESS HANDLING: partial:true is orthogonal to success — the action row exists but needs repair; repairHints names next steps. Common repair: walkStep introspect on doActPage to see the live schema, then write the missing fields; for unrecoverable rows (hubRenderError=true) use removeAction(index:N) then retry. Full settingsSkipped-sentinel + not-live slot reference: guide:true.
-
-On failure, wizardStuck: true means the wizard could not be auto-cancelled -- call hub_set_rule(button='cancelCapab', pageName='doActPage', confirm=true) before retry; restoreHint has the exact command."""
+PARTIAL-SUCCESS: partial:true is orthogonal to success — the action row exists but needs repair (repairHints names next steps); for unrecoverable rows (hubRenderError=true) use removeAction(index:N) then retry. On failure wizardStuck:true means call hub_set_rule(button='cancelCapab', pageName='doActPage', confirm=true) before retry (restoreHint has the exact command). Full protocol: guide:true."""
                     ],
                     guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference (trigger/action/expression families, extended condition shapes, the raw settings/button wizard flow, and walkStep) inline — same content as hub_get_tool_guide(section='set_rule_reference'), without a separate tool call. Makes NO change to any rule."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller (RM-family).[[FLAT_TRIM]] Routes through the controller's add-button flow; returns buttonRuleId with the Button trigger auto-seeded — then author actions with addAction on that appId. Controller must already have a button device. Same handler as hub_set_native_app.buttonRule.[[/FLAT_TRIM]]", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
@@ -427,20 +373,7 @@ On failure, wizardStuck: true means the wizard could not be auto-cancelled -- ca
         ],
         [
             name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report — the LLM uses this to detect broken rules without having to investigate via curl. Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule) — which share RM's configPage protocol, so the configPage checks (e.g. configPage.error, multiple-flag poison) cover them.[[FLAT_TRIM]] Preferred source is the rule's compiled state: the classic RM `broken` boolean (GET /app/ruleBuilderJson), or a graph Visual Rule's validationErrors (GET /app/ruleBuilder20Json) — VRB rules are rules too, validationErrors is their broken-equivalent. For classic RM the HTML render scan is retained as cross-check + fallback. `ruleFormat` says which engine answered. Surfaces:
-
-  - broken: authoritative compiled-state boolean — RM compiled `broken`, or (graph VRB) validationErrors non-empty; null when no boolean applies (classic VRB, or the source is unavailable)
-  - validationErrors: graph Visual Rule validation problems
-  - configPage.error: page render failures (often caused by multi-flag DB poisoning)
-  - label markers: '*BROKEN*' suffix RM appends when a rule has a malformed trigger or action
-  - paragraph markers: '**Broken Trigger**', '**Broken Action**', '**Broken Condition**'
-  - multiple-flag corruption: lists settings whose statusJson .multiple flag has been flipped to false despite the schema declaring multiple=true
-  - structural imbalance: walks actType.<N>/actSubType.<N> and flags IF/ELSE-IF/ELSE/END-IF or Repeat/End-Repeat blocks left unmatched by a false-failed mutation that committed post-response; RM does NOT surface this via the paragraph markers above
-  - cross-check: flags when the compiled-state boolean and the HTML markers disagree
-
-ruleFormat (rm / vrb-graph / vrb-classic / basic-rule / button-controller / classic-app) says what was inspected. Run after every mutation to confirm the change didn't leave the rule broken. Per-app event history: hub_list_device_events with appId.
-
-hub_set_rule attaches this report as `health` on every response (success AND error); hub_set_visual_rule attaches it on every response that resolves to a rule id (early CREATE failures carry no appId). brokenMarkerCounts gives per-marker occurrence counts (the replace/restore gate uses a count increase to spot a new broken instance).[[/FLAT_TRIM]] ok=false means at least one issue was found; the issues list explains what.""",
+            description: """Inspect a rule's current state and return a structured health report -- detect broken rules without curl. Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule), which share RM's configPage protocol. Prefers the rule's compiled state (RM `broken` via /app/ruleBuilderJson, or a graph VRB's validationErrors via /app/ruleBuilder20Json) with the HTML render scan as cross-check + fallback; `ruleFormat` (rm / vrb-graph / vrb-classic / basic-rule / button-controller / classic-app) says which engine answered. The report surfaces the compiled-state broken verdict, validationErrors, config-page render errors, RM *BROKEN* / **Broken Trigger|Action|Condition** markers, multiple-flag corruption, structural IF/Repeat imbalance, and a compiled-vs-HTML cross-check (full key list + brokenMarkerCounts: outputSchema below). Run after every mutation to confirm the change didn't leave the rule broken; hub_set_rule attaches it as `health` on every response. ok=false means at least one issue was found; the issues list explains what.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -6639,6 +6572,14 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
 // For "introspect" the call only fetches the schema — no mutation. The
 // `before` snapshot is the same as `after` and `diff` is empty.
 private Map _rmWalkStep(Integer appId, Map spec) {
+    // "drive" runs an ordered sequence of single-step operations in ONE call --
+    // the progressive flow that replaces the manual introspect -> navigate ->
+    // write each field -> done -> finalize loop the caller used to issue as N
+    // separate calls. Handled before the single-step page check because a drive
+    // carries its page per step, not at the top level.
+    if (spec?.operation?.toString()?.trim() == "drive") {
+        return _rmDriveWalkSteps(appId, spec)
+    }
     def page = spec?.page?.toString()?.trim()
     if (!page) throw new IllegalArgumentException("walkStep.page is required (e.g. 'selectTriggers', 'selectActions', 'doActPage', 'mainPage', 'periodic')")
     if (!page.matches(/[A-Za-z0-9_]+/)) throw new IllegalArgumentException("walkStep.page must be alphanumeric/underscore")
@@ -6934,6 +6875,119 @@ private Map _rmWalkStep(Integer appId, Map spec) {
     ]
 }
 
+// Auto-driver for walkStep (operation='drive'): run an ordered list of
+// single-step operations in one call, composing _rmWalkStep per step. Each
+// step is a normal walkStep spec ({operation, page?, write?/click?/navigate?/
+// done?, hrefContext?, validateEnum?}); a step that omits `page` inherits the
+// page the previous step left off on, because navigate moves to the target
+// page and done moves back to the parent. The drive stops at the first failed
+// step unless stopOnError=false, and returns an aggregate {steps:[...],
+// success, health} -- the per-step before/after schemas are omitted to keep
+// the envelope small; each step keeps its diff/valueEcho/health fail-loud
+// signals. This is the progressive flow that does the loop the LLM used to
+// drive by hand across N separate calls.
+private Map _rmDriveWalkSteps(Integer appId, Map spec) {
+    if (!(spec?.steps instanceof List) || ((List) spec.steps).isEmpty()) {
+        throw new IllegalArgumentException("walkStep operation='drive' requires a non-empty steps=[...] list, each item a single-step spec {operation, page?, write?/click?/navigate?/done?, hrefContext?}")
+    }
+    def steps = (List) spec.steps
+    def stopOnError = spec?.stopOnError != false   // default: stop at the first failed step
+    def stepResults = []
+    def currentPage = spec?.page?.toString()?.trim()
+    def allOk = true
+    def lastStepOperation = null
+    // Pre-flight: validate every step's SHAPE before issuing ANY live POST. A drive is
+    // partial-commit by nature (each write/click is a live POST), so a structural mistake
+    // -- a non-object step, or a nested drive -- must reject the whole drive up front,
+    // never after steps 1..N-1 have already mutated the rule. (Runtime errors that surface
+    // only on execution are handled per-step inside the loop, where the partial trace of
+    // the steps that already committed is preserved.)
+    steps.eachWithIndex { rawStep, i ->
+        if (!(rawStep instanceof Map)) {
+            throw new IllegalArgumentException("walkStep.drive step ${i + 1} must be an object {operation, ...}")
+        }
+        if (((Map) rawStep).operation?.toString()?.trim() == "drive") {
+            throw new IllegalArgumentException("walkStep.drive steps cannot nest operation='drive' (step ${i + 1})")
+        }
+    }
+    int idx = 0
+    for (def rawStep : steps) {
+        idx++
+        def step = new LinkedHashMap((Map) rawStep)
+        def stepOp = step.operation?.toString()?.trim() ?: "introspect"
+        // Inherit the page the previous step ended on when this step omits one.
+        if (!step.page && currentPage) step.page = currentPage
+        lastStepOperation = stepOp
+        def r
+        try {
+            r = _rmWalkStep(appId, step)
+        } catch (Exception stepExc) {
+            // A step that THROWS at runtime (bad input mid-sequence, a hub error) would
+            // otherwise unwind the whole drive and discard the per-step trace of the steps
+            // that already ran. Capture the throw as a failed step so the partial-run record
+            // + a health verdict survive, identical in quality to a success=false step. Record
+            // the step's OWN page (step.page is set by the inherit line above), not currentPage
+            // -- currentPage only advances on a SUCCESSFUL step, so it would mis-name the page
+            // the failing op actually targeted.
+            mcpLogError("rm-native", "walkStep drive: step ${idx} (${stepOp}) threw for app ${appId}", stepExc)
+            def stepHealth = null
+            try { stepHealth = _rmCheckRuleHealth(appId) } catch (Exception ignored) { /* best effort -- never mask the real error */ }
+            stepResults << [
+                step: idx,
+                operation: stepOp,
+                page: (step.page ?: currentPage),
+                success: false,
+                error: stepExc.message ?: stepExc.toString(),
+                health: stepHealth
+            ]
+            allOk = false
+            if (stopOnError) break
+            else continue
+        }
+        if (r?.page) currentPage = r.page.toString()
+        stepResults << [
+            step: idx,
+            operation: stepOp,
+            page: r?.page,
+            success: r?.success,
+            diff: r?.diff,
+            valueEcho: r?.valueEcho,
+            silentRejection: r?.silentRejection,
+            commitSignal: r?.commitSignal,
+            opResult: r?.opResult,
+            health: r?.health
+        ]
+        if (r?.success == false) {
+            allOk = false
+            if (stopOnError) break
+        }
+    }
+    def finalHealth = _rmCheckRuleHealth(appId)
+    def result = [
+        success: allOk && finalHealth.ok,
+        operation: "drive",
+        page: currentPage,
+        stepsRequested: steps.size(),
+        stepsRun: stepResults.size(),
+        lastStepOperation: lastStepOperation,
+        steps: stepResults,
+        health: finalHealth
+    ]
+    // Fail-loud rollup: a success:false drive must ALWAYS carry a top-level reason. A step
+    // error caught per-step otherwise lives only in steps[].error -- a weak signal for an
+    // LLM caller that sees success:false with no top-level `error`. Surface the first failed
+    // step's error (and a repairHint naming it); if every step passed but the rule ended
+    // unhealthy, surface the finalHealth.ok gate's reason instead.
+    def firstFailed = stepResults.find { it.success == false }
+    if (firstFailed != null) {
+        result.error = "drive halted at step ${firstFailed.step} (${firstFailed.operation}): ${firstFailed.error ?: 'step reported success:false -- inspect its valueEcho/silentRejection/health'}".toString()
+        result.repairHints = (result.repairHints ?: []) + ["Drive stopped at step ${firstFailed.step}. Inspect steps[${firstFailed.step - 1}] for the failure detail, correct it, and re-run the drive from that step.".toString()]
+    } else if (!finalHealth.ok) {
+        result.error = "drive completed all ${stepResults.size()} step(s) but the rule is unhealthy: ${(finalHealth.issues ?: ['see health']).join('; ')}".toString()
+    }
+    return result
+}
+
 // Commit a value-write as a FULL page-form submit to /installedapp/update/json,
 // mirroring exactly what the Web UI sends when a submitOnChange input changes.
 //
@@ -7056,7 +7110,7 @@ private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         // config JSON alone is enough to restore. Record the failure in
         // the snapshot so post-mortem sees why status was absent.
         mcpLog("warn", "rm-native", "Backup for rule ${ruleId}: statusJson failed -- ${e.message}")
-        status = [error: e.message]
+        status = [error: e.message ?: e.toString()]
     }
 
     // Detect appType from the config's appType.name so the restore path
@@ -7657,6 +7711,14 @@ def _createNativeAppShell(args) {
         if (createDone?.done == false) {
             result.mainPageDoneFailed = true
             result.mainPageDoneError = createDone.reason
+            // Flip success ONLY for commitButton:null app types (Basic Rule, Button Controller),
+            // where this Done is the session's ONLY lifecycle event -- a miss there means the app
+            // never initialized (a false-clean create). RM-family creates already fired updateRule
+            // above to commit each section, so a missed trailing Done there is a state-marker
+            // cleanup caveat (surfaced via the repairHint), not a creation failure.
+            if (_resolveCommitButton(_appTypeRegistry()[appType]?.appName) == null) {
+                result.success = false
+            }
             result.repairHints = (result.repairHints ?: []) + ["The session-end mainPage Done click did not commit (${createDone.reason}). Settings are already written, but the app's update lifecycle did not run -- verify via hub_get_app_config(appId=${newId}) and re-commit via hub_set_native_app(appId=${newId}, button='updateRule') for RM-family apps.".toString()]
         }
         if (triggerSpecs) result.triggers = triggerResults
@@ -7690,7 +7752,7 @@ def _createNativeAppShell(args) {
         try { _rmForceDeleteApp(newId) } catch (Exception ce) {
             mcpLog("warn", "rm-native", "Orphan cleanup failed for ${newId}: ${ce.message}")
         }
-        return [success: false, error: "${appType} create failed: ${e.message}", orphanCleanup: "attempted", note: "No partial app left behind."]
+        return [success: false, error: "${appType} create failed: ${e.message ?: e.toString()}", orphanCleanup: "attempted", note: "No partial app left behind."]
     }
 }
 
@@ -10405,17 +10467,25 @@ def _applyNativeAppEdit(args) {
             def result = _rmWalkStep(appId, walkStepSpec)
             result.appId = appId
             result.backup = backup
-            // Click mainPage Done as the final step — only if walkStep
-            // operation was 'done' (meaning the wizard flow is complete).
+            // Click mainPage Done as the final step — only if the walk's
+            // final operation was 'done' (meaning the wizard flow is complete):
+            // a single-step 'done', or a 'drive' whose last step was 'done'.
             // For introspect/write/click/navigate ops in the middle of a
             // multi-step walk, skip Done since the caller is mid-flow.
-            if (walkStepSpec?.operation?.toString() == "done") {
+            def wsOp = walkStepSpec?.operation?.toString()
+            if (wsOp == "done" || (wsOp == "drive" && result?.lastStepOperation == "done")) {
                 def walkDone = null
                 try { walkDone = _rmSubmitMainPageDone(appId) }
                 catch (Exception doneExc) { mcpLog("warn", "rm-native", "walkStep: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} -- in-flight state markers may linger and corrupt subsequent edits") }
                 if (walkDone?.done == false) {
                     result.mainPageDoneFailed = true
                     result.mainPageDoneError = walkDone.reason
+                    // The Done click drives the app's update lifecycle; a miss means subscriptions
+                    // / schedules did not re-initialize even though settings are written, so the
+                    // result is NOT clean -- flip success so callers branching on it don't treat a
+                    // half-committed edit as done.
+                    result.success = false
+                    result.repairHints = (result.repairHints ?: []) + ["The session-end mainPage Done click did not commit (${walkDone.reason}). Settings are already written, but the app's update lifecycle did not run -- verify via hub_get_app_config(appId=${appId}) and re-commit via hub_set_native_app(appId=${appId}, button='updateRule') for RM-family apps.".toString()]
                 }
             }
             return result
@@ -10424,7 +10494,7 @@ def _applyNativeAppEdit(args) {
             return [
                 success: false,
                 appId: appId,
-                error: e.message,
+                error: e.message ?: e.toString(),
                 backup: backup,
                 restoreHint: "Backup saved before write. Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
             ]
@@ -10771,7 +10841,7 @@ def _applyNativeAppEdit(args) {
             def trigResult = [
                 success: false,
                 appId: appId,
-                error: e.message,
+                error: e.message ?: e.toString(),
                 backup: backup,
                 restoreHint: isRetryExhaustion ?
                     "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')." :
@@ -11023,7 +11093,7 @@ def _applyNativeAppEdit(args) {
                         def innerResults = []
                         (pm.addTriggers as List).each { tspec ->
                             try { innerResults << _rmAddTrigger(appId, tspec as Map) }
-                            catch (Exception e) { innerResults << [success: false, error: e.message] }
+                            catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
                         // Outer success rolls up inner success — mark the
                         // outer entry as failed if ANY inner item failed,
@@ -11037,7 +11107,7 @@ def _applyNativeAppEdit(args) {
                         def innerResults = []
                         (pm.addActions as List).each { aspec ->
                             try { innerResults << _rmAddAction(appId, aspec as Map, true) }
-                            catch (Exception e) { innerResults << [success: false, error: e.message] }
+                            catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
                         patchResults << [success: innerOk, op: "addActions", results: innerResults]
@@ -11176,7 +11246,7 @@ def _applyNativeAppEdit(args) {
                         def innerResults = []
                         (pm.replaceActions as List).each { aspec ->
                             try { innerResults << _rmAddAction(appId, aspec as Map, true) }
-                            catch (Exception e) { innerResults << [success: false, error: e.message] }
+                            catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
                         patchResults << [success: innerOk, op: "replaceActions", removedIndices: cleared, addedResults: innerResults]
@@ -11741,6 +11811,19 @@ def _applyNativeAppEdit(args) {
         if (editDone?.done == false) {
             result.mainPageDoneFailed = true
             result.mainPageDoneError = editDone.reason
+            // Flip success ONLY for commitButton:null app types (Basic Rule, Button Controller),
+            // where this Done is the edit's ONLY commit channel -- a miss means nothing committed.
+            // For RM-family apps the edit already committed through another channel (a button click
+            // like pausRule via /installedapp/btn, or a main-page settings write's auto-updateRule),
+            // so a missed trailing Done is a state-marker-cleanup caveat (surfaced via the
+            // repairHint), NOT a failure -- flipping success there would be a false negative for a
+            // completed action. (finalConfig.app.appType.name is live-confirmed populated on the
+            // base configure/json endpoint; _resolveCommitButton fails safe to non-null on a
+            // degraded/absent name, i.e. toward NOT flipping.)
+            if (_resolveCommitButton(finalConfig?.app?.appType?.name?.toString()) == null) {
+                result.success = false
+            }
+            result.repairHints = (result.repairHints ?: []) + ["The session-end mainPage Done click did not commit (${editDone.reason}). Settings are already written, but the app's update lifecycle did not run -- verify via hub_get_app_config(appId=${appId}) and re-commit via hub_set_native_app(appId=${appId}, button='updateRule') for RM-family apps.".toString()]
         }
         return result
     } catch (Exception e) {
@@ -11801,7 +11884,7 @@ def toolDeleteNativeApp(args) {
         return [
             success: false,
             appId: appId,
-            error: e.message,
+            error: e.message ?: e.toString(),
             backup: backup
         ]
     }

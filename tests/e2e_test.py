@@ -1838,6 +1838,86 @@ class TestRunner:
             })
             assert wsn.get("page") == "mainPage", \
                 f"walkStep should route through the native-app tool, got: {wsn}"
+
+            # issue #258 added operation='drive' WITHOUT changing the single-step path; prove
+            # the old mode still drives a write end-to-end via SEPARATE calls (open the editor,
+            # then pick a capability) -- the same click+write the drive composes, step by step.
+            self._set_rule(app_id, {"walkStep": {"page": "selectTriggers", "operation": "click",
+                                                 "click": {"name": "true", "stateAttribute": "moreCond"}}}, strict=True)
+            sw = self._set_rule(app_id, {"walkStep": {"page": "selectTriggers", "operation": "write",
+                                                      "write": {"tCapab1": "Switch"}}}, strict=True)
+            assert (sw.get("valueEcho") or {}).get("match") is True, \
+                f"single-step write should still round-trip as before: {sw}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_walkstep_drive(self) -> None:
+        # issue #258: walkStep operation='drive' runs an ordered steps[] sequence in ONE
+        # call -- the progressive flow that replaces the manual introspect -> ... -> finalize
+        # loop the LLM used to issue as N separate calls. This pins the drive orchestration
+        # surface end-to-end against a live hub across four facets:
+        #   (1) read composition  -- multi-page introspect returns the aggregate
+        #                            {operation:'drive', steps:[...], stepsRun, success} with
+        #                            each step's page + fail-loud health snapshot;
+        #   (2) WRITE composition -- a click (open trigger editor) + a capability write in one
+        #                            call, with the write proven to land live via valueEcho;
+        #   (3) failure halt      -- a bad step aborts the drive (success:false) without
+        #                            corrupting the rule.
+        # Each live drive is kept to <=2 steps on purpose: a drive does a full
+        # introspect+op+introspect+health per step, so a long drive is ONE heavy tool call
+        # that risks the cloud relay's ~10s 504 ceiling. The stopOnError step-success=false
+        # branch and the >2-step commit sequence are covered deterministically by the Spock
+        # unit tests; here we prove the drive layer works against the real wizard.
+        app_id = self._create_native_rule("WalkDrive")
+        try:
+            # (1) read composition + page-carry + per-step health
+            res = self._set_rule(app_id, {"walkStep": {"operation": "drive", "steps": [
+                {"page": "selectTriggers", "operation": "introspect"},
+                {"page": "mainPage", "operation": "introspect"},
+            ]}}, strict=True)
+            assert isinstance(res, dict), f"walkStep drive returned non-dict: {res}"
+            assert res.get("operation") == "drive", f"drive should echo operation='drive': {res}"
+            steps = res.get("steps")
+            assert isinstance(steps, list) and len(steps) == 2, f"drive should report 2 per-step results: {res}"
+            assert res.get("stepsRun") == 2, f"both steps should run on a healthy rule: {res}"
+            assert steps[0].get("operation") == "introspect" and steps[0].get("page") == "selectTriggers", \
+                f"step 1 should introspect selectTriggers: {steps[0]}"
+            assert steps[1].get("page") == "mainPage", f"step 2 should land on mainPage: {steps[1]}"
+            assert all(isinstance(s.get("health"), dict) for s in steps), \
+                f"each drive step should carry its health snapshot: {steps}"
+            self._assert_rule_healthy(app_id)
+
+            # (2) WRITE composition: open the trigger editor then pick a capability, in ONE
+            #     drive call. Mirrors _rmAddTrigger's proven wire format (click name='true'/
+            #     stateAttribute='moreCond' opens the editor; tCapab1 is the capability picker).
+            #     The drive's own valueEcho proves the write round-tripped on the live hub.
+            wr = self._set_rule(app_id, {"walkStep": {"operation": "drive", "steps": [
+                {"page": "selectTriggers", "operation": "click", "click": {"name": "true", "stateAttribute": "moreCond"}},
+                {"page": "selectTriggers", "operation": "write", "write": {"tCapab1": "Switch"}},
+            ]}}, strict=True)
+            assert wr.get("stepsRun") == 2, f"both drive steps should run (click + write): {wr}"
+            write_step = next((s for s in (wr.get("steps") or []) if s.get("operation") == "write"), None)
+            assert write_step is not None, f"the write step should be reported in the aggregate: {wr}"
+            assert (write_step.get("valueEcho") or {}).get("match") is True, \
+                f"the driven tCapab1='Switch' write should round-trip live (valueEcho.match): {write_step}"
+            # A half-built (uncommitted) trigger is scratch wizard state, not a broken rule.
+            self._assert_rule_renders(app_id)
+
+            # (3) failure halt: an invalid step operation aborts the drive (success:false,
+            #     the step throws) and must NOT corrupt the rule.
+            bad = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": app_id, "confirm": True,
+                "walkStep": {"operation": "drive", "steps": [
+                    {"page": "mainPage", "operation": "introspect"},
+                    {"page": "mainPage", "operation": "bogus_op"},
+                ]},
+            }})
+            assert bad.get("success") is False, \
+                f"a drive with an invalid step operation must halt with success:false: {bad}"
+            assert "operation" in str(bad.get("error") or "").lower(), \
+                f"the halt error should name the bad operation: {bad}"
+            self._assert_rule_renders(app_id)
         finally:
             self._delete_native(app_id)
 

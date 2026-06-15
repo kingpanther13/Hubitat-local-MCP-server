@@ -2749,13 +2749,7 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""
 
 Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value), and `embeddedActions` — clickable button affordances embedded in paragraph HTML[[FLAT_TRIM]] (RM 5.1 wizards expose "Create New Trigger", "Edit Trigger", "Delete Trigger" etc. as `<div class='submitOnChange'>` elements rather than schema inputs; this field surfaces them with their button name + stateAttribute so hub_set_rule can drive them)[[/FLAT_TRIM]]. Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything. summary=true: fast identity-only mode.
 
-[[FLAT_TRIM]]
-Use to: understand what an existing automation actually does, audit rules for best-practice issues, diff two similar apps, generate human-readable summaries, or answer "which app is doing X" after hub_list_apps (scope='instances') / hub_list_device_dependents narrows the field.
-[[/FLAT_TRIM]]
-
-[[FLAT_TRIM]]
-Workflow: (1) Get the appId from hub_list_apps (scope='instances', all apps), hub_list_rules (RM rules specifically -- these are Rule-5.x appIds under parent Rule Machine; use this, not hub_get_custom_rule, which only handles MCP-native rules), or hub_list_apps (scope='instances') with filter=parents to explore app hierarchy. (2) Call hub_get_app_config with the appId. (3) For multi-page apps, optionally pass pageName -- call hub_list_app_pages first to discover available page names (the pageName param lists the common HPM / RM / Room Lighting pages).
-[[/FLAT_TRIM]]
+Get the appId from hub_list_apps (scope='instances') or hub_list_rules (RM rules -- use this, not hub_get_custom_rule, which only handles MCP-native rules); for multi-page apps pass pageName (hub_list_app_pages discovers available names).
 
 Requires Read master.""",
             inputSchema: [

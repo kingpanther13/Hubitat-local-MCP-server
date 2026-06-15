@@ -934,6 +934,45 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.buttonClicked == "pausRule"
     }
 
+    def "edit Done-miss flips success:false for a commitButton:null app but NOT for an RM app"() {
+        // The edit-path Done-miss flip is gated on _resolveCommitButton(appType.name)==null. For a
+        // Button Controller / Basic Rule the trailing Done is the ONLY commit channel, so a miss is
+        // a real failure (success:false). For an RM app the edit already committed (the button click
+        // via /installedapp/btn, or a main-page settings write's auto-updateRule), so a missed Done
+        // is only a state-marker-cleanup caveat -> success stays true. Neither registers a mainPage
+        // sub-page, so the trailing _rmSubmitMainPageDone fetch fails -> done:false on both.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Button Controller-5.1", label: "BC", installed: true,
+                      appType: [name: "Button Controller-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Button Controller", install: true, error: null,
+                             sections: [[title: "", input: []]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/101') { params -> ruleConfigJson(101, "RM", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/installedapp/statusJson/101') { params -> statusJson(101) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when: "a button edit on the Button Controller (commitButton:null), trailing Done can't commit"
+        def bc = script.toolSetRule([appId: 100, button: "pausRule", confirm: true])
+
+        then: "the missed Done is a real failure -- the Done was the only commit channel"
+        bc.mainPageDoneFailed == true
+        bc.success == false
+
+        when: "the same edit on an RM rule, whose trailing Done also can't commit"
+        def rm = script.toolSetRule([appId: 101, button: "pausRule", confirm: true])
+
+        then: "RM committed via the button click, so the missed Done does NOT flip success"
+        rm.mainPageDoneFailed == true
+        rm.success == true
+    }
+
     // ---------- delete_rm_rule ----------
 
     def "delete_rm_rule snapshots, then force-deletes when force=true"() {
@@ -4861,6 +4900,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 configPage: [name: "periodic", sections: [[input: [[name: "whichPeriod1", type: "enum", value: "Hourly"]]]]]
             ])]
         }
+        // walkStep done routes through the dispatcher's trailing mainPage Done finalize; stub the
+        // mainPage so it commits (an unstubbed fetch would fail it and correctly flip success:false).
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
 
         when:
         def result = script.toolSetRule([
@@ -4987,6 +5029,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 configPage: [name: "selectTriggers", sections: [[input: [[name: "tCapab1", type: "enum", value: "Switch"]]]]]
             ])]
         }
+        // walkStep done fires the dispatcher's trailing mainPage Done finalize; stub the mainPage
+        // so it commits (an unstubbed fetch would fail it and correctly flip success:false).
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
 
         when: "Done on selectTriggers (no hrefContext — top-level page Done)"
         def result = script.toolSetRule([
@@ -5011,6 +5056,519 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // swapped the two branches would surface here.
         result.opResult?.done?.from == "selectTriggers"
         result.opResult?.done?.parent == null
+    }
+
+    // ---- walkStep operation='drive': the auto-driver that runs an ordered
+    // sequence of single-step operations in one call (issue #258). It composes
+    // _rmWalkStep per step, carries the page forward across navigate/done, and
+    // stops at the first failed step unless stopOnError=false.
+
+    def "walkStep drive runs an ordered sequence in one call and aggregates per-step results"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Switch", "Motion"]],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "drive an introspect + click sequence in a single call"
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: [
+                [page: "selectTriggers", operation: "introspect"],
+                [page: "selectTriggers", operation: "click", click: [name: "hasAll"]]
+            ]],
+            confirm: true
+        ])
+
+        then: "the aggregate envelope reports both steps with their per-step operation + page"
+        result.operation == "drive"
+        result.stepsRequested == 2
+        result.stepsRun == 2
+        result.steps.size() == 2
+        result.steps[0].operation == "introspect"
+        result.steps[0].page == "selectTriggers"
+        result.steps[1].operation == "click"
+        result.lastStepOperation == "click"
+        result.success == true
+
+        and: "the click step actually executed through the real walker (a /installedapp/btn POST fired for hasAll)"
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "hasAll" }
+
+        and: "each per-step result carries the documented fail-loud signal fields (diff/valueEcho/silentRejection/health)"
+        result.steps.every { it.containsKey('diff') && it.containsKey('valueEcho') && it.containsKey('silentRejection') && it.health != null }
+        result.steps[0].diff?.containsKey('appeared')
+        result.steps[0].health?.containsKey('ok')
+
+        and: "no trailing mainPage Done finalize fires when the drive's last step is NOT 'done'"
+        // The conditional finalize must NOT run unless lastStepOperation=='done' -- guards the
+        // negative side of the drive-done-finalize test below.
+        !posts.any { it.path == "/installedapp/update/json" && it.body?._action_update == "Done" && it.body?.currentPage == "mainPage" }
+    }
+
+    def "walkStep drive stops at the first failed step by default (stopOnError)"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Switch"]],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        // Non-echoing post: the write never round-trips, so valueEcho.match=false
+        // and that step fails -- the trailing click step must NOT run.
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: [
+                [page: "selectTriggers", operation: "write", write: [tCapab1: "Switch"]],
+                [page: "selectTriggers", operation: "click", click: [name: "hasAll"]]
+            ]],
+            confirm: true
+        ])
+
+        then: "only the first (failing) step ran; the drive halted before the click"
+        result.stepsRequested == 2
+        result.stepsRun == 1
+        result.success == false
+        result.steps[0].operation == "write"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "hasAll" }
+    }
+
+    def "walkStep drive with stopOnError=false continues past a failed step"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Switch"]],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", stopOnError: false, steps: [
+                [page: "selectTriggers", operation: "write", write: [tCapab1: "Switch"]],
+                [page: "selectTriggers", operation: "click", click: [name: "hasAll"]]
+            ]],
+            confirm: true
+        ])
+
+        then: "both steps ran despite the first failing; overall success is still false"
+        result.stepsRun == 2
+        result.steps.size() == 2
+        result.steps[1].operation == "click"   // the post-failure step is present in the aggregate, not just its POST
+        result.success == false
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "hasAll" }
+    }
+
+    def "walkStep drive rejects a missing or empty steps list with an actionable error"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when: "drive without a steps list"
+        def missing = script.toolSetRule([appId: 100, walkStep: [operation: "drive"], confirm: true])
+
+        then:
+        missing.success == false
+        missing.error?.toString()?.contains("steps")
+
+        when: "drive with an empty steps list"
+        def empty = script.toolSetRule([appId: 100, walkStep: [operation: "drive", steps: []], confirm: true])
+
+        then:
+        empty.success == false
+        empty.error?.toString()?.contains("steps")
+    }
+
+    def "walkStep drive whose final step is done gets the trailing mainPage Done finalize"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        // The trailing finalize fetches the mainPage sub-page path explicitly.
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Switch"], value: "Switch"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", type: "enum", value: "Switch"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: [
+                [page: "selectTriggers", operation: "introspect"],
+                [page: "selectTriggers", operation: "done"]
+            ]],
+            confirm: true
+        ])
+
+        then: "the drive's last step was done, so the dispatcher fired the trailing mainPage Done finalize"
+        // The trailing finalize is _rmSubmitMainPageDone -- it POSTs the mainPage form
+        // with _action_update='Done' + currentPage='mainPage', distinct from the done
+        // STEP's sub-page Done (_action_previous='Done', currentPage='selectTriggers'). A
+        // single-step done gets the same finalize; this pins that a drive ending in done does too.
+        result.lastStepOperation == "done"
+        posts.any { it.path == "/installedapp/update/json" && it.body?._action_update == "Done" && it.body?.currentPage == "mainPage" }
+    }
+
+    def "walkStep drive whose trailing mainPage Done fails flips success:false with a repairHint"() {
+        // The trailing mainPage Done drives the app's update lifecycle (subscriptions/schedules
+        // re-init). If it does not commit, the edit is half-applied -- success must flip to false
+        // and carry a repairHint, NOT report a false-clean done. Fail ONLY the trailing mainPage
+        // Done (_action_update=Done + currentPage=mainPage); the in-drive steps commit fine.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Switch"], value: "Switch"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "tCapab1", type: "enum", value: "Switch"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?._action_update == "Done" && body?.currentPage == "mainPage") {
+                return [status: 500, location: null, data: '']
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a drive ending in done, whose trailing mainPage Done POST returns 500"
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: [
+                [page: "selectTriggers", operation: "introspect"],
+                [page: "selectTriggers", operation: "done"]
+            ]],
+            confirm: true
+        ])
+
+        then: "the missed Done flips success:false and surfaces the failure reason + a repairHint"
+        result.mainPageDoneFailed == true
+        result.success == false
+        result.mainPageDoneError?.toString()?.contains("500")
+        (result.repairHints as List)?.any { it.toString().contains("updateRule") }
+    }
+
+    def "walkStep drive carries the page forward: a step omitting page inherits the navigate target"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [],
+                                         body: [[element: "href", name: "periodic1", page: "periodic", params: [n: 1]]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/periodic') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, version: 7], configPage: [name: "periodic", sections: [[input: [[name: "whichPeriod1", type: "enum"]]]]], settings: [:]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: JsonOutput.toJson([
+                app: [id: 100, version: 7], configPage: [name: "periodic", sections: [[input: [[name: "whichPeriod1", type: "enum"]]]]]
+            ])]
+        }
+
+        when: "step 1 navigates to the periodic sub-page; step 2 omits page entirely"
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: [
+                [page: "selectTriggers", operation: "navigate", navigate: [targetPage: "periodic"]],
+                [operation: "introspect"]
+            ]],
+            confirm: true
+        ])
+
+        then: "step 2 inherited the navigate target page rather than failing on a missing page"
+        result.stepsRun == 2
+        result.steps[0].operation == "navigate"
+        result.steps[1].operation == "introspect"
+        result.steps[1].page == "periodic"
+    }
+
+    def "walkStep drive carries the parent page forward after a done step"() {
+        // After a 'done' step the walker is back on the sub-page's PARENT page; a following
+        // step that omits `page` must inherit that parent. This is the done-op analog of the
+        // navigate page-carry test above -- it pins the r.page(=parent) -> currentPage threading
+        // for done specifically (done sets page=parentPage, unlike navigate's page=target).
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/periodic') { params ->
+            ruleConfigJson(100, "r", [[name: "whichPeriod1", type: "enum", options: ["Hourly"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            ruleConfigJson(100, "r", [[name: "ruleLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when: "step 1 done returns from the periodic sub-page to parent mainPage; step 2 omits page"
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: [
+                [page: "periodic", operation: "done", hrefContext: [fromPage: "mainPage", hrefName: "name", hrefParams: [n: 1]]],
+                [operation: "introspect"]
+            ]],
+            confirm: true
+        ])
+
+        then: "the done step reports the parent page, and step 2 inherited it rather than failing on a missing page"
+        result.stepsRun == 2
+        result.steps[0].operation == "done"
+        result.steps[0].page == "mainPage"
+        result.steps[1].operation == "introspect"
+        result.steps[1].page == "mainPage"
+    }
+
+    def "walkStep drive reports success=false when the rule ends unhealthy even though every step passed"() {
+        // The drive success gate is `allOk && finalHealth.ok`. A drive whose steps ALL pass
+        // (allOk=true) but whose post-run health check comes back broken must still report
+        // success:false. The compiled-state read (/app/ruleBuilderJson, hit exactly once per
+        // _rmCheckRuleHealth and nowhere else) is the lever: healthy for the step's own health
+        // check, broken on the trailing finalHealth read -- which isolates the finalHealth.ok
+        // conjunct (a step's own success is also health-gated, so a uniformly-broken rule
+        // couldn't distinguish the two AND-operands).
+        given:
+        enableWrite()
+        def rb = [n: 0]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Switch"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        // 1-step drive => two health checks total: the step's own (read #1, clean) and the
+        // post-loop finalHealth (read #2, broken). Flip broken:true on read #2+.
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            rb.n = rb.n + 1
+            JsonOutput.toJson([broken: (rb.n >= 2)])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when: "the introspect step passes, but the rule reads broken on the final health check"
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: [
+                [page: "selectTriggers", operation: "introspect"]
+            ]],
+            confirm: true
+        ])
+
+        then: "the step itself succeeded, but the unhealthy finalHealth.ok gates overall success to false"
+        result.stepsRun == 1
+        result.steps[0].success == true
+        result.health.ok == false
+        result.health.broken == true
+        result.success == false
+    }
+
+    def "walkStep drive captures a step that THROWS into the per-step trace instead of unwinding the run"() {
+        // A drive step that throws (here: a write with no write map -> _rmWalkStep throws) must be
+        // recorded as a failed step so the partial-run trace of the steps that already ran survives,
+        // rather than being discarded into the bare dispatcher error envelope. The failed step must
+        // record its OWN page (the throwing step is on selectTriggers, distinct from step 1's
+        // mainPage, so a regression that recorded currentPage would show mainPage and be caught),
+        // and the drive aggregate must roll the failure up to a top-level error + repairHints.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Switch"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when: "step 2 is a write with no write map on a DIFFERENT page than step 1 -> the walker throws mid-drive"
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: [
+                [page: "mainPage", operation: "introspect"],
+                [page: "selectTriggers", operation: "write"],
+                [page: "mainPage", operation: "introspect"]
+            ]],
+            confirm: true
+        ])
+
+        then: "the throw is captured as a failed step; the aggregate (with step 1) survives, step 3 is skipped"
+        result.operation == "drive"
+        result.success == false
+        result.stepsRun == 2
+        result.steps.size() == 2
+        result.steps[0].operation == "introspect" && result.steps[0].success == true
+        result.steps[1].operation == "write"
+        result.steps[1].success == false
+        result.steps[1].error?.toString()?.contains("write")
+
+        and: "the failed step records its OWN page, not the previous step's"
+        result.steps[1].page == "selectTriggers"
+
+        and: "the drive rolls the first failed step up to a top-level error + repairHints (fail-loud for an LLM caller)"
+        result.error?.toString()?.contains("step 2")
+        result.error?.toString()?.contains("write")
+        (result.repairHints as List)?.any { it.toString().contains("step 2") }
+    }
+
+    def "walkStep drive rejects a nested drive step"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when: "a drive step is itself an operation='drive'"
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: [
+                [operation: "drive", steps: [[page: "mainPage", operation: "introspect"]]]
+            ]],
+            confirm: true
+        ])
+
+        then: "nesting is rejected"
+        result.success == false
+        result.error?.toString()?.toLowerCase()?.contains("nest")
+    }
+
+    def "walkStep drive rejects a non-object step"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when: "a step is a bare string, not an object"
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: ["introspect"]],
+            confirm: true
+        ])
+
+        then: "each step must be an object"
+        result.success == false
+        result.error?.toString()?.contains("object")
+    }
+
+    def "walkStep drive validates step shapes up front so a malformed step at index >1 commits nothing"() {
+        // Structural mistakes (non-object step, nested drive) are caught in a PRE-FLIGHT pass over
+        // all steps BEFORE the loop issues any live POST. So a malformed step after a valid live
+        // write rejects the whole drive with NOTHING committed, rather than running step 1's write
+        // and then unwinding (which would strand a half-applied mutation with no trace).
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Switch"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a valid live write is followed by a non-object step"
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: [
+                [page: "selectTriggers", operation: "write", write: [tCapab1: "Switch"]],
+                "garbage"
+            ]],
+            confirm: true
+        ])
+
+        then: "the whole drive is rejected pre-flight; step 1's write never issued a POST"
+        result.success == false
+        result.error?.toString()?.contains("object")
+        posts.isEmpty()
+    }
+
+    def "walkStep drive leaves a following step on the SAME page after a plain (no-hrefContext) done"() {
+        // A done WITHOUT hrefContext has no parent to return to (parentPage=null), so _rmWalkStep
+        // leaves page on the sub-page (page = parentPage ?: page). A following step that omits page
+        // must therefore inherit the SAME sub-page -- the negative of the hrefContext-done parent
+        // carry above, pinning the `parentPage ?: page` fallback branch.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Switch"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when: "a plain done on selectTriggers (no hrefContext), then a step that omits page"
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [operation: "drive", steps: [
+                [page: "selectTriggers", operation: "done"],
+                [operation: "introspect"]
+            ]],
+            confirm: true
+        ])
+
+        then: "the done kept the page on selectTriggers, and step 2 inherited it"
+        result.stepsRun == 2
+        result.steps[0].operation == "done"
+        result.steps[0].page == "selectTriggers"
+        result.steps[1].operation == "introspect"
+        result.steps[1].page == "selectTriggers"
     }
 
     def "addTriggers bulk shortcut returns partial: true when one inner spec fails"() {
