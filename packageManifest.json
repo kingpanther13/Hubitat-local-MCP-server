@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "2.4.0",
+    "version": "2.5.0",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-06-15",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v2.4.0 - 2026-06-15\n- refactor: extract native Rule Machine + classic-app tools into McpNativeRulesLib (#279)\n  - Internal modularization: the native Rule Machine and classic-app tools now ship from a bundled `#include` library. No change to tool behaviour, names, or schemas.",
+    "releaseNotes": "v2.5.0 - 2026-06-15\n- refactor: route the variable-name enum pickers through the canonical reader (#281)\n  - Internal refactor: Rule Machine variable-name pickers now share a single option-list reader. No user-facing behaviour change.\n- feat: add walkStep drive mode and pare hub_set_rule prose into the tool guide (#280)\n  - `hub_set_rule` descriptions are leaner — the full trigger/action/expression reference now lives in `hub_get_tool_guide(section='set_rule_reference')` (fetch inline with `guide:true`), keeping the tool catalog under the response cap.\n  - New `walkStep` drive mode: pass `{operation:'drive', steps:[...]}` to run a whole wizard sequence in one call instead of step by step.\n  - `hub_create_custom_rule` now declares its trigger/condition/action types as schema enums for better validation hints.",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
