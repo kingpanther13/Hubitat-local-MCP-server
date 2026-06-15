@@ -3439,13 +3439,19 @@ def _advance_triple_quote_state(line: str, state: "str | None") -> "str | None":
     while i < len(line):
         if state is None:
             if line.startswith('"""', i):
-                state = '"""'; i += 3; continue
+                state = '"""'
+                i += 3
+                continue
             if line.startswith("'''", i):
-                state = "'''"; i += 3; continue
+                state = "'''"
+                i += 3
+                continue
             i += 1
         else:
             if line.startswith(state, i):
-                state = None; i += 3; continue
+                state = None
+                i += 3
+                continue
             i += 1
     return state
 
