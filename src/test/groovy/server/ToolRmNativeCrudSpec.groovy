@@ -13856,6 +13856,90 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[state_1]") }
     }
 
+    def "addAction ifThen Variable compareToVariable: LHS+RHS pickers validate List-of-{value:...} options (canonical reader)"() {
+        // Regression guard: the condition reveal-walker validates the LHS variable name and the
+        // RHS compareToVariable name through the canonical _rmReadPickerOptionStrings. When the
+        // hub renders the variable pickers as a List of {value:...} option maps (rather than a
+        // Map keyed by name), the reader extracts .value. The prior hand-rolled List branch
+        // stringified each option to "[value:A]" and rejected the valid variable name. Both
+        // pickers use the value-map shape here so the walker must route both reads correctly.
+        given:
+        enableWrite()
+        def isVarWritten = false
+        def daSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v -> if (_settingKeyOf(k) == "isVar_1") isVarWritten = true }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            daSeq++
+            def inputs = [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "cond", type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Variable", "Switch"]],
+                // LHS variable picker delivered as a List of {value:...} option maps.
+                [name: "lVar_1", type: "enum", options: [[value: "A"], [value: "B"]]],
+                [name: "RelrDev_1", type: "enum", options: ["=", "≠", "<", ">"]],
+                [name: "isVar_1", type: "bool"],
+                [name: "state_1", type: "number"],
+                [name: "hasAll", type: "button"]
+            ]
+            if (isVarWritten) {
+                // RHS variable picker likewise a List of {value:...} maps.
+                inputs = inputs + [[name: "xVarR_1", type: "enum", options: [[value: "A"], [value: "B"]]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["IF A > B THEN (seq ${daSeq})".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["IF A > B THEN"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [
+                capability: "ifThen",
+                expression: [conditions: [[
+                    capability: "Variable", variable: "A",
+                    comparator: ">", compareToVariable: "B"
+                ]]]
+            ],
+            confirm: true
+        ])
+
+        then: "both variable names validate against the {value:...} option lists -- not rejected"
+        result.success == true
+
+        and: "isVar_1=true revealed the RHS picker and the RHS variable name landed at xVarR_1"
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[isVar_1]"]?.toString() == "true" }
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[xVarR_1]"]?.toString() == "B" }
+    }
+
     def "addAction ifThen Variable compareToVariable: empty RHS-picker option list emits api_unavailable sentinel and flips partial"() {
         // LOAD-BEARING guard for the RHS empty-options degradation path. When the revealed
         // right-hand picker has NO options (hub with no vars / lazily-populated enum / probe
@@ -17677,6 +17761,97 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "xVar2.1 was absent from the schema at the pre-uVar fetch (gating is production-observable)"
         fieldNamesAtPreUVarFetch != null
         !fieldNamesAtPreUVarFetch.contains("xVar2.1")
+    }
+
+    def "addAction runCommand variable parameter: canonical reader validates a List-of-value-Maps xVar enum shape"() {
+        // Regression guard for the picker-read consistency fix. The variable-param path now reads
+        // its xVar enum via the canonical _rmReadPickerOptionStrings (shared with the setVariable /
+        // fromDevice / math source modes) instead of a hand-rolled Map?keySet : List?collect. The
+        // old reader stringified a List-of-{value:...} option ([[value:'myVar']] -> "[value:myVar]")
+        // and then rejected the valid variable name; the canonical reader extracts .value. This pins
+        // the corrected read on the discriminating option shape.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def moreParamsFired = false
+        def uVar2Written = false
+
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "moreParams") moreParamsFired = true
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "uVar2.1") uVar2Written = true
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Run Custom Action"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def inputs = [
+                [name: "actType.1", type: "enum", options: ["modeActs": "Run Custom Action"]],
+                [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
+                [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
+                [name: "devices.1", type: "capability.switch", multiple: true],
+                [name: "cCmd.1", type: "text"],
+                [name: "moreParams", type: "button"],
+                [name: "actionDone", type: "button"]
+            ]
+            if (moreParamsFired && !uVar2Written) {
+                inputs = inputs + [
+                    [name: "cpType2.1", type: "enum",
+                     options: ["string": "String", "number": "Number", "decimal": "Decimal"]],
+                    [name: "uVar2.1", type: "bool"],
+                    [name: "cpVal2.1", type: "text"]
+                ]
+            } else if (uVar2Written) {
+                // xVar enum delivered as a List of {value:...} option maps -- the shape the old
+                // hand-rolled reader mishandled. The canonical reader extracts .value.
+                inputs = inputs + [
+                    [name: "cpType2.1", type: "enum",
+                     options: ["string": "String", "number": "Number", "decimal": "Decimal"]],
+                    [name: "uVar2.1", type: "bool"],
+                    [name: "xVar2.1", type: "enum",
+                     options: [[value: "myVar"], [value: "counter"], [value: "temp"]]]
+                ]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [
+                capability: "runCommand",
+                command: "setLevel",
+                deviceIds: [42],
+                parameters: [[type: "NUMBER", variable: "myVar"]]
+            ],
+            confirm: true
+        ])
+
+        then: "the variable name validates against the List-of-{value:...} enum and lands at xVar2.1"
+        result.success == true
+        writtenFields["uVar2.1"] == "true"
+        writtenFields["xVar2.1"] == "myVar"
     }
 
     def "addAction runCommand literal parameter: moreParams+P-discovery writes cpVal at P=2"() {
