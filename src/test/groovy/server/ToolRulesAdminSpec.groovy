@@ -5,7 +5,7 @@ import support.TestDevice
 import support.ToolSpecBase
 
 /**
- * Spec for the hub_manage_custom_rules gateway tools in hubitat-mcp-server.groovy:
+ * Spec for the hub_manage_custom_rules gateway tools in libraries/mcp-custom-rules-lib.groovy:
  *
  * - toolDeleteRule -> delete_rule
  * - toolTestRule   -> test_rule
@@ -390,7 +390,7 @@ class ToolRulesAdminSpec extends ToolSpecBase {
     // tools live under the hub_manage_custom_rules gateway; their dispatch names are
     // custom_* (hub_test_custom_rule, hub_export_custom_rule, hub_import_custom_rule,
     // hub_clone_custom_rule, hub_delete_custom_rule) per the gateway config at
-    // hubitat-mcp-server.groovy:761.
+    // libraries/mcp-custom-rules-lib.groovy.
 
     @spock.lang.Unroll
     def "hub_test_custom_rule via dispatch returns child app result (useGateways=#useGateways)"() {

@@ -476,7 +476,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     def "hub_write_file treats a download-throws exception as 'no existing file' and skips the backup step"() {
         // Pins the current server behaviour: the backup attempt is wrapped in
         // a try/catch that swallows ANY download throw and proceeds as if
-        // there was no prior file (hubitat-mcp-server.groovy:4512-4515). Note
+        // there was no prior file (libraries/mcp-files-lib.groovy). Note
         // this means a transient File-Manager read failure on a file that
         // DOES exist would cause the overwrite to silently skip the backup —
         // worth future design review, but pinning current behaviour here.

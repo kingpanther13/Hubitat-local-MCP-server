@@ -561,7 +561,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
             [[id: 1L, name: 'Living Room'], [id: 2L, name: 'Kitchen']]
         }
         // hub_list_rooms lives behind the hub_manage_rooms gateway in tools/list, but executeTool
-        // still dispatches it directly by tool name at hubitat-mcp-server.groovy:1853 — the
+        // still dispatches it directly by tool name in hubitat-mcp-server.groovy — the
         // gateway is a tools/list folding convention, not a dispatch barrier.
         mcpDriver.pushBody([
             jsonrpc: '2.0', id: 3, method: 'tools/call',
@@ -777,7 +777,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         when:
         script.handleMcpRequest()
 
-        then: 'production catch at hubitat-mcp-server.groovy:286-292 turned it into -32700'
+        then: 'production catch in hubitat-mcp-server.groovy turned it into -32700'
         def response = mcpDriver.parseResponseJson()
         response.jsonrpc == '2.0'
         response.id == null

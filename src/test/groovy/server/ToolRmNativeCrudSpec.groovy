@@ -6,7 +6,7 @@ import groovy.json.JsonOutput
 import spock.lang.Shared
 
 /**
- * Spec for the native Rule Machine CRUD tools in hubitat-mcp-server.groovy:
+ * Spec for the native Rule Machine CRUD tools in libraries/mcp-native-rules-lib.groovy:
  *
  *   toolCreateRmRule          -> create_rm_rule
  *   toolUpdateRmRule          -> update_rm_rule

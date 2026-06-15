@@ -4,7 +4,7 @@ import groovy.json.JsonOutput
 import support.ToolSpecBase
 
 /**
- * Spec for toolListInstalledApps (hubitat-mcp-server.groovy approx line 7483).
+ * Spec for toolListInstalledApps (libraries/mcp-code-management-lib.groovy).
  * Tool: hub_list_apps with scope:"instances" (the merged-in former hub_list_installed_apps).
  * Gateway: hub_read_apps_code -> hub_list_apps.
  *

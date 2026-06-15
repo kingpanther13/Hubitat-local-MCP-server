@@ -10,7 +10,7 @@ import support.TestLocation
 import support.ToolSpecBase
 
 /**
- * Spec for the hub_manage_diagnostics gateway tools (hubitat-mcp-server.groovy):
+ * Spec for the hub_manage_diagnostics gateway tools (libraries/mcp-diagnostics-lib.groovy):
  *
  * - toolGetHubPerformance   -> hub_get_metrics
  * - toolGetMemoryHistory    -> hub_get_memory_history
@@ -1487,7 +1487,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
     }
 
     def "hub_list_captured_states surfaces the approaching-limit warning at max-4 slots"() {
-        given: 'max=10, 7 entries → count >= max-4 branch (source hubitat-mcp-server.groovy:3174)'
+        given: 'max=10, 7 entries → count >= max-4 branch (source libraries/mcp-diagnostics-lib.groovy)'
         settingsMap.maxCapturedStates = 10
         atomicStateMap.capturedDeviceStates = (1..7).collectEntries { i ->
             ["s${i}".toString(), [devices: [], timestamp: (i * 1000L), deviceCount: 0]]

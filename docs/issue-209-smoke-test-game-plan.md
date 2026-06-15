@@ -1,5 +1,10 @@
 # Issue 209 — `#include` smoke-test + dev-update tool game plan
 
+> **Superseded (2026-06-14):** issue #209 is complete. All 19 tool domains — including the native
+> Rule Machine + classic-app cluster (`McpNativeRulesLib`), the last to move — are extracted into
+> `#include` libraries. The wizard mega-methods this doc predicted as "whole-only extractions (much
+> later)" have been moved. Kept as a historical record of the split's reasoning.
+
 Durable handoff doc (written 2026-06-05). Captures state, decisions, and the remaining plan so a
 fresh context can continue. Part of the issue #209 monolith-split effort.
 

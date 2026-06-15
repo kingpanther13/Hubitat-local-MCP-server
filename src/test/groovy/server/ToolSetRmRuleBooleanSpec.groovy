@@ -4,7 +4,7 @@ import support.RMUtilsMock
 import support.ToolSpecBase
 
 /**
- * Spec for toolSetRmRuleBoolean (hubitat-mcp-server.groovy approx line 7837).
+ * Spec for toolSetRmRuleBoolean (libraries/mcp-native-rules-lib.groovy).
  * Gateway: hub_manage_native_rules_and_apps -> hub_set_rule_private_boolean.
  *
  * Load-bearing: strict coercion policy. Accepts ONLY Boolean true/false OR

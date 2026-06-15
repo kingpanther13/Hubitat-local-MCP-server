@@ -46,7 +46,7 @@ definition(
     category: "Utility",
     iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
     iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
-    // Copied from hubitat-mcp-server.groovy line 28 (definition oauth).
+    // Copied from hubitat-mcp-server.groovy (definition oauth).
     oauth: [displayName: "E2E Dead-Man Watchdog v2", displayLink: ""],
     singleInstance: true
 )
@@ -60,7 +60,7 @@ preferences {
         }
         section("MCP Deploy Endpoint") {
             // Surface the cloud /mcp endpoint URL + access token, mirroring the main server's
-            // mainPage (hubitat-mcp-server.groovy lines 54-56). createAccessToken() runs in
+            // mainPage (hubitat-mcp-server.groovy). createAccessToken() runs in
             // initialize() before the endpoint can serve; if it hasn't run yet, prompt to save.
             if (state.accessToken) {
                 paragraph "<b>Cloud /mcp endpoint (token-in-query):</b><br><code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
@@ -78,7 +78,7 @@ preferences {
 
 // ==================== MCP CLOUD TRANSPORT (deploy controller) ====================
 //
-// Copied from hubitat-mcp-server.groovy lines 659-673 (top-level mappings{} for /mcp).
+// Copied from hubitat-mcp-server.groovy (top-level mappings{} for /mcp).
 // Hubitat OAuth validates ?access_token= BEFORE routing here, so there is no per-call token
 // check in the handlers below (matches the main server's transport contract).
 mappings {
@@ -94,7 +94,7 @@ def installed() { initialize() }
 def updated()   { unschedule(); initialize() }
 
 def initialize() {
-    // Copied from hubitat-mcp-server.groovy lines 404-408: create the OAuth access token
+    // Copied from hubitat-mcp-server.groovy: create the OAuth access token
     // (idempotent) BEFORE scheduling, so the /mcp endpoint can serve immediately.
     if (!state.accessToken) {
         // createAccessToken() THROWS until OAuth is enabled in the Apps Code editor UI (level99's
@@ -430,7 +430,7 @@ String readLibrarySource(String libId) {
 
 // ==================== MCP JSON-RPC HANDLERS (deploy controller) ====================
 //
-// handleMcpGet: copied from hubitat-mcp-server.groovy line 693 -- this endpoint is
+// handleMcpGet: copied from hubitat-mcp-server.groovy -- this endpoint is
 // request-response only (POST); GET/SSE is not supported.
 def handleMcpGet() {
     return render(status: 405, contentType: "application/json",
@@ -490,7 +490,7 @@ def handleMcpRequest() {
     return render(contentType: "application/json", data: jsonResponse)
 }
 
-// processJsonRpcMessage: copied from hubitat-mcp-server.groovy lines 786-825.
+// processJsonRpcMessage: copied from hubitat-mcp-server.groovy.
 def processJsonRpcMessage(msg) {
     if (!msg) return jsonRpcError(null, -32600, "Invalid Request: empty message")
     if (msg.jsonrpc != "2.0") return jsonRpcError(msg?.id, -32600, "Invalid Request: must use JSON-RPC 2.0")
@@ -534,7 +534,7 @@ def handleInitialize(msg) {
 
 // handleToolsCall: dispatch params.name -> tool impl, wrap result in the MCP
 // {jsonrpc,id,result:{content:[{type:text,text:<json>}]}} envelope.
-// Copied/condensed from hubitat-mcp-server.groovy lines 896-988 (handleToolsCall).
+// Copied/condensed from hubitat-mcp-server.groovy (handleToolsCall).
 def handleToolsCall(msg) {
     def toolName = msg.params?.name
     def args = msg.params?.arguments ?: [:]
@@ -561,7 +561,7 @@ def handleToolsCall(msg) {
     }
 }
 
-// jsonRpcResult / jsonRpcError: copied verbatim from hubitat-mcp-server.groovy lines 10012-10020.
+// jsonRpcResult / jsonRpcError: copied verbatim from hubitat-mcp-server.groovy.
 def jsonRpcResult(id, result) {
     return [jsonrpc: "2.0", id: id, result: result]
 }
@@ -618,7 +618,7 @@ private void requireConfirm(args) {
 
 // ==================== ADMIN TOOL IMPLEMENTATIONS ====================
 
-// hub_update_app: copied from toolUpdateItemCodeInner (hubitat-mcp-server.groovy 12934-13230),
+// hub_update_app: copied from toolUpdateItemCodeInner (hubitat-mcp-server.groovy),
 // KEEPING the issue #237 verbatim compile-error capture: read /app/ajax/update's errorMessage
 // synchronously AND, for the self-update case, stash a lastSelfDeploy-style record in atomicState.
 // Adapted from hubInternalGet/PostForm to hubGet/hubPostForm.
@@ -762,7 +762,7 @@ def adminUpdateApp(args) {
 }
 
 // hub_get_source: copied from toolGetSource / toolGetItemSource / toolGetLibrarySource
-// (hubitat-mcp-server.groovy 12135-12203, 12666-12677, 13458-13540). The File Manager
+// (hubitat-mcp-server.groovy). The File Manager
 // auto-save side effect (uploadHubFile of the full source) is how the backup caches main.
 def adminGetSource(args) {
     def type = args.type
@@ -841,7 +841,7 @@ def adminGetSource(args) {
     return result
 }
 
-// hub_create_library: copied from toolInstallLibrary (hubitat-mcp-server.groovy 13651-13730).
+// hub_create_library: copied from toolInstallLibrary (hubitat-mcp-server.groovy).
 // POST /library/saveOrUpdateJson {id:null, source, version:null}. Adapted to hubPostJson.
 def adminCreateLibrary(args) {
     requireConfirm(args)
@@ -888,7 +888,7 @@ def adminCreateLibrary(args) {
     }
 }
 
-// hub_update_library: copied from toolUpdateLibraryCode (hubitat-mcp-server.groovy 13795-13930).
+// hub_update_library: copied from toolUpdateLibraryCode (hubitat-mcp-server.groovy).
 // POST /library/saveOrUpdateJson {id, source, version}. Adapted to hubPostJson.
 def adminUpdateLibrary(args) {
     requireConfirm(args)
@@ -963,7 +963,7 @@ def adminUpdateLibrary(args) {
 }
 
 // hub_delete_item: copied from toolDeleteItem / _deleteItemViaEndpoint / toolDeleteLibrary
-// (hubitat-mcp-server.groovy 13307-13380, 14189-14272). GET delete endpoints; library uses JSON success.
+// (hubitat-mcp-server.groovy). GET delete endpoints; library uses JSON success.
 def adminDeleteItem(args) {
     requireConfirm(args)
     def type = args.type
@@ -1224,7 +1224,7 @@ def adminListAppInstances(args) {
 }
 
 // hub_install_bundle: copied from toolInstallBundle + _firmwareAtLeast + _bundleResponseSucceeded
-// (hubitat-mcp-server.groovy 13548-13643), incl. the NUMERIC firmware gate at 2.3.8.108 and the
+// (hubitat-mcp-server.groovy), incl. the NUMERIC firmware gate at 2.3.8.108 and the
 // /bundle2 vs /bundle/uploadZipFromUrl split. Adapted to hubGet/hubPostJson.
 def adminInstallBundle(args) {
     requireConfirm(args)
@@ -1270,7 +1270,7 @@ def adminInstallBundle(args) {
     }
 }
 
-// _firmwareAtLeast: copied VERBATIM from hubitat-mcp-server.groovy lines 13630-13644 (numeric
+// _firmwareAtLeast: copied VERBATIM from hubitat-mcp-server.groovy (numeric
 // segment compare; missing/blank/unparseable fw -> true / assume modern).
 def _firmwareAtLeast(fw, String target) {
     if (fw == null || !fw.toString().trim()) return true
@@ -1287,7 +1287,7 @@ def _firmwareAtLeast(fw, String target) {
     return true
 }
 
-// _bundleResponseSucceeded: copied from hubitat-mcp-server.groovy lines 13615-13627.
+// _bundleResponseSucceeded: copied from hubitat-mcp-server.groovy.
 def _bundleResponseSucceeded(resp) {
     if (resp == null) return false
     if (resp instanceof Map) return resp.success == true || resp.success?.toString() == "true"
@@ -1387,7 +1387,7 @@ def adminDeleteBundle(args) {
             bundleId: bundleId, bundleName: bundleName, verified: true]
 }
 
-// hub_get_info: condensed from toolGetHubInfo (hubitat-mcp-server.groovy 6986-7090), surfacing the
+// hub_get_info: condensed from toolGetHubInfo (hubitat-mcp-server.groovy), surfacing the
 // fields CI needs incl. the issue #237 lastSelfDeploy record with ageMs (server 7086-7090).
 def adminGetInfo(args) {
     def hub = location?.hub
@@ -1410,7 +1410,7 @@ def adminGetInfo(args) {
     return info
 }
 
-// hub_list_apps: copied from toolListHubApps (hubitat-mcp-server.groovy 10650-10675) for
+// hub_list_apps: copied from toolListHubApps (hubitat-mcp-server.groovy) for
 // scope='types', else installed-apps fallback. Adapted to hubGet.
 def adminListApps(args) {
     def endpoint = (args?.scope == "types") ? "/hub2/userAppTypes" : "/hub2/appsList"
@@ -1442,7 +1442,7 @@ def adminListApps(args) {
     return result
 }
 
-// hub_list_libraries: copied from toolListLibraries (hubitat-mcp-server.groovy 10743-10792).
+// hub_list_libraries: copied from toolListLibraries (hubitat-mcp-server.groovy).
 // Adapted to hubGet; projects to summaries (omits each library's source).
 def adminListLibraries(args) {
     def result = [:]
@@ -1487,7 +1487,7 @@ def adminListLibraries(args) {
     return result
 }
 
-// hub_get_jobs: condensed from toolGetHubJobs (hubitat-mcp-server.groovy 11532-11578). Reads the
+// hub_get_jobs: condensed from toolGetHubJobs (hubitat-mcp-server.groovy). Reads the
 // scheduled-jobs JSON over loopback. (The main server's toolGetHubJobs reads jobs a different way;
 // this app reads /hub/scheduledJobs/json directly -- verify the path + shape on the test hub firmware.)
 def adminGetJobs(args) {
@@ -1510,7 +1510,7 @@ def adminGetJobs(args) {
     ]
 }
 
-// hub_read_file: copied from toolReadFile (hubitat-mcp-server.groovy 9809-9855). downloadHubFile + chunk.
+// hub_read_file: copied from toolReadFile (hubitat-mcp-server.groovy). downloadHubFile + chunk.
 def adminReadFile(args) {
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
     def maxChunkSize = 60000
@@ -1539,7 +1539,7 @@ def adminReadFile(args) {
     return result
 }
 
-// hub_write_file: copied from toolWriteFile (hubitat-mcp-server.groovy 9862-9920). uploadHubFile + name check.
+// hub_write_file: copied from toolWriteFile (hubitat-mcp-server.groovy). uploadHubFile + name check.
 def adminWriteFile(args) {
     requireConfirm(args)
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
@@ -1563,7 +1563,7 @@ def adminWriteFile(args) {
     }
 }
 
-// hub_create_backup: copied from toolCreateHubBackup (hubitat-mcp-server.groovy 12023-12057).
+// hub_create_backup: copied from toolCreateHubBackup (hubitat-mcp-server.groovy).
 // GET /hub/backupDB?fileName=latest. Records state.lastBackupTimestamp.
 // light:true = trigger the backup WITHOUT downloading the multi-MB .lzf body through this app:
 // fire /hub/backupDB asynchronously (the async client truncates the body; the hub still creates
@@ -1616,7 +1616,7 @@ def backupFired(response, data) {
 // using the sandbox global-var API (getGlobalVar / setGlobalVar). NOTE: this is a convenience
 // read/write with a flat {action,name,value} shape; the e2e LEASE runs over $MCP_URL (the main server)
 // and uses that server's nested {tool,args} shape -- it does NOT go through this watchdog tool. Copied
-// from toolGetVariable / toolSetVariable (hubitat-mcp-server.groovy 7197-7220, 7639-7656).
+// from toolGetVariable / toolSetVariable (hubitat-mcp-server.groovy).
 def adminManageVariables(args) {
     def action = args?.action
     if (!action) {
@@ -1654,7 +1654,7 @@ def adminManageVariables(args) {
 
 // ==================== EXTERNAL FETCH (importUrl) ====================
 //
-// fetchExternal: copies _fetchSourceFromUrl (hubitat-mcp-server.groovy 8908-8967) +
+// fetchExternal: copies _fetchSourceFromUrl (hubitat-mcp-server.groovy) +
 // _httpFetchUrl (8981-9003) VERBATIM in behaviour. httpGet [uri, textParser:true, timeout:60],
 // NO ignoreSSLIssues (external cert validation -- this is a hub-side fetch of executable code,
 // so the trusted-CA handshake is the floor; self-signed / MITM-d URLs fail). Validates
@@ -1685,7 +1685,7 @@ def fetchExternal(urlArg) {
     return body
 }
 
-// _httpFetchUrl: copied VERBATIM from hubitat-mcp-server.groovy lines 8981-9003.
+// _httpFetchUrl: copied VERBATIM from hubitat-mcp-server.groovy.
 // NO ignoreSSLIssues -- external cert validation. Body read failures re-thrown, not swallowed.
 private Map _httpFetchUrl(String url) {
     def status = null

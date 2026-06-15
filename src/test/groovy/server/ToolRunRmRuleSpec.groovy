@@ -5,7 +5,7 @@ import support.RMUtilsMock
 import support.ToolSpecBase
 
 /**
- * Spec for toolRunRmRule (hubitat-mcp-server.groovy approx line 7788).
+ * Spec for toolRunRmRule (libraries/mcp-native-rules-lib.groovy).
  * Gateway: hub_manage_native_rules_and_apps -> hub_call_rule.
  *
  * Covers: gate-throw, missing ruleId, action-to-rmAction mapping (rule/actions

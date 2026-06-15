@@ -1,6 +1,6 @@
 # RM 5.1 Action Capability Reference
 
-Generated from `_rmActionSchemaForDiscover()` in `hubitat-mcp-server.groovy`.
+Generated from `_rmActionSchemaForDiscover()` in `libraries/mcp-native-rules-lib.groovy`.
 Use `addAction({discover: true})` to retrieve this schema live from the current code.
 
 The `capability` field (case-insensitive) is the discriminator. Pass it as
@@ -528,4 +528,4 @@ comparator-based condition:
 
 For these capabilities, pass `state: 'wet'` (not `comparator: '=' / value: ...`).
 
-**Carbon dioxide sensor is NOT in this table.** The `CarbonDioxideMeasurement` capability is numeric ppm (use `comparator: '>'` + `value: 1000` etc.), not a discrete enum. The name is superficially symmetric to `Carbon monoxide detector` but RM 5.1 treats CO2 as a numeric comparator condition; the state-based shape is rejected at the walker. See the `DISCRETE_EVENT_CAPS` rationale comment in `hubitat-mcp-server.groovy`.
+**Carbon dioxide sensor is NOT in this table.** The `CarbonDioxideMeasurement` capability is numeric ppm (use `comparator: '>'` + `value: 1000` etc.), not a discrete enum. The name is superficially symmetric to `Carbon monoxide detector` but RM 5.1 treats CO2 as a numeric comparator condition; the state-based shape is rejected at the walker. See the `DISCRETE_EVENT_CAPS` rationale comment in `libraries/mcp-native-rules-lib.groovy`.

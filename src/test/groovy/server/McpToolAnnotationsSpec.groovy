@@ -553,10 +553,12 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     }
 
     def "getAllToolDefinitions() concatenates its chunk methods with no dropped or duplicated tools"() {
-        // PR1C split getAllToolDefinitions() into _getAllToolDefinitions_part1..8()
-        // that the public method concatenates (JVM 64KB method-bytecode cap). The
+        // getAllToolDefinitions() concatenates one per-domain chunk method
+        // (_getAllToolDefinitions_part<Name>(), each contributed by its #include
+        // library — e.g. _partNativeRM / _partRooms / _partDevices) rather than
+        // building one giant literal (JVM 64KB method-bytecode cap). The
         // sandbox_lint guard parses source TEXT; this pins the actual runtime
-        // concatenation — a dropped `+ _part5()`, a chunk returning [:], or a
+        // concatenation — a dropped `+ _partRooms()`, a chunk returning [], or a
         // duplicated chunk would corrupt the list while the source still scans clean.
         when:
         def names = script.getAllToolDefinitions()*.name

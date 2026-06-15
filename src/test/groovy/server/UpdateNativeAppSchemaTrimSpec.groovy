@@ -309,7 +309,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         //
         // The guard is defensive against a future core tool wrapping prose in its
         // top-level description: if `applyDescriptionTransform` were skipped on the
-        // core branch (`hubitat-mcp-server.groovy:21825`), the marker would surface
+        // core branch (`libraries/mcp-native-rules-lib.groovy`), the marker would surface
         // here as a BM25 token. We also don't assert on `params` (property names
         // only -- structurally can't carry markers) or `hints` (author-controlled
         // gatewayConfig text -- structurally can't carry markers either).

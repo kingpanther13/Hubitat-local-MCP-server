@@ -4,7 +4,7 @@ import groovy.json.JsonOutput
 import support.ToolSpecBase
 
 /**
- * Spec for toolGetDeviceInUseBy (hubitat-mcp-server.groovy approx line 7573).
+ * Spec for toolGetDeviceInUseBy (libraries/mcp-code-management-lib.groovy).
  * Gateway: hub_read_apps_code -> hub_list_device_dependents.
  *
  * Critical: PR-79-review fix tightened deviceId validation -- findDevice()

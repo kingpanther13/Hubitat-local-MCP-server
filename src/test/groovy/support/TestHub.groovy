@@ -30,7 +30,7 @@ class TestHub implements Hub {
 
     // --- RUNTIME-ONLY (not on Hub interface — property-access only, resolved
     // via Groovy's dynamic property dispatch when tools read e.g.
-    // location.hub.zwaveVersion — see hubitat-mcp-server.groovy:5155 for the
+    // location.hub.zwaveVersion — see hubitat-mcp-server.groovy for the
     // zwaveVersion read and :5202 for the zigbeeChannel read) ---
     String zwaveVersion
     Integer zigbeeChannel
