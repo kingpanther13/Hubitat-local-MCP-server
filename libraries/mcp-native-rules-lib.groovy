@@ -6894,21 +6894,54 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
     def currentPage = spec?.page?.toString()?.trim()
     def allOk = true
     def lastStepOperation = null
+    // Pre-flight: validate every step's SHAPE before issuing ANY live POST. A drive is
+    // partial-commit by nature (each write/click is a live POST), so a structural mistake
+    // -- a non-object step, or a nested drive -- must reject the whole drive up front,
+    // never after steps 1..N-1 have already mutated the rule. (Runtime errors that surface
+    // only on execution are handled per-step inside the loop, where the partial trace of
+    // the steps that already committed is preserved.)
+    steps.eachWithIndex { rawStep, i ->
+        if (!(rawStep instanceof Map)) {
+            throw new IllegalArgumentException("walkStep.drive step ${i + 1} must be an object {operation, ...}")
+        }
+        if (((Map) rawStep).operation?.toString()?.trim() == "drive") {
+            throw new IllegalArgumentException("walkStep.drive steps cannot nest operation='drive' (step ${i + 1})")
+        }
+    }
     int idx = 0
     for (def rawStep : steps) {
         idx++
-        if (!(rawStep instanceof Map)) {
-            throw new IllegalArgumentException("walkStep.drive step ${idx} must be an object {operation, ...}")
-        }
         def step = new LinkedHashMap((Map) rawStep)
         def stepOp = step.operation?.toString()?.trim() ?: "introspect"
-        if (stepOp == "drive") {
-            throw new IllegalArgumentException("walkStep.drive steps cannot nest operation='drive' (step ${idx})")
-        }
         // Inherit the page the previous step ended on when this step omits one.
         if (!step.page && currentPage) step.page = currentPage
-        def r = _rmWalkStep(appId, step)
         lastStepOperation = stepOp
+        def r
+        try {
+            r = _rmWalkStep(appId, step)
+        } catch (Exception stepExc) {
+            // A step that THROWS at runtime (bad input mid-sequence, a hub error) would
+            // otherwise unwind the whole drive and discard the per-step trace of the steps
+            // that already ran. Capture the throw as a failed step so the partial-run record
+            // + a health verdict survive, identical in quality to a success=false step. Record
+            // the step's OWN page (step.page is set by the inherit line above), not currentPage
+            // -- currentPage only advances on a SUCCESSFUL step, so it would mis-name the page
+            // the failing op actually targeted.
+            mcpLogError("rm-native", "walkStep drive: step ${idx} (${stepOp}) threw for app ${appId}", stepExc)
+            def stepHealth = null
+            try { stepHealth = _rmCheckRuleHealth(appId) } catch (Exception ignored) { /* best effort -- never mask the real error */ }
+            stepResults << [
+                step: idx,
+                operation: stepOp,
+                page: (step.page ?: currentPage),
+                success: false,
+                error: stepExc.message ?: stepExc.toString(),
+                health: stepHealth
+            ]
+            allOk = false
+            if (stopOnError) break
+            else continue
+        }
         if (r?.page) currentPage = r.page.toString()
         stepResults << [
             step: idx,
@@ -6928,7 +6961,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
         }
     }
     def finalHealth = _rmCheckRuleHealth(appId)
-    return [
+    def result = [
         success: allOk && finalHealth.ok,
         operation: "drive",
         page: currentPage,
@@ -6938,6 +6971,19 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
         steps: stepResults,
         health: finalHealth
     ]
+    // Fail-loud rollup: a success:false drive must ALWAYS carry a top-level reason. A step
+    // error caught per-step otherwise lives only in steps[].error -- a weak signal for an
+    // LLM caller that sees success:false with no top-level `error`. Surface the first failed
+    // step's error (and a repairHint naming it); if every step passed but the rule ended
+    // unhealthy, surface the finalHealth.ok gate's reason instead.
+    def firstFailed = stepResults.find { it.success == false }
+    if (firstFailed != null) {
+        result.error = "drive halted at step ${firstFailed.step} (${firstFailed.operation}): ${firstFailed.error ?: 'step reported success:false -- inspect its valueEcho/silentRejection/health'}".toString()
+        result.repairHints = (result.repairHints ?: []) + ["Drive stopped at step ${firstFailed.step}. Inspect steps[${firstFailed.step - 1}] for the failure detail, correct it, and re-run the drive from that step.".toString()]
+    } else if (!finalHealth.ok) {
+        result.error = "drive completed all ${stepResults.size()} step(s) but the rule is unhealthy: ${(finalHealth.issues ?: ['see health']).join('; ')}".toString()
+    }
+    return result
 }
 
 // Commit a value-write as a FULL page-form submit to /installedapp/update/json,
@@ -7062,7 +7108,7 @@ private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         // config JSON alone is enough to restore. Record the failure in
         // the snapshot so post-mortem sees why status was absent.
         mcpLog("warn", "rm-native", "Backup for rule ${ruleId}: statusJson failed -- ${e.message}")
-        status = [error: e.message]
+        status = [error: e.message ?: e.toString()]
     }
 
     // Detect appType from the config's appType.name so the restore path
@@ -7663,6 +7709,14 @@ def _createNativeAppShell(args) {
         if (createDone?.done == false) {
             result.mainPageDoneFailed = true
             result.mainPageDoneError = createDone.reason
+            // Flip success ONLY for commitButton:null app types (Basic Rule, Button Controller),
+            // where this Done is the session's ONLY lifecycle event -- a miss there means the app
+            // never initialized (a false-clean create). RM-family creates already fired updateRule
+            // above to commit each section, so a missed trailing Done there is a state-marker
+            // cleanup caveat (surfaced via the repairHint), not a creation failure.
+            if (_resolveCommitButton(_appTypeRegistry()[appType]?.appName) == null) {
+                result.success = false
+            }
             result.repairHints = (result.repairHints ?: []) + ["The session-end mainPage Done click did not commit (${createDone.reason}). Settings are already written, but the app's update lifecycle did not run -- verify via hub_get_app_config(appId=${newId}) and re-commit via hub_set_native_app(appId=${newId}, button='updateRule') for RM-family apps.".toString()]
         }
         if (triggerSpecs) result.triggers = triggerResults
@@ -7696,7 +7750,7 @@ def _createNativeAppShell(args) {
         try { _rmForceDeleteApp(newId) } catch (Exception ce) {
             mcpLog("warn", "rm-native", "Orphan cleanup failed for ${newId}: ${ce.message}")
         }
-        return [success: false, error: "${appType} create failed: ${e.message}", orphanCleanup: "attempted", note: "No partial app left behind."]
+        return [success: false, error: "${appType} create failed: ${e.message ?: e.toString()}", orphanCleanup: "attempted", note: "No partial app left behind."]
     }
 }
 
@@ -10431,6 +10485,12 @@ def _applyNativeAppEdit(args) {
                 if (walkDone?.done == false) {
                     result.mainPageDoneFailed = true
                     result.mainPageDoneError = walkDone.reason
+                    // The Done click drives the app's update lifecycle; a miss means subscriptions
+                    // / schedules did not re-initialize even though settings are written, so the
+                    // result is NOT clean -- flip success so callers branching on it don't treat a
+                    // half-committed edit as done.
+                    result.success = false
+                    result.repairHints = (result.repairHints ?: []) + ["The session-end mainPage Done click did not commit (${walkDone.reason}). Settings are already written, but the app's update lifecycle did not run -- verify via hub_get_app_config(appId=${appId}) and re-commit via hub_set_native_app(appId=${appId}, button='updateRule') for RM-family apps.".toString()]
                 }
             }
             return result
@@ -10439,7 +10499,7 @@ def _applyNativeAppEdit(args) {
             return [
                 success: false,
                 appId: appId,
-                error: e.message,
+                error: e.message ?: e.toString(),
                 backup: backup,
                 restoreHint: "Backup saved before write. Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
             ]
@@ -10786,7 +10846,7 @@ def _applyNativeAppEdit(args) {
             def trigResult = [
                 success: false,
                 appId: appId,
-                error: e.message,
+                error: e.message ?: e.toString(),
                 backup: backup,
                 restoreHint: isRetryExhaustion ?
                     "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')." :
@@ -11038,7 +11098,7 @@ def _applyNativeAppEdit(args) {
                         def innerResults = []
                         (pm.addTriggers as List).each { tspec ->
                             try { innerResults << _rmAddTrigger(appId, tspec as Map) }
-                            catch (Exception e) { innerResults << [success: false, error: e.message] }
+                            catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
                         // Outer success rolls up inner success — mark the
                         // outer entry as failed if ANY inner item failed,
@@ -11052,7 +11112,7 @@ def _applyNativeAppEdit(args) {
                         def innerResults = []
                         (pm.addActions as List).each { aspec ->
                             try { innerResults << _rmAddAction(appId, aspec as Map, true) }
-                            catch (Exception e) { innerResults << [success: false, error: e.message] }
+                            catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
                         patchResults << [success: innerOk, op: "addActions", results: innerResults]
@@ -11191,7 +11251,7 @@ def _applyNativeAppEdit(args) {
                         def innerResults = []
                         (pm.replaceActions as List).each { aspec ->
                             try { innerResults << _rmAddAction(appId, aspec as Map, true) }
-                            catch (Exception e) { innerResults << [success: false, error: e.message] }
+                            catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
                         patchResults << [success: innerOk, op: "replaceActions", removedIndices: cleared, addedResults: innerResults]
@@ -11756,6 +11816,19 @@ def _applyNativeAppEdit(args) {
         if (editDone?.done == false) {
             result.mainPageDoneFailed = true
             result.mainPageDoneError = editDone.reason
+            // Flip success ONLY for commitButton:null app types (Basic Rule, Button Controller),
+            // where this Done is the edit's ONLY commit channel -- a miss means nothing committed.
+            // For RM-family apps the edit already committed through another channel (a button click
+            // like pausRule via /installedapp/btn, or a main-page settings write's auto-updateRule),
+            // so a missed trailing Done is a state-marker-cleanup caveat (surfaced via the
+            // repairHint), NOT a failure -- flipping success there would be a false negative for a
+            // completed action. (finalConfig.app.appType.name is live-confirmed populated on the
+            // base configure/json endpoint; _resolveCommitButton fails safe to non-null on a
+            // degraded/absent name, i.e. toward NOT flipping.)
+            if (_resolveCommitButton(finalConfig?.app?.appType?.name?.toString()) == null) {
+                result.success = false
+            }
+            result.repairHints = (result.repairHints ?: []) + ["The session-end mainPage Done click did not commit (${editDone.reason}). Settings are already written, but the app's update lifecycle did not run -- verify via hub_get_app_config(appId=${appId}) and re-commit via hub_set_native_app(appId=${appId}, button='updateRule') for RM-family apps.".toString()]
         }
         return result
     } catch (Exception e) {
@@ -11816,7 +11889,7 @@ def toolDeleteNativeApp(args) {
         return [
             success: false,
             appId: appId,
-            error: e.message,
+            error: e.message ?: e.toString(),
             backup: backup
         ]
     }

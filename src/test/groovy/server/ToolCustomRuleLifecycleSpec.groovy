@@ -42,6 +42,10 @@ class ToolCustomRuleLifecycleSpec extends ToolSpecBase {
             assert start >= 0 : "could not find ${fnSig} in hubitat-mcp-server.groovy -- validator moved/renamed?"
             int end = src.indexOf('\ndef ', start + fnSig.length())
             def body = src.substring(start, end < 0 ? src.length() : end)
+            // /[a-z_]+/ matches the lowercase_underscore type labels the validators use. A future
+            // label with a digit/uppercase (e.g. "set_hvac2") would be missed here -- but then the
+            // guard fails in the SAFE direction (the enum carries it, the parsed set doesn't =>
+            // inequality => RED), so it degrades to a loud failure, never a silent miss.
             (body =~ /case\s+"([a-z_]+)"/).collect { it[1] } as Set
         }
         def triggerCases = caseLabels('def validateTrigger(trigger) {') - ['minutes', 'hours', 'days']
