@@ -3432,13 +3432,15 @@ def check_include_library_lockstep() -> list[dict]:
 
 
 def _advance_triple_quote_state(line: str, state: "str | None") -> "str | None":
-    r"""Track Groovy triple-quoted-string state across a line so a column-0 `/*`
-    that is actually string content (a GString tool description) is not mistaken
-    for a file-scope block comment. Returns the triple-quote state at end of line.
+    r"""Return the triple-quoted-string state at the END of `line`, given the state at its
+    start (the delimiter we are inside -- triple-double or triple-single -- or None).
 
-    A triple-quote whose first quote is backslash-escaped (an odd run of backslashes
-    before it -- Groovy's \... escape for a literal triple-quote inside a triple-quoted
-    string) is NOT a delimiter; skip it so the string state stays correct."""
+    Only triple-quoted strings span lines, so only that state carries across lines. Within a
+    line, quote tokens that are NOT real triple-quoted-string delimiters must be skipped, or
+    they false-flip the state and blind the file-scope-block-comment scan for the rest of the
+    file: anything after an unquoted // line comment, anything inside a regular single/double-
+    quoted string, and a triple-quote whose first quote is backslash-escaped (Groovy's escape
+    for a literal triple-quote inside a triple-quoted string)."""
     def _escaped(idx):
         b = 0
         k = idx - 1
@@ -3447,23 +3449,39 @@ def _advance_triple_quote_state(line: str, state: "str | None") -> "str | None":
             k -= 1
         return b % 2 == 1
     i = 0
-    while i < len(line):
-        if state is None:
-            if line.startswith('"""', i) and not _escaped(i):
-                state = '"""'
-                i += 3
-                continue
-            if line.startswith("'''", i) and not _escaped(i):
-                state = "'''"
-                i += 3
-                continue
-            i += 1
-        else:
+    n = len(line)
+    reg = None  # delimiter of the regular (non-triple) string we are inside, or None
+    while i < n:
+        if state is not None:
+            # Inside a triple-quoted string: only the matching, unescaped triple closes it.
             if line.startswith(state, i) and not _escaped(i):
                 state = None
                 i += 3
                 continue
             i += 1
+            continue
+        if reg is not None:
+            # Inside a regular (non-triple) string: only the matching, unescaped quote closes it.
+            if line[i] == reg and not _escaped(i):
+                reg = None
+            i += 1
+            continue
+        # In code: an unquoted // starts a line comment -- the rest of the line is not scannable.
+        if line[i] == "/" and i + 1 < n and line[i + 1] == "/":
+            break
+        if line.startswith('"""', i) and not _escaped(i):
+            state = '"""'
+            i += 3
+            continue
+        if line.startswith("'''", i) and not _escaped(i):
+            state = "'''"
+            i += 3
+            continue
+        if line[i] in ('"', "'"):
+            reg = line[i]
+            i += 1
+            continue
+        i += 1
     return state
 
 
@@ -3539,8 +3557,21 @@ def _run_library_block_comment_self_test() -> int:
     if fp2:
         failures += 1
         print(f"SELF-TEST FAIL [library-block-comment]: escaped-triple-quote false positive at line(s) {[f['line'] for f in fp2]}")
+    # silent-failure-hunter #279: a triple-quote inside a // comment (or a regular string) must
+    # NOT flip the string state, so a genuine file-scope /* */ AFTER it is still flagged.
+    after_comment = (
+        'def foo() { return 1 }\n'
+        '// a // comment that mentions """ once must not blind the scanner\n'
+        'def s = "a string with \'\'\' in it"\n'
+        '/* a real file-scope block comment that MUST still be flagged */\n'
+        'def bar() { return 2 }\n'
+    )
+    must = _scan_library_block_comments("<self-test>", after_comment)
+    if not must:
+        failures += 1
+        print("SELF-TEST FAIL [library-block-comment]: file-scope /* after a // comment / string containing triple-quotes was NOT flagged")
     if failures == 0:
-        print("library block-comment self-test: PASS (3 fixtures)")
+        print("library block-comment self-test: PASS (4 fixtures)")
     return failures
 
 

@@ -28,8 +28,9 @@
 #     hub's verbatim compile error if it never does.
 #   - the package BUNDLE install can return an empty result (no JSON-RPC error, no
 #     structured tool error) for the #209 ~1.67MB bundle even though the import SUCCEEDED:
-#     verify_includes_current finds McpNativeRulesLib on the hub at its exact byte length
-#     on the FIRST probe, so this is NOT an install-duration timeout -- the cause of the
+#     verify_includes_current finds McpNativeRulesLib on the hub at its exact character length
+#     (wc -m vs the hub's char-based totalLength) on the FIRST probe, so this is NOT an
+#     install-duration timeout -- the cause of the
 #     lost envelope is unpinned (the small bundles don't trigger it). So a dropped/empty
 #     install response falls through to verify_includes_current, the authoritative
 #     length-check of every #include'd library on the hub. A structured hub error
@@ -296,21 +297,42 @@ else
     echo "Installing package bundle '${BASENAME}' from ${BUNDLE_URL} via hub_install_bundle ..."
     BUN_RPC=$(jq -nc --arg url "$BUNDLE_URL" \
       '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_install_bundle",arguments:{importUrl:$url,confirm:true}}}')
-    BUN_TEXT=$(call_tool "$BUN_RPC")
-    if [ "$(ok_of "$BUN_TEXT")" = "true" ]; then
+    # Read the RAW JSON-RPC response, not call_tool's collapsed text: call_tool returns empty
+    # stdout for BOTH a relay-dropped envelope (install accepted, response lost) AND a JSON-RPC
+    # / tool error (auth failure, missing hub_install_bundle tool, malformed request -- the
+    # install never ran). Those must NOT be treated the same: deferring a never-ran install to
+    # the length-only verify could false-pass on a pre-existing/stale library (codex review,
+    # PR #279). So hard-fail on a JSON-RPC error; only a genuinely empty result (no error)
+    # defers to the verify.
+    BUN_RAW=$(mcp_call "$BUN_RPC" || true)
+    # Detect a JSON-RPC error from the PRESENCE of a non-null .error, independent of its shape:
+    # `.error.message` (spec object), a bare-string `.error` (relay convention), or a message-less
+    # error object all hard-fail. `.message?` is the optional operator so a bare-string .error does
+    # not abort the whole jq program (which would silently route a never-ran install to the defer
+    # path). type=="object" guard keeps a non-JSON 504 body from erroring.
+    BUN_JSONRPC_ERR=$(printf '%s' "$BUN_RAW" | jq -r 'if (type=="object" and has("error") and .error != null) then (.error.message? // (.error|strings) // (.error|tojson)) else empty end' 2>/dev/null || true)
+    BUN_TEXT=$(printf '%s' "$BUN_RAW" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
+    if [ -n "$BUN_JSONRPC_ERR" ] && [ "$BUN_JSONRPC_ERR" != "null" ]; then
+      echo "::error::hub_install_bundle JSON-RPC/transport error for '${BASENAME}' -- the install command did not run (auth failure, missing tool, or malformed request), so the library was NOT delivered. Verbatim: $(printf '%s' "$BUN_JSONRPC_ERR" | head -c 300)"
+      exit 1
+    elif [ "$(ok_of "$BUN_TEXT")" = "true" ]; then
       ANY_BUNDLE_INSTALLED="true"
       echo "Bundle '${BASENAME}' installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint,message}' 2>/dev/null || true)"
-    elif [ -z "$BUN_TEXT" ] || [ -z "$(err_of "$BUN_TEXT")" ]; then
-      # Empty result, NOT a structured hub error: hub_install_bundle can come back with no
-      # success envelope for the large #209 bundle even though the import SUCCEEDED -- the
-      # post-install verify below finds McpNativeRulesLib present at its exact byte length on
-      # the first probe, so it is NOT a slow-install timeout and the cause of the lost
-      # envelope is unpinned (the small bundles don't hit it). Don't fail-fast -- mark the
-      # install unconfirmed and let verify_includes_current (authoritative: it length-checks
-      # every #include'd library on the hub) decide. A real hub error keeps the hard-fail
-      # else branch. e2e-transport only: the hub fetches the zip itself (300s) and HPM users
-      # install from the local hub UI.
-      echo "::warning::hub_install_bundle returned no success envelope for '${BASENAME}' (empty result, no hub error) -- deferring to the authoritative post-install library verify."
+    elif [ -z "$BUN_TEXT" ]; then
+      # Empty result with NO JSON-RPC error: the request was ACCEPTED but its response envelope
+      # was lost (relay 504 / dropped connection) -- the same class the rule-create e2e tests
+      # recover by verifying the real on-hub outcome. The install command ran, so defer to the
+      # authoritative post-install verify_includes_current (every #include'd library present,
+      # single copy, exact character length -- wc -m vs the hub's totalLength). This enforce
+      # gate is LOAD-BEARING for the empty path: it is the only thing that catches a never-ran
+      # install here, so it must never be weakened to a probe-only check. For the NEW
+      # McpNativeRulesLib this is a genuine run-confirmation: it is absent from main, so the
+      # verify can only pass if THIS install
+      # delivered it (a stale same-length copy is implausible for a 787KB new file). The hub
+      # fetches the zip itself from importUrl (300s) -- bundle DATA never crosses the transport
+      # -- so HPM users (local hub UI) are unaffected. JSON-RPC errors (above) and structured
+      # hub errors (below) both still hard-fail.
+      echo "::warning::hub_install_bundle returned no success envelope for '${BASENAME}' (empty result, no JSON-RPC error) -- request accepted but response dropped; deferring to the authoritative post-install library verify."
       ANY_BUNDLE_INSTALLED="true"
       BUNDLE_INSTALL_UNCONFIRMED="true"
     else

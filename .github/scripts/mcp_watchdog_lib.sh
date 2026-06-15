@@ -25,7 +25,10 @@ mcp_call() { curl -sS --max-time 120 -X POST "$WATCHDOG_URL" -H "Content-Type: a
 call_tool() {
   local resp err
   resp=$(mcp_call "$1" || true)
-  err=$(printf '%s' "$resp" | jq -r '.error.message // (.error | strings) // empty' 2>/dev/null || true)
+  # Detect a JSON-RPC error by the PRESENCE of a non-null .error, whatever its shape: a bare-string
+  # `.error` must not abort the jq program via `.error.message` (the `?` optional operator + tojson
+  # fallback keep a message-less or string error reported, not silently dropped).
+  err=$(printf '%s' "$resp" | jq -r 'if (type=="object" and has("error") and .error != null) then (.error.message? // (.error|strings) // (.error|tojson)) else empty end' 2>/dev/null || true)
   if [ -n "$err" ] && [ "$err" != "null" ]; then
     echo "::error::watchdog JSON-RPC error: $(printf '%s' "$err" | head -c 200)" >&2
     return 0
