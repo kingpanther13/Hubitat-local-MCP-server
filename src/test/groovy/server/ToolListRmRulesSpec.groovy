@@ -4,7 +4,7 @@ import support.RMUtilsMock
 import support.ToolSpecBase
 
 /**
- * Spec for toolListRmRules (hubitat-mcp-server.groovy approx line 7644).
+ * Spec for toolListRmRules (libraries/mcp-native-rules-lib.groovy).
  * Gateway: hub_manage_native_rules_and_apps -> hub_list_rules.
  *
  * Covers: gate-throw, RM 5.x Map shape with Integer key coercion, RM 4.x
@@ -220,7 +220,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         // The real Hubitat Groovy sandbox resolves unknown `hubitat.helper.X`
         // namespace lookups to null, and the subsequent property dereference
         // throws this shape -- verified via live probe during PR #79 review.
-        // Classifier at hubitat-mcp-server.groovy:7692 scopes the match to
+        // Classifier in libraries/mcp-native-rules-lib.groovy scopes the match to
         // the 'helper' substring.
         rmUtils.throwOnGetRuleList4 = new RuntimeException("Cannot get property 'helper' on null object")
         rmUtils.throwOnGetRuleList5 = new RuntimeException("Cannot get property 'helper' on null object")

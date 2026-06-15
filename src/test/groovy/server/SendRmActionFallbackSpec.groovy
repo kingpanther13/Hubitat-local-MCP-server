@@ -5,7 +5,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for the sendRmAction / sendRmActionFallback internals
- * (hubitat-mcp-server.groovy approx line 7867).
+ * (libraries/mcp-native-rules-lib.groovy).
  *
  * The 3-arg fallback fires ONLY on MissingMethodException or NoSuchMethodError
  * from the 4-arg sendAction call. All other Throwables propagate directly as a

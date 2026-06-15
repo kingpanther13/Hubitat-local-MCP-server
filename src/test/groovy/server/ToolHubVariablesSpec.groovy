@@ -1106,7 +1106,7 @@ class ToolHubVariablesSpec extends ToolSpecBase {
     // routing toggles, and error mapping (IAE -> -32602, generic -> isError) are
     // verified end-to-end alongside the direct-call golden paths above. Tools
     // live in the hub_manage_variables gateway; dispatched directly by snake-
-    // case name through executeTool() per hubitat-mcp-server.groovy:3098-3105.
+    // case name through executeTool() in hubitat-mcp-server.groovy.
 
     @spock.lang.Unroll
     def "hub_list_variables via dispatch returns hub + rule vars (useGateways=#useGateways)"() {

@@ -123,7 +123,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
     // v0.5.4 swapped to pure integer math, v0.7.6 re-introduced fractional
     // division — with explicit `.0` literals + `*10 / 10.0` — to get one
     // decimal place of precision without re-triggering the BigDecimal
-    // crash. The current shape at hubitat-mcp-server.groovy:5918 is the
+    // crash. The current shape in libraries/mcp-diagnostics-lib.groovy is the
     // v0.7.6 form: `Math.round((now() - activityTime) / 3600000.0 * 10) / 10.0`.
     //
     // This test only directly guards the v0.7.6 one-decimal-in-hours

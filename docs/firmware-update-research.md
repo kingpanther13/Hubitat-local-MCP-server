@@ -17,7 +17,7 @@ it's "stay current and re-test."
 We have **no** firmware check / apply / rollback capability.
 
 - The only firmware **read** is `hub_get_info.firmwareVersion`, from `hub.firmwareVersionString`
-  (`hubitat-mcp-server.groovy:6861`, `:10131`). It is displayed, never compared.
+  (`hubitat-mcp-server.groovy`). It is displayed, never compared.
 - `hub_get_update_status` is **not** firmware — it checks GitHub for a newer *MCP Rule Server app*
   version (`:2925`).
 - All firmware-conditional code uses endpoint-existence/fallback, not version comparison.
@@ -113,7 +113,7 @@ Builds on the existing 30-min lease (`lease_acquire.sh`) + importUrl deploy mode
   concurrency group.
 - 5xx-tolerant deploy/verify pattern to mirror for reboot polling:
   `mcp_deploy_source.sh:187-213`, `mcp_verify_deploy.sh:102-118`.
-- Destructive-ops gateway: `hubitat-mcp-server.groovy:1143-1151`.
+- Destructive-ops gateway: `hubitat-mcp-server.groovy`.
 - e2e is PR-triggered + manual only today; **no scheduled job exists** (`hub-e2e.yml:10-26`).
 
 ## Open questions (needs live hub)

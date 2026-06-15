@@ -150,7 +150,7 @@ Extend `tests/sandbox_lint.py` to assert `packageManifest.json` `version` matche
 
 ### 2. Harden `isNewerVersion()`
 
-`hubitat-mcp-server.groovy:7288` currently does `tokenize('.').collect { it as int }` which throws `NumberFormatException` on non-numeric tokens. The exception is caught, but the function silently returns `false` — meaning an installed hub with a corrupted version string would silently stop seeing updates. Add explicit regex validation before the tokenize; if the version doesn't match `^\d+\.\d+\.\d+$`, log and return `false` with a clear error message.
+`isNewerVersion()` in `libraries/mcp-system-lib.groovy` currently does `tokenize('.').collect { it as int }` which throws `NumberFormatException` on non-numeric tokens. The exception is caught, but the function silently returns `false` — meaning an installed hub with a corrupted version string would silently stop seeing updates. Add explicit regex validation before the tokenize; if the version doesn't match `^\d+\.\d+\.\d+$`, log and return `false` with a clear error message.
 
 ### 3. JSON validity post-check
 

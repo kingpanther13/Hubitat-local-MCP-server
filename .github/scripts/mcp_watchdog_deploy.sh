@@ -16,17 +16,28 @@
 # code-install plumbing. Its advantage over self-deploying through the primary
 # endpoint is that the watchdog is a DIFFERENT running app, so installing the MCP
 # package does NOT reload the app answering the request -- it never bricks itself
-# and stays queryable throughout. Small/fast calls (the package's libraries bundle,
-# get_source, get_info) return the hub's VERBATIM compile/save
-# result synchronously within the ~10s cloud relay window (a bundle install is the hub
-# fetching + unpacking a small zip, well within the window), so VERIFY for those is
-# simply: parse the tool
-# response and fail loudly -- surfacing the hub's verbatim errorMessage -- if
-# success != true. The one exception is the ~1.6MB APP deploy: it runs ~200s
-# hub-side, so the relay drops its response even though the deploy proceeds, exactly
-# like the live server's self-deploy. For that case we tolerate the dropped response
-# and poll hub_get_source until the new source lands, consulting lastSelfDeploy only
-# as a secondary source for the hub's verbatim compile error if it never does.
+# and stays queryable throughout. Most calls (get_source, get_info, the small per-library
+# operations) return the hub's VERBATIM compile/save result synchronously, so VERIFY is
+# simply: parse the tool response and fail loudly -- surfacing the hub's verbatim
+# errorMessage -- if success != true. TWO operations instead get a dropped/EMPTY response
+# (not a structured hub error); for both we tolerate that and consult an authoritative
+# on-hub check rather than fail-fast, each for its own reason:
+#   - the ~1.6MB APP deploy genuinely runs ~200s hub-side, so the response is dropped while
+#     the deploy proceeds (like the live server's self-deploy): poll hub_get_source until
+#     the new source lands, consulting lastSelfDeploy only as a secondary source for the
+#     hub's verbatim compile error if it never does.
+#   - the package BUNDLE install can return an empty result (no JSON-RPC error, no
+#     structured tool error) for the #209 ~1.67MB bundle even though the import SUCCEEDED:
+#     verify_includes_current finds McpNativeRulesLib on the hub at its exact character length
+#     (wc -m vs the hub's char-based totalLength) on the FIRST probe, so this is NOT an
+#     install-duration timeout -- the cause of the
+#     lost envelope is unpinned (the small bundles don't trigger it). So a dropped/empty
+#     install response falls through to verify_includes_current, the authoritative
+#     length-check of every #include'd library on the hub. A structured hub error
+#     (non-empty errorMessage) still fails loudly and fast. The hub fetches the zip itself
+#     from importUrl (hubInternalGet, 300s) -- the bundle DATA never crosses the MCP
+#     transport -- and HPM users install from the local hub UI, so this is an e2e-transport
+#     quirk, not a user-facing one.
 #
 # Install order (HPM's repair order; #include deps must exist before the app compiles):
 #   1. BUNDLE(S)  hub_install_bundle  importUrl=<bundle zip url>  confirm:true  (delivers EVERY #included library)
@@ -220,6 +231,7 @@ else
   ( cd "$REPO_DIR" && python3 tools/build-bundle.py )
   ANY_BUNDLE_DIFFERS="false"
   ANY_BUNDLE_INSTALLED="false"
+  BUNDLE_INSTALL_UNCONFIRMED="false"
   while IFS= read -r BASENAME; do
     [ -z "$BASENAME" ] && continue
     BUNDLE_PATH="$REPO_DIR/bundles/${BASENAME}"
@@ -285,13 +297,48 @@ else
     echo "Installing package bundle '${BASENAME}' from ${BUNDLE_URL} via hub_install_bundle ..."
     BUN_RPC=$(jq -nc --arg url "$BUNDLE_URL" \
       '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_install_bundle",arguments:{importUrl:$url,confirm:true}}}')
-    BUN_TEXT=$(call_tool "$BUN_RPC")
-    if [ "$(ok_of "$BUN_TEXT")" != "true" ]; then
+    # Read the RAW JSON-RPC response, not call_tool's collapsed text: call_tool returns empty
+    # stdout for BOTH a relay-dropped envelope (install accepted, response lost) AND a JSON-RPC
+    # / tool error (auth failure, missing hub_install_bundle tool, malformed request -- the
+    # install never ran). Those must NOT be treated the same: deferring a never-ran install to
+    # the length-only verify could false-pass on a pre-existing/stale library (codex review,
+    # PR #279). So hard-fail on a JSON-RPC error; only a genuinely empty result (no error)
+    # defers to the verify.
+    BUN_RAW=$(mcp_call "$BUN_RPC" || true)
+    # Detect a JSON-RPC error from the PRESENCE of a non-null .error, independent of its shape:
+    # `.error.message` (spec object), a bare-string `.error` (relay convention), or a message-less
+    # error object all hard-fail. `.message?` is the optional operator so a bare-string .error does
+    # not abort the whole jq program (which would silently route a never-ran install to the defer
+    # path). type=="object" guard keeps a non-JSON 504 body from erroring.
+    BUN_JSONRPC_ERR=$(printf '%s' "$BUN_RAW" | jq -r 'if (type=="object" and has("error") and .error != null) then (.error.message? // (.error|strings) // (.error|tojson)) else empty end' 2>/dev/null || true)
+    BUN_TEXT=$(printf '%s' "$BUN_RAW" | jq -r '.result.content[0].text // empty' 2>/dev/null || true)
+    if [ -n "$BUN_JSONRPC_ERR" ] && [ "$BUN_JSONRPC_ERR" != "null" ]; then
+      echo "::error::hub_install_bundle JSON-RPC/transport error for '${BASENAME}' -- the install command did not run (auth failure, missing tool, or malformed request), so the library was NOT delivered. Verbatim: $(printf '%s' "$BUN_JSONRPC_ERR" | head -c 300)"
+      exit 1
+    elif [ "$(ok_of "$BUN_TEXT")" = "true" ]; then
+      ANY_BUNDLE_INSTALLED="true"
+      echo "Bundle '${BASENAME}' installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint,message}' 2>/dev/null || true)"
+    elif [ -z "$BUN_TEXT" ]; then
+      # Empty result with NO JSON-RPC error: the request was ACCEPTED but its response envelope
+      # was lost (relay 504 / dropped connection) -- the same class the rule-create e2e tests
+      # recover by verifying the real on-hub outcome. The install command ran, so defer to the
+      # authoritative post-install verify_includes_current (every #include'd library present,
+      # single copy, exact character length -- wc -m vs the hub's totalLength). This enforce
+      # gate is LOAD-BEARING for the empty path: it is the only thing that catches a never-ran
+      # install here, so it must never be weakened to a probe-only check. For the NEW
+      # McpNativeRulesLib this is a genuine run-confirmation: it is absent from main, so the
+      # verify can only pass if THIS install
+      # delivered it (a stale same-length copy is implausible for a 787KB new file). The hub
+      # fetches the zip itself from importUrl (300s) -- bundle DATA never crosses the transport
+      # -- so HPM users (local hub UI) are unaffected. JSON-RPC errors (above) and structured
+      # hub errors (below) both still hard-fail.
+      echo "::warning::hub_install_bundle returned no success envelope for '${BASENAME}' (empty result, no JSON-RPC error) -- request accepted but response dropped; deferring to the authoritative post-install library verify."
+      ANY_BUNDLE_INSTALLED="true"
+      BUNDLE_INSTALL_UNCONFIRMED="true"
+    else
       echo "::error::hub_install_bundle did not report success for '${BASENAME}' -- HPM would fail to deliver this package's bundle. Hub verbatim: $(err_of "$BUN_TEXT") -- full: $(printf '%s' "$BUN_TEXT" | jq -c '{success,error,endpoint,rawResponse}' 2>/dev/null || printf '%s' "$BUN_TEXT" | head -c 400)"
       exit 1
     fi
-    ANY_BUNDLE_INSTALLED="true"
-    echo "Bundle '${BASENAME}' installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint,message}' 2>/dev/null || true)"
   done <<< "$BUNDLE_BASENAMES"
   # Run-scoped bundle-state marker for the dead-man restore: "<runId>:unchanged" lets restorePackage
   # skip reinstalling main's cached bundle (the libraries never left main's bytes this run). Any other
@@ -321,6 +368,22 @@ else
   # -------------------------------------------------------------------------
   if [ "${#INCLUDES[@]}" -gt 0 ]; then
     if [ "$ANY_BUNDLE_INSTALLED" = "true" ]; then
+      if [ "$BUNDLE_INSTALL_UNCONFIRMED" = "true" ]; then
+        # The install came back with no success envelope (cause unpinned; in practice the
+        # import succeeds fast -- the library is current on the first probe). Poll the
+        # non-fatal probe anyway so that on the off chance the hub is still writing the
+        # library, a not-yet-landed read isn't mistaken for a failed install before the
+        # authoritative enforce gate.
+        echo "Install reported no success envelope -- polling until the #include'd libraries verify current ..."
+        for attempt in 1 2 3 4 5 6 7 8; do
+          if verify_includes_current probe; then
+            echo "  libraries landed (probe clean) after attempt ${attempt}."
+            break
+          fi
+          echo "  probe attempt ${attempt}/8: not current yet -- waiting 15s ..."
+          sleep 15
+        done
+      fi
       echo "Verifying all ${#INCLUDES[@]} #include'd libraries are current on the hub (single copy, exact length) ..."
       verify_includes_current enforce
       echo "All #include'd libraries verified current."

@@ -4,7 +4,7 @@ import groovy.json.JsonOutput
 import support.ToolSpecBase
 
 /**
- * Spec for toolGetAppConfig (hubitat-mcp-server.groovy approx line 6232).
+ * Spec for toolGetAppConfig (libraries/mcp-code-management-lib.groovy).
  * Gateway tool under hub_read_apps_code — executeTool() dispatches via case "hub_get_app_config".
  *
  * Covers:

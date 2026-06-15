@@ -121,6 +121,10 @@ LIBS = [
         "source": LIB_DIR / "mcp-discovery-lib.groovy",
         "dest": f"{NAMESPACE}.McpDiscoveryLib.groovy",
     },
+    {
+        "source": LIB_DIR / "mcp-native-rules-lib.groovy",
+        "dest": f"{NAMESPACE}.McpNativeRulesLib.groovy",
+    },
 ]
 
 # Fixed DOS-epoch timestamp + stored (uncompressed) entries make rebuilds

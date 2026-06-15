@@ -1,6 +1,6 @@
 # RM 5.1 Wire Format Notes
 
-Internal reference for the RM 5.1 HTTP API helpers in `hubitat-mcp-server.groovy`.
+Internal reference for the RM 5.1 helpers in the `McpNativeRulesLib` library plus the shared classic-dynamicPage wizard primitives in `hubitat-mcp-server.groovy`.
 Moved from in-source Groovydocs to avoid multi-paragraph docblock sprawl.
 
 ---

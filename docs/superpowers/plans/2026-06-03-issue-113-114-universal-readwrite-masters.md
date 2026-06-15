@@ -271,7 +271,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ### Task 4: requireHubAdminWrite → requireDestructiveConfirm (keep confirm+backup on the 30)
 
 **Files:**
-- Modify: `hubitat-mcp-server.groovy` — rename fn (L8922-8936) + 30 call sites.
+- Modify: `hubitat-mcp-server.groovy` — rename fn + 30 call sites.
 - Test: `src/test/groovy/server/ToolDestructiveHubOpsSpec.groovy`, `ToolHubVariablesSpec.groovy`.
 
 - [ ] **Step 1: Rename the function and drop its toggle guard** (L8922-8936) to:
@@ -855,7 +855,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ### Task 12: Update hub_update_mcp_settings allowlist + description + searchHints
 
 **Files:**
-- Modify: `hubitat-mcp-server.groovy` — allowlist (L7577-7596), description (L2552), searchHints (L1317-1319).
+- Modify: `hubitat-mcp-server.groovy` — allowlist, description, searchHints.
 - Test: `src/test/groovy/server/ToolUpdateMcpSettingsSpec.groovy`.
 
 - [ ] **Step 1: Update the allowlist map** (L7586-7596) — rename `enableHubAdminRead`→`enableRead`, drop `enableBuiltinApp`, and update the excluded-keys comment:

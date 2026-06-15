@@ -748,7 +748,7 @@ def _extract_canonical_counts() -> dict | None:
 
     # Carve out getAllToolDefinitions() and its chunk helpers, then extract tool
     # names. PR1C split the over-64KB-bytecode getAllToolDefinitions() body into
-    # _getAllToolDefinitions_part1..N() chunk methods that the public method just
+    # _getAllToolDefinitions_part<Name>() chunk methods that the public method just
     # concatenates; the tool defs now live in those chunks, so gather them all.
     # (The dispatcher body carries no `name:` lines, so including it is harmless;
     # a pre-split source with all defs in getAllToolDefinitions() still matches.)
@@ -1566,6 +1566,14 @@ def check_discrete_event_caps_doc_parity(
         if not server.exists():
             return findings
         src = server.read_text(encoding="utf-8", errors="replace")
+        # DISCRETE_EVENT_CAPS now lives in the McpNativeRulesLib #include library
+        # (issue #209 native-RM extraction); the app includes every libraries/*.groovy,
+        # so append them so the map is found wherever it resides. The src_override path
+        # stays main-only for the synthetic self-test corpora.
+        _lib_dir = REPO_ROOT / "libraries"
+        if _lib_dir.is_dir():
+            for _lib in sorted(_lib_dir.glob("*.groovy")):
+                src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
 
     # 1. Extract the canonical DISCRETE_EVENT_CAPS set from production.
     #    The map literal shape is:
@@ -2126,7 +2134,7 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
 
     # 3. Flat (top-level) tools = every getAllToolDefinitions() tool that no
     #    gateway proxies. A read-only tool that is flat satisfies the invariant.
-    #    PR1C split the defs across _getAllToolDefinitions_part1..N() chunk
+    #    The defs are split across per-domain _getAllToolDefinitions_part<Name>() chunk
     #    methods (64KB-method-bytecode cap); gather names from all of them.
     all_bodies = re.findall(
         r"^def (?:getAllToolDefinitions|_getAllToolDefinitions_part\w+)\(\) \{(.*?)^}",
@@ -3305,6 +3313,9 @@ def run_self_test() -> int:
     read_write_split_failures = _run_read_write_split_self_test()
     failures += read_write_split_failures
 
+    # BP20 library file-scope block-comment guard: must-catch / must-not-catch fixtures.
+    failures += _run_library_block_comment_self_test()
+
     if failures:
         print(f"--- {failures} self-test failure(s) ---")
         return 1
@@ -3420,6 +3431,150 @@ def check_include_library_lockstep() -> list[dict]:
     return findings
 
 
+def _advance_triple_quote_state(line: str, state: "str | None") -> "str | None":
+    r"""Return the triple-quoted-string state at the END of `line`, given the state at its
+    start (the delimiter we are inside -- triple-double or triple-single -- or None).
+
+    Only triple-quoted strings span lines, so only that state carries across lines. Within a
+    line, quote tokens that are NOT real triple-quoted-string delimiters must be skipped, or
+    they false-flip the state and blind the file-scope-block-comment scan for the rest of the
+    file: anything after an unquoted // line comment, anything inside a regular single/double-
+    quoted string, and a triple-quote whose first quote is backslash-escaped (Groovy's escape
+    for a literal triple-quote inside a triple-quoted string)."""
+    def _escaped(idx):
+        b = 0
+        k = idx - 1
+        while k >= 0 and line[k] == "\\":
+            b += 1
+            k -= 1
+        return b % 2 == 1
+    i = 0
+    n = len(line)
+    reg = None  # delimiter of the regular (non-triple) string we are inside, or None
+    while i < n:
+        if state is not None:
+            # Inside a triple-quoted string: only the matching, unescaped triple closes it.
+            if line.startswith(state, i) and not _escaped(i):
+                state = None
+                i += 3
+                continue
+            i += 1
+            continue
+        if reg is not None:
+            # Inside a regular (non-triple) string: only the matching, unescaped quote closes it.
+            if line[i] == reg and not _escaped(i):
+                reg = None
+            i += 1
+            continue
+        # In code: an unquoted // starts a line comment -- the rest of the line is not scannable.
+        if line[i] == "/" and i + 1 < n and line[i + 1] == "/":
+            break
+        if line.startswith('"""', i) and not _escaped(i):
+            state = '"""'
+            i += 3
+            continue
+        if line.startswith("'''", i) and not _escaped(i):
+            state = "'''"
+            i += 3
+            continue
+        if line[i] in ('"', "'"):
+            reg = line[i]
+            i += 1
+            continue
+        i += 1
+    return state
+
+
+def _scan_library_block_comments(name: str, text: str) -> list[dict]:
+    """Flag file-scope (column-0) /* or /** block comments that are outside any
+    triple-quoted string. Block comments INSIDE a method body are indented, so they
+    never start at column 0 and are not flagged."""
+    findings: list[dict] = []
+    state = None
+    for i, line in enumerate(text.split("\n"), 1):
+        if state is None and line.startswith("/*"):
+            findings.append({
+                "file": name, "line": i, "severity": "error",
+                "rule": "library-file-scope-block-comment", "source": line[:80],
+                "message": (
+                    "File-scope /* */ or /** */ block comment in a #include library (BP20). "
+                    "The hub parser can fail with 'Internal error' on save of a library that carries "
+                    "a file-scope block comment under #include -- and the inlined Spock compile + "
+                    "build-bundle do NOT catch it, only the live hub does. Convert it to // line "
+                    "comments (the pattern every other library uses)."
+                ),
+            })
+        state = _advance_triple_quote_state(line, state)
+    return findings
+
+
+def check_library_no_file_scope_block_comments() -> list[dict]:
+    """BP20 library hygiene: no file-scope /* */ or /** */ block comments in any
+    libraries/*.groovy (see _scan_library_block_comments for the rationale)."""
+    findings: list[dict] = []
+    lib_dir = REPO_ROOT / "libraries"
+    if not lib_dir.is_dir():
+        return findings
+    for lib in sorted(lib_dir.glob("*.groovy")):
+        findings.extend(_scan_library_block_comments(
+            f"libraries/{lib.name}", lib.read_text(encoding="utf-8", errors="replace")))
+    return findings
+
+
+def _run_library_block_comment_self_test() -> int:
+    """Must-catch / must-not-catch fixtures for check_library_no_file_scope_block_comments."""
+    failures = 0
+    bad = '/**\n * docblock\n */\ndef foo() { return 1 }\n'
+    if not _scan_library_block_comments("<self-test>", bad):
+        failures += 1
+        print("SELF-TEST FAIL [library-block-comment]: a file-scope /** */ block was not flagged")
+    ok = (
+        '// file-scope line comment is fine\n'
+        'def foo() {\n'
+        '    /* indented in-method block comment is allowed */\n'
+        '    def d = """\n'
+        '/* string content, not a comment */\n'
+        '"""\n'
+        '    return d\n'
+        '}\n'
+    )
+    fp = _scan_library_block_comments("<self-test>", ok)
+    if fp:
+        failures += 1
+        print(f"SELF-TEST FAIL [library-block-comment]: false positive(s) at line(s) {[f['line'] for f in fp]}")
+    # Gemini #279: an escaped triple-quote (\""" -- a literal triple-quote inside a
+    # triple-quoted string) must NOT terminate the string, so a column-0 /* still inside
+    # it is not falsely flagged.
+    esc = (
+        'def foo() {\n'
+        '    def d = """opens; \\""" is a literal triple-quote, still in the string\n'
+        '/* string content after an escaped triple-quote, not a comment */\n'
+        '"""\n'
+        '    return d\n'
+        '}\n'
+    )
+    fp2 = _scan_library_block_comments("<self-test>", esc)
+    if fp2:
+        failures += 1
+        print(f"SELF-TEST FAIL [library-block-comment]: escaped-triple-quote false positive at line(s) {[f['line'] for f in fp2]}")
+    # silent-failure-hunter #279: a triple-quote inside a // comment (or a regular string) must
+    # NOT flip the string state, so a genuine file-scope /* */ AFTER it is still flagged.
+    after_comment = (
+        'def foo() { return 1 }\n'
+        '// a // comment that mentions """ once must not blind the scanner\n'
+        'def s = "a string with \'\'\' in it"\n'
+        '/* a real file-scope block comment that MUST still be flagged */\n'
+        'def bar() { return 2 }\n'
+    )
+    must = _scan_library_block_comments("<self-test>", after_comment)
+    if not must:
+        failures += 1
+        print("SELF-TEST FAIL [library-block-comment]: file-scope /* after a // comment / string containing triple-quotes was NOT flagged")
+    if failures == 0:
+        print("library block-comment self-test: PASS (4 fixtures)")
+    return failures
+
+
 def main() -> int:
     if "--self-test" in sys.argv[1:]:
         return run_self_test()
@@ -3472,6 +3627,9 @@ def main() -> int:
     # build-bundle.py LIBS entry, so a broken/undelivered library fails CI here instead of
     # failing the app's compile on a user's hub.
     all_findings.extend(check_include_library_lockstep())
+
+    # BP20: no file-scope block comments in #include libraries (hub-parser hazard).
+    all_findings.extend(check_library_no_file_scope_block_comments())
 
     # Sort by file, then line
     all_findings.sort(key=lambda f: (f["file"], f["line"]))

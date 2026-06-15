@@ -203,6 +203,7 @@ class IncludeResolverSpec extends Specification {
         'McpSelfAdminLib'       | 'toolUpdatePackage'       | 'SelfAdmin'
         'McpAppClonerLib'       | 'toolCloneNativeApp'      | 'AppCloner'
         'McpDiscoveryLib'       | 'toolSearchTools'         | 'Discovery'
+        'McpNativeRulesLib'     | 'toolSetRule'             | 'NativeRM'
     }
 
     def "indexLibraries matches name/namespace even when a description ) appears BEFORE the keys"() {
