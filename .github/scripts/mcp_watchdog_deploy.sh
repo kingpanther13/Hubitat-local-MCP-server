@@ -16,22 +16,27 @@
 # code-install plumbing. Its advantage over self-deploying through the primary
 # endpoint is that the watchdog is a DIFFERENT running app, so installing the MCP
 # package does NOT reload the app answering the request -- it never bricks itself
-# and stays queryable throughout. Small/fast calls (get_source, get_info) return the
-# hub's VERBATIM compile/save result synchronously within the ~10s cloud relay window,
-# so VERIFY for those is simply: parse the tool response and fail loudly -- surfacing
-# the hub's verbatim errorMessage -- if success != true. TWO operations run longer
-# hub-side than the relay window, so their response is dropped even though the operation
-# proceeds; for both we tolerate the dropped (empty) response and poll the hub until the
-# result lands, rather than fail-fast:
-#   - the ~1.6MB APP deploy (~200s hub-side): poll hub_get_source until the new source
-#     lands, consulting lastSelfDeploy only as a secondary source for the hub's verbatim
-#     compile error if it never does;
-#   - a LARGE package bundle install: importing + saving a big library (the #209
-#     McpNativeRulesLib alone is ~790KB, the bundle ~1.67MB) exceeds the window, so a
-#     dropped/empty install response falls through to verify_includes_current -- the
-#     authoritative length-check of every #include'd library on the hub. A structured
-#     hub error (non-empty errorMessage) still fails loudly and fast. HPM users install
-#     on the local hub UI with no relay window, so this tolerance is e2e-only.
+# and stays queryable throughout. Most calls (get_source, get_info, the small per-library
+# operations) return the hub's VERBATIM compile/save result synchronously, so VERIFY is
+# simply: parse the tool response and fail loudly -- surfacing the hub's verbatim
+# errorMessage -- if success != true. TWO operations instead get a dropped/EMPTY response
+# (not a structured hub error); for both we tolerate that and consult an authoritative
+# on-hub check rather than fail-fast, each for its own reason:
+#   - the ~1.6MB APP deploy genuinely runs ~200s hub-side, so the response is dropped while
+#     the deploy proceeds (like the live server's self-deploy): poll hub_get_source until
+#     the new source lands, consulting lastSelfDeploy only as a secondary source for the
+#     hub's verbatim compile error if it never does.
+#   - the package BUNDLE install can return an empty result (no JSON-RPC error, no
+#     structured tool error) for the #209 ~1.67MB bundle even though the import SUCCEEDED:
+#     verify_includes_current finds McpNativeRulesLib on the hub at its exact byte length
+#     on the FIRST probe, so this is NOT an install-duration timeout -- the cause of the
+#     lost envelope is unpinned (the small bundles don't trigger it). So a dropped/empty
+#     install response falls through to verify_includes_current, the authoritative
+#     length-check of every #include'd library on the hub. A structured hub error
+#     (non-empty errorMessage) still fails loudly and fast. The hub fetches the zip itself
+#     from importUrl (hubInternalGet, 300s) -- the bundle DATA never crosses the MCP
+#     transport -- and HPM users install from the local hub UI, so this is an e2e-transport
+#     quirk, not a user-facing one.
 #
 # Install order (HPM's repair order; #include deps must exist before the app compiles):
 #   1. BUNDLE(S)  hub_install_bundle  importUrl=<bundle zip url>  confirm:true  (delivers EVERY #included library)
@@ -296,15 +301,16 @@ else
       ANY_BUNDLE_INSTALLED="true"
       echo "Bundle '${BASENAME}' installed: $(printf '%s' "$BUN_TEXT" | jq -c '{success,endpoint,message}' 2>/dev/null || true)"
     elif [ -z "$BUN_TEXT" ] || [ -z "$(err_of "$BUN_TEXT")" ]; then
-      # Empty/dropped response, NOT a structured hub error: importing a large bundle (the
-      # ~787KB McpNativeRulesLib pushes this one to ~1.67MB) takes longer than the ~10s
-      # cloud-relay window, so the hub completes the import but the success envelope never
-      # returns. Don't fail-fast -- mark the install unconfirmed and let the post-install
-      # verify_includes_current (authoritative: it length-checks every #include'd library
-      # on the hub) decide. Mirrors the ~200s app deploy below, which already survives its
-      # relay-dropped response. (HPM users install on the local hub UI -- no relay window --
-      # so this tolerance is e2e-only.) A real hub error keeps the hard-fail else branch.
-      echo "::warning::hub_install_bundle returned no success envelope for '${BASENAME}' (empty/dropped response -- the relay window on a large bundle). Falling through to the authoritative post-install library verify."
+      # Empty result, NOT a structured hub error: hub_install_bundle can come back with no
+      # success envelope for the large #209 bundle even though the import SUCCEEDED -- the
+      # post-install verify below finds McpNativeRulesLib present at its exact byte length on
+      # the first probe, so it is NOT a slow-install timeout and the cause of the lost
+      # envelope is unpinned (the small bundles don't hit it). Don't fail-fast -- mark the
+      # install unconfirmed and let verify_includes_current (authoritative: it length-checks
+      # every #include'd library on the hub) decide. A real hub error keeps the hard-fail
+      # else branch. e2e-transport only: the hub fetches the zip itself (300s) and HPM users
+      # install from the local hub UI.
+      echo "::warning::hub_install_bundle returned no success envelope for '${BASENAME}' (empty result, no hub error) -- deferring to the authoritative post-install library verify."
       ANY_BUNDLE_INSTALLED="true"
       BUNDLE_INSTALL_UNCONFIRMED="true"
     else
@@ -341,11 +347,12 @@ else
   if [ "${#INCLUDES[@]}" -gt 0 ]; then
     if [ "$ANY_BUNDLE_INSTALLED" = "true" ]; then
       if [ "$BUNDLE_INSTALL_UNCONFIRMED" = "true" ]; then
-        # The install response was dropped (large bundle > relay window); the hub may still
-        # be extracting/compiling the big library. Poll the non-fatal probe until the
-        # libraries land before the authoritative enforce gate, so a still-in-progress
-        # import is not mistaken for a failed one.
-        echo "Install response was dropped -- polling until the #include'd libraries land (large-bundle import) ..."
+        # The install came back with no success envelope (cause unpinned; in practice the
+        # import succeeds fast -- the library is current on the first probe). Poll the
+        # non-fatal probe anyway so that on the off chance the hub is still writing the
+        # library, a not-yet-landed read isn't mistaken for a failed install before the
+        # authoritative enforce gate.
+        echo "Install reported no success envelope -- polling until the #include'd libraries verify current ..."
         for attempt in 1 2 3 4 5 6 7 8; do
           if verify_includes_current probe; then
             echo "  libraries landed (probe clean) after attempt ${attempt}."

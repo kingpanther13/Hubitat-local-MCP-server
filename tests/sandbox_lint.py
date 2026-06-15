@@ -3432,23 +3432,34 @@ def check_include_library_lockstep() -> list[dict]:
 
 
 def _advance_triple_quote_state(line: str, state: "str | None") -> "str | None":
-    """Track Groovy triple-quoted-string state across a line so a column-0 `/*`
+    r"""Track Groovy triple-quoted-string state across a line so a column-0 `/*`
     that is actually string content (a GString tool description) is not mistaken
-    for a file-scope block comment. Returns the triple-quote state at end of line."""
+    for a file-scope block comment. Returns the triple-quote state at end of line.
+
+    A triple-quote whose first quote is backslash-escaped (an odd run of backslashes
+    before it -- Groovy's \... escape for a literal triple-quote inside a triple-quoted
+    string) is NOT a delimiter; skip it so the string state stays correct."""
+    def _escaped(idx):
+        b = 0
+        k = idx - 1
+        while k >= 0 and line[k] == "\\":
+            b += 1
+            k -= 1
+        return b % 2 == 1
     i = 0
     while i < len(line):
         if state is None:
-            if line.startswith('"""', i):
+            if line.startswith('"""', i) and not _escaped(i):
                 state = '"""'
                 i += 3
                 continue
-            if line.startswith("'''", i):
+            if line.startswith("'''", i) and not _escaped(i):
                 state = "'''"
                 i += 3
                 continue
             i += 1
         else:
-            if line.startswith(state, i):
+            if line.startswith(state, i) and not _escaped(i):
                 state = None
                 i += 3
                 continue
@@ -3513,8 +3524,23 @@ def _run_library_block_comment_self_test() -> int:
     if fp:
         failures += 1
         print(f"SELF-TEST FAIL [library-block-comment]: false positive(s) at line(s) {[f['line'] for f in fp]}")
+    # Gemini #279: an escaped triple-quote (\""" -- a literal triple-quote inside a
+    # triple-quoted string) must NOT terminate the string, so a column-0 /* still inside
+    # it is not falsely flagged.
+    esc = (
+        'def foo() {\n'
+        '    def d = """opens; \\""" is a literal triple-quote, still in the string\n'
+        '/* string content after an escaped triple-quote, not a comment */\n'
+        '"""\n'
+        '    return d\n'
+        '}\n'
+    )
+    fp2 = _scan_library_block_comments("<self-test>", esc)
+    if fp2:
+        failures += 1
+        print(f"SELF-TEST FAIL [library-block-comment]: escaped-triple-quote false positive at line(s) {[f['line'] for f in fp2]}")
     if failures == 0:
-        print("library block-comment self-test: PASS (2 fixtures)")
+        print("library block-comment self-test: PASS (3 fixtures)")
     return failures
 
 
