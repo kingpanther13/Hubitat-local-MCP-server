@@ -4956,6 +4956,12 @@ NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* too
 - days_of_week: Specific days
 - sun_position: Sun above/below horizon
 - hsm_status: Current HSM state
+- presence: Presence sensor state (deviceId)
+- lock: Lock state (deviceId)
+- thermostat_mode: Thermostat mode (deviceId)
+- thermostat_state: Thermostat operating state (deviceId)
+- illuminance: Illuminance threshold (deviceId + operator + value)
+- power: Power-meter threshold (deviceId + operator + value)
 
 ### Actions
 - device_command: Send command to device
@@ -4977,6 +4983,13 @@ NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* too
 - set_valve: Open/close valve
 - set_fan_speed: Set fan to low/medium/high/auto
 - set_shade: Open/close/position shade
+- set_level: Set dimmer level — {deviceId, level (0-100)}
+- set_color: Set RGBW color — {deviceId, color}
+- set_color_temperature: Set color temperature — {deviceId, temperature (Kelvin)}
+- lock / unlock: Lock or unlock a lock — {deviceId}
+- capture_state: Capture device states for later restore — {deviceIds}
+- restore_state: Restore previously captured states (no fields)
+- send_notification: Send a notification to a device — {deviceId, message}
 - variable_math: Arithmetic on variables — {variableName, operation: add|subtract|multiply|divide|modulo|set, operand, scope: local|global}''',
 
         backup: '''## Backup System
@@ -5269,16 +5282,26 @@ Also a valid `patches[]` op (reported as `op: 'replaceRequiredExpression'`). Ins
 
 ### `walkStep` schema-aware wizard walker
 
-`walkStep` is the lowest-level escape hatch: drive one wizard page/operation at a time when the high-level `addTrigger`/`addAction` helpers don't cover the capability you need (Periodic Schedule sub-pages, conditional-trigger binding, IF/THEN/ELSE flow control, features added in a later firmware). Each call returns a structured snapshot -- schema before/after, schema diff (inputs appeared/disappeared), value-echo (catches silent enum case normalization), sub-page hrefs, action/trigger list-count change (disambiguates 'committed' from 'broke and lost the row'), and a health check.
+`walkStep` is the lowest-level escape hatch: drive the RM wizard when the high-level `addTrigger`/`addAction` helpers don't cover the capability you need (Periodic Schedule sub-pages, conditional-trigger binding, IF/THEN/ELSE flow control, features added in a later firmware). Each single-step call returns a structured snapshot -- schema before/after, schema diff (inputs appeared/disappeared), value-echo (catches silent enum case normalization), sub-page hrefs, action/trigger list-count change (disambiguates 'committed' from 'broke and lost the row'), and a health check.
 
-Spec: `{page, operation, write?:{<field>:<value>}, click?:{name,stateAttribute?}, navigate?:{targetPage}, validateEnum?:<bool>, hrefContext?:{fromPage,hrefName,hrefParams?,hrefIndex?}}` where `page` is e.g. `selectTriggers`/`selectActions`/`doActPage`/`mainPage`/`periodic` and `operation` is one of:
+Spec: `{page, operation, write?:{<field>:<value>}, click?:{name,stateAttribute?}, navigate?:{targetPage}, validateEnum?:<bool>, hrefContext?:{fromPage,hrefName,hrefParams?,hrefIndex?}, steps?:[...]}` where `page` is e.g. `selectTriggers`/`selectActions`/`doActPage`/`mainPage`/`periodic` and `operation` is one of:
+- `drive` -- **preferred**: run an ordered `steps=[...]` list (each item a single-step spec) in ONE call. The tool performs them in sequence, carrying the page forward across `navigate`/`done`, and stops at the first failed step (`stopOnError=false` to continue). A step that omits `page` inherits the page the previous step ended on. Returns `{steps:[{step, operation, page, success, diff, valueEcho, silentRejection, commitSignal, health}, ...], stepsRequested, stepsRun, lastStepOperation, success, health}`; a trailing `done` step gets the same mainPage Done finalize a single-step `done` does. This automates the manual loop below.
 - `introspect` -- fetch schema; no mutation.
 - `write` -- write one field's value (exactly one key per call; `hrefContext` for sub-pages).
 - `click` -- click a regular button (`cancelCapab`, `hasAll`, `moreCond`, ...).
 - `navigate` -- forward into a sub-page via its href.
 - `done` -- BACK-navigate from a sub-page to its parent (`_action_previous=Done`), carrying ALL the sub-page's current settings. REQUIRED for sub-pages (Periodic, etc.) whose parent row otherwise renders `?`. Pass `hrefContext={fromPage:<parent>, hrefParams:{n:<idx>}}`.
 
-Recommended driving loop: `introspect` to see the page's fields -> `navigate` into a sub-page if one is exposed -> `write` each required field (with `hrefContext` on sub-pages) -> inspect `diff.appeared`/`valueEcho.match`/`silentRejection` between writes -> `done` to back out of a sub-page (this bakes the trigger/action description) -> `click` `hasAll`/`actionDone` on the parent to finalize the row. Always check `silentRejection`, `valueEcho.match`, and `health.ok` in the response -- they are the fail-loud signals.
+The loop `drive` automates (and the sequence to put in `steps[]`): `introspect` to see the page's fields -> `navigate` into a sub-page if one is exposed -> `write` each required field (with `hrefContext` on sub-pages) -> inspect `diff.appeared`/`valueEcho.match`/`silentRejection` between writes -> `done` to back out of a sub-page (this bakes the trigger/action description) -> `click` `hasAll`/`actionDone` on the parent to finalize the row. Always check `silentRejection`, `valueEcho.match`, and `health.ok` in each step's snapshot -- they are the fail-loud signals.
+
+Worked `drive` example (a multi-device switch trigger committed in one call, the `steps[]` form of the raw-mode example above):
+```
+hub_set_rule(appId=N, confirm=true, walkStep={operation:'drive', steps:[
+  {page:'selectTriggers', operation:'write', write:{tCapab1:'Switch'}},
+  {page:'selectTriggers', operation:'write', write:{tDev1:[<deviceId>, ...]}},
+  {page:'selectTriggers', operation:'write', write:{tstate1:'on'}},
+  {page:'selectTriggers', operation:'click', click:{name:'hasAll'}}]})
+```
 
 ### Raw `settings`/`button` mode (manual wizard flow)
 
