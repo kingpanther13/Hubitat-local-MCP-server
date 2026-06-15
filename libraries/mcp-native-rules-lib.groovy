@@ -5687,11 +5687,13 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
                 if (!xVarInput) {
                     throw new IllegalArgumentException("runCommand: xVar field not revealed after enabling variable mode for param slot ${pNumStr} (expected '${xVarField}') -- hub may not support variable-sourced parameters for command '${actionSpec.command}'")
                 }
-                def xVarOpts = (xVarInput.options instanceof Map) ? xVarInput.options.keySet().collect { it?.toString() } :
-                               (xVarInput.options instanceof List) ? xVarInput.options.collect { it?.toString() } : null
+                // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps),
+                // shared with the setVariable source-variable + fromDevice/math modes so all enum reads match.
+                def xVarOpts = _rmReadPickerOptionStrings(xVarInput)
                 // Fail loud when options are absent or unreadable: writing an unvalidated
-                // variable name would produce a silently-broken action.
-                if (xVarOpts == null || xVarOpts.isEmpty()) {
+                // variable name would produce a silently-broken action. The canonical reader
+                // returns a non-null list, so the idiomatic truthiness check covers empty/absent.
+                if (!xVarOpts) {
                     throw new IllegalArgumentException("runCommand: xVar${pNumStr}.${idx} revealed but has no enumerable options -- cannot validate variable name '${pVariable}'. Hub may not expose variable list for command '${actionSpec.command}'")
                 }
                 if (!xVarOpts.any { it == pVariable.toString() }) {
@@ -8459,16 +8461,11 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             throw new IllegalStateException("conditions[${condIdx}]: Variable: variable-name picker not revealed after rCapab='Variable'. Visible fields: ${visible}")
         }
         def varPickerField = varPickerReveal.input.name.toString()
-        // Validate variable name against the schema's option list.
-        // Hub options for variable pickers are Maps keyed by variable name (the throw
-        // in the Variable-picker validation branch below emits "hub variable
-        // '${varName}' not in the revealed picker" -- varName IS the key).
-        // Map.Entry.toString() would produce "key=value" strings
-        // that never match a bare name; use .keySet() to extract the names.
-        def varOptsRaw = varPickerReveal.input.options
-        def varOpts = (varOptsRaw instanceof Map)
-            ? (varOptsRaw as Map).keySet().collect { it?.toString() }.findAll { it }
-            : (varOptsRaw ?: []).collect { it?.toString() }.findAll { it }
+        // Validate variable name against the schema's option list via the canonical
+        // reader. Variable-picker options are Maps keyed by variable name, so the reader's
+        // Map branch extracts the keys (the names); it also normalizes the scalar and
+        // List-of-{value:...} shapes a hand-rolled Map?keySet:List?collect reader mishandled.
+        def varOpts = _rmReadPickerOptionStrings(varPickerReveal.input)
         if (!varOpts) {
             // Schema's option list came back empty -- could be a hub with no variables defined,
             // a firmware version that lazily-populates the enum, or a probe-timing race. The
@@ -8524,11 +8521,9 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                 throw new IllegalStateException("conditions[${condIdx}]: Variable: right-hand variable picker not revealed after isVar_<N>=true (compareToVariable='${rhsVarName}'). Without it the condition would render '${varName} ${cond.comparator} 0' (numeric default) instead of variable-vs-variable. Visible fields: ${visible}")
             }
             def rhsVarField = rhsVarReveal.input.name.toString()
-            // Validate the RHS variable name against the revealed picker's options.
-            def rhsOptsRaw = rhsVarReveal.input.options
-            def rhsOpts = (rhsOptsRaw instanceof Map)
-                ? (rhsOptsRaw as Map).keySet().collect { it?.toString() }.findAll { it }
-                : (rhsOptsRaw ?: []).collect { it?.toString() }.findAll { it }
+            // Validate the RHS variable name against the revealed picker's options via the
+            // canonical reader (same Map-keyed-by-name contract as the LHS variable picker).
+            def rhsOpts = _rmReadPickerOptionStrings(rhsVarReveal.input)
             if (!rhsOpts) {
                 // Empty option list -- same ambiguity as the LHS variable picker: a hub with
                 // no variables, a lazily-populated enum, or a probe-timing race. The walker
