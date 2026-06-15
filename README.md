@@ -1552,6 +1552,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.4.0** - refactor: extract native Rule Machine + classic-app tools into McpNativeRulesLib. PRs: [#279](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/279)
 - **v2.3.7** - feat: prefer compiled rule state for hub_get_rule_health (RM + Visual Rules + classic apps). PRs: [#276](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/276)
 - **v2.3.6** - feat: add device-attribute and variable-math source modes to setVariable. PRs: [#277](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/277)
 - **v2.3.5** - fix: align replaceRequiredExpression result-contract docs with behavior + post-delete safety net. PRs: [#278](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/278)
