@@ -1575,7 +1575,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_radio_details",
-            description: "Get Z-Wave and/or Zigbee radio info (firmware, home/PAN ID, channel, device nodes). radio='zwave' or 'zigbee' for one radio; omit to return both. Set include_topology=true to also pull the read-only mesh route map (which nodes route through which, per-node next-hop/neighbor tables) for diagnosing weak routes or unresponsive devices. All reads; no radio mutation. Requires Read master.",
+            description: "Get Z-Wave and/or Zigbee radio info (firmware, home/PAN ID, channel, device nodes); omit radio to return both. include_topology=true adds the read-only mesh route map for diagnosing weak or unresponsive nodes. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [

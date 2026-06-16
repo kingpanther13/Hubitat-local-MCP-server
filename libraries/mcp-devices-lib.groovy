@@ -1709,7 +1709,7 @@ def _getAllToolDefinitions_partDevices() {
 
 DEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don't silently fall back to existing devices.
 
-Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only. Set scope='all' to list EVERY device on the hub (not just MCP-authorized ones), each tagged mcpAuthorized true/false — use this when a device can't be controlled to confirm it just needs adding to the MCP device list.
+Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only. scope='all' lists every hub device (not just MCP-authorized) with an mcpAuthorized flag.
 
 [[FLAT_TRIM]]
 Summary mode returns currentStates; detailed mode replaces that with capabilities, attributes, and commands (field list in outputSchema). Server-side filtering (all applied before pagination) is configured via the filter / labelFilter / capabilityFilter params (documented on those params). format='ids' is the cheapest shape; fields=[...] projects named fields and skips expensive hub reads. To count a parent's children, group the response by parentDeviceId.
