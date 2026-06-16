@@ -46,7 +46,7 @@ two load-bearing files:
   button encoding. Endpoints it calls: `/installedapp/update/json` (settings
   POST), `/installedapp/btn` (button click), `/installedapp/ssr/` (server-side
   page render), `/installedapp/collapseCallback/`, `/installedapp/configure/`.
-- **`main.js`** (148 KB) — the broader classic app-list / app-config UI logic:
+- **`main.js`** (145 KB) — the broader classic app-list / app-config UI logic:
   `submitOnChange`, `formAction`, `nextPage` / `btnNext` page navigation,
   `AppButtons`, plus `/installedapp/status/`, `/installedapp/createchild/`,
   `/installedapp/disable`, `/installedapp/configure/`.
@@ -54,13 +54,13 @@ two load-bearing files:
 Supporting files:
 
 - **`helpers.js`** (16 KB) — shared UI helpers (`/installedapp/list`).
-- **`hub2utils.js`** (3.6 KB) — small shared utility shims.
+- **`hub2utils.js`** (3.7 KB) — small shared utility shims.
 - **`hubitat.min.js`** (33 KB) — **not** the dynamicPage engine: the Handlebars
   template runtime (`registerPartial`/`registerHelper`/`unregisterDecorator`),
   modal / z-index helpers (`showModal`, `updateZIndex`), and the hub-control
   toolbar (`reboot`/`shutdown`/`zwaveRepair` via jQuery `.ajax`). Vendored for
   completeness of the classic `/ui2/js` set.
-- **`success-compiled.js`** (833 B) — tiny precompiled Handlebars template bundle.
+- **`success-compiled.js`** (842 B) — tiny precompiled Handlebars template bundle.
 
 ### On the "Rule Machine is a black box" note
 
@@ -106,6 +106,7 @@ user-facing app type ("Visual Rules Builder" parent; children are hidden type
 | `GET  /app/ruleBuilderGenerateRule?appId=&prompt=` | VRB AI generate (Gemini cloud) → `{success, whenNodes, thenNodes, elseNodes}` |
 | `GET  /app/ruleBuilderSuggestions` | Prompt suggestions for the VRB AI-generate dialog |
 | `GET  /device/listWithCapabilities/json` | Device list with capabilities — feeds the VRB device pickers |
+| `GET  /device/listJson?capability=<cap>` | Classic `dynamicPage` device-input picker feed (`appUI.js` line 209 `$.getJSON('/device/listJson?capability='…)`, `main.js`) — a capability-filtered device list. The MCP server reaches the same data via `/device/fullJson` + `hub_list_devices`; this is the older classic-engine path, distinct from the Vue `listWithCapabilities/json` above |
 | `GET  /modes/list/json` | Location modes list — feeds the VRB mode trigger/condition/action dialogs |
 | `GET  /appui/createBasicRulesChild` | Server-creates a new Basic Rules child → `{success, appId}` |
 | `GET  /appui/clearEmptyBasicRules` | Sweeps empty (never-saved) Basic Rules children |
@@ -118,6 +119,8 @@ user-facing app type ("Visual Rules Builder" parent; children are hidden type
 | `GET  /installedapp/statusJson/<id>` | App status JSON |
 | `GET  /installedapp/eventsJson/<id>` | Events history JSON |
 | `POST /installedapp/forcedelete/<id>/quiet` | Force-delete, no prompts |
+| `GET  /installedapp/createchild/<ns>/<appName>/parent/<parentId>` | Server-creates a child app instance under a parent — a raw GET that 302-redirects to the new child's `configure/<id>` page. Used by the MCP server (`_rmCreateChildApp`) to instantiate classic child apps (Basic Rule, RM child, etc.) |
+| `POST /installedapp/disable` | Enable/disable an installed app — body `{id, disable:<bool>}` (`true` disables, `false` enables). Posted by `main.js` `enableApp()`/`disableApp()`. Not currently called by the MCP server |
 | `GET  /installedapp/direct/<alias>` | NOT a Vue CRUD endpoint — a name-addressed 302 redirect chain: `direct/<alias>` → `create/<typeId>` → `configure/<instanceId>` (type ids vary per hub; the alias is the stable key). Get-or-create, so it doubles as a stable name→id resolver (fw 2.5.0.143) |
 | `GET  /installedapp/direct/hubVariables` | Singleton: the chain lands on the SAME instance every visit. The Vue `HubVariables` component is a non-functional stub — the classic `hubVar` wizard is the real variable-CRUD contract |
 | `GET  /installedapp/direct/swapDevice` | Transient: every visit CREATES a fresh instance (1802, then 1803 observed) — callers own cleanup of instances they don't drive to completion. The swap flow itself is the classic `mainPage` wizard; its pickers offer only free-standing devices (app-owned child/component devices are excluded from both `oldDev` and `newDev`); `oldDev` additionally lists only devices referenced by at least one app, while `newDev` offers any compatible free-standing device (fw 2.5.0.143) |
