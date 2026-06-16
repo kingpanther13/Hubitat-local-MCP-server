@@ -136,7 +136,7 @@ Claude Desktop only launches **stdio** MCP servers from its config file — it d
 
 > **Easiest option:** skip the config file entirely and add the server in **Claude.ai** instead (see the *Claude.ai* section below). Connectors you add there automatically show up in Claude Desktop when signed in to the same account — no JSON editing, and it works from any chat.
 
-To edit the config file manually, open Claude Desktop > **Settings** > **Developer** > **Edit Config** (this opens `claude_desktop_config.json`). Add **one** of the following:
+To edit the config file manually, open Claude Desktop > **Settings** > **Developer** > **Edit Config** (this opens `claude_desktop_config.json`). Add **one** of the following — if you already have other MCP servers configured, merge the `hubitat` block into your existing `mcpServers` object instead of pasting over the whole file:
 
 **Cloud endpoint (HTTPS):**
 ```json
