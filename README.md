@@ -132,7 +132,7 @@ Alternatively, some people have had luck just simply giving Claude access to its
 <details>
 <summary><b>Claude Desktop</b></summary>
 
-Claude Desktop only launches **stdio** MCP servers from its config file — it does **not** accept a plain `"url"`/`"type": "url"` entry (those are silently ignored). Because this server speaks HTTP, you bridge it to stdio with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote). This requires [Node.js](https://nodejs.org) installed (it provides the `npx` command).
+Claude Desktop only launches **stdio** MCP servers from its config file — it does **not** accept a plain `"url"`/`"type": "url"` entry (those are silently ignored). Because this server speaks HTTP, you bridge it to stdio with a small proxy. Use the one that matches your OS: **`mcp-proxy` on Windows** (via [`uv`](https://docs.astral.sh/uv/getting-started/installation/)'s `uvx`), **`mcp-remote` on macOS** (via [Node.js](https://nodejs.org)'s `npx`). Install the matching runtime first.
 
 > **Easiest option:** skip the config file entirely and add the server in **Claude.ai** instead (see the *Claude.ai* section below). Connectors you add there automatically show up in Claude Desktop when signed in to the same account — no JSON editing, and it works from any chat.
 
@@ -144,27 +144,26 @@ To edit the config file manually, open Claude Desktop > **Settings** > **Develop
 > ```
 > The regular installer (`.exe`) build does use `%APPDATA%\Claude\…`. ([tracking bug](https://github.com/anthropics/claude-code/issues/26073))
 
-Add **one** of the following — if you already have other MCP servers configured, merge the `hubitat` block into your existing `mcpServers` object instead of pasting over the whole file:
+Add the block for your OS — use your **local** URL (`http://YOUR_HUB_IP/apps/api/123/mcp?access_token=YOUR_TOKEN`) or your **cloud** URL (`https://cloud.hubitat.com/api/YOUR_HUB_ID/apps/123/mcp?access_token=YOUR_TOKEN`) where shown. If you already have other MCP servers configured, merge the `hubitat` block into your existing `mcpServers` object instead of pasting over the whole file.
 
-**Cloud endpoint (HTTPS):**
+**Windows — [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) (via `uvx`).** Same block for the local or cloud URL:
 ```json
 {
   "mcpServers": {
     "hubitat": {
-      "command": "npx",
+      "command": "uvx",
       "args": [
-        "-y",
-        "mcp-remote",
-        "https://cloud.hubitat.com/api/YOUR_HUB_ID/apps/123/mcp?access_token=YOUR_TOKEN",
+        "mcp-proxy",
         "--transport",
-        "http-only"
+        "streamablehttp",
+        "http://YOUR_HUB_IP/apps/api/123/mcp?access_token=YOUR_TOKEN"
       ]
     }
   }
 }
 ```
 
-**Local endpoint (HTTP)** — note the extra `--allow-http`, since `mcp-remote` blocks plain-HTTP URLs by default:
+**macOS — [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) (via `npx`).** Add `--allow-http` for a **local** (plain-HTTP) URL; omit it for the **cloud** (HTTPS) URL:
 ```json
 {
   "mcpServers": {
