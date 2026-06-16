@@ -481,18 +481,33 @@ def toolSetAppDisabled(args) {
     } catch (Exception e) {
         return [success: false, appId: appId, error: "POST /installedapp/disable failed: ${e.message}", note: "Verify the app id with hub_list_apps and retry."]
     }
+    // Read the flag back. Distinguish empty body / GET exception / missing-key so a read-back
+    // miss can't masquerade as a clean false-RED, and a missing 'disabled' key can't be read as
+    // false (a silent false-GREEN). A bare GET exception means the WRITE may have committed.
     def observed = null
+    def readErr = null
     try {
         def txt = hubInternalGet("/installedapp/json/${appId}")
-        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "")
-        if (parsed instanceof Map) observed = (parsed.disabled == true)
-    } catch (Exception ignore) { observed = null }
+        if (txt) {
+            def parsed = new groovy.json.JsonSlurper().parseText(txt)
+            if (parsed instanceof Map && parsed.containsKey("disabled")) {
+                observed = (parsed.disabled == true)
+            } else {
+                readErr = "read-back response carried no 'disabled' field"
+            }
+        } else {
+            readErr = "read-back returned an empty body"
+        }
+    } catch (Exception e) {
+        readErr = e.message
+        mcpLog("warn", "hub-admin", "hub_set_app_disabled ${appId}: read-back of /installedapp/json/${appId} failed: ${e.message}")
+    }
     if (observed == disable) {
         mcpLog("info", "hub-admin", "Set installed app ${appId} disabled=${disable}")
         return [success: true, appId: appId, disabled: disable, message: "App ${appId} disabled flag is now ${disable}."]
     }
     if (observed == null) {
-        return [success: false, appId: appId, error: "POST accepted but the /installedapp/json/${appId} read-back could not be parsed.", note: "Confirm the app id with hub_list_apps."]
+        return [success: false, appId: appId, error: "POST /installedapp/disable was accepted but the disabled state could not be confirmed (${readErr ?: 'unparseable read-back'}).", note: "The change may already be applied -- re-check with hub_list_apps before retrying; do NOT blindly re-POST."]
     }
     return [success: false, appId: appId, disabled: observed, error: "POST accepted but read-back shows disabled=${observed} (wanted ${disable}).", note: "The hub may not have committed the flag; retry, or check the app in the hub UI."]
 }

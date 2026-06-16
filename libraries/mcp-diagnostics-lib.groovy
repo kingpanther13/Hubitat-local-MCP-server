@@ -83,7 +83,10 @@ private Map _fetchRadioTopology(String radio) {
             def t = hubInternalGet("/hub/zwaveTopology")
             if (t) topo.zwaveTopologyTable = t.take(8000)
         } catch (Exception e) {
-            // The raw route table is optional context on top of the JSON route info above.
+            // The raw route table is optional context on top of the JSON route info above, but
+            // record the miss so an absent table can't be mistaken for an empty one.
+            topo.zwaveTopologyTableError = "Failed to fetch /hub/zwaveTopology: ${e.message}"
+            mcpLog("debug", "hub-admin", "_fetchRadioTopology zwaveTopology miss: ${e.message}")
         }
     }
     return topo

@@ -955,14 +955,19 @@ class TestRunner:
     @test("diagnostics")
     def test_radio_details_include_topology(self) -> None:
         # Item 3 (#257): include_topology folds the read-only mesh route map into hub_get_radio_details.
+        # The helper always returns a topology object (with at least `endpoint`) when include_topology
+        # is set, so assert it strictly -- on a live hub (every Hubitat has a Z-Wave radio) the route
+        # fetch must succeed, so a route-fetch regression (topology.error, or no route data) fails here
+        # instead of slipping through a best-effort `if present` guard.
         result = self.client.call_tool("hub_get_radio_details", {"radio": "zwave", "include_topology": True})
         assert isinstance(result, dict), "hub_get_radio_details did not return an object"
         topo = result.get("topology")
-        # topology is best-effort (present when the hub has a Z-Wave radio); when present it must
-        # carry the route endpoint marker so we know the fold-in path actually fired.
-        if topo is not None:
-            assert "getChildAndRouteInfoJson" in str(topo.get("endpoint", "")), \
-                f"include_topology returned a topology without the route endpoint: {topo}"
+        assert topo is not None, "include_topology=true did not return a topology object"
+        assert "getChildAndRouteInfoJson" in str(topo.get("endpoint", "")), \
+            f"include_topology topology missing the route endpoint: {topo}"
+        assert "error" not in topo, f"include_topology route fetch errored (regression): {topo.get('error')}"
+        assert "routes" in topo or "rawRoutes" in topo, \
+            f"include_topology returned no route data: {topo}"
 
     @test("native_apps")
     def test_set_app_disabled_roundtrip(self) -> None:

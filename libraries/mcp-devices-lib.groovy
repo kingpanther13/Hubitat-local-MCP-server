@@ -25,6 +25,9 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         throw new IllegalArgumentException("scope must be 'authorized' (default) or 'all' (got: '${scope}')")
     }
     if (scope == "all") {
+        if (detailed) {
+            throw new IllegalArgumentException("scope='all' does not support detailed=true (attributes/commands/currentStates require MCP-authorized devices); use scope='authorized' for detail.")
+        }
         return _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, format, cursor)
     }
     // Combine selected devices and MCP-managed child devices (virtual devices)
@@ -353,17 +356,23 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         def txt = hubInternalGet("/device/listWithCapabilities/json")
         raw = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
     } catch (Exception e) {
+        mcpLog("warn", "device", "hub_list_devices scope='all': /device/listWithCapabilities/json fetch/parse failed: ${e.message}")
         return [success: false, error: "Failed to fetch the all-hub device list (/device/listWithCapabilities/json): ${e.message}", note: "Endpoint may be unavailable on this firmware; use scope='authorized' (default)."]
     }
     if (!(raw instanceof List)) {
+        mcpLog("warn", "device", "hub_list_devices scope='all': /device/listWithCapabilities/json returned a non-array response")
         return [success: false, error: "Unexpected /device/listWithCapabilities/json response (expected a JSON array).", note: "Hub firmware may have changed the endpoint contract."]
     }
-    def authorizedIds = ((selectedDevices ?: []).collect { it.id.toString() } as Set)
-    (getChildDevices() ?: []).each { authorizedIds.add(it.id.toString()) }
+    def authorizedIds = ((selectedDevices ?: []).collect { it.id?.toString() }.findAll { it != null } as Set)
+    (getChildDevices() ?: []).each { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) }
 
-    def devices = raw.collect { d ->
+    // Only process actual Map elements; a null/non-object element from a firmware contract drift
+    // would otherwise NPE/ClassCast past the structured-error envelope. id is emitted as a String
+    // to match the outputSchema and the scope='authorized' path.
+    def devices = raw.findAll { it instanceof Map }.collect { d ->
         def caps = (d.capabilities instanceof List) ? d.capabilities.collect { it?.toString() } : []
-        [id: d.id, label: d.label, capabilities: caps, mcpAuthorized: authorizedIds.contains(d.id?.toString())]
+        def idStr = d.id?.toString()
+        [id: idStr, label: d.label, capabilities: caps, mcpAuthorized: idStr != null && authorizedIds.contains(idStr)]
     }
     def unfilteredTotal = devices.size()
     if (labelFilter) {
@@ -381,7 +390,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     def paged = (totalCount > 0 && startIndex < endIndex) ? devices.subList(startIndex, endIndex) : []
 
     if (resolvedFormat == "ids") {
-        def ids = paged.collect { it.id as Integer }
+        def ids = paged.findAll { it.id?.isInteger() }.collect { it.id as Integer }
         def r = [deviceIds: ids, count: ids.size(), total: totalCount, scope: "all", unfilteredTotal: unfilteredTotal]
         if (labelFilter) r.labelFilter = labelFilter
         if (capabilityFilter) r.capabilityFilter = capabilityFilter
@@ -395,12 +404,13 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     def authorizedCount = devices.findAll { it.mcpAuthorized }.size()
     def result = [
         devices: paged,
+        count: paged.size(),
         total: totalCount,
         scope: "all",
         unfilteredTotal: unfilteredTotal,
         mcpAuthorizedCount: authorizedCount,
         unauthorizedCount: totalCount - authorizedCount,
-        note: "scope='all' lists EVERY hub device with mcpAuthorized true/false. mcpAuthorized=false means the device is NOT in this MCP app's device list, so it cannot be read or controlled until added in the hub UI (MCP Rule Server app > device selection). Records are lightweight (id/label/capabilities); use scope='authorized' (default) for full detail/currentStates."
+        note: "scope='all' lists EVERY hub device with mcpAuthorized true/false. mcpAuthorized=false means the device is NOT in this MCP app's device list, so it cannot be read or controlled until added in the hub UI (MCP Rule Server app > device selection). Records are lightweight (id/label/capabilities/mcpAuthorized); use scope='authorized' (default) for full detail/currentStates. mcpAuthorizedCount/unauthorizedCount are over the full filtered set (they sum to total), not the returned page."
     ]
     if (labelFilter) result.labelFilter = labelFilter
     if (capabilityFilter) result.capabilityFilter = capabilityFilter
@@ -1758,8 +1768,8 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
                     capabilityFilter: [type: "string", description: "Echoed capabilityFilter; present when set"],
                     capabilityFilterMatchedKnownCapability: [type: "boolean", description: "When capabilityFilter yields 0: whether the capability exists on any device"],
                     scope: [type: "string", description: "Echoed 'all' when scope='all' was requested"],
-                    mcpAuthorizedCount: [type: "integer", description: "scope='all': count of returned devices that ARE in the MCP authorized list"],
-                    unauthorizedCount: [type: "integer", description: "scope='all': count of returned devices NOT in the MCP authorized list"],
+                    mcpAuthorizedCount: [type: "integer", description: "scope='all': count over the full filtered (pre-pagination) set that ARE in the MCP authorized list; sums with unauthorizedCount to total, not to the returned page"],
+                    unauthorizedCount: [type: "integer", description: "scope='all': count over the full filtered (pre-pagination) set NOT in the MCP authorized list"],
                     offset: [type: "integer", description: "Page start index; present when paginated"],
                     limit: [type: "integer", description: "Page size; present when paginated"],
                     hasMore: [type: "boolean", description: "More pages remain; present when paginated"],

@@ -48,9 +48,9 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         result.total == 2
         result.mcpAuthorizedCount == 1
         result.unauthorizedCount == 1
-        result.devices.find { it.id == 80 }.mcpAuthorized == true
-        result.devices.find { it.id == 99 }.mcpAuthorized == false
-        result.devices.find { it.id == 99 }.capabilities == ["MotionSensor"]
+        result.devices.find { it.id == "80" }.mcpAuthorized == true
+        result.devices.find { it.id == "99" }.mcpAuthorized == false
+        result.devices.find { it.id == "99" }.capabilities == ["MotionSensor"]
     }
 
     def "scope='all' applies capabilityFilter across all-hub devices"() {
@@ -68,7 +68,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
 
         then:
         result.total == 1
-        result.devices*.id == [2]
+        result.devices*.id == ["2"]
         result.unfilteredTotal == 2
     }
 
@@ -160,5 +160,190 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
 
         then:
         result.topology == null
+    }
+
+    // ---- added coverage (PR #289 review gaps) ----------------------------
+
+    def "scope='all' returns a structured error when the endpoint fetch throws"() {
+        given:
+        settingsMap.selectedDevices = []
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("boom") }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then:
+        result.success == false
+        result.note?.toLowerCase()?.contains("authorized")
+    }
+
+    def "scope='all' returns a structured error when the endpoint returns a non-array"() {
+        given:
+        settingsMap.selectedDevices = []
+        hubGet.register('/device/listWithCapabilities/json') { params -> JsonOutput.toJson([unexpected: "object"]) }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then:
+        result.success == false
+        result.error?.contains("expected a JSON array")
+    }
+
+    def "scope='all' format='ids' returns integer ids (strings cast back) and no devices key"() {
+        given:
+        settingsMap.selectedDevices = [dev(id: 1)]
+        hubGet.register('/device/listWithCapabilities/json') { params ->
+            JsonOutput.toJson([[id: 1, label: "A", capabilities: ["Switch"]], [id: 2, label: "B", capabilities: []]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, "ids", null, null, "all")
+
+        then:
+        result.scope == "all"
+        result.deviceIds == [1, 2]
+        result.count == 2
+        result.total == 2
+        !result.containsKey("devices")
+    }
+
+    def "scope='all' paginates with hasMore / nextOffset over the filtered set"() {
+        given:
+        settingsMap.selectedDevices = []
+        hubGet.register('/device/listWithCapabilities/json') { params ->
+            JsonOutput.toJson([[id: 1, label: "A", capabilities: []], [id: 2, label: "B", capabilities: []], [id: 3, label: "C", capabilities: []]])
+        }
+
+        when: "first page of 2"
+        def page1 = script.toolListDevices(false, 0, 2, null, null, null, null, null, null, "all")
+
+        then:
+        page1.devices.size() == 2
+        page1.total == 3
+        page1.count == 2
+        page1.hasMore == true
+        page1.nextOffset == 2
+
+        when: "second page"
+        def page2 = script.toolListDevices(false, 2, 2, null, null, null, null, null, null, "all")
+
+        then:
+        page2.devices.size() == 1
+        page2.hasMore == false
+        !page2.containsKey("nextOffset")
+    }
+
+    def "scope='all' tags an MCP child (virtual) device mcpAuthorized=true"() {
+        given:
+        childDevicesList << dev(id: 50)
+        hubGet.register('/device/listWithCapabilities/json') { params ->
+            JsonOutput.toJson([[id: 50, label: "Virtual", capabilities: ["Switch"]], [id: 51, label: "Foreign", capabilities: []]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then:
+        result.devices.find { it.id == "50" }.mcpAuthorized == true
+        result.devices.find { it.id == "51" }.mcpAuthorized == false
+    }
+
+    def "scope='all' devices carry id as a String (matches schema + scope='authorized')"() {
+        given:
+        settingsMap.selectedDevices = []
+        hubGet.register('/device/listWithCapabilities/json') { params -> JsonOutput.toJson([[id: 7, label: "X", capabilities: []]]) }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then:
+        result.devices[0].id == "7"
+        result.devices[0].id instanceof String
+    }
+
+    def "scope='all' rejects detailed=true"() {
+        when:
+        script.toolListDevices(true, 0, 0, null, null, null, null, null, null, "all")
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "include_topology on Zigbee hits the zigbee route endpoint and omits the Z-Wave-only table"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/zigbeeDetails/json') { params -> JsonOutput.toJson([enabled: true]) }
+        hubGet.register('/hub/zigbee/getChildAndRouteInfoJson') { params ->
+            JsonOutput.toJson([children: [[id: "FD0A"]], neighbors: [], routes: [[id: "867A", nextHopId: "CC3E"]]])
+        }
+
+        when:
+        def result = script.toolGetZigbeeDetails([include_topology: true])
+
+        then:
+        result.topology.endpoint.contains("zigbee")
+        result.topology.routes != null
+        !result.topology.containsKey("zwaveTopologyTable")
+    }
+
+    def "hub_set_app_disabled reports a structured error when the POST throws"() {
+        given:
+        settingsMap.enableWrite = true
+        script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false -> throw new RuntimeException("net down") }
+
+        when:
+        def result = script.executeTool("hub_set_app_disabled", [app_id: 5, disabled: true])
+
+        then:
+        result.success == false
+        result.error?.contains("failed")
+    }
+
+    def "hub_set_app_disabled flags an unconfirmable write when the read-back throws"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.enableRead = true
+        script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false -> [status: 200] }
+        hubGet.register('/installedapp/json/9') { params -> throw new RuntimeException("404") }
+
+        when:
+        def result = script.executeTool("hub_set_app_disabled", [app_id: 9, disabled: true])
+
+        then:
+        result.success == false
+        result.error?.toLowerCase()?.contains("could not be confirmed")
+        result.note?.toLowerCase()?.contains("re-check")
+    }
+
+    def "hub_set_app_disabled requires the disabled arg"() {
+        given:
+        settingsMap.enableWrite = true
+
+        when:
+        script.executeTool("hub_set_app_disabled", [app_id: 5])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "dispatch: hub_list_devices scope='all' and hub_get_radio_details include_topology route through executeTool"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.selectedDevices = []
+        hubGet.register('/device/listWithCapabilities/json') { params -> JsonOutput.toJson([[id: 1, label: "A", capabilities: []]]) }
+        hubGet.register('/hub/zwaveDetails/json') { params -> JsonOutput.toJson([enabled: true]) }
+        hubGet.register('/hub/zwave/getChildAndRouteInfoJson') { params -> JsonOutput.toJson([nodes: [], connectors: []]) }
+        hubGet.register('/hub/zwaveTopology') { params -> "table" }
+
+        when:
+        def devs = script.executeTool("hub_list_devices", [scope: "all"])
+        def radio = script.executeTool("hub_get_radio_details", [radio: "zwave", include_topology: true])
+
+        then:
+        devs.scope == "all"
+        devs.devices*.id == ["1"]
+        radio.topology != null
+        radio.topology.endpoint.contains("getChildAndRouteInfoJson")
     }
 }
