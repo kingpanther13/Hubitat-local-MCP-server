@@ -22,26 +22,14 @@ name: Hub E2E (test hub)
 on:
   pull_request_target:
     branches: [main]
-    # Skip when only docs / non-test files change. Cuts CI cost on
-    # README-only / SKILL-only PRs that can't break the hub-side surface.
-    paths:
-      - 'hubitat-mcp-server.groovy'
-      - 'hubitat-mcp-rule.groovy'
-      - 'e2e-deadman-watchdog.groovy'
-      - 'e2e-deadman-watchdog-v2.groovy'
-      - 'tests/e2e_test.py'
-      - '.github/workflows/hub-e2e.yml'
-      - '.github/scripts/lease_acquire.sh'
-      - '.github/scripts/lease_release.sh'
-      - '.github/scripts/mcp_setup_env.sh'
-      - '.github/scripts/mcp_restore_env.sh'
-      - '.github/scripts/mcp_validate_package_tool.sh'
-      - '.github/scripts/mcp_watchdog_lib.sh'
-      - '.github/scripts/mcp_watchdog_deploy.sh'
-      - '.github/scripts/mcp_arm_watchdog.sh'
-      - '.github/scripts/mcp_disarm_watchdog.sh'
-      - 'libraries/**'
-      - 'bundles/**'
+    # Deliberately NO `paths:` filter. `e2e` is a REQUIRED status check, and a paths-filtered
+    # required check never reports on a PR that doesn't touch those paths -- it sits at
+    # "Expected -- waiting for status to be reported" forever, so a docs-only PR can never
+    # merge. Instead the workflow always triggers and the e2e job's `gate` step detects whether
+    # any hub-relevant file changed: none changed (docs-only / non-hub PR) -> report green
+    # WITHOUT running the suite; any changed -> run the real suite. The hub-relevant allowlist
+    # lives in that gate step and is the source of truth for "what must exercise e2e" -- do NOT
+    # reintroduce a workflow-level paths: filter here (it recreates the never-reports deadlock).
   workflow_dispatch:
     inputs:
       pr_number:
@@ -208,26 +196,66 @@ jobs:
         with:
           ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.event.pull_request.head.sha || github.ref }}
 
-      - name: Check secret availability + skip if absent
-        # MCP_URL / WATCHDOG_URL are empty only when the secrets aren't configured at all --
-        # e.g. someone forked the whole project to a repo without the donated test hub, or
-        # @level99 has not yet provisioned the separate watchdog endpoint. (Under
-        # pull_request_target on the upstream repo the run is in trusted context, so the
-        # secrets ARE present for both trusted and approved fork PRs; fork-PR secret
-        # stripping does NOT apply here the way it does to a plain pull_request trigger.)
-        # In the no-secret case we skip cleanly rather than fail red -- e2e must not go red
-        # before WATCHDOG_MCP_URL exists. GitHub doesn't allow `secrets` in job-level `if:`
-        # conditions, so the check happens here as a step output and gates everything below.
+      - name: Gate — secret availability + hub-relevant change detection
+        # Two independent reasons to report green WITHOUT running the hub suite. Both write a
+        # line to the run summary so a skip-green is never mistaken for a real pass.
+        #
+        # 1) Secrets absent. MCP_URL / WATCHDOG_URL are empty only when the secrets aren't
+        #    configured at all -- e.g. someone forked the project without the donated test hub,
+        #    or @level99 has not provisioned the watchdog endpoint. (Under pull_request_target on
+        #    the upstream repo the run is in trusted context, so the secrets ARE present for
+        #    trusted and approved fork PRs.) GitHub doesn't allow `secrets` in a job-level `if:`,
+        #    so the check happens here as a step output that gates every step below.
+        # 2) No hub-relevant file changed (docs-only / non-hub PR). The workflow-level `paths:`
+        #    filter was removed because `e2e` is a REQUIRED check and a paths-filtered required
+        #    check never reports on a docs-only PR (it hangs at "Expected -- waiting" and blocks
+        #    merge). So the workflow always triggers and relevance is detected HERE against the
+        #    same allowlist. A PR touching ANY allowlist path takes the real-run branch, so this
+        #    cannot green-wash a change e2e should test; detection fails SAFE (run on any doubt);
+        #    workflow_dispatch always runs the real suite.
         id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ -z "$MCP_URL" ]; then
             echo "::notice::LEVEL99_TEST_HUB_MCP_URL secret not available — skipping E2E (expected on repos without the test hub configured)"
+            echo "E2E NOT RUN — test-hub secret (LEVEL99_TEST_HUB_MCP_URL) not configured." >> "$GITHUB_STEP_SUMMARY"
             echo "available=false" >> "$GITHUB_OUTPUT"
-          elif [ -z "$WATCHDOG_URL" ]; then
-            echo "::notice::WATCHDOG_MCP_URL secret not available — skipping E2E (the v2 dead-man watchdog endpoint is not provisioned yet; this is expected until @level99 sets WATCHDOG_MCP_URL)"
+            exit 0
+          fi
+          if [ -z "$WATCHDOG_URL" ]; then
+            echo "::notice::WATCHDOG_MCP_URL secret not available — skipping E2E (the v2 dead-man watchdog endpoint is not provisioned yet; expected until @level99 sets WATCHDOG_MCP_URL)"
+            echo "E2E NOT RUN — watchdog secret (WATCHDOG_MCP_URL) not configured." >> "$GITHUB_STEP_SUMMARY"
             echo "available=false" >> "$GITHUB_OUTPUT"
-          else
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"   # manual dispatch always runs the real suite
+            exit 0
+          fi
+          # Fetch the PR's changed-file list. Fail SAFE: if it can't be read, run the full suite
+          # rather than risk green-washing a code PR.
+          files="$(gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[].filename')" || {
+            echo "::warning::Could not list changed files — running the full E2E suite to be safe."
             echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          # Hub-relevant allowlist — the source of truth for "what must exercise e2e".
+          # (`case` patterns: `*` matches `/`, so `libraries/*` covers nested paths too.)
+          relevant=false
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog.groovy|e2e-deadman-watchdog-v2.groovy|tests/e2e_test.py|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_restore_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|libraries/*|bundles/*)
+                relevant=true ;;
+            esac
+          done <<< "$files"
+          if [ "$relevant" = "true" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No hub-relevant files changed — reporting E2E green WITHOUT running the suite (docs-only / non-hub PR)."
+            echo "E2E NOT RUN — no hub-relevant files changed (docs-only / non-hub PR). Skipped on purpose; this green does NOT mean the e2e suite executed." >> "$GITHUB_STEP_SUMMARY"
+            echo "available=false" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: actions/setup-python@v6
