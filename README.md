@@ -136,7 +136,15 @@ Claude Desktop only launches **stdio** MCP servers from its config file — it d
 
 > **Easiest option:** skip the config file entirely and add the server in **Claude.ai** instead (see the *Claude.ai* section below). Connectors you add there automatically show up in Claude Desktop when signed in to the same account — no JSON editing, and it works from any chat.
 
-To edit the config file manually, open Claude Desktop > **Settings** > **Developer** > **Edit Config** (this opens `claude_desktop_config.json`). Add **one** of the following — if you already have other MCP servers configured, merge the `hubitat` block into your existing `mcpServers` object instead of pasting over the whole file:
+To edit the config file manually, open Claude Desktop > **Settings** > **Developer** > **Edit Config** (this opens `claude_desktop_config.json`).
+
+> **Windows — Microsoft Store / MSIX install:** the **Edit Config** button opens `%APPDATA%\Claude\claude_desktop_config.json`, but the Store build does **not** read that file (MSIX redirects it to a virtualized copy), so edits there are silently ignored and your server never loads. Edit this file instead:
+> ```
+> %LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json
+> ```
+> The regular installer (`.exe`) build does use `%APPDATA%\Claude\…`. ([tracking bug](https://github.com/anthropics/claude-code/issues/26073))
+
+Add **one** of the following — if you already have other MCP servers configured, merge the `hubitat` block into your existing `mcpServers` object instead of pasting over the whole file:
 
 **Cloud endpoint (HTTPS):**
 ```json
