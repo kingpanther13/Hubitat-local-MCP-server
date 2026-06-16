@@ -417,7 +417,7 @@ def toolCreateVariable(args) {
         if (existing != null) {
             throw new IllegalArgumentException(
                 "Hub variable '${name}' already exists (type=${existing.type}, value=${existing.value}). " +
-                "Use set_variable to change the value, or pick a different name.")
+                "Use hub_set_variable to change the value, or pick a different name.")
         }
     } catch (IllegalArgumentException reraise) { throw reraise }
     catch (Exception e) {
@@ -460,7 +460,7 @@ private Map _createVariablesBulk(variables) {
             }
             if (existing != null) {
                 throw new IllegalArgumentException(
-                    "Hub variable '${itemName}' already exists (type=${existing.type}). Use set_variable to change the value, or pick a different name.")
+                    "Hub variable '${itemName}' already exists (type=${existing.type}). Use hub_set_variable to change the value, or pick a different name.")
             }
 
             def created = _createOneVariable(appId, itemName, itemType, item.value)
