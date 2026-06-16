@@ -16,8 +16,9 @@ def toolUpdateMcpSettings(args) {
 
     // Allowlist of settings that can be modified via this tool, with their Hubitat input
     // type (matches the input "<key>", "<type>", ... declarations in the mainPage section).
-    // useGateways is allowlisted: it only reshapes tools/list (gateway vs flat) — same class
-    // as enableCustomRuleEngine, no write-path or lockout risk; clients must reconnect
+    // useGateways and publishOutputSchemas are allowlisted: they only reshape tools/list
+    // (gateway vs flat; whether outputSchema is advertised) — same class as
+    // enableCustomRuleEngine, no write-path or lockout risk; clients must reconnect
     // afterward to pick up the new tool surface.
     // Excluded:
     //   enableWrite          — would footgun: could disable own write path mid-session
@@ -32,7 +33,8 @@ def toolUpdateMcpSettings(args) {
         "loopGuardWindowSec":     "number",
         "enableRead":             "bool",
         "enableCustomRuleEngine": "bool",
-        "useGateways":            "bool"
+        "useGateways":            "bool",
+        "publishOutputSchemas":   "bool"
     ]
 
     // Validate, coerce, and stage each update. Validation is fully atomic — every key
@@ -91,7 +93,7 @@ def toolUpdateMcpSettings(args) {
     return [
         success: true,
         updated: updates,
-        message: "Updated ${updateCount} ${settingWord}. MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag or useGateways."
+        message: "Updated ${updateCount} ${settingWord}. MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag, useGateways, or publishOutputSchemas."
     ]
 }
 
@@ -496,7 +498,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
     return [
         [
             name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters) in place. Use this to self-administer the MCP app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit. Allowlisted keys only: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways — any other key is rejected. After changing any enable* toggle or useGateways, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema. [[FLAT_TRIM]]Deliberately NOT allowlisted: enableWrite (would disable the tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), selectedDevices (different wire format, has its own tool), and disabled_tools/disabled_gateways (could self-disable this tool).[[/FLAT_TRIM]]",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters) in place. Use this to self-administer the MCP app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit. Allowlisted keys only: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas — any other key is rejected. After changing any enable* toggle, useGateways, or publishOutputSchemas, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema. [[FLAT_TRIM]]Deliberately NOT allowlisted: enableWrite (would disable the tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), selectedDevices (different wire format, has its own tool), and disabled_tools/disabled_gateways (could self-disable this tool).[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [

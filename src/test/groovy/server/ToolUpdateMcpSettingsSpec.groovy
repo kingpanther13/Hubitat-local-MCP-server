@@ -330,6 +330,57 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         sharedAppStub.settingsStore['useGateways'] == [type: 'bool', value: false]
     }
 
+    // -------- Golden path: publishOutputSchemas (outputSchema opt-in, issue #290) --------
+
+    def "writes publishOutputSchemas toggle — outputSchema opt-in is allowlisted (dev-mode gated)"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when: 'the agent opts into advertising outputSchema via its own self-admin tool'
+        def result = script.toolUpdateMcpSettings([
+            settings: [publishOutputSchemas: true],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        result.updated == [publishOutputSchemas: true]
+        sharedAppStub.settingsStore['publishOutputSchemas'] == [type: 'bool', value: true]
+
+        and: 'message steers the client to reconnect — the advertised tool schema just changed'
+        result.message.contains('reconnect')
+    }
+
+    def "coerces publishOutputSchemas string 'true' to native true — opting in must not stay a truthy string"() {
+        given: 'a CI/curl client sends the string "true"'
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def result = script.toolUpdateMcpSettings([
+            settings: [publishOutputSchemas: 'true'],
+            confirm: true
+        ])
+
+        then: 'string "true" coerces to native true'
+        result.success == true
+        sharedAppStub.settingsStore['publishOutputSchemas'] == [type: 'bool', value: true]
+    }
+
+    def "coerces publishOutputSchemas string 'false' to native false — opting out must not stay truthy"() {
+        given: 'a CI/curl client sends the string "false"'
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def result = script.toolUpdateMcpSettings([
+            settings: [publishOutputSchemas: 'false'],
+            confirm: true
+        ])
+
+        then: 'string "false" coerces to native false, not Groovy-truthy "false"'
+        result.success == true
+        sharedAppStub.settingsStore['publishOutputSchemas'] == [type: 'bool', value: false]
+    }
+
     // -------- Golden path: mcpLogLevel delegates to toolSetLogLevel --------
 
     def "mcpLogLevel updates state.debugLogs.config AND settings (via toolSetLogLevel delegation)"() {

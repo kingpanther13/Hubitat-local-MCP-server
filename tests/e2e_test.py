@@ -892,6 +892,37 @@ class TestRunner:
             "pure-read diagnostics gateway must roll up idempotent"
 
     @test("infrastructure")
+    def test_default_tools_list_omits_output_schema(self) -> None:
+        # Issue #290: by default (publishOutputSchemas OFF) NO tools/list entry advertises
+        # outputSchema. Strict MCP clients (e.g. Claude Desktop, via the MCP TypeScript SDK)
+        # throw JSON-RPC -32600 "has an output schema but did not return structured content"
+        # when a tool declares outputSchema but the result carries no structuredContent --
+        # and this server returns text-only results. Regression guard against re-advertising
+        # schemas by default, at BOTH gated surfaces: the top-level tools/list AND the
+        # gateway catalog disclosure. (The opt-in ON path is covered by the Spock suite.)
+        result = self.client.list_tools()
+        tools = result.get("tools", [])
+        assert tools, "tools/list returned no tools"
+        with_schema = [t.get("name") for t in tools if "outputSchema" in t]
+        assert not with_schema, (
+            "default tools/list must not advertise outputSchema "
+            f"(publishOutputSchemas defaults OFF), but these did: {with_schema}"
+        )
+        # Surface (b): the gateway no-arg catalog disclosure must also omit outputSchema by
+        # default (it is the other surface the toggle gates, in handleGateway).
+        catalog = self.client.call_tool("hub_read_rooms", {})
+        cat_entries = catalog.get("tools", []) if isinstance(catalog, dict) else []
+        assert cat_entries, "hub_read_rooms catalog returned no tools"
+        cat_with_schema = [e.get("name") for e in cat_entries if "outputSchema" in e]
+        assert not cat_with_schema, (
+            "gateway catalog must not advertise outputSchema by default "
+            f"(publishOutputSchemas OFF), but these did: {cat_with_schema}"
+        )
+        # And a base tool call still succeeds end-to-end (the symptom #290 reported).
+        info = self.client.call_tool("hub_get_info")
+        assert isinstance(info, dict) and info, "hub_get_info call must still return data"
+
+    @test("infrastructure")
     def test_gateway_catalog_titles(self) -> None:
         # Issue #245: the gateway no-arg catalog disclosure also surfaces each
         # sub-tool's friendly title next to its bare name and schema.

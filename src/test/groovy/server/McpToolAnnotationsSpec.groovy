@@ -534,11 +534,12 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     }
 
     def "every leaf tool in getAllToolDefinitions() declares a well-formed outputSchema"() {
-        // PR1C: every tool returns a structured map, so every leaf definition MUST
-        // publish an outputSchema describing it (MCP spec 2025-06-18 /server/tools;
-        // AGENTS.md Schema design -- "servers MUST conform to a published outputSchema;
-        // clients SHOULD validate"). Asserting the shape (object + non-empty properties
-        // map) catches a missing, stubbed, or malformed schema on a newly-added tool.
+        // Every tool DEFINITION declares an outputSchema describing its success shape
+        // (MCP spec 2025-06-18 /server/tools). Per issue #290 the definitions are ALWAYS
+        // present even though wire EMISSION is opt-in (settings.publishOutputSchemas,
+        // default OFF) -- this test guards the definitions, NOT the emission. Asserting the
+        // shape (object + non-empty properties map) catches a missing, stubbed, or
+        // malformed schema on a newly-added tool.
         when:
         def defs = script.getAllToolDefinitions()
 
@@ -628,28 +629,45 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         mode << ['gateway', 'flat']
     }
 
-    def "outputSchema is published in gateway mode (base tools) and stripped in flat mode (size)"() {
-        // PR1C size strategy: flat-mode tools/list is the all-tools surface bounded by
-        // the hub's 124,000-byte cap, so outputSchema is dropped there; gateway-mode
-        // base tools (and the gateway catalog disclosure) carry it, where the
-        // per-response budget has headroom. hub_get_info is a flat/base read tool in
-        // both modes, so it is the clean probe.
+    def "outputSchema emission is gated by publishOutputSchemas in gateway mode; flat mode never emits it"() {
+        // Issue #290: outputSchema emission is OPT-IN. The DEFINITION is always present
+        // (see the 'every leaf tool declares a well-formed outputSchema' spec above), but
+        // it reaches the wire only in gateway mode AND only when publishOutputSchemas is on
+        // -- OFF by default so strict clients (e.g. Claude Desktop) that reject an
+        // outputSchema returned without structuredContent work. The flat tools/list never
+        // emits it regardless of the toggle (size-constrained 124,000-byte surface).
+        // hub_get_info is a base/flat read tool present in both modes -- the clean probe.
         given:
         settingsMap.enableCustomRuleEngine = true
 
-        when: 'gateway mode'
+        when: 'gateway mode, publishOutputSchemas OFF (default)'
         settingsMap.remove('useGateways')
-        def gwInfo = script.getToolDefinitions().find { it.name == 'hub_get_info' }
+        settingsMap.remove('publishOutputSchemas')
+        def gwOff = script.getToolDefinitions().find { it.name == 'hub_get_info' }
 
-        and: 'flat mode'
+        and: 'gateway mode, publishOutputSchemas ON'
+        settingsMap.publishOutputSchemas = true
+        def gwOn = script.getToolDefinitions().find { it.name == 'hub_get_info' }
+
+        and: 'flat mode, publishOutputSchemas ON (must STILL strip)'
         settingsMap.useGateways = false
-        def flatInfo = script.getToolDefinitions().find { it.name == 'hub_get_info' }
+        def flatOn = script.getToolDefinitions().find { it.name == 'hub_get_info' }
 
-        then:
-        gwInfo?.outputSchema instanceof Map
-        gwInfo.outputSchema.type == 'object'
-        flatInfo != null
-        flatInfo.containsKey('outputSchema') == false
+        and: 'flat mode, publishOutputSchemas OFF'
+        settingsMap.remove('publishOutputSchemas')
+        def flatOff = script.getToolDefinitions().find { it.name == 'hub_get_info' }
+
+        then: 'gateway mode emits outputSchema only when the toggle is on'
+        gwOff != null
+        gwOff.containsKey('outputSchema') == false
+        gwOn?.outputSchema instanceof Map
+        gwOn.outputSchema.type == 'object'
+
+        and: 'flat mode never emits outputSchema, regardless of the toggle'
+        flatOn != null
+        flatOn.containsKey('outputSchema') == false
+        flatOff != null
+        flatOff.containsKey('outputSchema') == false
     }
 
     def "getAllToolDefinitions() returns a FRESH list each call -- mutating one return must not leak to the next"() {
