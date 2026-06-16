@@ -37,6 +37,9 @@ class HandleGatewaySpec extends ToolSpecBase {
         def result = script.handleGateway('hub_manage_rooms', null, null)
 
         then:
+        // Non-vacuity guard: the catalog actually lists the room tools, so the every{}
+        // below cannot pass on an empty list.
+        result.tools*.name == ['hub_list_rooms', 'hub_get_room', 'hub_create_room', 'hub_delete_room', 'hub_update_room']
         // With the opt-in toggle ON, the catalog disclosure forwards each tool's
         // outputSchema (the flat tools/list path still strips it for size).
         result.tools.every { it.outputSchema instanceof Map && it.outputSchema.type == 'object' }

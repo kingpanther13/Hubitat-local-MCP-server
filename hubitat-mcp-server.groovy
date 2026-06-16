@@ -760,8 +760,10 @@ def serverInstructions() {
 
 // Protocol versions this server can speak, newest first. Echo-allowlist:
 // handleInitialize honors the client's requested version when it is one of
-// these, else falls back to the default. PR1C ships outputSchema (a 2025-06-18
-// feature) on every tool, so a strict 2025-06-18 client is fully supported.
+// these, else falls back to the default. outputSchema (a 2025-06-18 feature) is
+// declared on every tool but, by default, NOT advertised on the wire (issue #290:
+// strict clients reject an advertised schema returned without structuredContent);
+// enable publishOutputSchemas to advertise it.
 def supportedProtocolVersions() { ["2025-06-18", "2025-03-26", "2024-11-05"] }
 def defaultProtocolVersion() { "2024-11-05" }
 
