@@ -1,6 +1,6 @@
 library(name: "McpDevicesLib", namespace: "mcp", author: "kingpanther13", description: "Device tool implementations (list/get/attribute/events/command/update/delete) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
-def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null) {
+def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null) {
     // Opt-in cursor pagination decodes onto the existing offset/limit mechanics. The
     // real range check against the filtered total happens further down (line ~3585)
     // because we don't have the filtered count yet; pass Integer.MAX_VALUE so the
@@ -17,6 +17,15 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         // Callers who want a different page size set limit explicitly (cursor still wins
         // on offset; limit just sizes the page).
         if (!limit || limit <= 0) limit = 50
+    }
+    // scope='all' lists EVERY hub device (not just MCP-authorized), tagging each mcpAuthorized
+    // true/false so a caller who can't control a device sees it must be added to the MCP list.
+    // Distinct lightweight path (plain endpoint maps, not Groovy device objects).
+    if (scope != null && !(scope in ["authorized", "all"])) {
+        throw new IllegalArgumentException("scope must be 'authorized' (default) or 'all' (got: '${scope}')")
+    }
+    if (scope == "all") {
+        return _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, format, cursor)
     }
     // Combine selected devices and MCP-managed child devices (virtual devices)
     def allDevices = (selectedDevices ?: []).toList()
@@ -322,6 +331,85 @@ private String formatLastActivity(Date d) {
     } catch (Exception ignore) {
         return d.toString()
     }
+}
+
+// scope='all' implementation: every hub device + an mcpAuthorized flag. Sourced from the admin
+// endpoint /device/listWithCapabilities/json (id/label/capabilities) -- the ONLY way the app sees
+// devices it isn't granted; the Groovy device model is authorization-scoped. Lightweight uniform
+// records (no attributes/commands/currentStates -- those need an MCP-authorized Groovy device).
+private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, format, cursor) {
+    if (labelFilter != null && !(labelFilter instanceof String)) {
+        throw new IllegalArgumentException("labelFilter must be a string")
+    }
+    if (capabilityFilter != null && !(capabilityFilter instanceof String)) {
+        throw new IllegalArgumentException("capabilityFilter must be a string")
+    }
+    def resolvedFormat = format ?: "summary"
+    if (format && !["summary", "ids"].contains(resolvedFormat)) {
+        throw new IllegalArgumentException("scope='all' supports format 'summary' or 'ids' only (detailed/currentStates require MCP-authorized devices; got '${format}')")
+    }
+    def raw
+    try {
+        def txt = hubInternalGet("/device/listWithCapabilities/json")
+        raw = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
+    } catch (Exception e) {
+        return [success: false, error: "Failed to fetch the all-hub device list (/device/listWithCapabilities/json): ${e.message}", note: "Endpoint may be unavailable on this firmware; use scope='authorized' (default)."]
+    }
+    if (!(raw instanceof List)) {
+        return [success: false, error: "Unexpected /device/listWithCapabilities/json response (expected a JSON array).", note: "Hub firmware may have changed the endpoint contract."]
+    }
+    def authorizedIds = ((selectedDevices ?: []).collect { it.id.toString() } as Set)
+    (getChildDevices() ?: []).each { authorizedIds.add(it.id.toString()) }
+
+    def devices = raw.collect { d ->
+        def caps = (d.capabilities instanceof List) ? d.capabilities.collect { it?.toString() } : []
+        [id: d.id, label: d.label, capabilities: caps, mcpAuthorized: authorizedIds.contains(d.id?.toString())]
+    }
+    def unfilteredTotal = devices.size()
+    if (labelFilter) {
+        def lf = labelFilter.toLowerCase()
+        devices = devices.findAll { (it.label ?: "").toString().toLowerCase().contains(lf) }
+    }
+    if (capabilityFilter) {
+        def cf = capabilityFilter.toLowerCase()
+        devices = devices.findAll { dev -> dev.capabilities.any { c -> c?.toLowerCase() == cf } }
+    }
+    def totalCount = devices.size()
+    def startIndex = (offset && offset > 0) ? (offset as Integer) : 0
+    if (startIndex > totalCount) startIndex = totalCount
+    def endIndex = (limit && limit > 0) ? Math.min(startIndex + (limit as Integer), totalCount) : totalCount
+    def paged = (totalCount > 0 && startIndex < endIndex) ? devices.subList(startIndex, endIndex) : []
+
+    if (resolvedFormat == "ids") {
+        def ids = paged.collect { it.id as Integer }
+        def r = [deviceIds: ids, count: ids.size(), total: totalCount, scope: "all", unfilteredTotal: unfilteredTotal]
+        if (labelFilter) r.labelFilter = labelFilter
+        if (capabilityFilter) r.capabilityFilter = capabilityFilter
+        if (limit && limit > 0) {
+            r.offset = startIndex; r.limit = limit; r.hasMore = endIndex < totalCount
+            if (endIndex < totalCount) r.nextOffset = endIndex
+            if (cursor != null && endIndex < totalCount) r.nextCursor = endIndex.toString()
+        }
+        return r
+    }
+    def authorizedCount = devices.findAll { it.mcpAuthorized }.size()
+    def result = [
+        devices: paged,
+        total: totalCount,
+        scope: "all",
+        unfilteredTotal: unfilteredTotal,
+        mcpAuthorizedCount: authorizedCount,
+        unauthorizedCount: totalCount - authorizedCount,
+        note: "scope='all' lists EVERY hub device with mcpAuthorized true/false. mcpAuthorized=false means the device is NOT in this MCP app's device list, so it cannot be read or controlled until added in the hub UI (MCP Rule Server app > device selection). Records are lightweight (id/label/capabilities); use scope='authorized' (default) for full detail/currentStates."
+    ]
+    if (labelFilter) result.labelFilter = labelFilter
+    if (capabilityFilter) result.capabilityFilter = capabilityFilter
+    if (limit && limit > 0) {
+        result.offset = startIndex; result.limit = limit; result.hasMore = endIndex < totalCount
+        if (endIndex < totalCount) result.nextOffset = endIndex
+        if (cursor != null && endIndex < totalCount) result.nextCursor = endIndex.toString()
+    }
+    return result
 }
 
 def toolGetDevice(deviceId) {
@@ -1621,7 +1709,7 @@ def _getAllToolDefinitions_partDevices() {
 
 DEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don't silently fall back to existing devices.
 
-Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.
+Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only. Set scope='all' to list EVERY device on the hub (not just MCP-authorized ones), each tagged mcpAuthorized true/false — use this when a device can't be controlled to confirm it just needs adding to the MCP device list.
 
 [[FLAT_TRIM]]
 Summary mode returns currentStates; detailed mode replaces that with capabilities, attributes, and commands (field list in outputSchema). Server-side filtering (all applied before pagination) is configured via the filter / labelFilter / capabilityFilter params (documented on those params). format='ids' is the cheapest shape; fields=[...] projects named fields and skips expensive hub reads. To count a parent's children, group the response by parentDeviceId.
@@ -1638,7 +1726,8 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
                     capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl', 'TemperatureMeasurement').[[FLAT_TRIM]] Applied after labelFilter, before pagination. When count=0, response includes `capabilityFilterMatchedKnownCapability` to distinguish 'no devices have this capability' from a typo.[[/FLAT_TRIM]]"],
                     format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands[[FLAT_TRIM]] (same as detailed=true)[[/FLAT_TRIM]]. 'ids' = flat array of device ID integers (cheapest, ignores fields arg).[[FLAT_TRIM]] detailed=true overrides format='summary'.[[/FLAT_TRIM]]"],
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object.[[FLAT_TRIM]] Valid names: id, name, label, room, disabled, deviceNetworkId, lastActivity, parentDeviceId, mcpManaged, currentStates, capabilities, attributes, commands. Throws if any field name is unknown. Omitted or empty = all default fields for the active format. Ignored when format='ids'. id is always included regardless of projection (use format='ids' for id-only results). Including capabilities, attributes, or commands auto-promotes the response to detailed mode (those fields require detailed-mode device introspection). Project out currentStates and attributes to skip expensive hub reads; capabilities and commands are in-memory and cheap.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section='performance')` for valid field names and projection semantics."],
-                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor[[FLAT_TRIM]] returned alongside nextOffset[[/FLAT_TRIM]]."]
+                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor[[FLAT_TRIM]] returned alongside nextOffset[[/FLAT_TRIM]]."],
+                    scope: [type: "string", enum: ["authorized", "all"], description: "Which devices to list. 'authorized' (default) = only devices granted to this MCP app (full detail/currentStates). 'all' = EVERY device on the hub, each tagged mcpAuthorized true/false.[[FLAT_TRIM]] Use scope='all' to find a device that exists on the hub but can't be controlled — mcpAuthorized=false means it must be added to this app's device list in the hub UI. scope='all' records are lightweight (id/label/capabilities/mcpAuthorized only; no attributes/commands/currentStates) and support format 'summary' or 'ids'; capabilityFilter/labelFilter/pagination still apply.[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [
@@ -1654,6 +1743,7 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
                         lastActivity: [type: "string", description: "Last-activity ISO timestamp, or null"],
                         parentDeviceId: [type: "string", description: "Parent device ID, or null"],
                         mcpManaged: [type: "boolean", description: "Present and true for this app's virtual devices"],
+                        mcpAuthorized: [type: "boolean", description: "scope='all' mode: whether the device is in this MCP app's authorized device list (false = exists on hub but not controllable until added)"],
                         currentStates: [type: "object", description: "Summary mode: common attribute values"],
                         capabilities: [type: "array", description: "Detailed mode: capability names", items: [type: "string"]],
                         attributes: [type: "array", description: "Detailed mode: attribute name/value pairs", items: [type: "object"]],
@@ -1667,6 +1757,9 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
                     labelFilter: [type: "string", description: "Echoed labelFilter; present when set"],
                     capabilityFilter: [type: "string", description: "Echoed capabilityFilter; present when set"],
                     capabilityFilterMatchedKnownCapability: [type: "boolean", description: "When capabilityFilter yields 0: whether the capability exists on any device"],
+                    scope: [type: "string", description: "Echoed 'all' when scope='all' was requested"],
+                    mcpAuthorizedCount: [type: "integer", description: "scope='all': count of returned devices that ARE in the MCP authorized list"],
+                    unauthorizedCount: [type: "integer", description: "scope='all': count of returned devices NOT in the MCP authorized list"],
                     offset: [type: "integer", description: "Page start index; present when paginated"],
                     limit: [type: "integer", description: "Page size; present when paginated"],
                     hasMore: [type: "boolean", description: "More pages remain; present when paginated"],

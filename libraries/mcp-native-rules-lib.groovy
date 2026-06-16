@@ -436,7 +436,65 @@ Requires Write master + confirm=true + recent hub backup.""",
                 required: ["success"]
             ]
         ],
+        [
+            name: "hub_set_app_disabled",
+            description: "Enable or disable any installed app (the hub admin UI's red-X) without deleting it — reversible. Stops/starts the app's automations while preserving its config. Use to park a misbehaving Room Lighting / Notifier / Groups+Scenes / custom app, or re-enable one. For Rule Machine RULES prefer hub_set_rule_paused. Verified by reading the disabled flag back. Requires the Write master.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    app_id: [type: "integer", description: "Installed-app ID to enable/disable (from hub_list_apps)."],
+                    disabled: [type: "boolean", description: "true = disable the app (stop it running), false = enable it."]
+                ],
+                required: ["app_id", "disabled"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the disabled flag now matches the requested value (read-back verified)"],
+                    appId: [type: "integer", description: "App ID"],
+                    disabled: [type: "boolean", description: "The app's disabled flag after the call"],
+                    message: [type: "string", description: "Human-readable result on success"],
+                    error: [type: "string", description: "Present on failure"],
+                    note: [type: "string", description: "Recovery guidance on failure"]
+                ],
+                required: ["success"]
+            ]
+        ],
     ]
+}
+
+// Enable/disable any installed app via POST /installedapp/disable {id, disable} -- the documented
+// Vue admin wire format (red-X). Reversible (re-enable with disabled=false). A POST that doesn't
+// throw is NOT proof; the disabled flag is read back from /installedapp/json/<id>.
+def toolSetAppDisabled(args) {
+    def id = (args?.app_id != null) ? args.app_id : args?.appId
+    if (id == null || !id.toString().isInteger() || id.toString().toInteger() <= 0) {
+        throw new IllegalArgumentException("app_id must be a positive integer (got: '${id}')")
+    }
+    int appId = id.toString().toInteger()
+    if (args?.disabled == null) {
+        throw new IllegalArgumentException("disabled is required (true to disable the app, false to enable it)")
+    }
+    boolean disable = (args.disabled == true || args.disabled?.toString() == "true")
+    try {
+        hubInternalPostJson("/installedapp/disable", groovy.json.JsonOutput.toJson([id: appId, disable: disable]))
+    } catch (Exception e) {
+        return [success: false, appId: appId, error: "POST /installedapp/disable failed: ${e.message}", note: "Verify the app id with hub_list_apps and retry."]
+    }
+    def observed = null
+    try {
+        def txt = hubInternalGet("/installedapp/json/${appId}")
+        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "")
+        if (parsed instanceof Map) observed = (parsed.disabled == true)
+    } catch (Exception ignore) { observed = null }
+    if (observed == disable) {
+        mcpLog("info", "hub-admin", "Set installed app ${appId} disabled=${disable}")
+        return [success: true, appId: appId, disabled: disable, message: "App ${appId} disabled flag is now ${disable}."]
+    }
+    if (observed == null) {
+        return [success: false, appId: appId, error: "POST accepted but the /installedapp/json/${appId} read-back could not be parsed.", note: "Confirm the app id with hub_list_apps."]
+    }
+    return [success: false, appId: appId, disabled: observed, error: "POST accepted but read-back shows disabled=${observed} (wanted ${disable}).", note: "The hub may not have committed the flag; retry, or check the app in the hub UI."]
 }
 
 // List all Rule Machine rules via the official hubitat.helper.RMUtils API.
@@ -11920,7 +11978,7 @@ def _idempotentWriteToolNames_partNativeRM() {
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
     return [
         // Native rules / classic apps
-        "hub_set_rule_paused", "hub_set_rule_private_boolean"
+        "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_app_disabled"
     ]
 }
 
@@ -11935,6 +11993,7 @@ def _toolDisplayMeta_partNativeRM() {
         hub_set_rule: [title: "Author Rule Machine Rule", summary: "Create or edit a Rule Machine rule."],
         hub_get_rule_health: [title: "Get Rule Health", summary: "Read-only health check on any installed app."],
         hub_set_native_app: [title: "Create or Edit Native App", summary: "Create or edit a classic native app (Room Lighting, Notifier, etc.)."],
-        hub_delete_native_app: [title: "Delete Native App", summary: "Delete a classic native app (auto-snapshot first)."]
+        hub_delete_native_app: [title: "Delete Native App", summary: "Delete a classic native app (auto-snapshot first)."],
+        hub_set_app_disabled: [title: "Enable or Disable App", summary: "Enable or disable any installed app without deleting it (reversible)."]
     ]
 }

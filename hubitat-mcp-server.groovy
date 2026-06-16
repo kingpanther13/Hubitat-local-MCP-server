@@ -1251,7 +1251,7 @@ def getGatewayConfig() {
         ],
         hub_manage_native_rules_and_apps: [
             description: "Native classic-app CRUD + Rule Machine runtime control. WHEN TO USE: creating or editing any NON-Rule-Machine classic SmartApp (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule, etc.) via hub_set_native_app, plus delete/clone/export/import of ANY classic app by appId, plus RMUtils runtime control of RM rules (list/run/pause/resume/setBoolean/health). TO CREATE OR EDIT A RULE MACHINE RULE (triggers/actions/conditions) -- 'create a rule machine rule', 'make a Hubitat rule' -- use the dedicated hub_manage_rule_machine gateway's hub_set_rule tool instead; that is the right path for default rule-authoring requests. The custom_* MCP rule engine (separate surface) is only for sandbox MCP-managed rules not visible in Hubitat's UI -- uncommon outside power-user / testing scenarios. Two surfaces here: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (hub_set_native_app create+edit, hub_delete_native_app, plus clone/copy/duplicate and export/import, by appId). Writes snapshot before every change; restore via the unified hub_list_backups (in hub_read_apps_code) + hub_restore_backup (in hub_manage_code) tools. Completely separate from the MCP custom rule engine (custom_* tools). Reads require the Read master; CRUD requires the Write master (destructive CRUD additionally requires confirm=true + a recent backup). Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via hub_get_app_config(appId=N) and inspect persisted settings before retrying.",
-            tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
+            tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId, action (rule/actions/stop/start, default rule). rule/actions use RMUtils; stop/start toggle the stopRule button (start also resets private boolean).",
@@ -1259,6 +1259,7 @@ def getGatewayConfig() {
                 hub_set_rule_private_boolean: "Set an RM rule's private boolean (RMUtils). Args: ruleId, value (bool)",
                 hub_set_native_app: "Create or edit any classic native app (Room Lighting, Button Controller, Basic Rule, Notifier, Groups+Scenes, etc.) — generic upsert. Omit appId to create (appType, name); provide appId to edit via settings/button/walkStep. buttonRule={controllerId, buttonNumber, event} creates a Button Rule through its parent controller. Auto-backs-up before edits. For Rule Machine RULES use hub_set_rule (in hub_manage_rule_machine). Args: appId (omit=create), appType, name, settings|button|walkStep|buttonRule, pageName (opt), stateAttribute (opt), confirm.",
                 hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
+                hub_set_app_disabled: "Enable or disable any installed app without deleting it (reversible red-X). Args: app_id, disabled (bool). Read-back verified. For RM rules prefer hub_set_rule_paused.",
                 hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner. Cheaper than rebuilding from scratch via the wizard. Args: appId (alias sourceAppId), newName (opt), confirm. Returns newAppId.",
                 hub_export_native_app: "Export a rule/app to its canonical JSON shape via Hubitat's first-party appCloner. Args: appId (alias sourceAppId), saveAs (opt File Manager filename). Returns the JSON content (and writes to File Manager if saveAs given).",
                 hub_import_native_app: "Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Args: jsonContent | fromFile, parentHintAppId (existing rule under the target parent — used to seed the cloner), newName (opt), confirm. Returns newAppId.",
@@ -1271,6 +1272,7 @@ def getGatewayConfig() {
                 hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
                 hub_set_native_app: "create edit modify change native room lighting button controller notifier groups scenes basic rule visual rule classic smartapp settings button upsert app",
                 hub_delete_native_app: "remove delete destroy native rule machine room lighting button controller basic rule notifier app",
+                hub_set_app_disabled: "disable enable pause stop park red-x toggle installed app room lighting notifier groups scenes without deleting reversible",
                 hub_clone_native_app: "copy duplicate clone existing rule app appCloner template surgical edit",
                 hub_export_native_app: "export serialize download rule app json appCloner backup transfer canonical shape",
                 hub_import_native_app: "import restore upload create rule app from json appCloner backup transfer round trip",
@@ -2073,7 +2075,7 @@ def executeTool(toolName, args) {
             // filter='virtual' routes to the MCP-managed virtual-device listing (a distinct
             // population -- this app's child devices -- with a richer driver-namespace shape).
             if (args.filter == "virtual") return toolListVirtualDevices(args)
-            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor)
+            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope)
         case "hub_get_device": return toolGetDevice(args.deviceId)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
@@ -2227,6 +2229,7 @@ def executeTool(toolName, args) {
         // hub_list_backups (hub_read_apps_code) + hub_restore_backup (hub_manage_code))
         case "hub_set_rule": return toolSetRule(args)
         case "hub_set_native_app": return toolSetNativeApp(args)
+        case "hub_set_app_disabled": return toolSetAppDisabled(args)
         case "hub_delete_native_app": return toolDeleteNativeApp(args)
         case "hub_clone_native_app": return toolCloneNativeApp(args)
         case "hub_export_native_app": return toolExportNativeApp(args)

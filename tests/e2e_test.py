@@ -939,6 +939,32 @@ class TestRunner:
         assert "label" in first or "name" in first, "Device missing label/name"
 
     @test("devices")
+    def test_list_devices_scope_all(self) -> None:
+        # Item 1 (#257): scope='all' lists EVERY hub device with an mcpAuthorized flag,
+        # sourced from /device/listWithCapabilities/json (not the authorization-scoped Groovy model).
+        result = self.client.call_tool("hub_list_devices", {"scope": "all"})
+        assert isinstance(result, dict), "scope='all' did not return an object"
+        assert result.get("scope") == "all", f"scope='all' not echoed: {result}"
+        devices = result.get("devices", [])
+        assert isinstance(devices, list) and len(devices) > 0, "scope='all' returned no devices"
+        assert all("mcpAuthorized" in d for d in devices), \
+            "scope='all' devices missing the mcpAuthorized flag"
+        assert "mcpAuthorizedCount" in result and "unauthorizedCount" in result, \
+            "scope='all' missing mcpAuthorizedCount/unauthorizedCount"
+
+    @test("diagnostics")
+    def test_radio_details_include_topology(self) -> None:
+        # Item 3 (#257): include_topology folds the read-only mesh route map into hub_get_radio_details.
+        result = self.client.call_tool("hub_get_radio_details", {"radio": "zwave", "include_topology": True})
+        assert isinstance(result, dict), "hub_get_radio_details did not return an object"
+        topo = result.get("topology")
+        # topology is best-effort (present when the hub has a Z-Wave radio); when present it must
+        # carry the route endpoint marker so we know the fold-in path actually fired.
+        if topo is not None:
+            assert "getChildAndRouteInfoJson" in str(topo.get("endpoint", "")), \
+                f"include_topology returned a topology without the route endpoint: {topo}"
+
+    @test("devices")
     def test_get_device(self) -> None:
         dev_id = self.get_first_device_id()
         result = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
