@@ -132,11 +132,11 @@ user-facing app type ("Visual Rules Builder" parent; children are hidden type
 | `GET  /appui/clearEmptyBasicRules` | Sweeps empty (never-saved) Basic Rules children |
 | `GET  /installedapp/configure/json/<id>` | Full live config page (sections, inputs, settings) — the RM **read** path the MCP server uses |
 | `POST /installedapp/update/json` | Classic settings POST (`dynamicPage` submit) — the RM **write** path |
-| `*    /installedapp/btn` | Classic page-button click |
+| `*    /installedapp/btn` | Classic page-button click. **RM rule-local-variable delete is a two-step `btn` flow** (NOT present in the Vue/`appUI` bundles — DevTools-confirmed on a live hub): click 1 = button name `<varName>` with `stateAttribute=deleteGV` (opens the inline confirm), click 2 = button name `delConfirm` with `stateAttribute=deleteConfirm` (commits the removal). The `stateAttribute` value distinguishes the two clicks even though both target the `selectActions` page. Verify the removal via `statusJson` `appState.allLocalVars`. Used by `hub_set_rule` `removeLocalVariable`. |
 | `*    /installedapp/ssr/<…>` | Classic server-side page render |
 | `*    /installedapp/collapseCallback/` | Section collapse state |
 | `GET  /installedapp/json/<id>` | Thin app summary (id/name/type/disabled/user) |
-| `GET  /installedapp/statusJson/<id>` | App status JSON |
+| `GET  /installedapp/statusJson/<id>` | App status JSON. For an RM rule, `appState.allLocalVars` carries the rule's local-variable map (`{<name>: {type, value}}`) — the read/verify source for `addLocalVariable` / `setLocalVariable` / `removeLocalVariable` and `hub_list_rule_local_variables` (NOT `appSettings`). Note `appState` is a **LIST** of `{name, value}` entries, so read it as `appState.find { it.name == "allLocalVars" }.value`; the entry is absent when the rule has no locals. The `setLocalVariable` action validates its target against this map (rule-local namespace), distinct from `setVariable`'s hub-global namespace. |
 | `GET  /installedapp/eventsJson/<id>` | Events history JSON |
 | `POST /installedapp/forcedelete/<id>/quiet` | Force-delete, no prompts |
 | `GET  /installedapp/createchild/<namespace>/<appName>/parent/<parentId>` | Server-creates a child app instance under a parent — a raw GET that 302-redirects to the new child's `configure/<id>` page. Used by the MCP server (`_rmCreateChildApp`) to instantiate classic child apps (Basic Rule, RM child, etc.) |

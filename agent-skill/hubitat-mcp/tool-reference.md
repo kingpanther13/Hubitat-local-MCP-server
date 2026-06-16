@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 104 MCP tools. The server exposes **31 items on `tools/list`**: 11 flat core tools + 20 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
+Quick reference for all 105 MCP tools. The server exposes **31 items on `tools/list`**: 11 flat core tools + 20 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
 
 For the most authoritative reference, call `hub_get_tool_guide` via MCP.
 
@@ -49,7 +49,7 @@ These 11 tools are never behind a gateway. Every other tool is reachable through
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `hub_search_tools` | BM25 natural language search across all 104 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `hub_search_tools` | BM25 natural language search across all 105 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
@@ -122,9 +122,9 @@ Read-only room access: list rooms and view room details.
 | `hub_list_rooms` | List all rooms with device counts. | None |
 | `hub_get_room` | Room details with full device info. Accepts name or ID. | None |
 
-### hub_read_rules (5 tools)
+### hub_read_rules (6 tools)
 
-Read-only custom-rule access plus dry-run testing, native-rule listing/health, and Visual Rules Builder rule reads.
+Read-only custom-rule access plus dry-run testing, native-rule listing/health, rule-local-variable listing, and Visual Rules Builder rule reads.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
@@ -132,6 +132,7 @@ Read-only custom-rule access plus dry-run testing, native-rule listing/health, a
 | `hub_test_custom_rule` | Dry-run: see what would happen without executing. | None |
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). | Read master |
 | `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Read master |
+| `hub_list_rule_local_variables` | List a Rule Machine rule's local variables (name/type/value) from `state.allLocalVars`. Distinct from `hub_list_variables` (hub globals). `type` is the internal token -- translate for `addLocalVariable`: Number->integer, Decimal->bigdecimal, String->string, Boolean->boolean, DateTime->datetime. | Read master |
 | `hub_get_visual_rule` | List Visual Rules Builder rules (omit `appId`) or read one rule's full JSON definition. Reports `format`: `classic` (`whenNodes`/`thenNodes`/`elseNodes`) or `graph` (`nodes`/`edges`). | Read master |
 
 ### hub_read_variables (3 tools)
@@ -282,7 +283,7 @@ Manage hub File Manager: list, read, write, and delete files stored on the hub.
 | `hub_write_file` | Create/update a file (auto-backs up existing). | Write master |
 | `hub_delete_file` | Delete a file (auto-backs up first). | Write master |
 
-### hub_manage_native_rules_and_apps (10 tools)
+### hub_manage_native_rules_and_apps (11 tools)
 
 Two surfaces: RMUtils-based runtime control for RM rules (read/trigger/pause-resume) plus admin-layer CRUD that works uniformly across any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.). Requires the Read master; CRUD operations additionally require the Write master.
 
@@ -293,24 +294,26 @@ Two surfaces: RMUtils-based runtime control for RM rules (read/trigger/pause-res
 | `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible; paused rules don't fire on triggers). | Write master |
 | `hub_set_rule_private_boolean` | Set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). | Write master |
 | `hub_set_native_app` | Create or edit any classic SmartApp by appId (Button Controller, Notifier, Groups+Scenes, Visual Rule, Basic Rules). Omit `appId` to create (`appType` enum incl. `basic_rule`, default `rule_machine`; `name`); provide `appId` to edit via `settings`/`button`. Create a **Button Rule** under its controller via `buttonRule={controllerId, buttonNumber, event}` (returns `buttonRuleId`; author its actions via `hub_set_rule`). `walkStep` (generic classic-page walker) works here too; full RM rule authoring belongs in `hub_set_rule`. Auto-snapshots before writing. | Write master |
+| `hub_set_app_disabled` | Enable or disable any installed app (red-X) via POST `/installedapp/disable`; reversible. Args: `app_id`, `disabled` (bool). Read-back verified. | Write master |
 | `hub_delete_native_app` | Delete any classic native app, type-agnostic (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Write master |
 | `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. | Write master |
 | `hub_export_native_app` | Export a classic SmartApp to JSON (persists to File Manager), round-trippable with `hub_import_native_app`. Useful for backup, sharing, or export-mutate-import editing of complex rules. | Write master |
 | `hub_import_native_app` | Import previously-exported app JSON into a new instance. Pairs with `hub_export_native_app`. Returns the new `appId`. | Write master |
 | `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Read master |
 
-### hub_manage_rule_machine (10 tools)
+### hub_manage_rule_machine (11 tools)
 
 Dedicated rule-authoring gateway: the Visual Rules Builder tools (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`) manage the PRIMARY engine for new automations -- one clean JSON write, no wizard, with if/then/else condition gating -- plus full RM authoring (`hub_set_rule`) for complex automations, RM deletion (`hub_delete_native_app`), and RMUtils-based runtime control -- list, trigger, pause/resume, set private boolean, and check health. (Create/edit of NON-RM classic apps lives in `hub_manage_native_rules_and_apps`.)
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `hub_set_rule` | Create or edit a Rule Machine rule (RM 5.1) -- the full authoring surface. Omit `appId` to create (`name`); provide `appId` to edit. FAT schema: addTrigger, addAction, addRequiredExpression, replaceRequiredExpression, addTriggers, addActions, replaceActions, removeAction, clearActions, moveAction, removeTrigger, modifyTrigger, addLocalVariable, patches, walkStep, or raw `settings`/`button`. Auto-snapshots before writing. clearActions / replaceActions commit the delete synchronously via a full selectActions page-form submit (RM's trashActs handler runs in-band), so the actions are gone when the call returns; a thin defensive verify-retry returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` on the rare residual -- verify via `hub_get_app_config` rather than rolling back. | Write master |
+| `hub_set_rule` | Create or edit a Rule Machine rule (RM 5.1) -- the full authoring surface. Omit `appId` to create (`name`); provide `appId` to edit. FAT schema: addTrigger, addAction, addRequiredExpression, replaceRequiredExpression, addTriggers, addActions, replaceActions, removeAction, clearActions, moveAction, removeTrigger, modifyTrigger, addLocalVariable, removeLocalVariable, patches, walkStep, or raw `settings`/`button`. Auto-snapshots before writing. clearActions / replaceActions commit the delete synchronously via a full selectActions page-form submit (RM's trashActs handler runs in-band), so the actions are gone when the call returns; a thin defensive verify-retry returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` on the rare residual -- verify via `hub_get_app_config` rather than rolling back. | Write master |
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). | Read master |
 | `hub_call_rule` | Trigger an existing RM rule. `action`: `rule` (full), `actions` (bypass conditions), or `stop` (cancel in-flight). | Write master |
 | `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible; paused rules don't fire on triggers). | Write master |
 | `hub_set_rule_private_boolean` | Set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). | Write master |
 | `hub_get_rule_health` | Read-only health check on any installed app -- surfaces broken markers, multiple-flag poison, configPage errors. | Read master |
+| `hub_list_rule_local_variables` | List a Rule Machine rule's local variables (name/type/value) from `state.allLocalVars`. Distinct from `hub_list_variables` (hub globals). Args: `appId`. | Read master |
 | `hub_delete_native_app` | Delete any classic native app, type-agnostic (auto-snapshot to File Manager before deleting). `force=true` for hard delete. | Write master |
 | `hub_get_visual_rule` | List Visual Rules Builder rules (omit `appId`) or read one rule's full JSON definition. Reports `format`: `classic` (`whenNodes`/`thenNodes`/`elseNodes`) or `graph` (`nodes`/`edges`); pass the same format back when editing. | Read master |
 | `hub_set_visual_rule` | Create (omit `appId`; `name` + `definition` required) or update (definition replaces wholesale, `name` renames, `paused` pauses/resumes) a Visual Rules Builder rule -- VRB is the primary rule engine; one JSON write. The definition format must match the rule's existing format. | Write master + confirm + recent backup |

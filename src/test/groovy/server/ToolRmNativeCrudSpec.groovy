@@ -6693,6 +6693,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.capabilities.any { it.name == "dimmer" }
         result.capabilities.any { it.name == "ifThen" }
         result.capabilities.any { it.name == "log" }
+        result.capabilities.any { it.name == "setLocalVariable" }
 
         and: "dimmer declares per-action required fields (toggle/setLevel need level) -- not buried in optionalFields"
         def dimmer = result.capabilities.find { it.name == "dimmer" }
@@ -19446,6 +19447,62 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.settingsSkipped?.any { it?.key == "variable-validation" && it?.reason == "api_unavailable" }
     }
 
+    def "addAction setLocalVariable skips locals validation when the locals read is unavailable (graceful degradation, partial=true)"() {
+        // LOCAL-path equivalent of the getAllGlobalVars-unavailable spec: when the local
+        // namespace read (statusJson appState.allLocalVars, via _rmReadLocalVarsMap) returns
+        // ok:false, setLocalVariable must SKIP name validation, push a variable-validation /
+        // api_unavailable sentinel, and proceed with the unvalidated write -- surfacing
+        // partial=true. Goes RED if the locals-read failure stops skipping (would throw instead
+        // of degrading) or drops the sentinel. _rmReadLocalVarsMap is overridden to ok:false so
+        // ONLY the validation read degrades; statusJson stays functional for the rest of the flow.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            ruleConfigJson(100, "r", [
+                [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
+                [name: "xVarV.1", type: "enum", options: ["myLocal": "myLocal"], value: ""],
+                [name: "numOp.1", type: "enum", options: ["number": "Constant", "variable": "Variable"], value: ""],
+                [name: "valNumber.1", type: "number", value: "", paragraphs: ["seq ${seq}".toString()]]
+            ])
+        }
+        // statusJson returns a NON-EMPTY non-List appState -> _rmReadLocalVarsMap returns ok:false
+        // (the contract-shift read failure), which drives the locals-unavailable skip path while
+        // statusJson itself stays valid 200 JSON for the wizard prime.
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [],
+                eventSubscriptions: [[name: "evt1"]], scheduledJobs: [],
+                appState: [allLocalVars: [contractShift: [type: "integer", value: 1]]], state: [:]
+            ])
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "unvalidatedLocal", value: 7],
+            confirm: true
+        ])
+
+        then: "call proceeds (locals-read-unavailable is graceful degradation) but partial=true and the LOCAL sentinel is present"
+        result.success == true
+        result.partial == true
+        // Load-bearing discriminator: the reason-coded sentinel is the sole assertion that
+        // fails if the locals-read skip is removed. Keep the reason-coded form (a bare
+        // partial==true is incidentally satisfiable by unrelated stub-level skips).
+        result.settingsSkipped?.any { it?.key == "variable-validation" && it?.reason == "api_unavailable" }
+    }
+
     // runCommand parameter validation: mutex, neither, type-mismatch guards
 
     @spock.lang.Unroll
@@ -20409,7 +20466,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the String target is rejected naming the Number/Decimal requirement and the type"
         result.success == false
         result.error?.contains("device-attribute (fromDevice) source mode requires a Number or Decimal target variable")
-        result.error?.contains("'msg' is string")
+        result.error?.contains("'msg' is of type 'string'")
     }
 
     def "addAction setVariable math rejects a non-numeric (String) target variable"() {
@@ -20439,7 +20496,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the String target is rejected naming the Number/Decimal requirement and the type"
         result.success == false
         result.error?.contains("variable-math (math) source mode requires a Number or Decimal target variable")
-        result.error?.contains("'msg' is string")
+        result.error?.contains("'msg' is of type 'string'")
     }
 
     def "addAction setVariable fromDevice rejects a Boolean target variable"() {
@@ -20468,7 +20525,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the Boolean target is rejected naming the Number/Decimal requirement and the type"
         result.success == false
         result.error?.contains("device-attribute (fromDevice) source mode requires a Number or Decimal target variable")
-        result.error?.contains("'flag' is boolean")
+        result.error?.contains("'flag' is of type 'boolean'")
     }
 
     def "addAction setVariable math rejects a DateTime target variable"() {
@@ -20497,7 +20554,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the DateTime target is rejected naming the Number/Decimal requirement and the type"
         result.success == false
         result.error?.contains("variable-math (math) source mode requires a Number or Decimal target variable")
-        result.error?.contains("'when' is datetime")
+        result.error?.contains("'when' is of type 'datetime'")
     }
 
     def "addAction setVariable fromDevice accepts an integer (Number) target variable"() {
@@ -20631,10 +20688,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "an un-typeable target is rejected (fail closed), naming the unknown type"
+        then: "an un-typeable target is rejected (fail closed), naming the unreadable-type shape"
         result.success == false
         result.error?.contains("device-attribute (fromDevice) source mode requires a Number or Decimal target variable")
-        result.error?.contains("'mystery' is an unknown type")
+        result.error?.contains("'mystery' is of an unreadable type")
     }
 
     def "addAction setVariable math trims whitespace around a variable operand"() {
@@ -21850,6 +21907,1176 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "case-insensitive match for 'night' resolves to Night's ID '3', not Day's ID '1'"
         writtenFields["mode.1"].toString() == "3"
         result.success == true
+    }
+
+    // ---------- setLocalVariable capability (rule-local target) ----------
+
+    // Build a statusJson whose appState carries allLocalVars (List form, as the
+    // live hub returns) so the setLocalVariable target validation has a namespace
+    // to read. The default statusJson(100) helper has appState=[:] (no locals).
+    private String statusJsonWithLocals(int ruleId, Map locals, int subs = 1) {
+        JsonOutput.toJson([
+            installedApp: [id: ruleId],
+            appSettings: [],
+            eventSubscriptions: (1..subs).collect { [name: "evt${it}"] },
+            scheduledJobs: [],
+            appState: [[name: "allLocalVars", value: locals]],
+            state: [:]
+        ])
+    }
+
+    def "addAction setLocalVariable constant form validates against locals and writes getSetVariable fields"() {
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v -> def key = _settingKeyOf(k); if (key != null) writtenFields[key] = v }
+            }
+            [status: 200, location: null, data: '']
+        }
+        // A hub global named "counter" exists too -- proving setLocalVariable does NOT
+        // consult getAllGlobalVars: the local "loopCount" is the only valid target here.
+        script.metaClass.getAllGlobalVars = { -> ["counter": [name: "counter", type: "integer", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Set Mode / Variable / Hub Action"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            modeActsDoActPageJson(100, [
+                [name: "xVarV.1", type: "enum", options: ["loopCount": "loopCount"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number"]],
+                [name: "valNumber.1", type: "number"]
+            ], { ++fetchSeq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [loopCount: [type: "integer", value: 0]]) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "loopCount", value: 42],
+            confirm: true
+        ])
+
+        then: "routes to the same getSetVariable subtype + writes the variable-path fields"
+        writtenFields["actType.1"] == "modeActs"
+        writtenFields["actSubType.1"] == "getSetVariable"
+        writtenFields["xVarV.1"] == "loopCount"
+        writtenFields["numOp.1"] == "number"
+        writtenFields["valNumber.1"].toString() == "42"
+        result.success == true
+    }
+
+    def "addAction setLocalVariable rejects a target that is not a local variable (and names locals, not globals)"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        // "globalOnly" is a hub global; it must NOT satisfy a setLocalVariable target.
+        script.metaClass.getAllGlobalVars = { -> ["globalOnly": [name: "globalOnly", type: "integer", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [myLocal: [type: "integer", value: 0]]) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "globalOnly", value: 1],
+            confirm: true
+        ])
+
+        then: "fails loud, names the unknown target, lists local variables (not hub globals)"
+        result.success == false
+        result.error?.contains("variable 'globalOnly' not found")
+        result.error?.contains("Available local variables")
+        result.error?.contains("myLocal")
+        !result.error?.contains("Available hub variables")
+    }
+
+    def "addAction setLocalVariable rejects the picker section-header sentinel as a target"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [a: [type: "integer", value: 0]]) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: " --LOCAL VARIABLES--", value: 1],
+            confirm: true
+        ])
+
+        then: "the section-header value is rejected as not a variable name"
+        result.success == false
+        result.error?.contains("section header")
+    }
+
+    def "addAction setLocalVariable ACCEPTS a hub-global sourceVariable (source pre-check is skipped for locals)"() {
+        // NEGATIVE PIN (skip-pre-check contract): RM's source picker (xVar3) spans BOTH
+        // local and hub variables, so a LOCAL target legitimately copies from a HUB-GLOBAL
+        // source. The setLocalVariable path must therefore SKIP the locals-only source
+        // pre-check and let the live revealed-enum validation in __setVariableSourceVar be
+        // authoritative. Here the source 'gSrc' exists ONLY as a hub global (NOT in the
+        // rule's locals) and IS in the revealed xVar3 enum -> the action must proceed to the
+        // hub write with NO pre-validation IllegalArgumentException. Goes RED if someone
+        // re-adds a locals-only source restriction to the setLocalVariable path.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v -> def key = _settingKeyOf(k); if (key != null) writtenFields[key] = v }
+            }
+            [status: 200, location: null, data: '']
+        }
+        // 'gSrc' is a HUB GLOBAL only; the rule's locals contain ONLY the target 'dstLocal'.
+        script.metaClass.getAllGlobalVars = { -> ["gSrc": [name: "gSrc", type: "integer", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        // doActPage: xVar3.1 (source enum, spanning local+hub) revealed only after numOp=variable.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "variable"
+            def inputs = [
+                [name: "xVarV.1", type: "enum", options: ["dstLocal": "dstLocal"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable": "From variable"]],
+                [name: "valNumber.1", type: "number"]
+            ]
+            if (numOpWritten) {
+                // The revealed source enum spans BOTH namespaces: the local target AND the hub global.
+                inputs << [name: "xVar3.1", type: "enum", options: ["dstLocal": "dstLocal", "gSrc": "gSrc"]]
+            }
+            modeActsDoActPageJson(100, inputs, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        // The local namespace: only the target 'dstLocal' -- 'gSrc' is NOT here.
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [dstLocal: [type: "integer", value: 0]]) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "dstLocal", sourceVariable: "gSrc"],
+            confirm: true
+        ])
+
+        then: "no pre-validation rejection -- the action proceeds to the hub write with the hub-global source"
+        result.error == null || !(result.error?.contains("sourceVariable 'gSrc' not found"))
+        result.success == true
+        writtenFields["xVarV.1"] == "dstLocal"
+        writtenFields["numOp.1"] == "variable"
+        writtenFields["xVar3.1"] == "gSrc"
+    }
+
+    def "addAction setLocalVariable ACCEPTS a LOCAL sourceVariable (local side of the cross-namespace source span)"() {
+        // Companion to the hub-global-source pin: the revealed xVar3 enum spans both
+        // namespaces, so a LOCAL source is equally valid. Source 'srcLocal' is a local
+        // (NOT a hub global) and IS in the revealed enum -> the action proceeds and
+        // xVar3.1 carries the local source.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v -> def key = _settingKeyOf(k); if (key != null) writtenFields[key] = v }
+            }
+            [status: 200, location: null, data: '']
+        }
+        // No hub globals at all -- proves the local source is honored without any global namespace.
+        script.metaClass.getAllGlobalVars = { -> [:] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def numOpWritten = writtenFields["numOp.1"] == "variable"
+            def inputs = [
+                [name: "xVarV.1", type: "enum", options: ["dstLocal": "dstLocal"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable": "From variable"]],
+                [name: "valNumber.1", type: "number"]
+            ]
+            if (numOpWritten) {
+                inputs << [name: "xVar3.1", type: "enum", options: ["dstLocal": "dstLocal", "srcLocal": "srcLocal"]]
+            }
+            modeActsDoActPageJson(100, inputs, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [dstLocal: [type: "integer", value: 0], srcLocal: [type: "integer", value: 0]]) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "dstLocal", sourceVariable: "srcLocal"],
+            confirm: true
+        ])
+
+        then: "the local source is accepted and written to xVar3.1"
+        result.success == true
+        writtenFields["xVar3.1"] == "srcLocal"
+    }
+
+    def "addAction setLocalVariable rejects the ' --HUB VARIABLES--' picker section-header sentinel too (class completeness)"() {
+        // Both sentinel header rows must be rejected -- the LOCAL one is pinned in a
+        // sibling spec; this pins the HUB one so the rejection covers the full class.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [a: [type: "integer", value: 0]]) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: " --HUB VARIABLES--", value: 1],
+            confirm: true
+        ])
+
+        then: "the hub-variables section-header value is rejected as not a variable name"
+        result.success == false
+        result.error?.contains("section header")
+    }
+
+    def "addAction setLocalVariable rejects a non-numeric String value (numeric-constant branch)"() {
+        // The value-as-constant branch is numeric-only; a String value must be rejected
+        // BEFORE any hub write with the setLocalVariable label (not setVariable).
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [numLocal: [type: "integer", value: 0]]) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "numLocal", value: "notanumber"],
+            confirm: true
+        ])
+
+        then: "rejected with the numeric-constant message naming the actual capability"
+        result.success == false
+        result.error?.contains("must be a numeric constant")
+        result.error?.contains("setLocalVariable")
+    }
+
+    def "addAction setLocalVariable fromDevice into a String-typed local target is rejected (Number/Decimal-target requirement)"() {
+        // fromDevice/math require a numeric target. A String-typed LOCAL target must be
+        // rejected before any write, with the setLocalVariable label.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        // The target local 'strLocal' is a string type -> not a valid fromDevice target.
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [strLocal: [type: "string", value: "x"]]) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "strLocal", fromDevice: [deviceId: 72, attribute: "temperature"]],
+            confirm: true
+        ])
+
+        then: "rejected: device-attribute source needs a Number/Decimal target, message names setLocalVariable"
+        result.success == false
+        result.error?.contains("requires a Number or Decimal target variable")
+        result.error?.contains("setLocalVariable")
+    }
+
+    def "addAction setLocalVariable value into a String-typed local target is rejected (value is numeric-target-only)"() {
+        // The value (numeric-constant) source mode is ALSO numeric-target-only: RM renders
+        // numOp/valNumber only for a Number/Decimal target, so a value into a String/Boolean/
+        // DateTime local bakes a partial action with no assigned value. Reject before any write,
+        // with the setLocalVariable label, matching the fromDevice/math posture. Goes RED if the
+        // value-target type pre-check is dropped (the action would bake partial instead).
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        // The target local 'strLocal' is a string type; value is numeric-target-only.
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [strLocal: [type: "string", value: "x"]]) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "strLocal", value: 5],
+            confirm: true
+        ])
+
+        then: "rejected: numeric-constant source needs a Number/Decimal target, with the supported alternative"
+        result.success == false
+        result.error?.contains("requires a Number or Decimal target variable")
+        result.error?.contains("setLocalVariable")
+        result.error?.contains("sourceVariable")
+        // The reverted-bug message wrongly told callers to 'use value' for a String target;
+        // the corrected message must NOT suggest value as the alternative for a non-numeric target.
+        !result.error?.contains("use 'value'")
+    }
+
+    def "addAction setLocalVariable with a malformed (non-Map) fromDevice is rejected naming setLocalVariable, NOT setVariable"() {
+        // The fromDevice/math SHAPE + ARITY validation in the shared addAction block must name the
+        // capability the caller actually invoked. setLocalVariable accepts the fromDevice source
+        // mode, so a malformed fromDevice from a setLocalVariable caller must surface a message
+        // naming setLocalVariable. Goes RED if the shape-validation throws hardcode "setVariable".
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [numLocal: [type: "integer", value: 0]]) }
+
+        when: "a non-Map fromDevice value is passed via setLocalVariable"
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "numLocal", fromDevice: "72:temperature"],
+            confirm: true
+        ])
+
+        then: "rejected naming the actual capability (setLocalVariable), not the sibling (setVariable)"
+        result.success == false
+        result.error?.contains("'fromDevice' must be a Map {deviceId, attribute}")
+        result.error?.contains("setLocalVariable")
+        !result.error?.contains("setVariable")
+    }
+
+    def "addAction setLocalVariable with a malformed (non-Map) math is rejected naming setLocalVariable, NOT setVariable"() {
+        // Sibling of the fromDevice shape guard: the math shape/arity validation must also name
+        // setLocalVariable for a setLocalVariable caller. Goes RED if the throw hardcodes "setVariable".
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [numLocal: [type: "integer", value: 0]]) }
+
+        when: "a non-Map math value is passed via setLocalVariable"
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "numLocal", math: "left+right"],
+            confirm: true
+        ])
+
+        then: "rejected naming the actual capability (setLocalVariable), not the sibling (setVariable)"
+        result.success == false
+        result.error?.contains("'math' must be a Map {left, op, right}")
+        result.error?.contains("setLocalVariable")
+        !result.error?.contains("setVariable")
+    }
+
+    def "addAction setLocalVariable math with a hub-global operand into a numeric local is ACCEPTED (operand cross-namespace span)"() {
+        // The math operand picker (xVar3) spans both namespaces, like sourceVariable. A
+        // hub-global operand into a NUMERIC local target must be accepted (no locals-only
+        // operand pre-check). Unary 'negate' so only the left operand is in play.
+        given:
+        enableWrite()
+        def writtenFields = [:]
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v -> def key = _settingKeyOf(k); if (key != null) writtenFields[key] = v }
+            }
+            [status: 200, location: null, data: '']
+        }
+        // 'gOperand' is a hub global only; the numeric local target 'numLocal' is the only local.
+        script.metaClass.getAllGlobalVars = { -> ["gOperand": [name: "gOperand", type: "integer", value: 0]] }
+
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Set Mode / Variable"]]])
+        }
+        // doActPage: after numOp='variable math', reveal xVar3 (left operand, spanning
+        // both namespaces) + valMathOp (operator). Unary negate -> no second operand.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def seq = ++fetchSeq
+            def mathWritten = writtenFields["numOp.1"] == "variable math"
+            def inputs = [
+                [name: "xVarV.1", type: "enum", options: ["numLocal": "numLocal"]],
+                [name: "numOp.1", type: "enum", options: ["number": "Number", "variable math": "Variable math"]],
+                [name: "valNumber.1", type: "number"]
+            ]
+            if (mathWritten) {
+                inputs << [name: "xVar3.1", type: "enum", options: ["(constant)": "(constant)", "numLocal": "numLocal", "gOperand": "gOperand"]]
+                inputs << [name: "valMathOp.1", type: "enum", options: ["negate": "negate", "+": "+"]]
+            }
+            modeActsDoActPageJson(100, inputs, { seq })
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [numLocal: [type: "integer", value: 0]]) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "setLocalVariable", variable: "numLocal", math: [left: "gOperand", op: "negate"]],
+            confirm: true
+        ])
+
+        then: "the hub-global operand is accepted (no locals-only operand pre-check) and written to xVar3.1"
+        result.success == true
+        writtenFields["numOp.1"] == "variable math"
+        writtenFields["xVar3.1"] == "gOperand"
+    }
+
+    // ---------- removeLocalVariable shortcut ----------
+
+    def "removeLocalVariable golden path: deleteGV+delConfirm fire with exact wire (stateAttribute pinned), verify sees it gone"() {
+        // REGRESSION GUARD for the delConfirm wire format: RM's commit click POSTs
+        // /installedapp/btn with name="delConfirm" AND stateAttribute="deleteConfirm"
+        // (the confirm button's stateAttribute differs from its name -- captured from
+        // RM's own delete request). The earlier implementation passed null, which
+        // silently no-oped the commit. This spec pins BOTH clicks' exact (name,
+        // stateAttribute, page) triple, so a revert of the delConfirm stateAttribute to
+        // null (or any other value) makes it go RED. The verify gate ALSO keys on the
+        // correct stateAttribute, so a wrong commit click never flips the var to "gone".
+        given:
+        enableWrite()
+        // statusJson: present until the CORRECT delConfirm commit lands, then gone.
+        def delConfirmed = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            delConfirmed ? statusJsonWithLocals(100, [:]) : statusJsonWithLocals(100, [doomed: [type: "integer", value: 1]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            // The var only disappears when the commit carries the EXACT wire the live
+            // hub requires: name=delConfirm AND stateAttribute=deleteConfirm. A null (or
+            // wrong) stateAttribute leaves the var present -> the test goes RED on success.
+            if (path == "/installedapp/btn" && body?.name == "delConfirm" && body?.stateAttribute == "deleteConfirm") {
+                delConfirmed = true
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            removeLocalVariable: [name: "doomed"],
+            confirm: true
+        ])
+
+        then: "deleteGV click carries (name=varName, stateAttribute=deleteGV, page=selectActions)"
+        posts.any {
+            it.path == "/installedapp/btn" && it.body?.name == "doomed" &&
+            it.body?.stateAttribute == "deleteGV" && it.body?.currentPage == "selectActions"
+        }
+
+        and: "delConfirm commit carries (name=delConfirm, stateAttribute=deleteConfirm, page=selectActions) -- the wire the live hub requires"
+        posts.any {
+            it.path == "/installedapp/btn" && it.body?.name == "delConfirm" &&
+            it.body?.stateAttribute == "deleteConfirm" && it.body?.currentPage == "selectActions"
+        }
+
+        and: "the commit click was NEVER sent with a null stateAttribute (the reverted-bug shape)"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "delConfirm" && it.body?.stateAttribute == null }
+
+        and: "verified gone -> success, variable.deleted true"
+        result.success == true
+        result.variable?.name == "doomed"
+        result.variable?.deleted == true
+    }
+
+    def "removeLocalVariable retries when attempt 1 transiently misses: succeeds on attempt 2 (no false still-referenced)"() {
+        // REGRESSION GUARD against a fail-fast after attempt 1. On a live hub the first
+        // deleteGV/delConfirm sequence can transiently miss (an RM state-machine race);
+        // the second unconditional attempt is what lands the delete. This mock makes
+        // attempt 1's commit a no-op and attempt 2's commit succeed -- so a helper that
+        // breaks out of the loop after a clean attempt-1 verify read (the reverted
+        // efficiency bug) would falsely report this un-referenced variable as "still
+        // referenced". The var leaves allLocalVars only after the SECOND deleteGV lands.
+        given:
+        enableWrite()
+        int deleteGVClicks = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        // statusJson reflects state: present until the 2nd deleteGV+delConfirm commits.
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            deleteGVClicks >= 2 ? statusJsonWithLocals(100, [:]) : statusJsonWithLocals(100, [batCounter: [type: "integer", value: 7]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            // Count deleteGV clicks; the second one (attempt 2) is the one that lands.
+            if (path == "/installedapp/btn" && body?.name == "batCounter" && body?.stateAttribute == "deleteGV") {
+                deleteGVClicks++
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            removeLocalVariable: [name: "batCounter"],
+            confirm: true
+        ])
+
+        then: "BOTH attempts ran -- deleteGV fired twice (the retry was NOT skipped)"
+        deleteGVClicks == 2
+
+        and: "the second attempt landed the delete -> success, not a false still-referenced"
+        result.success == true
+        result.variable?.name == "batCounter"
+        result.variable?.deleted == true
+    }
+
+    def "removeLocalVariable verify-miss returns success=false + partial=true + repairHints"() {
+        given:
+        enableWrite()
+        // The variable NEVER leaves allLocalVars -- the legitimate failure mode is RM
+        // refusing to delete a variable still referenced by an action/expression. The
+        // helper must surface this as partial + repairHints (fail loud), not throw.
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [stubborn: [type: "integer", value: 1]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            removeLocalVariable: [name: "stubborn"],
+            confirm: true
+        ])
+
+        then: "unconfirmed delete surfaces as partial, not a clean success"
+        result.success == false
+        result.partial == true
+        result.error?.contains("did not delete")
+        (result.repairHints as List)?.any { it?.toString()?.contains("hub_list_rule_local_variables") }
+    }
+
+    def "removeLocalVariable rejects an unknown name with the available-locals list"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [realOne: [type: "integer", value: 1]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            removeLocalVariable: [name: "ghost"],
+            confirm: true
+        ])
+
+        then: "fails loud naming the unknown local and listing available locals"
+        result.success == false
+        result.error?.contains("'ghost' not found")
+        result.error?.contains("realOne")
+    }
+
+    def "removeLocalVariable on a rule with ZERO locals rejects before firing the wizard (no false deleted)"() {
+        // A successful pre-read where the rule has NO locals (allLocalVars absent from
+        // appState) must REJECT the unknown name, same as a present-but-missing name.
+        // The old guard skipped the check when localVarsBefore was null -- which also
+        // covered zero-locals -- so the wizard fired (no-op), verify read lv=null, and it
+        // reported a false deleted:true for a variable that never existed.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        // statusJson with NO allLocalVars entry at all -- a genuine zero-locals rule.
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [],
+                eventSubscriptions: [[name: "evt1"]], scheduledJobs: [],
+                appState: [], state: [:]
+            ])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            removeLocalVariable: [name: "ghost"],
+            confirm: true
+        ])
+
+        then: "rejected as unknown -- not a false success"
+        result.success == false
+        result.error?.contains("'ghost' not found")
+
+        and: "the deleteGV/delConfirm wizard was NEVER clicked (no no-op delete that fakes deleted:true)"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.stateAttribute == "deleteGV" }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.stateAttribute == "deleteConfirm" }
+        result.variable?.deleted != true
+    }
+
+    def "removeLocalVariable trailing-updateRule failure surfaces updateRuleFailed + variableNotLive (var IS deleted)"() {
+        // The var deletes successfully (deleteGV/delConfirm land, verify sees it gone),
+        // but the trailing updateRule click is REJECTED. The dispatcher must surface
+        // updateRuleFailed=true + variableNotLive=true + partial=true while still
+        // reporting the deletion (variable.deleted=true) and a repair hint. Discriminating:
+        // goes RED if the dispatcher stops bubbling updateRuleFailed.
+        given:
+        enableWrite()
+        def delConfirmed = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            delConfirmed ? statusJsonWithLocals(100, [:]) : statusJsonWithLocals(100, [doomed: [type: "integer", value: 1]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        // Override _rmClickAppButton: deleteGV/delConfirm succeed (delConfirm flips the
+        // var to gone); the trailing updateRule click THROWS to drive the failure path.
+        script.metaClass._rmClickAppButton = { Integer aid, String btn, String sa = null, String pg = null ->
+            if (btn == "updateRule") throw new IllegalArgumentException("Button click 'updateRule' on app ${aid} failed: status=500")
+            if (btn == "delConfirm") delConfirmed = true
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            removeLocalVariable: [name: "doomed"],
+            confirm: true
+        ])
+
+        then: "the deletion committed but the trailing updateRule failure is surfaced, not swallowed"
+        result.variable?.deleted == true
+        result.updateRuleFailed == true
+        result.variableNotLive == true
+        result.partial == true
+        result.success == false
+        (result.repairHints as List)?.any { it?.toString()?.contains("updateRule") }
+    }
+
+    def "removeLocalVariable that deletes the var but BREAKS the rule reports success=false with a specific error + restore repairHint (not a contradictory clean removed)"() {
+        // BLOCKER REGRESSION GUARD: RM does NOT reliably refuse a referenced-local delete. Live,
+        // deleting a local that an action references SUCCEEDS at removing the var (deleted=true)
+        // and leaves the referencing action Broken. The envelope must be SELF-CONSISTENT in that
+        // case: deleted=true + success=false + a SPECIFIC error naming the broken-after-delete
+        // outcome + a repairHint pointing at the backup restore. The reverted-bug shape it guards
+        // against is deleted=true + error=null + a clean "removed" note while the rule sits broken.
+        given:
+        enableWrite()
+        def delConfirmed = false
+        // The config fetch (/installedapp/configure/json/100, no subpage) serves both the
+        // pre-delete backup snapshot AND the post-delete health check. It is CLEAN before the
+        // delete (the rule was healthy beforehand) and renders a **Broken Action** marker AFTER
+        // delConfirm lands -- the post-delete broken state the referencing action leaves. This
+        // clean->broken transition is what proves the delete CAUSED the break (vs a rule that was
+        // already broken), so the broken-after-delete error fires.
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "Clean Label", trueLabel: "Clean Label",
+                      installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: (delConfirmed ? ["**Broken Action**"] : [])]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        // statusJson: the var is present until delConfirm lands, then GONE (the delete succeeds).
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            delConfirmed ? statusJsonWithLocals(100, [:]) : statusJsonWithLocals(100, [counter: [type: "integer", value: 42]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "delConfirm" && body?.stateAttribute == "deleteConfirm") {
+                delConfirmed = true
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            removeLocalVariable: [name: "counter"],
+            confirm: true
+        ])
+
+        then: "the delete really happened (deleted=true) but the rule is broken -> success=false, partial=true"
+        result.variable?.deleted == true
+        result.success == false
+        // committed-but-not-clean: the delete landed but the rule is not healthy -> partial:true.
+        result.partial == true
+        result.health?.ok == false
+        result.health?.brokenMarkers?.contains("**Broken Action**")
+        // The rule was CLEAN before the delete (config had no markers pre-delete), so the delete
+        // CAUSED the break -- the causation wording fires. (The pre-delete baseline that selects it
+        // is an internal signal, not surfaced on the envelope.)
+
+        and: "the envelope is self-consistent: a SPECIFIC error (NOT null) names the broken-after-delete outcome"
+        result.error != null
+        result.error.contains("was deleted")
+        result.error.contains("broke")
+
+        and: "a repairHint points at the backup restore (the undo path)"
+        (result.repairHints as List)?.any { it?.toString()?.contains("hub_restore_backup") && it?.toString()?.contains(result.backup?.backupKey?.toString()) }
+
+        and: "the note does NOT render a clean 'removed' (the reverted-bug contradiction)"
+        !(result.note?.toString()?.contains("removed; updateRule fired"))
+    }
+
+    def "removeLocalVariable from an ALREADY-broken rule reports a coherent failure that does NOT blame the delete (pre-existing wording)"() {
+        // Edge guard complementing the clean->broken blocker above. If the rule was ALREADY broken
+        // BEFORE the delete (a pre-existing broken action unrelated to this variable), cleanly
+        // removing an unreferenced local must still produce a COHERENT envelope -- success:false
+        // must never ride with error:null. So the broken-after-delete error ALWAYS fires, but its
+        // WORDING is baseline-aware: it must NOT claim the delete caused the break, and must NOT
+        // promise that restoring fixes it (restore only undoes the delete; the pre-existing break
+        // remains). The pre-delete baseline that selects the wording is an internal signal.
+        given:
+        enableWrite()
+        // The config (/installedapp/configure/json/100, no subpage) renders **Broken Action**
+        // BOTH before and after the delete: the rule was already broken from prior damage and
+        // stays broken (pre-delete baseline = broken -> pre-existing wording).
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "Clean Label", trueLabel: "Clean Label",
+                      installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["**Broken Action**"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        // The deleted local 'unrelated' is present until delConfirm lands, then gone (clean delete).
+        def delConfirmed = false
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            delConfirmed ? statusJsonWithLocals(100, [:]) : statusJsonWithLocals(100, [unrelated: [type: "integer", value: 7]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "delConfirm" && body?.stateAttribute == "deleteConfirm") {
+                delConfirmed = true
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            removeLocalVariable: [name: "unrelated"],
+            confirm: true
+        ])
+
+        then: "the delete really happened (deleted=true), rule still broken -> success=false, partial=true"
+        result.variable?.deleted == true
+        result.success == false
+        result.partial == true
+        result.health?.ok == false
+
+        and: "the envelope is COHERENT: a non-null error is present (no success:false + error:null contradiction)"
+        result.error != null
+
+        and: "the wording names the pre-existing breakage and does NOT claim the delete caused it"
+        result.error.toString().toLowerCase().contains("already broken")
+        !(result.error.toString().contains("broke the action(s)/expression(s) that referenced it"))
+
+        and: "no repairHint promises that restoring fixes the breakage"
+        !((result.repairHints as List)?.any { it?.toString()?.contains("still referenced; the rule is now broken") })
+        (result.repairHints as List)?.any { it?.toString()?.contains("NOT repair the pre-existing breakage") }
+    }
+
+    def "removeLocalVariable via patches: per-op result entry carries the op key and the outer envelope reports success"() {
+        // The patches path routes removeLocalVariable through the same _rmRemoveLocalVariable
+        // helper as the top-level shortcut, but the per-op outcome must land in patches[i]
+        // tagged with op="removeLocalVariable", and the outer envelope must reflect it.
+        given:
+        enableWrite()
+        def delConfirmed = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            delConfirmed ? statusJsonWithLocals(100, [:]) : statusJsonWithLocals(100, [doomed: [type: "integer", value: 1]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.name == "delConfirm" && body?.stateAttribute == "deleteConfirm") {
+                delConfirmed = true
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            patches: [[removeLocalVariable: [name: "doomed"]]],
+            confirm: true
+        ])
+
+        then: "the per-op result entry is tagged removeLocalVariable and confirms the delete"
+        def opEntries = (result.patches ?: result.results) as List
+        opEntries != null
+        def rlv = opEntries.find { it?.op == "removeLocalVariable" }
+        rlv != null
+        rlv.deleted == true
+        rlv.success == true
+
+        and: "the outer envelope reports success with no partial"
+        result.success == true
+        result.partial != true
+    }
+
+    def "removeLocalVariable trims surrounding whitespace on the name before resolving the local"() {
+        // Negative pin: a name with leading/trailing whitespace resolves to the canonical
+        // local (the helper trims before the existence pre-check + delete wire), rather than
+        // failing "not found" on the untrimmed token.
+        given:
+        enableWrite()
+        def delConfirmed = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            delConfirmed ? statusJsonWithLocals(100, [:]) : statusJsonWithLocals(100, [doomed: [type: "integer", value: 1]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/btn" && body?.name == "delConfirm" && body?.stateAttribute == "deleteConfirm") {
+                delConfirmed = true
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            removeLocalVariable: [name: " doomed "],
+            confirm: true
+        ])
+
+        then: "the deleteGV click carries the TRIMMED canonical name, not the whitespace-padded token"
+        posts.any {
+            it.path == "/installedapp/btn" && it.body?.name == "doomed" && it.body?.stateAttribute == "deleteGV"
+        }
+
+        and: "resolves and deletes the canonical local"
+        result.success == true
+        result.variable?.name == "doomed"
+        result.variable?.deleted == true
+    }
+
+    def "removeLocalVariable: a delConfirm click throw runs cancelCapab cleanup and surfaces wizardStuck"() {
+        // REGRESSION GUARD: a mid-sequence delConfirm POST failure must NOT escape raw to
+        // the dispatcher leaving RM's confirm prompt half-open. The helper must close the
+        // wizard (cancelCapab on selectActions) before propagating, and -- when that
+        // cleanup ALSO fails -- embed the wizardStuck marker so the dispatcher surfaces the
+        // cancelCapab recovery hint. Goes RED if the cleanup-on-throw is removed.
+        given:
+        enableWrite()
+        def cancelClicks = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [doomed: [type: "integer", value: 1]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        // deleteGV succeeds; delConfirm THROWS (the half-open-leaving step). cancelCapab is
+        // recorded AND also throws -- forcing the wizardStuck-marker branch.
+        script.metaClass._rmClickAppButton = { Integer aid, String btn, String sa = null, String pg = null ->
+            if (btn == "delConfirm") throw new IllegalArgumentException("Button click 'delConfirm' on app ${aid} failed: status=400")
+            if (btn == "cancelCapab") {
+                cancelClicks << [page: pg]
+                throw new IllegalArgumentException("Button click 'cancelCapab' on app ${aid} failed: status=400")
+            }
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            removeLocalVariable: [name: "doomed"],
+            confirm: true
+        ])
+
+        then: "cancelCapab cleanup was attempted on selectActions before the error propagated"
+        cancelClicks.any { it.page == "selectActions" }
+
+        and: "the error envelope flags wizardStuck with the cancelCapab recovery hint"
+        result.success == false
+        result.wizardStuck == true
+        result.restoreHint?.contains("cancelCapab")
+        result.restoreHint?.contains("selectActions")
+    }
+
+    def "removeLocalVariable: a delConfirm click throw with a SUCCEEDING cancelCapab cleanup surfaces a retry hint (no wizardStuck)"() {
+        // Companion to the cancelCapab-ALSO-fails spec: when the mid-sequence delConfirm POST
+        // throws but the cancelCapab cleanup SUCCEEDS, the wizard is closed cleanly, so the
+        // error must NOT carry wizardStuck -- it surfaces the plain "delete wizard was closed
+        // (cancelCapab); retry" message instead. Goes RED if the success branch starts
+        // mislabelling a clean cleanup as wizardStuck.
+        given:
+        enableWrite()
+        def cancelClicks = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [doomed: [type: "integer", value: 1]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        // deleteGV succeeds; delConfirm THROWS; cancelCapab is recorded and SUCCEEDS (the clean
+        // cleanup path -- distinct from the wizardStuck case where cancelCapab also throws).
+        script.metaClass._rmClickAppButton = { Integer aid, String btn, String sa = null, String pg = null ->
+            if (btn == "delConfirm") throw new IllegalArgumentException("Button click 'delConfirm' on app ${aid} failed: status=400")
+            if (btn == "cancelCapab") cancelClicks << [page: pg]
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            removeLocalVariable: [name: "doomed"],
+            confirm: true
+        ])
+
+        then: "cancelCapab cleanup ran on selectActions and the delete error surfaced"
+        cancelClicks.any { it.page == "selectActions" }
+        result.success == false
+
+        and: "the clean-cleanup path does NOT flag wizardStuck and points the caller at a retry"
+        result.wizardStuck != true
+        result.error?.toString()?.contains("retry") || result.repairHints?.any { it?.toString()?.contains("retry") } ||
+            result.restoreHint?.toString()?.contains("retry")
+    }
+
+    def "removeLocalVariable: when every verify read throws, the hint leads with read-failure (not still-referenced)"() {
+        // REGRESSION GUARD for the hint ORDERING: a verify channel that throws on every
+        // read must report "the delete may have succeeded; the verify read failed" FIRST,
+        // not the misleading "still referenced by an action" guidance. Goes RED if the
+        // read-failure branch is dropped or the ordering reverts.
+        given:
+        enableWrite()
+        // Pre-read succeeds (the var exists); every POST-delete verify read throws.
+        def deleteFired = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (deleteFired) throw new RuntimeException("simulated verify-read channel failure")
+            statusJsonWithLocals(100, [doomed: [type: "integer", value: 1]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass._rmClickAppButton = { Integer aid, String btn, String sa = null, String pg = null ->
+            if (btn == "delConfirm") deleteFired = true
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            removeLocalVariable: [name: "doomed"],
+            confirm: true
+        ])
+
+        then: "partial, and the error leads with the read-failure / may-have-succeeded framing"
+        result.success == false
+        result.partial == true
+        result.error?.contains("verify read")
+        result.error?.contains("may have succeeded")
+
+        and: "the first repair hint points at a re-check, not at removing references"
+        def hints = result.repairHints as List
+        hints != null
+        hints[0]?.toString()?.contains("hub_list_rule_local_variables")
+    }
+
+    def "removeLocalVariable: a form-key-unsafe variable name is rejected before any wizard click"() {
+        // REGRESSION GUARD: a name carrying a settings[<name>] form-key metacharacter
+        // ([ ] & =) or a non-ASCII byte would corrupt the deleteGV click and silently
+        // no-op. The helper must hard-reject it up front, never firing the wizard.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [("ok[x]".toString()): [type: "integer", value: 1]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            removeLocalVariable: [name: "ok[x]"],
+            confirm: true
+        ])
+
+        then: "rejected as an invalid name (the IAE maps to a -32602-style error envelope)"
+        result.success == false
+        result.error?.toString()?.contains("not valid")
+
+        and: "no deleteGV/delConfirm click ever fired"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.stateAttribute == "deleteGV" }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.stateAttribute == "deleteConfirm" }
+    }
+
+    def "_rmReadLocalVarsMap: a non-empty Map-shaped appState surfaces a read failure (not a false empty)"() {
+        // REGRESSION GUARD for the appState-shape assumption: every local-var read goes
+        // through _rmReadLocalVarsMap, which assumes appState is a List of {name,value} entries.
+        // A NON-EMPTY non-List shape (an unexpected contract shift) carries data we cannot
+        // interpret -- returning ok:true would MASK a read failure as a genuinely-empty rule.
+        // The helper must return ok:false so hub_list_rule_local_variables raises a read error
+        // (distinguishable from total:0). Goes RED if the non-List guard reverts to ok:true
+        // (the tool would then return a clean total:0 instead of throwing).
+        given:
+        enableReadOnly()
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [],
+                eventSubscriptions: [[name: "evt1"]], scheduledJobs: [],
+                // appState as a non-empty MAP -- the contract-shift shape the guard catches.
+                appState: [allLocalVars: [doomed: [type: "integer", value: 1]]], state: [:]
+            ])
+        }
+
+        when:
+        script.toolListRuleLocalVariables([appId: 100])
+
+        then: "the unexpected non-empty shape surfaces as a read failure, not a false total:0"
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("could not read")
+    }
+
+    def "_rmReadLocalVarsMap: an EMPTY Map-shaped appState still reads as zero locals (no data to lose)"() {
+        // Companion to the non-empty shape-guard: an EMPTY non-List appState (e.g. [:]) carries
+        // no data, so it stays a clean no-locals read (ok:true, total:0) rather than a read
+        // failure. Pins the empty-vs-non-empty boundary so the read-failure branch does not
+        // over-fire on a genuinely empty rule.
+        given:
+        enableReadOnly()
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [],
+                eventSubscriptions: [[name: "evt1"]], scheduledJobs: [],
+                appState: [:], state: [:]
+            ])
+        }
+
+        when:
+        def result = script.toolListRuleLocalVariables([appId: 100])
+
+        then: "an empty non-List shape reads as zero locals, not an error"
+        result.total == 0
+        result.localVariables == []
+    }
+
+    // ---------- hub_list_rule_local_variables read ----------
+
+    def "hub_list_rule_local_variables returns sorted name/type/value from appState.allLocalVars"() {
+        given:
+        enableReadOnly()
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJsonWithLocals(100, [zeta: [type: "string", value: "z"], alpha: [type: "integer", value: 5]])
+        }
+
+        when:
+        def result = script.toolListRuleLocalVariables([appId: 100])
+
+        then: "every local surfaces, sorted by name, with type + value"
+        result.appId == 100
+        result.total == 2
+        result.localVariables*.name == ["alpha", "zeta"]
+        result.localVariables[0].type == "integer"
+        result.localVariables[0].value == 5
+        result.localVariables[1].type == "string"
+    }
+
+    def "hub_list_rule_local_variables returns empty list when the rule has no locals"() {
+        given:
+        enableReadOnly()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolListRuleLocalVariables([appId: 100])
+
+        then: "no locals -> empty list, total 0 (not an error)"
+        result.total == 0
+        result.localVariables == []
+    }
+
+    def "hub_list_rule_local_variables dispatches through executeTool via hub_read_rules"() {
+        given:
+        enableReadOnly()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJsonWithLocals(100, [k: [type: "integer", value: 1]]) }
+
+        when:
+        def result = script.executeTool("hub_list_rule_local_variables", [appId: 100])
+
+        then: "the dispatch case routes to the implementation"
+        result.total == 1
+        result.localVariables[0].name == "k"
+    }
+
+    def "hub_list_rule_local_variables re-raises a transient status-read failure (not a false empty list)"() {
+        // REGRESSION GUARD for the read-failure re-raise: when the status read itself fails
+        // (channel down, NOT a shape contract shift), _rmReadLocalVarsMap returns ok:false and
+        // the pure-read tool must RE-RAISE that as an error rather than silently returning an
+        // empty list that an LLM would read as "this rule has no locals". Goes RED if the
+        // ok:false re-raise at the tool boundary is dropped.
+        given:
+        enableReadOnly()
+        hubGet.register('/installedapp/statusJson/100') { params -> throw new RuntimeException("simulated status-read channel failure") }
+
+        when:
+        script.toolListRuleLocalVariables([appId: 100])
+
+        then: "the transient read failure surfaces as an error, not a clean total:0"
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("could not read")
+        ex.message.contains("100")
     }
 
     // ---------- per-capability reveal sequences ----------
@@ -30940,6 +32167,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // be appended. A regression that always appends would surface here. This pins
         // the gating of outer-hint append on `updateRuleFailed` specifically.
         !hints.any { it?.toString()?.contains("updateRule click was rejected") }
+
+        and: "the note does NOT render a clean 'added with value' on a non-committed add (guard parity with the remove note)"
+        // The add-path note must be guarded the same way the remove-path note guards on deleted:
+        // a non-committed add (hubRenderError / success:false) reports 'NOT added (commit miss)',
+        // never a clean 'added with value X' that would contradict the failure envelope.
+        result.note?.toString()?.contains("NOT added")
+        !result.note?.toString()?.contains("added with value 42")
     }
 
     // ---------- F7: addRequiredExpression verificationFetchFailed + hubRenderError outer-dispatcher coverage ----------
@@ -34144,7 +35378,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the FAT RM trigger/action authoring shortcuts still stay OUT of the schema (use hub_set_rule)"
         ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression',
          'patches', 'replaceActions', 'removeAction', 'clearActions', 'moveAction',
-         'removeTrigger', 'modifyTrigger', 'addLocalVariable', 'guide'].every { !props.contains(it) }
+         'removeTrigger', 'modifyTrigger', 'addLocalVariable', 'removeLocalVariable', 'guide'].every { !props.contains(it) }
     }
 
     def "hub_set_native_app dispatch-envelope through the native gateway routes to create"() {
@@ -34424,6 +35658,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         where:
         editOnlyOp        | editOnlyVal
         "addLocalVariable" | [name: "v", type: "Number", value: 0]
+        "removeLocalVariable" | [name: "v"]
         "patches"          | [[op: "x"]]
         "replaceActions"   | [[capability: "log", message: "x"]]
         "removeAction"     | [index: 0]
