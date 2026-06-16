@@ -596,6 +596,20 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('Initial value is required')
     }
 
+    def "hub_create_variable rejects an empty-string value for a String variable"() {
+        // A String variable created with an empty value reports success but never
+        // persists (getGlobalVar stays null -- deterministic). Reject up front.
+        given:
+        enableWrite()
+
+        when:
+        script.toolCreateVariable([name: 'emptyStr', type: 'String', value: '', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('non-empty initial value')
+    }
+
     def "hub_create_variable refuses to overwrite an existing hub variable"() {
         given:
         enableWrite()
@@ -766,6 +780,120 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         def ex = thrown(IllegalStateException)
         ex.message.contains('wizard completed but')
         ex.message.contains('ghostVar')
+    }
+
+    def "hub_create_variable bulk form creates every item and reports per-item success"() {
+        given:
+        enableWrite()
+
+        and: 'getGlobalVar echoes the requested name so each item round-trips its OWN name/type/value (not item-0 for all)'
+        def seen = [:]
+        def postWrite = [:]   // populated by the varValue write, keyed by name
+        script.metaClass.getGlobalVar = { String n ->
+            // First lookup per name = pre-flight (null); subsequent = post-write.
+            if (!seen[n]) { seen[n] = true; return null }
+            return [name: n, type: postWrite[n]?.type ?: 'Number', value: postWrite[n]?.value, deviceId: null, attribute: null]
+        }
+
+        and: 'wizard primitives recorded -- capture the per-item name/type/value the wizard actually wrote'
+        def buttonClicks = []
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName ->
+            buttonClicks << [appId: appId, btn: btnName]
+            return [status: 200]
+        }
+        def pending = [:]
+        def settingWrites = []
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null ->
+            settingWrites << [key: key, value: value]
+            // hbVar -> varType -> varValue write order per item; stash so the post-write
+            // getGlobalVar can echo the value that THIS item just wrote.
+            if (key == 'hbVar')   pending.name  = value
+            if (key == 'varType') pending.type  = value
+            if (key == 'varValue') { postWrite[pending.name] = [type: pending.type, value: value]; pending.clear() }
+            if (applied != null) applied << key
+        }
+        def appIdLookups = 0
+        script.metaClass._findHubVariablesAppId = { -> appIdLookups++; 1424 }
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
+
+        when:
+        def result = script.toolCreateVariable([confirm: true, variables: [
+            [name: 'bulkA', type: 'Number', value: 1],
+            [name: 'bulkB', type: 'String', value: 'two']
+        ]])
+
+        then: 'overall success with both items created'
+        result.success == true
+        result.createdCount == 2
+        result.failedCount == 0
+        result.results.size() == 2
+
+        and: 'each result carries ITS OWN name/type/value -- a regression that wrote item-0 for every entry would fail here'
+        result.results[0].name == 'bulkA'
+        result.results[0].success == true
+        result.results[0].type == 'Number'
+        result.results[0].value == 1
+        result.results[1].name == 'bulkB'
+        result.results[1].success == true
+        result.results[1].type == 'String'
+        result.results[1].value == 'two'
+
+        and: 'and the wizard received each item distinct name/type/value (not item-0 twice)'
+        settingWrites.findAll { it.key == 'hbVar' }*.value == ['bulkA', 'bulkB']
+        settingWrites.findAll { it.key == 'varType' }*.value == ['Number', 'String']
+        settingWrites.findAll { it.key == 'varValue' }*.value == [1, 'two']
+
+        and: 'the Hub Variables app id was resolved ONCE and reused across the batch'
+        appIdLookups == 1
+    }
+
+    def "hub_create_variable bulk form: one bad item fails while the others still create"() {
+        given:
+        enableWrite()
+
+        and: 'getGlobalVar: null pre-flight, populated after commit (good names only)'
+        def seen = [:]
+        script.metaClass.getGlobalVar = { String n ->
+            if (!seen[n]) { seen[n] = true; return null }
+            return [name: n, type: 'Number', value: 1, deviceId: null, attribute: null]
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null ->
+            if (applied != null) applied << key
+        }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
+
+        when: 'the middle item has a forbidden character in its name'
+        def result = script.toolCreateVariable([confirm: true, variables: [
+            [name: 'goodOne', type: 'Number', value: 1],
+            [name: 'bad[name]', type: 'Number', value: 2],
+            [name: 'goodTwo', type: 'Number', value: 3]
+        ]])
+
+        then: 'overall failure, but the two good items still created'
+        result.success == false
+        result.createdCount == 2
+        result.failedCount == 1
+        result.results.size() == 3
+        result.results[0].success == true
+        result.results[1].name == 'bad[name]'
+        result.results[1].success == false
+        result.results[1].error.contains('forbidden character')
+        result.results[2].success == true
+    }
+
+    def "hub_create_variable rejects supplying both the single form and the bulk array"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolCreateVariable([name: 'single', type: 'Number', value: 1, confirm: true,
+                                   variables: [[name: 'bulk', type: 'Number', value: 2]]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('not both')
     }
 
     def "hub_delete_variable hub-namespace wizard sequence: deleteGV then delConfirm"() {
@@ -1415,6 +1543,48 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         then:
         response.error?.code == -32602
         response.error.message.contains('already exists')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "hub_create_variable via dispatch creates the bulk array and reports per-item status (useGateways=#useGateways)"() {
+        given: 'the gateway must route the variables arg + the relaxed required:["confirm"]'
+        settingsMap.useGateways = useGateways
+        enableWrite()
+
+        and: 'getGlobalVar: null pre-flight per name, populated after each wizard commits'
+        def seen = [:]
+        script.metaClass.getGlobalVar = { String n ->
+            if (!seen[n]) { seen[n] = true; return null }
+            return [name: n, type: 'Number', value: 1, deviceId: null, attribute: null]
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null ->
+            if (applied != null) applied << key
+        }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_variable', [confirm: true, variables: [
+            [name: 'dispBulkA', type: 'Number', value: 1],
+            [name: 'dispBulkB', type: 'Number', value: 2]
+        ]])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.createdCount == 2
+        inner.failedCount == 0
+        inner.results.size() == 2
+        inner.results[0].name == 'dispBulkA'
+        inner.results[0].success == true
+        inner.results[1].name == 'dispBulkB'
+        inner.results[1].success == true
 
         where:
         useGateways << [true, false]
