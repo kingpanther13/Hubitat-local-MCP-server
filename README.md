@@ -116,7 +116,7 @@ Add to your MCP settings file (`~/.claude.json` or project `.mcp.json`):
 {
   "mcpServers": {
     "hubitat": {
-      "type": "url",
+      "type": "http",
       "url": "http://192.168.1.100/apps/api/123/mcp?access_token=YOUR_TOKEN"
     }
   }
@@ -132,21 +132,58 @@ Alternatively, some people have had luck just simply giving Claude access to its
 <details>
 <summary><b>Claude Desktop</b></summary>
 
-Add to your Claude Desktop config file:
-- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+Claude Desktop only launches **stdio** MCP servers from its config file — it does **not** accept a plain `"url"`/`"type": "url"` entry (those are silently ignored). Because this server speaks HTTP, you bridge it to stdio with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote). This requires [Node.js](https://nodejs.org) installed (it provides the `npx` command).
 
+> **Easiest option:** skip the config file entirely and add the server in **Claude.ai** instead (see the *Claude.ai* section below). Connectors you add there automatically show up in Claude Desktop when signed in to the same account — no JSON editing, and it works from any chat.
+
+To edit the config file manually, open Claude Desktop > **Settings** > **Developer** > **Edit Config** (this opens `claude_desktop_config.json`).
+
+> **Windows — Microsoft Store / MSIX install:** the **Edit Config** button opens `%APPDATA%\Claude\claude_desktop_config.json`, but the Store build does **not** read that file (MSIX redirects it to a virtualized copy), so edits there are silently ignored and your server never loads. Edit this file instead:
+> ```
+> %LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json
+> ```
+> The regular installer (`.exe`) build does use `%APPDATA%\Claude\…`. ([tracking bug](https://github.com/anthropics/claude-code/issues/26073))
+
+Add **one** of the following — if you already have other MCP servers configured, merge the `hubitat` block into your existing `mcpServers` object instead of pasting over the whole file:
+
+**Cloud endpoint (HTTPS):**
 ```json
 {
   "mcpServers": {
     "hubitat": {
-      "type": "url",
-      "url": "http://YOUR_HUB_IP/apps/api/123/mcp?access_token=YOUR_TOKEN"
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://cloud.hubitat.com/api/YOUR_HUB_ID/apps/123/mcp?access_token=YOUR_TOKEN",
+        "--transport",
+        "http-only"
+      ]
     }
   }
 }
 ```
-Alternatively, some people have had luck just simply giving Claude access to its own directory, giving it the URL and asking it to set up its own connection.
+
+**Local endpoint (HTTP)** — note the extra `--allow-http`, since `mcp-remote` blocks plain-HTTP URLs by default:
+```json
+{
+  "mcpServers": {
+    "hubitat": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://YOUR_HUB_IP/apps/api/123/mcp?access_token=YOUR_TOKEN",
+        "--transport",
+        "http-only",
+        "--allow-http"
+      ]
+    }
+  }
+}
+```
+
+Save the file, then fully restart Claude Desktop (Quit from the system tray / menu bar — closing the window is not enough). The Hubitat tools appear under the tools (🔨) icon.
 
 </details>
 
@@ -160,6 +197,8 @@ Claude.ai supports MCP servers through **Connectors**:
 3. Use the **Cloud Endpoint** URL for remote access, or use a Cloudflare Tunnel URL
 
 With Hubitat Cloud, you can control your smart home from claude.ai anywhere — no local setup required!
+
+> **Tip:** a connector added in Claude.ai also shows up automatically in **Claude Desktop** when you're signed in to the same account — so this is the easiest way to get Hubitat into Claude Desktop without editing any config file, and it works from any chat thread.
 
 **NOTE**: when connecting on claude.ai, you will see a message stating "Couldn't reach the MCP server. You can check the server URL and verify the server is running. If this persists, share this reference with support: "ofid_1234"".
 
