@@ -473,6 +473,7 @@ def updated() {
     atomicState.remove("toolSearchTokens")        // ...and the paired BM25 token cache in lockstep
     atomicState.remove("toolSearchCorpusVersion")  // ...and the corpus version stamp
     atomicState.remove("requiredParamsByTool")    // ...and the gateway required-param memo
+    atomicState.remove("requiredParamsByToolFingerprint")  // ...and its content fingerprint in lockstep
     initialize()
 
     // ===== One-time custom-engine rename migration =====
@@ -2006,19 +2007,34 @@ def getAllToolDefinitions() {
     return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles()
 }
 
-// Lightweight memoized name -> inputSchema.required map for the gateway
-// dispatch-path missing-param pre-check. handleGateway used to rebuild the
-// entire ~111-tool catalog (applyDescriptionTransform(getAllToolDefinitions())
-// + collectEntries) on EVERY gateway call just to read one tool's required
-// array. required arrays carry no [[FLAT_TRIM]] markers and applyDescriptionTransform
-// never touches them (it only rewrites descriptions), and required is identical
-// in flat and gateway mode -- so no transform is needed here. Stored as a plain
-// Map<String,List<String>> (fresh String copies, never the mutable raw def list)
-// in atomicState; invalidated in updated() alongside the BM25 corpus. Tools with
-// no/empty inputSchema.required are omitted, so a miss == "no required params".
+// Content fingerprint of the catalog's name -> required-params shape, used as
+// the memo key in requiredParamsByTool(). A code deploy (HPM update,
+// hub_update_app) recompiles the class without firing updated() or bumping
+// currentVersion() (PRs ride the same version), so neither updated() invalidation
+// nor a version stamp catches a same-version required-array change -- a content
+// fingerprint does. Cheap append pass, no per-tool allocation; kept as the raw
+// string (no sandbox digest API assumed, String equality is cheap).
+def requiredParamsCatalogFingerprint() {
+    def sb = new StringBuilder()
+    getAllToolDefinitions().each { tool ->
+        def req = tool?.inputSchema?.required
+        if (req instanceof List && !req.isEmpty()) {
+            sb.append(tool.name as String).append(':').append(req.join(',')).append(';')
+        }
+    }
+    return sb.toString()
+}
+
+// Memo of each tool's required-params array (fresh String copies, never the
+// mutable raw def list) for the gateway missing-param pre-check, so handleGateway
+// need not rebuild the full catalog per call. Keyed on the catalog fingerprint so
+// it self-heals on a same-version code deploy, and cleared in updated() alongside
+// the BM25 corpus. Tools with no/empty inputSchema.required are omitted, so a
+// miss == "no required params".
 def requiredParamsByTool() {
+    def fp = requiredParamsCatalogFingerprint()
     def cached = atomicState.requiredParamsByTool
-    if (cached instanceof Map) {
+    if (cached instanceof Map && atomicState.requiredParamsByToolFingerprint == fp) {
         return cached
     }
     def built = [:]
@@ -2029,6 +2045,7 @@ def requiredParamsByTool() {
         }
     }
     atomicState.requiredParamsByTool = built
+    atomicState.requiredParamsByToolFingerprint = fp
     return built
 }
 
