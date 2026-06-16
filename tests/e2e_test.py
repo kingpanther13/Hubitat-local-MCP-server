@@ -964,6 +964,52 @@ class TestRunner:
             assert "getChildAndRouteInfoJson" in str(topo.get("endpoint", "")), \
                 f"include_topology returned a topology without the route endpoint: {topo}"
 
+    @test("native_apps")
+    def test_set_app_disabled_roundtrip(self) -> None:
+        # Item 2 (#257): toggle a standalone non-e2e app's disabled flag and restore it.
+        # Pinned to "Hub Health Monitor & Auto Reboot" (app id 68) -- the only user-installed app on
+        # the test hub that is NOT e2e infrastructure (not the MCP server under test (38), the v1/v2
+        # watchdogs (5506/5993), the RM/VRB/Basic-Rules/Dashboard/HSM parent containers, or HPM (37)).
+        # Reads the app's current disabled state, flips it (tool read-back + list-apps verified), and
+        # restores the original state in finally so the run leaves the hub as it found it.
+        APP_ID = 68
+
+        def current_disabled():
+            listed = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_list_apps", "args": {"scope": "instances", "filter": "user"}})
+            apps = listed
+            for _ in range(3):
+                if isinstance(apps, dict):
+                    apps = apps.get("apps") or apps.get("instances") or apps.get("list") or []
+                else:
+                    break
+            for a in (apps if isinstance(apps, list) else []):
+                if not isinstance(a, dict):
+                    continue
+                data = a.get("data")
+                d = data if isinstance(data, dict) else a
+                if str(d.get("id") or a.get("id") or "") == str(APP_ID):
+                    return bool(d.get("disabled"))
+            return None
+
+        original = current_disabled()
+        assert original is not None, \
+            f"app {APP_ID} (Hub Health Monitor) not found on the test hub -- cannot exercise hub_set_app_disabled"
+
+        def set_disabled(val):
+            res = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_app_disabled", "args": {"app_id": APP_ID, "disabled": val}})
+            assert res.get("success") is True, f"hub_set_app_disabled(disabled={val}) failed: {res}"
+            assert res.get("disabled") == val, f"hub_set_app_disabled read-back wrong: wanted {val}, got {res}"
+            return res
+
+        try:
+            set_disabled(not original)
+            assert current_disabled() == (not original), \
+                "hub_list_apps does not reflect the flipped disabled state"
+        finally:
+            set_disabled(original)  # restore the app to the state we found it in
+
     @test("devices")
     def test_get_device(self) -> None:
         dev_id = self.get_first_device_id()
