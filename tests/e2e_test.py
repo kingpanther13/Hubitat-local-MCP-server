@@ -4191,6 +4191,64 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         if var_name in self.created_variable_names:
             self.created_variable_names.remove(var_name)
 
+    @test("hub_variables")
+    def test_hub_variable_bulk_create_round_trip(self) -> None:
+        # The bulk form (variables=[...]) creates several vars sequentially in one call
+        # and reports per-item status. A green round-trip proves the gateway routes the
+        # variables array, each item's wizard write landed in the real namespace, and the
+        # response carries per-item success + the value that actually persisted.
+        names = [f"{PREFIX}BulkVar_A", f"{PREFIX}BulkVar_B", f"{PREFIX}BulkVar_C"]
+        items = [
+            {"name": names[0], "type": "Number", "value": 1},
+            {"name": names[1], "type": "String", "value": "two"},
+            {"name": names[2], "type": "Boolean", "value": True},
+        ]
+        # Track BEFORE creating -- no prefix sweep for variables, so a crash between the
+        # create landing and a later append would strand the entities.
+        for n in names:
+            self.created_variable_names.append(n)
+        try:
+            cw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_variable",
+                    "args": {"variables": items, "confirm": True}}),
+                lambda: all(self._hub_variable_visible_in_bulk(n) for n in names),
+                "hub_create_variable (bulk)",
+            )
+            if cw["relayDropped"]:
+                assert cw["committed"], \
+                    f"bulk create lost to relay 504 and never committed: {names}"
+                print("    hub_create_variable (bulk): per-item assertions skipped (relay 504); verified via read-back")
+            else:
+                created = cw["response"]
+                assert created.get("success") is True, f"bulk create did not fully succeed: {created}"
+                assert created.get("createdCount") == 3 and created.get("failedCount") == 0, \
+                    f"bulk create count mismatch: {created}"
+                results = created.get("results") or []
+                assert len(results) == 3, f"bulk create did not report one result per item: {created}"
+                by_name = {r.get("name"): r for r in results}
+                for it in items:
+                    r = by_name.get(it["name"])
+                    assert r and r.get("success") is True, f"bulk item {it['name']} not created: {created}"
+                    # Per-item value round-trips -- a regression that wrote item-0 for every
+                    # entry would surface here (value/type would not match the requested item).
+                    assert r.get("value") == it["value"], \
+                        f"bulk item {it['name']} value mismatch: got {r.get('value')!r}, expected {it['value']!r}"
+                    assert r.get("type") == it["type"], \
+                        f"bulk item {it['name']} type mismatch: got {r.get('type')!r}, expected {it['type']!r}"
+
+            # Independently confirm each landed in the hub namespace and read back its value.
+            for it in items:
+                got = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": it["name"]},
+                })
+                assert got.get("source") == "hub", f"bulk var {it['name']} not in the hub namespace: {got}"
+                assert got.get("value") == it["value"], \
+                    f"bulk var {it['name']} value mismatch on read-back: {got}"
+        finally:
+            for n in names:
+                self._delete_variable_safe(n)
+
     # -----------------------------------------------------------------------
     # GROUP 5: trigger_types (1 batched test -- all trigger types in one rule)
     # -----------------------------------------------------------------------

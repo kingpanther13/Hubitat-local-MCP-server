@@ -122,6 +122,8 @@ Actions: `setSpeed`, `cycle`
 | `delay` | Map | |
 | `rawSettings` | Map | |
 
+Note: fan `setSpeed` takes a fixed enum speed only (low / medium-low / medium / medium-high / high / on / off / auto); RM has no variable-sourced fan speed because the classic wizard exposes a variable toggle only for numeric/text value fields, not enum pickers. For a variable-driven speed, use `runCommand` with `command='setSpeed'` and `parameters=[{type:'string', variable:'<varName>'}]` (per-parameter variable sourcing).
+
 ### button
 Actions: `push`, `pushPerMode`, `choosePerMode`
 

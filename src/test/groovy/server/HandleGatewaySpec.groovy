@@ -283,4 +283,102 @@ class HandleGatewaySpec extends ToolSpecBase {
         result.error.contains('confirm')
         (atomicStateMap.requiredParamsByTool['hub_create_room'] as Set) == (['name', 'confirm'] as Set)
     }
+
+    // ---- content-fingerprint self-heal of the required-param memo ----
+    // A code-update deploy (HPM update, hub_update_app, the e2e HPM-repair install)
+    // recompiles the class but does NOT fire updated() (the memo's only other
+    // invalidation) AND rides the SAME currentVersion() (PRs don't bump version), so
+    // neither updated() nor a version stamp catches a same-version required-array change.
+    // The memo is keyed on requiredParamsCatalogFingerprint() -- a content signature of
+    // the live name->required shape -- so a memo whose fingerprint != the live catalog's
+    // is rebuilt from the live definitions. The discriminator is that fingerprint check:
+    // reverting it makes the stale memo authoritative, so the load-bearing spec below
+    // rejects on the stale `legacy_param` (RED) instead of the live `room` (GREEN). The
+    // pre-check rejects before any tool impl runs, so the spec needs no hub-method stubs.
+
+    def "a same-version stale memo is rebuilt from live definitions (live required honored, not the stale entry)"() {
+        given: 'an old build memoized a different required list for hub_get_room; version is UNCHANGED but the catalog fingerprint no longer matches'
+        // hub_get_room requires ['room'] in the live (current) catalog. The seeded memo
+        // simulates an older same-version build that required `legacy_param` instead. The
+        // stamped fingerprint is a stale string that cannot match the live fingerprint --
+        // the exact same-version code-deploy scenario the e2e caught (a relaxed required
+        // array served stale because currentVersion() did not change).
+        atomicStateMap.requiredParamsByTool = ['hub_get_room': ['legacy_param']]
+        atomicStateMap.requiredParamsByToolFingerprint = 'stale-fingerprint-from-an-older-same-version-build'
+
+        when: 'a gateway call omits everything'
+        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+
+        then: 'the fingerprint mismatch forces a rebuild -- rejection names the LIVE required param, never the stale one'
+        result.isError == true
+        result.tool == 'hub_get_room'
+        result.error.contains('room')
+        !result.error.contains('legacy_param')
+
+        and: 'the memo + fingerprint were healed to the live catalog (live required restored)'
+        atomicStateMap.requiredParamsByToolFingerprint == script.requiredParamsCatalogFingerprint(script.getAllToolDefinitions())
+        atomicStateMap.requiredParamsByTool['hub_get_room'] == ['room']
+    }
+
+    def "a relaxed-required tool with a stale fingerprint is NOT rejected for the now-optional params (the e2e failure, abstracted)"() {
+        given: 'a stale memo lists params as required that the live build relaxed away; fingerprint is stale (same-version deploy)'
+        // Directly models the failing e2e: a tool whose required array was relaxed (here
+        // hub_get_room, whose live required is only ['room']) must not be rejected for a
+        // param the OLD build still listed. With the fix, supplying the live-required
+        // `room` passes the pre-check and dispatch reaches the impl; reverting the
+        // fingerprint guard would reject on the stale `extra_param` before dispatch even
+        // though `room` was supplied. Stub getRooms() to return a matching room so the
+        // impl resolves cleanly to a real result (bucket-1 per-test metaClass stub;
+        // setup() wipes it next test).
+        script.metaClass.getRooms = { [[id: 7, name: 'Kitchen', deviceIds: []]] }
+        atomicStateMap.requiredParamsByTool = ['hub_get_room': ['room', 'extra_param']]
+        atomicStateMap.requiredParamsByToolFingerprint = 'stale-fingerprint'
+
+        when: 'supply only the live-required param, omitting the stale extra'
+        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [room: 'Kitchen'])
+
+        then: 'the pre-check passes (no missing-param rejection) -- dispatch reached the impl and returned the room'
+        !(result instanceof Map && result.isError == true && result.error?.toString()?.startsWith('Missing required'))
+        result.name == 'Kitchen'
+
+        and: 'the memo healed to the live shape (the stale extra param is gone)'
+        atomicStateMap.requiredParamsByTool['hub_get_room'] == ['room']
+    }
+
+    def "the fingerprint discriminates: two catalogs with different required shapes produce different fingerprints"() {
+        given: 'two catalogs identical except for one tool required array -- the only property the self-heal rests on'
+        // If requiredParamsCatalogFingerprint() returned a constant, the three tests
+        // above would all still pass (each seeds a deliberately-mismatched literal). This
+        // proves the fingerprint is actually a function of the required shape, so a
+        // same-version required-array change yields a fresh key and forces a rebuild.
+        def catalogA = [[name: 'hub_get_room', inputSchema: [required: ['room']]]]
+        def catalogB = [[name: 'hub_get_room', inputSchema: [required: ['room', 'extra_param']]]]
+
+        when:
+        def fpA = script.requiredParamsCatalogFingerprint(catalogA)
+        def fpB = script.requiredParamsCatalogFingerprint(catalogB)
+
+        then: 'a changed required array yields a different fingerprint (a constant return would make these equal)'
+        fpA != fpB
+
+        and: 'the fingerprint is stable for an unchanged shape'
+        fpA == script.requiredParamsCatalogFingerprint([[name: 'hub_get_room', inputSchema: [required: ['room']]]])
+    }
+
+    def "a memo whose fingerprint matches the live catalog is served as-is (no rebuild)"() {
+        given: 'a memo carrying a deliberately wrong required list but stamped with the LIVE fingerprint'
+        // Proves the fingerprint is the gate: a matching fingerprint trusts the cached
+        // value verbatim (the build-once/read-many fast path the memo exists for).
+        atomicStateMap.requiredParamsByTool = ['hub_get_room': ['sentinel_param']]
+        atomicStateMap.requiredParamsByToolFingerprint = script.requiredParamsCatalogFingerprint(script.getAllToolDefinitions())
+
+        when: 'omit the sentinel param the cached (matching-fingerprint) memo lists as required'
+        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+
+        then: 'the matching-fingerprint cache is honored verbatim -- the sentinel rejection fires (no rebuild)'
+        result.isError == true
+        result.tool == 'hub_get_room'
+        result.error.contains('sentinel_param')
+        atomicStateMap.requiredParamsByTool['hub_get_room'] == ['sentinel_param']
+    }
 }

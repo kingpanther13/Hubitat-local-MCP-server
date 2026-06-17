@@ -184,7 +184,7 @@ Manage hub variables (every type — Number, Decimal, String, Boolean, DateTime)
 | `hub_list_variables` | List all hub variables (with type/connector linkage) and rule-engine variables. | None |
 | `hub_get_variable` | Get a variable's value + metadata (type, deviceId, attribute). | None |
 | `hub_set_variable` | Set an existing variable's value. Falls back to rule_engine namespace when no hub var matches. | None |
-| `hub_create_variable` | Create a new hub variable. Type enum: Number / Decimal / String / Boolean / DateTime. | Write master |
+| `hub_create_variable` | Create a new hub variable, or several at once via `variables=[{name,type,value},...]` (mutually exclusive with the single name/type/value form). Type enum: Number / Decimal / String / Boolean / DateTime. String values must be non-empty. | Write master |
 | `hub_delete_variable` | Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). `force=true` if rules reference it. | Write master + recent backup |
 | `hub_create_connector` | Create a virtual-device connector for an existing hub variable. | Write master |
 | `hub_delete_connector` | Remove the connector device for a hub variable (the variable itself is unchanged). | Write master |
