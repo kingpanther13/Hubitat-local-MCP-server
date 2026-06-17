@@ -517,6 +517,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         then:
         posted == ['/hub/zwave/nodeReplace/stop']
         r.success == true
+        r.action == 'node_replace_stop'
     }
 
     def "hub_get_radio_details radio='matter' + node_id polls matterPairDeviceStatus (not the zwave node-state)"() {
@@ -548,6 +549,9 @@ class RadioGatewaySpec extends ToolSpecBase {
         r.status?.containsKey('zwaveJoinDiscovery')
         r.status?.containsKey('zwaveAntennaTest')
         r.status?.zwaveNodeReplace?.containsKey('status')
+        r.status?.zwaveNodeReplace?.containsKey('info')
+        r.status?.containsKey('zwaveRepair')    // pre-existing pollers survive the rewrite
+        r.status?.containsKey('zwaveExclude')
     }
 
     def "hub_set_zigbee settings merge preserves the unspecified flag"() {
@@ -587,5 +591,61 @@ class RadioGatewaySpec extends ToolSpecBase {
 
         then:
         r.success == true   // null region param filtered out, no NullPointerException
+    }
+
+    def "hub_set_zigbee with no operation specified is rejected"() {
+        when: script.toolSetZigbee([:])
+        then: thrown(IllegalArgumentException)
+    }
+
+    def "hub_set_zigbee ping_device requires {device_id, enabled}"() {
+        when: script.toolSetZigbee([ping_device: [enabled: true]])   // missing device_id
+        then: thrown(IllegalArgumentException)
+
+        when: script.toolSetZigbee([ping_device: 'not-a-map'])
+        then: thrown(IllegalArgumentException)
+    }
+
+    def "hub_set_zigbee settings refuses to fabricate an unspecified flag when current state lacks it"() {
+        given:
+        // zigbeeDetails comes back MISSING inactiveDevicePingEnabled while ping_inactive is omitted;
+        // updateSettings is intentionally NOT registered so the only success path is the refuse guard.
+        hubGet.register('/hub/zigbeeDetails/json') { p -> JsonOutput.toJson([rebuildNetworkOnReboot: false]) }
+
+        when:
+        def r = script.toolSetZigbee([rebuild_on_reboot: true])
+
+        then:
+        r.success == false                       // did NOT silently write inactiveDevicePingEnabled=false
+        r.error?.contains('ping-inactive')       // refused for the unreadable flag, not a hub-fault throw
+    }
+
+    def "dispatch: hub_call_zwave node_replace_stop routes through executeTool"() {
+        given:
+        settingsMap.enableWrite = true
+        def posted = []
+        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean retry = false ->
+            posted << path; 'stopped'
+        }
+
+        when:
+        def r = script.executeTool('hub_call_zwave', [action: 'node_replace_stop'])
+
+        then:
+        posted == ['/hub/zwave/nodeReplace/stop']
+        r.success == true
+    }
+
+    def "dispatch: hub_set_zigbee ping_device routes through executeTool"() {
+        given:
+        settingsMap.enableWrite = true
+        hubGet.register('/hub/zigbee/updatePingDevice/0xABCD/false') { p -> 'ok' }
+
+        when:
+        def r = script.executeTool('hub_set_zigbee', [ping_device: [device_id: '0xABCD', enabled: false]])
+
+        then:
+        r.success == true
+        r.pingDevice.deviceId == '0xABCD'
     }
 }

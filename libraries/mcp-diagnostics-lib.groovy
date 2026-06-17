@@ -1455,7 +1455,7 @@ def toolSetZigbee(args) {
             boolean on = (pd.enabled == true)
             def resp = _radioGet("/hub/zigbee/updatePingDevice/${java.net.URLEncoder.encode(pd.device_id.toString(), 'UTF-8')}/${on}")
             mcpLog("info", "hub-admin", "Zigbee keep-alive ping ${on ? 'on' : 'off'} for device ${pd.device_id} via MCP")
-            return [success: true, radio: "zigbee", pingDevice: [deviceId: pd.device_id?.toString(), enabled: on],
+            return [success: true, radio: "zigbee", pingDevice: [deviceId: pd.device_id.toString(), enabled: on],
                     message: "Zigbee keep-alive ping ${on ? 'enabled' : 'disabled'} for device ${pd.device_id}.", response: resp]
         } catch (Exception e) {
             mcpLogError("hub-admin", "Zigbee ping-device update failed", e)
@@ -1464,13 +1464,25 @@ def toolSetZigbee(args) {
     }
 
     if (hasSettings) {
-        // updateSettings is a full-set GET (sends both flags); merge over the current
-        // zigbeeDetails so an unspecified flag keeps its value rather than resetting.
+        // updateSettings is a full-set GET (sends both flags), so an omitted flag must be merged
+        // from the current zigbeeDetails to "keep its value". If that current value can't be read
+        // (non-Map response / missing key on older firmware), fabricating false would silently flip
+        // a live setting -- refuse instead so the caller passes the flag explicitly.
         try {
             def current = _radioGet("/hub/zigbeeDetails/json")
             def cur = (current instanceof Map) ? current : [:]
-            boolean rebuild = (args.rebuild_on_reboot != null) ? (args.rebuild_on_reboot == true) : (cur.rebuildNetworkOnReboot == true)
-            boolean ping = (args.ping_inactive != null) ? (args.ping_inactive == true) : (cur.inactiveDevicePingEnabled == true)
+            def rebuildCur = cur.rebuildNetworkOnReboot
+            def pingCur = cur.inactiveDevicePingEnabled
+            if (args.rebuild_on_reboot == null && !(rebuildCur instanceof Boolean)) {
+                return [success: false, error: "Could not read the current rebuild-on-reboot setting to preserve it.",
+                        note: "Pass rebuild_on_reboot explicitly, or read hub_get_radio_details(radio='zigbee') first."]
+            }
+            if (args.ping_inactive == null && !(pingCur instanceof Boolean)) {
+                return [success: false, error: "Could not read the current ping-inactive setting to preserve it.",
+                        note: "Pass ping_inactive explicitly, or read hub_get_radio_details(radio='zigbee') first."]
+            }
+            boolean rebuild = (args.rebuild_on_reboot != null) ? (args.rebuild_on_reboot == true) : (rebuildCur == true)
+            boolean ping = (args.ping_inactive != null) ? (args.ping_inactive == true) : (pingCur == true)
             def resp = _radioGet("/hub/zigbee/updateSettings?rebuildNetworkOnReboot=${rebuild}&inactiveDevicePingEnabled=${ping}")
             mcpLog("info", "hub-admin", "Zigbee radio settings updated via MCP")
             return [success: true, radio: "zigbee", rebuildNetworkOnReboot: rebuild, inactiveDevicePingEnabled: ping,
@@ -2500,7 +2512,7 @@ def _toolDisplayMeta_partDiagnostics() {
         hub_get_device_health: [title: "Get Device Health", summary: "Find stale devices, ICMP-ping LAN hosts, run traceroute/WAN speedtest, and optionally blink the hub identify LED."],
         hub_get_radio_details: [title: "Get Radio Details", summary: "Z-Wave/Zigbee/Matter details, topology, per-node state, status, channel scan, SmartStart, firmware."],
         hub_set_zwave: [title: "Set Z-Wave Radio", summary: "Enable/disable the Z-Wave radio or set its region and long-range channel."],
-        hub_set_zigbee: [title: "Set Zigbee Radio", summary: "Enable/disable the Zigbee radio or set its channel and power level."],
+        hub_set_zigbee: [title: "Set Zigbee Radio", summary: "Enable/disable the radio, set channel/power, radio settings (rebuild-on-reboot, ping-inactive), or per-device keep-alive ping."],
         hub_call_zwave: [title: "Z-Wave Operations", summary: "Z-Wave repair, inclusion, exclusion, node maintenance, replace/remove, antenna test, SmartStart delete."],
         hub_call_zigbee: [title: "Zigbee Operations", summary: "Reboot the Zigbee radio, rebuild the network, or trigger a channel scan."],
         hub_call_matter: [title: "Matter Operations", summary: "Enable/disable Matter, pair a device by setup code, or open a pairing window."],

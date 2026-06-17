@@ -1167,6 +1167,64 @@ class TestRunner:
             "hub_call_zigbee", {"action": "rebuild_network"}, "hub_call_zigbee(rebuild_network)")
 
     @test("diagnostics")
+    def test_radio_details_matter_node_status(self) -> None:
+        # node_id is radio-aware: with radio='matter' it polls /hub/matterPairDeviceStatus for
+        # that node and attaches result.matterPairStatus (a _radioGetSafe read, so the key is
+        # always present -- parsed status on a Matter hub, a structured {error} on a hub without
+        # Matter / without that node). The load-bearing assertion is that the matter branch fired
+        # (matterPairStatus attached, NOT the Z-Wave nodeState branch).
+        result = self.client.call_tool(
+            "hub_get_radio_details", {"radio": "matter", "node_id": "1"})
+        assert isinstance(result, dict), f"matter node_id read did not return an object: {result}"
+        assert "matterPairStatus" in result, \
+            f"radio='matter' + node_id did not attach matterPairStatus (matter branch didn't fire?): {result}"
+        assert "nodeState" not in result, \
+            f"radio='matter' wrongly took the Z-Wave nodeState branch: {result}"
+
+    @test("diagnostics")
+    def test_call_zwave_node_replace_stop(self) -> None:
+        # hub_call_zwave(node_replace_stop): aborts an in-flight node-replace (bare POST to
+        # /hub/zwave/nodeReplace/stop). Stopping when none is running is a safe no-op, so this is
+        # callable on the no-device e2e hub. Not confirm-gated. Resilient to relay 5xx / radio-absent.
+        assert self._resilient_radio_write(
+            "hub_call_zwave", {"action": "node_replace_stop"}, "hub_call_zwave(node_replace_stop)")
+
+    @test("diagnostics")
+    def test_set_zigbee_settings_roundtrip(self) -> None:
+        # hub_set_zigbee settings mode (updateSettings: rebuild-on-reboot / inactive-device ping).
+        # The setter merges over current values, so read the live flags first and write them back
+        # UNCHANGED -- a true no-op that leaves the hub's radio config as found. Resilient to a
+        # Zigbee-less hub (read lacks the flags / write returns a structured error).
+        details = self.client.call_tool("hub_get_radio_details", {"radio": "zigbee"})
+        assert isinstance(details, dict), f"zigbee details read did not return an object: {details}"
+        zdata = details.get("zigbeeData")
+        zd = zdata if isinstance(zdata, dict) else {}
+        args = {}
+        rebuild = zd.get("rebuildNetworkOnReboot")
+        ping = zd.get("inactiveDevicePingEnabled")
+        if isinstance(rebuild, bool):
+            args["rebuild_on_reboot"] = rebuild
+        if isinstance(ping, bool):
+            args["ping_inactive"] = ping
+        if not args:
+            # Hub did not expose the flags (Zigbee-less / older firmware) -- pass BOTH explicitly so
+            # the settings dispatch still fires (the merge-refuse guard only triggers on an omitted,
+            # unreadable flag). Values are arbitrary here; the no-device hub has nothing to disrupt.
+            args = {"rebuild_on_reboot": False, "ping_inactive": False}
+        assert self._resilient_radio_write(
+            "hub_set_zigbee", args, f"hub_set_zigbee(settings {args})")
+
+    @test("diagnostics")
+    def test_set_zigbee_ping_device(self) -> None:
+        # hub_set_zigbee ping_device mode (updatePingDevice): toggle keep-alive ping for ONE device.
+        # The e2e hub has no devices, so target a benign/likely-absent id with enabled=false (a no-op
+        # disable). Resilient to relay 5xx / structured error (device-absent) -- the load-bearing
+        # check is that the new ping_device mode dispatches, not that a device was pinged.
+        assert self._resilient_radio_write(
+            "hub_set_zigbee", {"ping_device": {"device_id": "0x0000", "enabled": False}},
+            "hub_set_zigbee(ping_device)")
+
+    @test("diagnostics")
     def test_call_destructive_radio_requires_confirm(self) -> None:
         # hub_call_destructive_radio is confirm-gated and MUST NOT be executed for real here (a reset
         # wipes a radio's network; a firmware flash can brick hardware). Assert the safety gate:
