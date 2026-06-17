@@ -390,13 +390,26 @@ def _findHubVariablesAppId() {
 
 def toolCreateVariable(args) {
     requireDestructiveConfirm(args.confirm)
+
+    // Bulk form: variables=[{name,type,value}, ...]. Mutually exclusive with
+    // the single name/type/value form. Each item is created SEQUENTIALLY
+    // through the shared Hub Variables system app -- the create wizard has a
+    // known post-write race that makes rapid/parallel creates spuriously fail,
+    // so the loop never parallelizes.
+    if (args.variables != null) {
+        if (args.name != null || args.type != null || args.value != null) {
+            throw new IllegalArgumentException(
+                "Provide EITHER the single name/type/value form OR the bulk variables array -- not both.")
+        }
+        return _createVariablesBulk(args.variables)
+    }
+
     def name = args.name?.toString()?.trim()
     _validateHubVarName(name)
     def type = _validateHubVarType(args.type?.toString())
     def value = args.value
-    if (value == null) {
-        throw new IllegalArgumentException("Initial value is required")
-    }
+    _validateInitialValue(name, type, value)
+
     // Refuse to silently overwrite an existing variable — the UI's "Create"
     // path can't either; the wizard only progresses when the name is novel.
     try {
@@ -404,7 +417,7 @@ def toolCreateVariable(args) {
         if (existing != null) {
             throw new IllegalArgumentException(
                 "Hub variable '${name}' already exists (type=${existing.type}, value=${existing.value}). " +
-                "Use set_variable to change the value, or pick a different name.")
+                "Use hub_set_variable to change the value, or pick a different name.")
         }
     } catch (IllegalArgumentException reraise) { throw reraise }
     catch (Exception e) {
@@ -412,6 +425,88 @@ def toolCreateVariable(args) {
     }
 
     def appId = _findHubVariablesAppId()
+    return _createOneVariable(appId, name, type, value)
+}
+
+// Bulk create driver: requires a non-empty List at the batch level, resolves the
+// Hub Variables app id ONCE, then creates each item sequentially. Per-item
+// try/catch so one failure never aborts the rest -- a malformed (non-Map) item or
+// a bad name/type/value fails only itself and carries its own `error`.
+private Map _createVariablesBulk(variables) {
+    if (!(variables instanceof List) || variables.isEmpty()) {
+        throw new IllegalArgumentException("variables must be a non-empty array of {name, type, value} objects.")
+    }
+
+    def appId = _findHubVariablesAppId()
+    def results = []
+    int createdCount = 0
+    int failedCount = 0
+
+    variables.eachWithIndex { item, idx ->
+        // A malformed (non-Map) item fails only itself, never the whole batch --
+        // same per-item isolation as a bad name/type/value below.
+        def itemName = (item instanceof Map) ? item.name?.toString()?.trim() : null
+        try {
+            if (!(item instanceof Map)) {
+                throw new IllegalArgumentException("variables[${idx}] must be an object with name, type, and value.")
+            }
+            _validateHubVarName(itemName)
+            def itemType = _validateHubVarType(item.type?.toString())
+            _validateInitialValue(itemName, itemType, item.value)
+
+            // Pre-flight existence check (matches the single-create refusal).
+            def existing = null
+            try { existing = getGlobalVar(itemName) } catch (Exception e) {
+                logDebug("hub_create_variable bulk: getGlobalVar('${itemName}') threw ${e.class.simpleName}: ${e.message}")
+            }
+            if (existing != null) {
+                throw new IllegalArgumentException(
+                    "Hub variable '${itemName}' already exists (type=${existing.type}). Use hub_set_variable to change the value, or pick a different name.")
+            }
+
+            def created = _createOneVariable(appId, itemName, itemType, item.value)
+            results << [name: itemName, success: true, type: created.type, value: created.value]
+            createdCount++
+        } catch (Exception e) {
+            // Fall back to the array index when the item carried no usable name, so
+            // every failed entry is traceable to its request position. Guard the
+            // .name read behind the Map check -- a non-Map item has no name property.
+            def rawName = (item instanceof Map) ? item.name : null
+            results << [name: (itemName ?: rawName ?: "variables[${idx}]"), success: false, error: e.message ?: e.toString()]
+            failedCount++
+        }
+    }
+
+    return [
+        success: failedCount == 0,
+        results: results,
+        createdCount: createdCount,
+        failedCount: failedCount
+    ]
+}
+
+// Validate the initial value for a hub variable create. A null value is always
+// rejected; additionally a String variable created with an empty/blank value
+// reports success but never actually persists (getGlobalVar stays null --
+// deterministic), so reject that up front with an actionable error.
+private void _validateInitialValue(String name, String type, value) {
+    if (value == null) {
+        throw new IllegalArgumentException("Initial value is required")
+    }
+    if (type == "String" && !value.toString().trim()) {
+        throw new IllegalArgumentException(
+            "String variable '${name}' requires a non-empty initial value. " +
+            "Hubitat reports success for an empty String value but the variable never persists; supply any non-empty initial value.")
+    }
+}
+
+// Shared per-variable create core: drives the Hub Variables system app wizard
+// (prime -> moreVar -> write name/type/value or DateTime date/time + Done),
+// verifies the variable landed with a verify-backoff, and subscribes to its
+// change event. Returns the single-create success map; throws on validation
+// or verification failure. Both the single and bulk paths call this; `appId`
+// is resolved once by the caller and reused.
+private Map _createOneVariable(Integer appId, String name, String type, value) {
     def applied = []
     def skipped = []
 
@@ -847,28 +942,46 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_create_variable",
-            description: "Create a new hub variable (global variable visible to apps and Rule Machine). Use this before hub_set_variable for a name that doesn't exist yet — Hubitat's setGlobalVar cannot create, only update.[[FLAT_TRIM]] Drives the Settings → Hub Variables wizard, since creation isn't exposed via the public app API. Name must not contain any of these characters: ' \" \\ ~ [ : ] < >.[[/FLAT_TRIM]] To also expose the variable to device-only apps, follow up with hub_create_connector.",
+            description: "Create a new hub variable (global variable visible to apps and Rule Machine), one at a time or several in one call. Single form: name + type + value.[[FLAT_TRIM]] Bulk form: variables=[{name,type,value}, ...] -- mutually exclusive with the single form. Use this before hub_set_variable for a name that doesn't exist yet -- Hubitat's setGlobalVar cannot create, only update. Drives the Settings -> Hub Variables wizard, since creation isn't exposed via the public app API. Name must not contain any of these characters: ' \" \\ ~ [ : ] < >. A String variable's initial value must be non-empty (an empty String reports success but never persists). Bulk items are created sequentially; each succeeds or fails independently and the result reports per-item status. To also expose the variable to device-only apps, follow up with hub_create_connector.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "New variable name, e.g. \"vacationMode\". Must not contain: ' \" \\ ~ [ : ] < >"],
-                    type: [type: "string", description: "Variable type — one of: Number, Decimal, String, Boolean, DateTime"],
-                    value: [description: "Initial value, must match the chosen type (e.g. 72 for Number, true for Boolean, \"away\" for String, a DateTime string for DateTime)"],
+                    name: [type: "string", description: "New variable name, e.g. \"vacationMode\". Omit when using variables.[[FLAT_TRIM]] Must not contain: ' \" \\ ~ [ : ] < >.[[/FLAT_TRIM]]"],
+                    type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type. Omit when using variables."],
+                    value: [description: "Initial value, must match the type. Omit when using variables."],
+                    variables: [type: "array", description: "Bulk form: several variables in one call.[[FLAT_TRIM]] Mutually exclusive with name/type/value.[[/FLAT_TRIM]]", items: [
+                        type: "object",
+                        properties: [
+                            name: [type: "string", description: "New variable name (same character rules as the single form)"],
+                            type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type"],
+                            value: [description: "Initial value, must match the type"]
+                        ],
+                        required: ["name", "type", "value"]
+                    ]],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to perform the creation"]
                 ],
-                required: ["name", "type", "value", "confirm"]
+                required: ["confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "Whether creation succeeded"],
-                    name: [type: "string", description: "Variable name"],
-                    type: [type: "string", description: "Variable type"],
-                    value: [description: "Initial value after creation"],
-                    source: [type: "string", description: "Always 'hub'"],
-                    message: [type: "string", description: "Human-readable result"]
+                    success: [type: "boolean", description: "Single form: whether creation succeeded. Bulk form: true only when every item was created."],
+                    name: [type: "string", description: "Single form: variable name"],
+                    type: [type: "string", description: "Single form: variable type"],
+                    value: [description: "Single form: initial value after creation"],
+                    source: [type: "string", description: "Single form: always 'hub'"],
+                    message: [type: "string", description: "Single form: human-readable result"],
+                    results: [type: "array", description: "Bulk form: per-item result, one entry per requested variable", items: [type: "object", properties: [
+                        name: [type: "string", description: "Variable name"],
+                        success: [type: "boolean", description: "Whether this item was created"],
+                        type: [type: "string", description: "Variable type (created items)"],
+                        value: [description: "Initial value after creation (created items)"],
+                        error: [type: "string", description: "Failure reason (failed items)"]
+                    ]]],
+                    createdCount: [type: "integer", description: "Bulk form: number of items created"],
+                    failedCount: [type: "integer", description: "Bulk form: number of items that failed"]
                 ],
-                required: ["success", "name", "type", "source"]
+                required: ["success"]
             ]
         ],
         [

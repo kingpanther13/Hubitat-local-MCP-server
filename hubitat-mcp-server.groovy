@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 2.6.0 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 2.6.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -473,6 +473,7 @@ def updated() {
     atomicState.remove("toolSearchTokens")        // ...and the paired BM25 token cache in lockstep
     atomicState.remove("toolSearchCorpusVersion")  // ...and the corpus version stamp
     atomicState.remove("requiredParamsByTool")    // ...and the gateway required-param memo
+    atomicState.remove("requiredParamsByToolFingerprint")  // ...and its content fingerprint in lockstep
     initialize()
 
     // ===== One-time custom-engine rename migration =====
@@ -1037,7 +1038,7 @@ def getGatewayConfig() {
                 hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables.",
                 hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). Args: name",
                 hub_set_variable: "Set an existing variable's value. Falls back to rule_engine namespace when no hub var matches. Args: name, value",
-                hub_create_variable: "Create a new hub variable. Args: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true",
+                hub_create_variable: "Create a new hub variable, or several at once. Single: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true. Bulk: variables=[{name,type,value},...], confirm=true (mutually exclusive with the single form). A String value must be non-empty",
                 hub_delete_variable: "Permanently delete a variable (DESTRUCTIVE — also removes its connector if any). Args: name, confirm=true, [force=true if rules reference it]",
                 hub_create_connector: "Create a virtual-device connector for an existing hub variable. For Number/Decimal vars, connectorType picks the device type (Dimmer|Variable|Volume|ColorTemp|Humidity|Illuminance, default Variable). Args: name, connectorType?, confirm=true",
                 hub_delete_connector: "Remove the connector device for a hub variable (variable itself unchanged). Args: name, confirm=true",
@@ -1801,11 +1802,12 @@ def handleGateway(gatewayName, toolName, toolArgs) {
 
     // Option D: Pre-validate required parameters and return a helpful error.
     def safeArgs = toolArgs ?: [:]
-    // Read this tool's required-param list from the small memoized map instead of
-    // rebuilding the whole ~111-tool catalog on every gateway call. A missing key
-    // means the tool has no required params. The full catalog (with the
-    // [[FLAT_TRIM]]-stripped param descriptions for the hint) is rebuilt lazily
-    // only inside the if (missing) branch below, which fires rarely.
+    // Read this tool's required-param list from the memoized map. Computing the
+    // memo key walks the catalog once per gateway call; the memo saves the per-tool
+    // map re-derivation, not the catalog walk. A missing key means the tool has no
+    // required params. The full catalog (with the [[FLAT_TRIM]]-stripped param
+    // descriptions for the hint) is rebuilt lazily only inside the if (missing)
+    // branch below, which fires rarely.
     def required = requiredParamsByTool()[toolName]
     // Gate-bypassing meta-calls return pure static content with NO hub mutation and
     // short-circuit at the very top of their handler (before any gate / appId check),
@@ -2027,29 +2029,48 @@ def getAllToolDefinitions() {
     return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles()
 }
 
-// Lightweight memoized name -> inputSchema.required map for the gateway
-// dispatch-path missing-param pre-check. handleGateway used to rebuild the
-// entire ~111-tool catalog (applyDescriptionTransform(getAllToolDefinitions())
-// + collectEntries) on EVERY gateway call just to read one tool's required
-// array. required arrays carry no [[FLAT_TRIM]] markers and applyDescriptionTransform
-// never touches them (it only rewrites descriptions), and required is identical
-// in flat and gateway mode -- so no transform is needed here. Stored as a plain
-// Map<String,List<String>> (fresh String copies, never the mutable raw def list)
-// in atomicState; invalidated in updated() alongside the BM25 corpus. Tools with
-// no/empty inputSchema.required are omitted, so a miss == "no required params".
+// Content fingerprint of the catalog's name -> required-params shape, used as
+// the memo key in requiredParamsByTool(). A code deploy (HPM update,
+// hub_update_app) recompiles the class without firing updated() or bumping
+// currentVersion() (PRs ride the same version), so neither updated() invalidation
+// nor a version stamp catches a same-version required-array change -- a content
+// fingerprint does. Operates on a pre-fetched defs list so the caller can build
+// both the key and the memo from one catalog walk; kept as the raw string (no
+// sandbox digest API assumed, String equality is cheap).
+def requiredParamsCatalogFingerprint(List defs) {
+    def sb = new StringBuilder()
+    defs.each { tool ->
+        def req = tool?.inputSchema?.required
+        if (req instanceof List && !req.isEmpty()) {
+            sb.append(tool.name as String).append(':').append(req.join(',')).append(';')
+        }
+    }
+    return sb.toString()
+}
+
+// Memo of each tool's required-params array (fresh String copies, never the
+// mutable raw def list) for the gateway missing-param pre-check. The full catalog
+// is walked once per call to compute the fingerprint key; the memo saves the
+// per-tool map re-derivation (the String-copy allocation), not the catalog build.
+// Keyed on the catalog fingerprint so it self-heals on a same-version code deploy,
+// and cleared in updated() alongside the BM25 corpus. Tools with no/empty
+// inputSchema.required are omitted, so a miss == "no required params".
 def requiredParamsByTool() {
+    def defs = getAllToolDefinitions()
+    def fp = requiredParamsCatalogFingerprint(defs)
     def cached = atomicState.requiredParamsByTool
-    if (cached instanceof Map) {
+    if (cached instanceof Map && atomicState.requiredParamsByToolFingerprint == fp) {
         return cached
     }
     def built = [:]
-    getAllToolDefinitions().each { tool ->
+    defs.each { tool ->
         def req = tool?.inputSchema?.required
         if (req instanceof List && !req.isEmpty()) {
             built[tool.name as String] = req.collect { it as String }
         }
     }
     atomicState.requiredParamsByTool = built
+    atomicState.requiredParamsByToolFingerprint = fp
     return built
 }
 
@@ -4874,7 +4895,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "2.6.0"
+    return "2.6.1"
 }
 
 
@@ -5258,6 +5279,7 @@ For the live machine-readable per-field schema (action enums, required and optio
 - **Thermostat** (`capability='thermostat'`): `action=(any)` + `deviceIds` + optional `mode`/`fanMode`/`heatingSetpoint`/`coolingSetpoint`/`adjustHeating`/`adjustCooling`.
 - **Shade/blind** (`capability='shade'`): `open`/`close`/`stop` + `deviceIds`. `setPosition` + `deviceIds` + `position` (0–100).
 - **Fan** (`capability='fan'`): `setSpeed` + `deviceIds` + `speed` (low/med/high/auto/etc.). `cycle` + `deviceIds`.
+  - **NOTE:** fan `setSpeed` takes a fixed enum speed only (low / medium-low / medium / medium-high / high / on / off / auto); RM has no variable-sourced fan speed (unlike dimmer `setLevel`'s `levelVariable`) because the classic wizard exposes a variable toggle only for numeric/text value fields, not enum pickers. For a variable-driven speed, use `capability='runCommand'` with `command='setSpeed'` + `parameters=[{type:'string', variable:'<varName>'}]` (per-parameter variable sourcing).
 - **Mode** (`capability='mode'`): `action='setMode'` + `modeId` (Integer) OR `modeName` (String, case-insensitive). When `modeName` is supplied it is resolved to the numeric mode ID via `location.modes` before the write; an unknown name fails fast with the list of valid mode names. Use `hub_list_modes` to inspect available modes first. Note: `addAction` mode uses the `modeName` field for explicit name-based resolution; `addTrigger` mode uses the generic `state` field instead because triggers cover a superset of device-state events where a single field serves multiple capability types -- `modeName` vs `state` is an intentional surface difference, not a typo.
 - **Hub Variable** (`capability='setVariable'`, alias `'variable'`): `variable` (target) + exactly ONE source mode -- `value` (numeric constant), `sourceVariable` (copy from another hub variable), `fromDevice` (`{deviceId, attribute}` -- read a device attribute), or `math` (`{left, op, right}` -- structured variable math). All variable names (`variable`, `sourceVariable`, `math` var-operands) must be existing hub variable names -- unknown names are rejected before any write. The four source modes are mutually exclusive; providing more than one is rejected. `math` binary operators (`+ - * / %`) require `right`; unary operators (`negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees`) reject `right`. A `math` operand that is a number becomes a literal constant; a string operand is a variable name. `fromDevice` reads from any hub device (not just MCP-selected); an attribute not in the device's filtered enum is rejected with `success=false` and the device's available-attribute list. See `addAction setVariable` in `docs/rm_action_subtype_schemas.md` for the full field reference.
 - **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
@@ -5305,6 +5327,16 @@ Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expressi
 - **Sub-expression (parens) -- addRequiredExpression-only**: `{subExpression:{conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]}}`. The STPage walker recursively handles nesting of arbitrary depth. **`addAction` (ifThen/elseIf/repeatWhile/waitExpression) REJECTS nested subExpression** with `"nested subExpression on this row is not yet supported"`. Flatten the conditions list, or move the nested expression to a Required Expression.
 
 `addTrigger.condition` supports a narrower subset: Variable (incl. `compareToVariable`), Custom Attribute, and enum/numeric device-state. Mode-via-picker / Between two times / compareToDevice are NOT yet supported on `selectTriggers` -- the `_rmBuildCondition` helper is a static direct-write path, not the shared `_rmWalkConditionReveal` walker.
+
+### Supported comparison shapes for a numeric condition
+
+A numeric device condition's right-hand side can be one of these shapes (the RM 5.1 wizard exposes the `isDev_` device-RHS toggle but no `isVar_` toggle on a numeric device condition, so "device attribute vs a hub variable" is NOT a directly-supported shape):
+
+- a) **Device attribute vs literal value** -- `{capability:'Temperature', deviceIds:[N], comparator:'>', value:72}`.
+- b) **Device attribute vs another device's same attribute** (`compareToDevice`, numeric capabilities only) -- `{capability:'Temperature', deviceIds:[N], comparator:'>', compareToDevice:{deviceId:M, offset?:-2}}`. The reference reads the SAME capability; `offset` is optional.
+- c) **Variable vs variable** (`compareToVariable`, Variable-capability LHS only) -- `{capability:'Variable', variable:'<hubVarName>', comparator:'=', compareToVariable:'<otherHubVarName>'}`.
+
+To compare a **device attribute against a hub variable**, there is no direct shape -- read the attribute into a variable first with an `addAction setVariable` using `fromDevice` (`{deviceId, attribute}`), then compare variable-vs-variable per shape (c).
 
 ### `addRequiredExpression` operator contract
 
