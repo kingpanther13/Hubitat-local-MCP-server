@@ -125,7 +125,9 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_delete_captured_state',
             'hub_delete_debug_logs',
             'hub_create_backup', 'hub_call_gc',
-            'hub_reboot', 'hub_shutdown', 'hub_call_zwave_repair', 'hub_delete_device',
+            'hub_reboot', 'hub_shutdown', 'hub_delete_device',
+            'hub_set_zwave', 'hub_set_zigbee',
+            'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',
             'hub_manage_virtual_device', 'hub_update_device',
             'hub_create_room', 'hub_delete_room', 'hub_update_room',
             'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
@@ -171,11 +173,12 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_manage_custom_rules', // hub_delete_custom_rule + others
             'hub_manage_variables',      // set/create/delete + others
             'hub_manage_rooms',              // create/delete/rename + others
-            'hub_manage_destructive_ops',// reboot/shutdown/hub_delete_device
+            'hub_manage_destructive_ops',// reboot/shutdown/hub_delete_device/hub_call_destructive_radio
             'hub_manage_code',          // install/update/delete code
             'hub_manage_devices',            // hub_call_device_command, hub_call_device_swap, hub_update_device
             'hub_manage_logs',               // hub_delete_debug_logs, hub_set_log_level
-            'hub_manage_diagnostics',        // hub_call_zwave_repair, hub_delete_captured_state
+            'hub_manage_diagnostics',        // hub_call_gc, hub_delete_captured_state
+            'hub_manage_radio',              // hub_set_zwave/zigbee, hub_call_zwave/zigbee/matter
             'hub_manage_files',              // hub_write_file, hub_delete_file
             'hub_manage_native_rules_and_apps', // create/update/delete/run native rules
             'hub_manage_rule_machine',       // hub_call_rule, set_rule_paused, set_rule_private_boolean
@@ -263,7 +266,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     def "gateway aggregation survives toggle-driven sub-tool hiding"() {
         // Smoke-tests the end-to-end path: the Write master OFF feeds getHiddenToolNames(),
         // which also filters gateway sub-tools. hub_manage_diagnostics is a mixed gateway --
-        // with every write sub-tool (hub_call_gc, hub_call_zwave_repair, hub_delete_captured_state)
+        // with every write sub-tool (hub_call_gc, hub_delete_captured_state)
         // hidden, its surviving read sub-tools relabel the gateway to read-only. The gateway
         // still appears (it keeps reads), proving the aggregation re-derives the label from the
         // visible sub-tools rather than the static config.
@@ -329,6 +332,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_set_app_disabled',
             'hub_export_native_app',
             'hub_delete_visual_rule',
+            'hub_set_zwave', 'hub_set_zigbee',
             'hub_update_package'
         ] as Set
 
@@ -338,7 +342,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_export_custom_rule',
             'hub_create_variable',
             'hub_create_backup',
-            'hub_reboot', 'hub_shutdown', 'hub_call_zwave_repair', 'hub_call_gc',
+            'hub_reboot', 'hub_shutdown', 'hub_call_gc',
+            'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',
             'hub_manage_virtual_device',
             'hub_create_room',
             'hub_create_app', 'hub_create_driver', 'hub_create_library',
@@ -509,8 +514,10 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_delete_captured_state',
             'hub_delete_debug_logs', 'hub_set_log_level',
             'hub_create_backup',
-            'hub_reboot', 'hub_shutdown', 'hub_call_zwave_repair', 'hub_delete_device',
+            'hub_reboot', 'hub_shutdown', 'hub_delete_device',
             'hub_call_gc',
+            'hub_set_zwave', 'hub_set_zigbee',
+            'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',
             'hub_manage_virtual_device', 'hub_update_device',
             'hub_create_room', 'hub_delete_room', 'hub_update_room',
             'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
@@ -569,7 +576,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 99
+        names.size() == 104
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk

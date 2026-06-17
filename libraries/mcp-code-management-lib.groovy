@@ -2276,13 +2276,13 @@ def _getAllToolDefinitions_partCodeManagement() {
             name: "hub_list_apps",
             description: """List apps on the hub. scope selects what kind of "apps" to return.
 
-scope='instances' (default) — running app INSTANCES (built-in + user) with parent/child tree. Requires the Read master.
+scope='instances' (default) — running app INSTANCES (built-in + user) with parent/child tree. Requires the Read master.[[FLAT_TRIM]]
   Each app entry returns: id, name, type, disabled, user (true=user-installed Groovy app, false=built-in), hidden, parentId (null for top-level), hasChildren, childCount. Per-app event history: hub_list_device_events with appId.
   Use filter to narrow results: 'all' (default), 'builtin' (Hubitat native apps), 'user' (custom Groovy apps), 'disabled' (paused/disabled), 'parents' (apps with children like Rule Machine, Room Lighting, Groups and Scenes), 'children' (individual rules, scenes, etc.).
-  filter, includeHidden, and cursor apply to this mode.
+  filter, includeHidden, and cursor apply to this mode.[[/FLAT_TRIM]]
 
-scope='types' — installed app CODE LIBRARY / available app TYPES (the app code installed on the hub, not running instances). Requires Read master.
-  filter and includeHidden are ignored in this mode.
+scope='types' — installed app CODE LIBRARY / available app TYPES (the app code installed on the hub, not running instances). Requires Read master.[[FLAT_TRIM]]
+  filter and includeHidden are ignored in this mode.[[/FLAT_TRIM]]
 
 Pass cursor to page through the list at 50 per page when the full response would exceed the hub's 128KB JSON-RPC cap.""",
             inputSchema: [
@@ -2291,7 +2291,7 @@ Pass cursor to page through the list at 50 per page when the full response would
                     scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree (Read master). 'types' = installed app code library / available app types (Read master).", default: "instances"],
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: filter apps by category. Default: all"],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit to get the full list in a single response (subject to the universal 120KB response-size guard -- oversized responses come back as a response_too_large envelope). Pass the nextCursor value from a prior call to fetch the next page (page size 50). Empty string starts at the first page."]
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard).[[FLAT_TRIM]] Pass the nextCursor value from a prior call to fetch the next page (page size 50). Empty string starts at the first page.[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [
@@ -2525,7 +2525,7 @@ Four source modes (mutually exclusive):
 
 Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
 
-Self-update guard: refuses to overwrite the MCP server's own app source unless Developer Mode is on (a bad self-update bricks the MCP loop). Optional expectedVersion arg enables optimistic locking. Optional triggerUpdated arg fires updated() on a named instance after save (UI Save does NOT do this -- opt-in only).""",
+Self-update guard: refuses to overwrite the MCP server's own app source unless Developer Mode is on. Optional expectedVersion arg enables optimistic locking. Optional triggerUpdated arg fires updated() on a named instance after save.[[FLAT_TRIM]] A bad self-update bricks the MCP loop. UI Save does NOT fire updated() -- triggerUpdated is opt-in only.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2534,8 +2534,8 @@ Self-update guard: refuses to overwrite the MCP server's own app source unless D
                     sourceFile: [type: "string", description: "File Manager filename. Upload first via curl per tool description."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http:// or https://). Mirrors UI's Import Code from Website + Save."],
                     resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub."],
-                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard. If supplied, the update aborts with success:false + conflict:true on version mismatch. Stringified integers coerced; explicit null rejected."],
-                    triggerUpdated: [type: "integer", description: "OPTIONAL post-save lifecycle refresh. Set to the running instance appId; after save succeeds, the tool also fires updated() on that instance so subscriptions/schedules re-initialize. Default: omitted (matches UI behavior; UI does NOT fire updated() on save)."],
+                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard. Aborts with conflict:true on version mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
+                    triggerUpdated: [type: "integer", description: "OPTIONAL post-save lifecycle refresh. Set to the running instance appId; fires updated() so subscriptions/schedules re-initialize.[[FLAT_TRIM]] Default: omitted (matches UI behavior; UI does NOT fire updated() on save).[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["appId", "confirm"]
@@ -2675,11 +2675,11 @@ Three source modes (mutually exclusive):
 - sourceFile -- File Manager filename (upload first via curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload)
 - importUrl -- hub fetches the URL directly
 
-Library source must include a library() definition block with 4 required fields: name, namespace, author, description. The hub does NOT compile-check libraries at install time -- syntax errors only surface later when an app or driver tries to #include the library. Requires Write master + confirm + backup <24h. Returns new libraryId.""",
+Library source must include a library() definition block. Requires Write master + confirm + backup <24h. Returns new libraryId.[[FLAT_TRIM]] Required fields: name, namespace, author, description. The hub does NOT compile-check libraries at install time -- syntax errors only surface later when an app or driver tries to #include the library.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    source: [type: "string", description: "Inline source. Stubs only -- fills agent transcript. Must include library() block with name/namespace/author/description."],
+                    source: [type: "string", description: "Inline source. Stubs only -- fills agent transcript.[[FLAT_TRIM]] Must include library() block with name/namespace/author/description.[[/FLAT_TRIM]]"],
                     sourceFile: [type: "string", description: "File Manager filename. Upload first via curl per tool description."],
                     importUrl: [type: "string", description: "URL the hub fetches directly. http:// or https://. Mutually exclusive with source/sourceFile."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
@@ -2749,14 +2749,14 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""
 
 Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value), and `embeddedActions` — clickable button affordances embedded in paragraph HTML[[FLAT_TRIM]] (RM 5.1 wizards expose "Create New Trigger", "Edit Trigger", "Delete Trigger" etc. as `<div class='submitOnChange'>` elements rather than schema inputs; this field surfaces them with their button name + stateAttribute so hub_set_rule can drive them)[[/FLAT_TRIM]]. Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything. summary=true: fast identity-only mode.
 
-Get the appId from hub_list_apps (scope='instances') or hub_list_rules (RM rules -- use this, not hub_get_custom_rule, which only handles MCP-native rules); for multi-page apps pass pageName (hub_list_app_pages discovers available names).
+Get the appId from hub_list_apps (scope='instances') or hub_list_rules; for multi-page apps pass pageName (hub_list_app_pages discovers available names).[[FLAT_TRIM]] Use hub_list_rules, not hub_get_custom_rule, for RM rules (hub_get_custom_rule only handles MCP-native rules).[[/FLAT_TRIM]]
 
 Requires Read master.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
-                    pageName: [type: "string", description: "Optional sub-page name for multi-page apps. Main page is used when omitted. Call hub_list_app_pages to discover available pages. HPM: prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefOptions (main menu). RM / Room Lighting: mainPage only."],
+                    pageName: [type: "string", description: "Optional sub-page name for multi-page apps. Main page is used when omitted. Call hub_list_app_pages to discover available pages.[[FLAT_TRIM]] HPM: prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefOptions (main menu). RM / Room Lighting: mainPage only.[[/FLAT_TRIM]]"],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map. Default false -- large apps can have 500-1000 keys with app-specific encoding (e.g. Room Lighting's dm~<deviceId>~<scene>). Set true only for power-user inspection.", default: false],
                     summary: [type: "boolean", description: "Fast identity-only read (returns the hub's thin app record: id, name, type, disabled, user -- no config page). pageName/includeSettings are ignored.", default: false]
                 ],
@@ -2866,8 +2866,9 @@ Requires Read master.""",
             description: """List all apps that reference a specific device (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.). Requires the Read master.
 
 Answers \"which apps would break or change behavior if I disable/delete this device?\" — critical before device cleanup, troubleshooting, or reassignment.
-
-Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, label=user-visible name, trueLabel=label without HTML decoration, disabled), count, parentApp.""",
+[[FLAT_TRIM]]
+Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, label=user-visible name, trueLabel=label without HTML decoration, disabled), count, parentApp.
+[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [

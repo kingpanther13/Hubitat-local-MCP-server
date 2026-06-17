@@ -19,7 +19,6 @@ import support.ToolSpecBase
  * - toolGetRuleDiagnostics  -> hub_get_custom_rule (detailed=true)
  * - toolGetZwaveDetails     -> hub_get_radio_details (radio=zwave)
  * - toolGetZigbeeDetails    -> hub_get_radio_details (radio=zigbee)
- * - toolZwaveRepair         -> hub_call_zwave_repair        (Write master + confirm + 24h backup)
  * - toolListCapturedStates  -> hub_list_captured_states
  * - toolDeleteCapturedState -> hub_delete_captured_state (stateId omitted = delete ALL)
  *
@@ -1247,129 +1246,6 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.source == 'hub_api_raw'
         result.rawResponse.contains('not json')
         result.note.contains('not JSON')
-    }
-
-    // -------- toolZwaveRepair (DESTRUCTIVE: Write master + confirm + 24h-backup gate) --------
-
-    def "hub_call_zwave_repair throws when confirm is not provided"() {
-        given:
-        enableWrite()
-
-        when:
-        script.toolZwaveRepair([:])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('SAFETY CHECK FAILED')
-        ex.message.contains('confirm=true')
-    }
-
-    def "hub_call_zwave_repair throws when the Write master is disabled"() {
-        given:
-        settingsMap.enableWrite = false
-
-        when: 'the central Write master gate fires before the confirm/backup checks in the tool body'
-        script.executeTool('hub_call_zwave_repair', [confirm: true])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Write tools are disabled')
-    }
-
-    def "hub_call_zwave_repair throws when no recent backup exists"() {
-        given:
-        settingsMap.enableWrite = true
-        // No stateMap.lastBackupTimestamp
-
-        when:
-        script.toolZwaveRepair([confirm: true])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('BACKUP REQUIRED')
-    }
-
-    def "hub_call_zwave_repair posts to /hub/zwaveRepair and reports success with warning"() {
-        given:
-        enableWrite()
-        def postedPath = null
-        script.metaClass.hubInternalPost = { String path, Map body = null ->
-            postedPath = path
-            'repair started'
-        }
-
-        when:
-        def result = script.toolZwaveRepair([confirm: true])
-
-        then:
-        postedPath == '/hub/zwaveRepair'
-        result.success == true
-        result.message.contains('Z-Wave network repair')
-        result.warning.contains('unresponsive')
-        result.duration.contains('5-30 minutes')
-        result.response == 'repair started'
-    }
-
-    @spock.lang.Unroll
-    def "hub_call_zwave_repair via dispatch posts and reports success (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-        def postedPath = null
-        script.metaClass.hubInternalPost = { String path, Map body = null ->
-            postedPath = path
-            'repair started'
-        }
-
-        when:
-        def response = mcpDriver.callTool('hub_call_zwave_repair', [confirm: true])
-
-        then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        postedPath == '/hub/zwaveRepair'
-        inner.success == true
-        inner.message.contains('Z-Wave network repair')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    @spock.lang.Unroll
-    def "hub_call_zwave_repair via dispatch maps confirm-missing IAE to -32602 (useGateways=#useGateways)"() {
-        given:
-        settingsMap.useGateways = useGateways
-        enableWrite()
-
-        when:
-        def response = mcpDriver.callTool('hub_call_zwave_repair', [:])
-
-        then:
-        response.error != null
-        response.error.code == -32602
-        response.error.message.contains('SAFETY CHECK FAILED')
-        response.error.message.contains('confirm=true')
-
-        where:
-        useGateways << [true, false]
-    }
-
-    def "hub_call_zwave_repair reports failure without throwing when POST throws"() {
-        given:
-        enableWrite()
-        script.metaClass.hubInternalPost = { String path, Map body = null ->
-            throw new RuntimeException('hub unreachable')
-        }
-
-        when:
-        def result = script.toolZwaveRepair([confirm: true])
-
-        then:
-        result.success == false
-        result.error.contains('Z-Wave repair failed')
-        result.error.contains('hub unreachable')
-        result.note.contains('Z-Wave Details')
     }
 
     // -------- saveCapturedState atomic-store migration (issue #105 PR2a #5) --------

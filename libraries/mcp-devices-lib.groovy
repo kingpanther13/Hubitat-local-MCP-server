@@ -1816,7 +1816,7 @@ Only query devices the user has mentioned or that are relevant to their request.
             name: "hub_get_device_attribute",
             description: """Get a device attribute's current value, or block-poll until it reaches an expected value.
 
-One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches (OR semantics), returning immediately on match or when timeoutMs elapses — a single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished). Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.
+One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches (OR semantics), returning immediately on match or when timeoutMs elapses — a single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished).[[FLAT_TRIM]] Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.[[/FLAT_TRIM]]
 
 Only query devices the user has mentioned or that are relevant to their request.""",
             inputSchema: [
@@ -1824,7 +1824,7 @@ Only query devices the user has mentioned or that are relevant to their request.
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices"],
                     attribute: [type: "string", description: "Attribute name"],
-                    expectedValue: [type: "string", description: "If set, block-poll until currentValue equals this string. Enables poll mode. At least one of expectedValue/expectedValues enables polling."],
+                    expectedValue: [type: "string", description: "If set, block-poll until currentValue equals this string. Enables poll mode.[[FLAT_TRIM]] At least one of expectedValue/expectedValues enables polling.[[/FLAT_TRIM]]"],
                     expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue is any of these strings (OR with expectedValue). Enables poll mode."],
                     timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
                     pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.", default: 200, minimum: 50, maximum: 5000]
@@ -1857,7 +1857,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match"],
                     command: [type: "string", description: "Command name, e.g. \"setLevel\". Must be one of the device's supported commands (see hub_get_device)."],
-                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor. Omit for no-arg commands like on/off. Each element is a string; numbers and JSON-object values are passed as strings (e.g. [\"{\\\"hue\\\":0,\\\"saturation\\\":100,\\\"level\\\":50}\"]) and coerced hub-side.", items: [type: "string"]]
+                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor. Omit for no-arg commands like on/off.[[FLAT_TRIM]] Each element is a string; numbers and JSON-object values are passed as strings (e.g. [\"{\\\"hue\\\":0,\\\"saturation\\\":100,\\\"level\\\":50}\"]) and coerced hub-side.[[/FLAT_TRIM]]", items: [type: "string"]]
                 ],
                 required: ["deviceId", "command"]
             ],
@@ -1881,9 +1881,9 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
                 type: "object",
                 properties: [
                     deviceId: [type: "string", description: "Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable)."],
-                    appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted). Rows: {name, value, description, date}. Mutually exclusive with deviceId."],
+                    appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted).[[FLAT_TRIM]] Rows: {name, value, description, date}.[[/FLAT_TRIM]] Mutually exclusive with deviceId."],
                     hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events."],
-                    attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch'). Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name."],
+                    attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch').[[FLAT_TRIM]] Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name.[[/FLAT_TRIM]]"],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500). Higher values may slow hub.", default: 10]
                 ]
             ],
