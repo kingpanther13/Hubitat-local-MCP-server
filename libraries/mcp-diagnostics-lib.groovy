@@ -30,20 +30,33 @@ def toolGetRadioDetails(args) {
 private void _attachRadioIncludes(result, args) {
     if (!(result instanceof Map)) return
 
-    // Per-node Z-Wave state (plain text; "Done" when idle). Encode the id like the write paths.
+    // Per-node state, radio-aware: Matter -> per-node commissioning poller; otherwise
+    // the Z-Wave node-state read (plain text; "Done" when idle). Encode the id.
+    def radio = args?.radio?.toString()?.toLowerCase()
     def nodeId = args?.node_id?.toString()?.trim()
     if (nodeId) {
-        result.nodeState = _radioGetSafe("/hub/zwave2/getNodeState?node=${java.net.URLEncoder.encode(nodeId, 'UTF-8')}")
+        def encoded = java.net.URLEncoder.encode(nodeId, 'UTF-8')
+        if (radio == "matter") {
+            result.matterPairStatus = _radioGetSafe("/hub/matterPairDeviceStatus?nodeId=${encoded}")
+        } else {
+            result.nodeState = _radioGetSafe("/hub/zwave2/getNodeState?node=${encoded}")
+        }
     }
 
-    // Lifecycle status pollers: Z-Wave repair/exclusion + Zigbee network. Matter is
-    // omitted -- /hub/matterPairDeviceStatus is a per-node commissioning poller (empty
-    // without a node), so Matter status comes from hub_get_radio_details(radio='matter').
+    // Lifecycle status pollers -- the in-flight progress reads for the hub_call_zwave
+    // operations plus Zigbee network state. (Matter commissioning status is per-node:
+    // hub_get_radio_details(radio='matter', node_id=N).)
     if (args?.include_status) {
         result.status = [
             zwaveRepair: _radioGetSafe("/hub/zwaveRepair2Status"),
             zwaveRepairRunning: _radioGetSafe("/hub/checkZwaveRepairRunning"),
             zwaveExclude: _radioGetSafe("/hub/zwaveExclude/status"),
+            zwaveJoinDiscovery: _radioGetSafe("/hub/searchZwaveDevices"),
+            zwaveAntennaTest: _radioGetSafe("/hub/zwave2/antennaTestProgress"),
+            zwaveNodeReplace: [
+                status: _radioGetSafe("/hub/zwave/nodeReplace/status"),
+                info: _radioGetSafe("/hub/zwave/nodeReplace/info")
+            ],
             zigbee: _radioGetSafe("/hub/zigbeeInfo/status")
         ]
     }
@@ -1394,7 +1407,8 @@ def toolSetZwave(args) {
         } else if (cur.longRangeChannel != null) {
             params.longRangeChannel = cur.longRangeChannel
         }
-        def query = params.collect { k, v -> "${k}=${java.net.URLEncoder.encode(v.toString(), 'UTF-8')}" }.join("&")
+        // Drop null params so v.toString() can't NPE (e.g. region-less hub + region-omitting call).
+        def query = params.findAll { k, v -> v != null }.collect { k, v -> "${k}=${java.net.URLEncoder.encode(v.toString(), 'UTF-8')}" }.join("&")
         def resp = _radioGet("/hub/zwaveDetails/update?${query}")
         mcpLog("info", "hub-admin", "Z-Wave region/long-range config updated via MCP")
         return [success: true, radio: "zwave", region: params.region, longRangeChannel: params.longRangeChannel,
@@ -1405,13 +1419,16 @@ def toolSetZwave(args) {
     }
 }
 
-// hub_set_zigbee: enable/disable the Zigbee radio, or set channel + power.
-// Idempotent. Disable is confirm-gated.
+// hub_set_zigbee: enable/disable the Zigbee radio, set channel + power, set radio
+// settings (rebuild-on-reboot / inactive-device ping), or toggle keep-alive ping
+// for one device. Idempotent. Disable is confirm-gated.
 def toolSetZigbee(args) {
     def hasEnabled = args.containsKey("enabled")
-    def hasConfig = (args.channel != null || args.power_level != null)
-    if (!hasEnabled && !hasConfig) {
-        throw new IllegalArgumentException("Specify enabled (true/false) and/or channel + power_level.")
+    def hasChannel = (args.channel != null || args.power_level != null)
+    def hasSettings = (args.rebuild_on_reboot != null || args.ping_inactive != null)
+    def hasPingDevice = (args.ping_device != null)
+    if (!hasEnabled && !hasChannel && !hasSettings && !hasPingDevice) {
+        throw new IllegalArgumentException("Specify enabled, channel + power_level, rebuild_on_reboot/ping_inactive, or ping_device.")
     }
 
     if (hasEnabled) {
@@ -1426,6 +1443,41 @@ def toolSetZigbee(args) {
         } catch (Exception e) {
             mcpLogError("hub-admin", "Zigbee enable/disable failed", e)
             return [success: false, error: "Zigbee enable/disable failed: ${e.message}", note: "Check Hub Security credentials."]
+        }
+    }
+
+    if (hasPingDevice) {
+        def pd = args.ping_device
+        if (!(pd instanceof Map) || pd.device_id == null || pd.enabled == null) {
+            throw new IllegalArgumentException("ping_device requires {device_id, enabled} -- toggle keep-alive pinging for one Zigbee device.")
+        }
+        try {
+            boolean on = (pd.enabled == true)
+            def resp = _radioGet("/hub/zigbee/updatePingDevice/${java.net.URLEncoder.encode(pd.device_id.toString(), 'UTF-8')}/${on}")
+            mcpLog("info", "hub-admin", "Zigbee keep-alive ping ${on ? 'on' : 'off'} for device ${pd.device_id} via MCP")
+            return [success: true, radio: "zigbee", pingDevice: [deviceId: pd.device_id?.toString(), enabled: on],
+                    message: "Zigbee keep-alive ping ${on ? 'enabled' : 'disabled'} for device ${pd.device_id}.", response: resp]
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "Zigbee ping-device update failed", e)
+            return [success: false, error: "Zigbee ping-device update failed: ${e.message}", note: "Check the device id and Hub Security credentials."]
+        }
+    }
+
+    if (hasSettings) {
+        // updateSettings is a full-set GET (sends both flags); merge over the current
+        // zigbeeDetails so an unspecified flag keeps its value rather than resetting.
+        try {
+            def current = _radioGet("/hub/zigbeeDetails/json")
+            def cur = (current instanceof Map) ? current : [:]
+            boolean rebuild = (args.rebuild_on_reboot != null) ? (args.rebuild_on_reboot == true) : (cur.rebuildNetworkOnReboot == true)
+            boolean ping = (args.ping_inactive != null) ? (args.ping_inactive == true) : (cur.inactiveDevicePingEnabled == true)
+            def resp = _radioGet("/hub/zigbee/updateSettings?rebuildNetworkOnReboot=${rebuild}&inactiveDevicePingEnabled=${ping}")
+            mcpLog("info", "hub-admin", "Zigbee radio settings updated via MCP")
+            return [success: true, radio: "zigbee", rebuildNetworkOnReboot: rebuild, inactiveDevicePingEnabled: ping,
+                    message: "Zigbee radio settings updated.", response: resp]
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "Zigbee settings update failed", e)
+            return [success: false, error: "Zigbee settings update failed: ${e.message}", note: "Check Hub Security credentials."]
         }
     }
 
@@ -1528,7 +1580,10 @@ def toolCallZwave(args) {
                 resp = _radioPost("/hub2/zwave/nodeReplace", groovy.json.JsonOutput.toJson([zwaveNodeId: nodeId]))
                 return [success: true, action: action, nodeId: nodeId,
                         message: "Node replace started for node ${nodeId}.",
-                        note: "Poll hub_get_radio_details(include_status=true) and add the replacement device. The flow exposes /hub/zwave/nodeReplace/{info,status,stop}.", response: resp]
+                        note: "Poll hub_get_radio_details(include_status=true) (status.zwaveNodeReplace) and add the replacement device; abort with action='node_replace_stop'.", response: resp]
+            case "node_replace_stop":
+                resp = _radioPost("/hub/zwave/nodeReplace/stop")   // bare POST (UI sends empty body)
+                return [success: true, action: action, message: "Z-Wave node replace stopped.", response: resp]
             case "node_remove":
                 requireDestructiveConfirm(args.confirm)
                 resp = _radioPost("/hub/zwave/nodeRemove", [zwaveNodeId: nodeId])
@@ -2107,8 +2162,8 @@ def _getAllToolDefinitions_partDiagnostics() {
                 properties: [
                     radio: [type: "string", enum: ["zwave", "zigbee", "matter"], description: "Which radio to query. Omit to return both Z-Wave and Zigbee; pass 'matter' for the Matter fabric and commissioned-device list."],
                     include_topology: [type: "boolean", description: "Also include the mesh route/topology map[[FLAT_TRIM]] (Z-Wave nodes+connectors and raw route table; Zigbee children+neighbors+routes)[[/FLAT_TRIM]]. Z-Wave/Zigbee only. Read-only. Default false."],
-                    node_id: [type: "string", description: "Attach per-node Z-Wave state for this node id (plain text; 'Done' when idle), under result.nodeState."],
-                    include_status: [type: "boolean", description: "Attach lifecycle status pollers under result.status[[FLAT_TRIM]]: Z-Wave repair stage, heal-running flag, exclusion status, and Zigbee network status (panId/extendedPanId/networkState). Matter status is via radio='matter'[[/FLAT_TRIM]]. Default false."],
+                    node_id: [type: "string", description: "Per-node status for this id. With radio='matter' -> per-node Matter commissioning status under result.matterPairStatus; otherwise Z-Wave node state under result.nodeState (plain text; 'Done' when idle)."],
+                    include_status: [type: "boolean", description: "Attach lifecycle status pollers under result.status[[FLAT_TRIM]]: Z-Wave repair stage, heal-running flag, exclusion status, join discovery, antenna-test progress, node-replace status/info, and Zigbee network status (panId/extendedPanId/networkState). (Matter commissioning status is per-node: radio='matter' + node_id.)[[/FLAT_TRIM]] Default false."],
                     include_logs: [type: "boolean", description: "Attach Matter chip-tool logs ({text}, ANSI) under result.matterLogs. Default false."],
                     include_channel_scan: [type: "boolean", description: "Attach Zigbee channel energy-scan results under result.channelScan (run a fresh scan with hub_call_zigbee action='channel_scan' first). Default false."],
                     include_smartstart: [type: "boolean", description: "Attach the Z-Wave SmartStart provisioning list under result.smartStart (each entry's nodeDSK feeds hub_call_zwave action='smartstart_delete'). Default false."],
@@ -2128,7 +2183,8 @@ def _getAllToolDefinitions_partDiagnostics() {
                     matterData: [type: "object", description: "Parsed Matter details; present for radio='matter'. {enabled, installed, networkState, ipAddresses, fabricId, devices[]}"],
                     topology: [type: "object", description: "Mesh route/topology; present only when include_topology=true. {endpoint, routes (parsed node/route graph), zwaveTopologyTable (raw, Z-Wave only), error?}"],
                     nodeState: [description: "Per-node Z-Wave state; present when node_id given (parsed JSON or plain text)"],
-                    status: [type: "object", description: "Lifecycle status pollers; present when include_status=true. {zwaveRepair, zwaveRepairRunning, zwaveExclude, zigbee}"],
+                    status: [type: "object", description: "Lifecycle status pollers; present when include_status=true. {zwaveRepair, zwaveRepairRunning, zwaveExclude, zwaveJoinDiscovery, zwaveAntennaTest, zwaveNodeReplace:{status,info}, zigbee}"],
+                    matterPairStatus: [type: "object", description: "Per-node Matter commissioning status; present when radio='matter' and node_id is given"],
                     matterLogs: [type: "object", description: "Matter chip-tool logs; present when include_logs=true. {text}"],
                     channelScan: [description: "Zigbee channel energy-scan results; present when include_channel_scan=true"],
                     smartStart: [type: "object", description: "SmartStart provisioning entries; present when include_smartstart=true. {items:[...]}"],
@@ -2190,14 +2246,17 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_set_zigbee",
-            description: "Configure the Zigbee radio (idempotent): enable/disable the radio, or set the channel and power level. Read current values with hub_get_radio_details(radio='zigbee').[[FLAT_TRIM]] Channel changes can drop devices that do not follow (they may need re-pairing). Disabling strands every Zigbee device, so it is confirm-gated. For reboot/rebuild/channel-scan use hub_call_zigbee; for reset/firmware use hub_call_destructive_radio.[[/FLAT_TRIM]] Requires Write master.",
+            description: "Configure the Zigbee radio (idempotent): enable/disable, channel + power, radio settings (rebuild-on-reboot / inactive-device ping), or per-device keep-alive ping. One operation per call. Read current values with hub_get_radio_details(radio='zigbee').[[FLAT_TRIM]] Channel changes can drop devices that do not follow (they may need re-pairing). Disabling strands every Zigbee device, so it is confirm-gated. Settings merge over current values (an unspecified flag is preserved). For reboot/rebuild/channel-scan use hub_call_zigbee; for reset/firmware use hub_call_destructive_radio.[[/FLAT_TRIM]] Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
                     enabled: [type: "boolean", description: "Enable (true) or disable (false) the Zigbee radio. Disable requires confirm=true."],
                     channel: [description: "Zigbee channel (typically 11-26). Set together with power_level."],
                     power_level: [description: "Zigbee transmit power level (hub-dependent dBm scale). Set together with channel."],
-                    confirm: [type: "boolean", description: "Required true to DISABLE the radio (backup <24h also enforced). Not needed for enable or channel/power changes."]
+                    rebuild_on_reboot: [type: "boolean", description: "Radio setting: rebuild the Zigbee network on each hub reboot.[[FLAT_TRIM]] Merged with ping_inactive over current settings.[[/FLAT_TRIM]]"],
+                    ping_inactive: [type: "boolean", description: "Radio setting: keep-alive ping inactive Zigbee devices.[[FLAT_TRIM]] Merged with rebuild_on_reboot over current settings.[[/FLAT_TRIM]]"],
+                    ping_device: [type: "object", description: "Toggle keep-alive ping for ONE device: {device_id, enabled}.[[FLAT_TRIM]] device_id is the Zigbee device id; enabled is a boolean.[[/FLAT_TRIM]]"],
+                    confirm: [type: "boolean", description: "Required true to DISABLE the radio (backup <24h also enforced). Not needed for the other changes."]
                 ]
             ],
             outputSchema: [
@@ -2206,8 +2265,11 @@ def _getAllToolDefinitions_partDiagnostics() {
                     success: [type: "boolean", description: "Whether the change applied"],
                     radio: [type: "string", description: "Always 'zigbee'"],
                     enabled: [type: "boolean", description: "Resulting enabled state; present for enable/disable"],
-                    channel: [description: "Resulting channel; present for config update"],
-                    powerLevel: [description: "Resulting power level; present for config update"],
+                    channel: [description: "Resulting channel; present for channel/power update"],
+                    powerLevel: [description: "Resulting power level; present for channel/power update"],
+                    rebuildNetworkOnReboot: [type: "boolean", description: "Resulting rebuild-on-reboot setting; present for a settings update"],
+                    inactiveDevicePingEnabled: [type: "boolean", description: "Resulting inactive-device-ping setting; present for a settings update"],
+                    pingDevice: [type: "object", description: "Resulting per-device ping {deviceId, enabled}; present for ping_device"],
                     message: [type: "string", description: "Human-readable result"],
                     warning: [type: "string", description: "Channel-change disruption warning"],
                     error: [type: "string", description: "Present on failure"],
@@ -2222,7 +2284,7 @@ def _getAllToolDefinitions_partDiagnostics() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    action: [type: "string", enum: ["repair_start", "repair_cancel", "repair_node", "inclusion_start", "inclusion_stop", "grant_keys", "grant_code", "exclusion_start", "exclusion_stop", "node_refresh", "node_rediscover", "node_reinitialize", "refresh_stats", "node_replace", "node_remove", "antenna_test_start", "antenna_test_continue", "smartstart_delete"], description: "The Z-Wave operation.[[FLAT_TRIM]] repair_start/cancel + repair_node (network rebuild); inclusion_start/stop + grant_keys/grant_code (S2 pairing); exclusion_start/stop; node_refresh/rediscover/reinitialize + refresh_stats (maintenance); node_replace; node_remove (failed-node removal); antenna_test_start/continue; smartstart_delete.[[/FLAT_TRIM]]"],
+                    action: [type: "string", enum: ["repair_start", "repair_cancel", "repair_node", "inclusion_start", "inclusion_stop", "grant_keys", "grant_code", "exclusion_start", "exclusion_stop", "node_refresh", "node_rediscover", "node_reinitialize", "refresh_stats", "node_replace", "node_replace_stop", "node_remove", "antenna_test_start", "antenna_test_continue", "smartstart_delete"], description: "The Z-Wave operation.[[FLAT_TRIM]] repair_start/cancel + repair_node (network rebuild); inclusion_start/stop + grant_keys/grant_code (S2 pairing); exclusion_start/stop; node_refresh/rediscover/reinitialize + refresh_stats (maintenance); node_replace + node_replace_stop; node_remove (failed-node removal); antenna_test_start/continue; smartstart_delete. Poll progress via hub_get_radio_details(include_status=true).[[/FLAT_TRIM]]"],
                     node_id: [type: "string", description: "Z-Wave node id; required for repair_node, node_refresh/rediscover/reinitialize, node_remove, node_replace, antenna_test_start."],
                     security_keys: [type: "object", description: "grant_keys only: S2 grant booleans, e.g. {S2AccessControl:true, S2Authenticated:true, S2Unauthenticated:false, S0Unauthenticated:false}."],
                     security_code: [type: "object", description: "grant_code only: S2 DSK / security code, e.g. {accept:true, securityCode:'12345'}."],

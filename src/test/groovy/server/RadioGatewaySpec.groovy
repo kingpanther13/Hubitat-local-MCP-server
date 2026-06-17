@@ -501,4 +501,91 @@ class RadioGatewaySpec extends ToolSpecBase {
         when: script.toolCallMatter([action: 'bogus'])
         then: thrown(IllegalArgumentException)
     }
+
+    // ---- Final-pass additions: pollers, node_replace_stop, zigbee settings/ping, matter per-node, null-fix ----
+
+    def "hub_call_zwave node_replace_stop POSTs to /hub/zwave/nodeReplace/stop"() {
+        given:
+        def posted = []
+        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean retry = false ->
+            posted << path; 'stopped'
+        }
+
+        when:
+        def r = script.toolCallZwave([action: 'node_replace_stop'])
+
+        then:
+        posted == ['/hub/zwave/nodeReplace/stop']
+        r.success == true
+    }
+
+    def "hub_get_radio_details radio='matter' + node_id polls matterPairDeviceStatus (not the zwave node-state)"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/matterDetails/json') { p -> JsonOutput.toJson([enabled: true]) }
+        hubGet.register('/hub/matterPairDeviceStatus?nodeId=3001') { p -> JsonOutput.toJson([initMap: [:], deviceMap: [:]]) }
+
+        when:
+        def r = script.toolGetRadioDetails([radio: 'matter', node_id: '3001'])
+
+        then:
+        r.matterPairStatus != null
+        !r.containsKey('nodeState')
+    }
+
+    def "include_status attaches the join/antenna/nodeReplace pollers"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true]) }
+        ['/hub/zwaveRepair2Status', '/hub/checkZwaveRepairRunning', '/hub/zwaveExclude/status',
+         '/hub/searchZwaveDevices', '/hub/zwave2/antennaTestProgress', '/hub/zwave/nodeReplace/status',
+         '/hub/zwave/nodeReplace/info', '/hub/zigbeeInfo/status'].each { ep -> hubGet.register(ep) { p -> '{}' } }
+
+        when:
+        def r = script.toolGetRadioDetails([radio: 'zwave', include_status: true])
+
+        then:
+        r.status?.containsKey('zwaveJoinDiscovery')
+        r.status?.containsKey('zwaveAntennaTest')
+        r.status?.zwaveNodeReplace?.containsKey('status')
+    }
+
+    def "hub_set_zigbee settings merge preserves the unspecified flag"() {
+        given:
+        hubGet.register('/hub/zigbeeDetails/json') { p -> JsonOutput.toJson([rebuildNetworkOnReboot: false, inactiveDevicePingEnabled: true]) }
+        hubGet.register('/hub/zigbee/updateSettings?rebuildNetworkOnReboot=true&inactiveDevicePingEnabled=true') { p -> 'ok' }
+
+        when:
+        def r = script.toolSetZigbee([rebuild_on_reboot: true])
+
+        then:
+        r.success == true
+        r.rebuildNetworkOnReboot == true
+        r.inactiveDevicePingEnabled == true   // preserved from current state
+    }
+
+    def "hub_set_zigbee ping_device toggles per-device keep-alive ping"() {
+        given:
+        hubGet.register('/hub/zigbee/updatePingDevice/0x1234/true') { p -> 'ok' }
+
+        when:
+        def r = script.toolSetZigbee([ping_device: [device_id: '0x1234', enabled: true]])
+
+        then:
+        r.success == true
+        r.pingDevice.deviceId == '0x1234'
+        r.pingDevice.enabled == true
+    }
+
+    def "hub_set_zwave long-range-only config does not NPE when region is absent (Gemini null-filter)"() {
+        given:
+        hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true, secureJoin: 0]) }   // no region key
+        hubGet.register('/hub/zwaveDetails/update?enabled=true&secureJoin=0&longRangeChannel=1') { p -> 'ok' }
+
+        when:
+        def r = script.toolSetZwave([long_range_channel: 1])
+
+        then:
+        r.success == true   // null region param filtered out, no NullPointerException
+    }
 }
