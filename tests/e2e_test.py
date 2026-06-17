@@ -1038,6 +1038,28 @@ class TestRunner:
         assert ("output" in tr) or ("error" in tr), \
             f"traceroute produced neither output nor a structured error: {tr}"
 
+    @test("diagnostics")
+    def test_device_health_speedtest(self) -> None:
+        # FOLD 2 (#257): speedtest folds the hub's WAN download test into hub_get_device_health
+        # (GET /hub/networkTest/speedtest -- a fixed ~10 MB S3 blob). Unlike traceroute, the
+        # download time is inherently variable and on a slow link can exceed the ~10s cloud-relay
+        # ceiling, dropping the response with a 504 even though the hub completed it. That's an
+        # infra limit, not a tool fault, so tolerate a relay 504 as an acceptable outcome; when the
+        # response DOES come back in time, assert the fold fired (speedtest object with output|error).
+        try:
+            result = self.client.call_tool("hub_get_device_health", {"speedtest": True})
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" in str(exc) or "502" in str(exc) or "503" in str(exc):
+                print("    speedtest response lost to relay 5xx (10 MB download > ~10s ceiling) -- "
+                      "acceptable; fold reached the hub")
+                return
+            raise
+        assert isinstance(result, dict), "hub_get_device_health did not return an object"
+        st = result.get("speedtest")
+        assert isinstance(st, dict), f"speedtest fold did not attach a speedtest object: {result}"
+        assert ("output" in st) or ("error" in st), \
+            f"speedtest produced neither output nor a structured error: {st}"
+
     @test("native_apps")
     def test_set_app_disabled_roundtrip(self) -> None:
         # Item 2 (#257): toggle a standalone non-e2e app's disabled flag and restore it.

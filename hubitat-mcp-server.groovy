@@ -1177,7 +1177,7 @@ def getGatewayConfig() {
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; recordSnapshot=true also persists a snapshot. Args: recordSnapshot, trendPoints",
                 hub_get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Read master",
                 hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires the Write master",
-                hub_get_device_health: "Check device staleness; run network diagnostics: ICMP-ping arbitrary IPs (router, NAS, server), traceroute to one IPv4, ~10s WAN speedtest; and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), traceroute (IPv4), speedtest (bool), identifyHub",
+                hub_get_device_health: "Check device staleness; run network diagnostics: ICMP-ping arbitrary IPs (router, NAS, server), traceroute to one IPv4, WAN download speedtest; and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), traceroute (IPv4), speedtest (bool), identifyHub",
                 hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count), or Matter fabric/device details. Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee). Requires Read master",
                 hub_call_zwave_repair: "Z-Wave network repair (⚠️ DISRUPTIVE, 5-30 min, devices unresponsive). Args: confirm=true",
                 hub_list_captured_states: "List saved device state snapshots",
@@ -1220,7 +1220,7 @@ def getGatewayConfig() {
                 hub_get_debug_logs: "Get MCP internal debug logs (mode='logs') or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
-                hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, ~10s WAN speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, traceroute, speedtest, identifyHub",
+                hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, traceroute, speedtest, identifyHub",
                 hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count), or Matter fabric/device details. Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee)",
                 hub_list_captured_states: "List saved device state snapshots"
             ],

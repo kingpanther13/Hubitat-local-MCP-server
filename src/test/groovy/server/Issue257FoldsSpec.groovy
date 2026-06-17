@@ -1,5 +1,6 @@
 package server
 
+import support.TestDevice
 import support.TestLocation
 import support.ToolSpecBase
 import groovy.json.JsonOutput
@@ -50,7 +51,7 @@ class Issue257FoldsSpec extends ToolSpecBase {
         result.matterData.devices[0].name == "HW1"
     }
 
-    def "radio='matter' falls back to sdk_only with a C-8 note when the endpoint is empty"() {
+    def "radio='matter' falls back to sdk_only with a C-8 note when the endpoint is empty (benign: no error field)"() {
         given:
         settingsMap.enableRead = true
         hubGet.register('/hub/matterDetails/json') { params -> null }
@@ -62,6 +63,8 @@ class Issue257FoldsSpec extends ToolSpecBase {
         result.source == "sdk_only"
         result.note?.toLowerCase()?.contains("c-8")
         !result.containsKey("matterData")
+        // Empty 2xx is the benign "no Matter radio" signal -- NOT a fault, so no error field.
+        !result.containsKey("error")
     }
 
     def "radio='matter' captures a raw body when the response is not JSON"() {
@@ -78,7 +81,7 @@ class Issue257FoldsSpec extends ToolSpecBase {
         result.note == "Response was not JSON format"
     }
 
-    def "radio='matter' returns sdk_only when the fetch throws"() {
+    def "radio='matter' surfaces a structured error when the fetch throws (fault != absent hardware)"() {
         given:
         settingsMap.enableRead = true
         // No handler registered -> HubInternalGetMock throws, exercising the catch path.
@@ -88,6 +91,9 @@ class Issue257FoldsSpec extends ToolSpecBase {
 
         then:
         result.source == "sdk_only"
+        // A thrown request is a genuine fault, distinguished from the benign empty-2xx
+        // "no Matter radio" case by the error field (silent-failure-hunter finding).
+        result.error?.toLowerCase()?.contains("matter query failed")
         result.note?.toLowerCase()?.contains("matter")
     }
 
@@ -97,6 +103,35 @@ class Issue257FoldsSpec extends ToolSpecBase {
 
         then:
         thrown(IllegalArgumentException)
+    }
+
+    def "radio is case-normalized so a capitalized 'Matter' still dispatches"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/matterDetails/json') { params ->
+            JsonOutput.toJson([enabled: true, fabricId: "CAFE", devices: []])
+        }
+
+        when:
+        def result = script.toolGetRadioDetails([radio: "Matter"])
+
+        then:
+        result.source == "hub_api"
+        result.matterData.fabricId == "CAFE"
+    }
+
+    def "radio case-normalization also covers Z-Wave ('ZWAVE' dispatches, does not throw)"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/zwaveDetails/json') { params -> JsonOutput.toJson([enabled: true]) }
+
+        when:
+        def result = script.toolGetRadioDetails([radio: "ZWAVE"])
+
+        then:
+        // Routed to the Z-Wave helper (single-radio shape), not the both-shape or a throw.
+        !result.containsKey("zigbee")
+        result.source == "hub_api"
     }
 
     def "omitting radio keeps the Z-Wave + Zigbee both-shape (Matter not added to OMIT)"() {
@@ -144,6 +179,22 @@ class Issue257FoldsSpec extends ToolSpecBase {
 
         then:
         thrown(IllegalArgumentException)
+    }
+
+    def "traceroute rejects malformed/dangerous host '#bad' (IPv4 gate guards the path interpolation)"() {
+        given:
+        settingsMap.enableRead = true
+
+        when:
+        script.toolDeviceHealthCheck([traceroute: bad])
+
+        then:
+        thrown(IllegalArgumentException)
+
+        where:
+        // Out-of-range octet, wrong arity, empty (post-trim), and a shell/path-injection
+        // attempt -- all must be rejected before the host reaches the endpoint path.
+        bad << ["256.1.1.1", "1.2.3.999", "1.2.3", "1.2.3.4.5", "", "8.8.8.8/../../hub/reboot", "8.8.8.8; ls"]
     }
 
     def "traceroute fetch failure sets result.traceroute.error instead of throwing"() {
@@ -224,6 +275,27 @@ class Issue257FoldsSpec extends ToolSpecBase {
         result.speedtest.output == "1.5 MB/s"
     }
 
+    def "traceroute + speedtest attach on the normal (devices-present) return path too"() {
+        given:
+        settingsMap.enableRead = true
+        // A populated selection skips the no-devices early return and reaches the
+        // bottom-of-function attach. The device has no lastActivity -> 'unknown',
+        // which is fine: we only need the populated-result path exercised.
+        settingsMap.selectedDevices = [new TestDevice(id: 1, name: "d1", label: "Living Room Light")]
+        hubGet.register('/hub/networkTest/traceroute/8.8.8.8') { params -> "1  router  0.5 ms\n2  8.8.8.8  12 ms" }
+        hubGet.register('/hub/networkTest/speedtest') { params -> "(2.7 MB/s) saved [10485760/10485760]" }
+
+        when:
+        def result = script.toolDeviceHealthCheck([traceroute: "8.8.8.8", speedtest: true])
+
+        then:
+        // Reached the populated-result path, not the early "No devices selected" return.
+        !result.containsKey("message")
+        result.summary.totalDevices == 1
+        result.traceroute.output.contains("8.8.8.8")
+        result.speedtest.output.contains("MB/s")
+    }
+
     // ---- Dispatch via executeTool ---------------------------------------
 
     def "dispatch: hub_get_radio_details radio='matter' routes through executeTool"() {
@@ -253,5 +325,23 @@ class Issue257FoldsSpec extends ToolSpecBase {
         then:
         result.traceroute.host == "1.2.3.4"
         result.traceroute.output == "hops here"
+    }
+
+    def "dispatch: case-normalized radio='Matter' survives the executeTool layer"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/matterDetails/json') { params ->
+            JsonOutput.toJson([enabled: true, fabricId: "BEEF", devices: []])
+        }
+
+        when:
+        // executeTool does not enum-validate args (only master/override gating), so a
+        // capitalized value reaches the handler -- this proves the fold works end-to-end
+        // for a client that capitalizes the enum.
+        def result = script.executeTool("hub_get_radio_details", [radio: "Matter"])
+
+        then:
+        result.source == "hub_api"
+        result.matterData.fabricId == "BEEF"
     }
 }

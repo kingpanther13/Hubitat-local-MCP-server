@@ -5,7 +5,8 @@ library(name: "McpDiagnosticsLib", namespace: "mcp", author: "kingpanther13", de
 // `case X:` label is rejected by the hub's Groovy parser (ambiguous
 // parameterless-closure vs open-block) even though hubitat_ci's parser accepts it.
 def toolGetRadioDetails(args) {
-    def radio = args.radio
+    // Normalize case so clients that capitalize the arg (e.g. "Matter") still dispatch.
+    def radio = args.radio?.toString()?.toLowerCase()
     if (radio != null && !(radio in ["zwave", "zigbee", "matter"]))
         throw new IllegalArgumentException("radio must be 'zwave', 'zigbee', or 'matter' (or omit for both Z-Wave and Zigbee)")
     if (radio == "zwave") return toolGetZwaveDetails(args)
@@ -25,6 +26,7 @@ def toolGetMatterDetails(args) {
     // a Matter radio (C-8 / C-8 Pro); older hubs / non-Matter models return nothing.
     def endpoint = "/hub/matterDetails/json"
     def matterSuccess = false
+    def matterFault = null
     try {
         def responseText = hubInternalGet(endpoint)
         if (responseText) {
@@ -42,12 +44,22 @@ def toolGetMatterDetails(args) {
             }
         }
     } catch (Exception e) {
-        mcpLog("debug", "hub-admin", "Matter endpoint ${endpoint} failed: ${e.message}")
+        // A thrown request (timeout/500/auth) is a genuine fault, NOT the benign
+        // "no Matter radio" signal (which is an empty 2xx). Log at warn so a real
+        // C-8 fault is visible at the default log level, and tag the result below
+        // so the caller can tell a fault apart from absent hardware.
+        matterFault = e.message
+        mcpLog("warn", "hub-admin", "Matter endpoint ${endpoint} failed: ${matterFault}")
     }
 
     if (!matterSuccess) {
         result.source = "sdk_only"
-        result.note = "Matter details unavailable. Matter requires a Hubitat C-8 or C-8 Pro on supported firmware with the Matter integration enabled."
+        if (matterFault) {
+            result.error = "Matter query failed: ${matterFault}"
+            result.note = "The Matter endpoint returned an error rather than the benign 'no Matter radio' signal. On a C-8/C-8 Pro this is a transient/connectivity fault -- retry."
+        } else {
+            result.note = "Matter details unavailable. Matter requires a Hubitat C-8 or C-8 Pro on supported firmware with the Matter integration enabled."
+        }
     }
 
     mcpLog("info", "hub-admin", "Retrieved Matter details")
@@ -1058,8 +1070,9 @@ def toolDeviceHealthCheck(args) {
         def endpoint = "/hub/networkTest/speedtest"
         speedtestResult = [endpoint: endpoint]
         try {
-            // ~10s synchronous WAN download test (fixed Hubitat S3 URL); allow headroom over the default timeout.
-            def txt = hubInternalGet(endpoint, [:], 30)
+            // Synchronous WAN download test (~10 MB from a fixed Hubitat S3 URL). Slow links are
+            // exactly what's being diagnosed, so allow 90s -- 10 MB under ~1 Mbps exceeds the 30s default.
+            def txt = hubInternalGet(endpoint, [:], 90)
             speedtestResult.output = txt?.take(8000)
         } catch (Exception e) {
             speedtestResult.error = "speedtest failed: ${e.message}"
@@ -1622,7 +1635,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     pingHosts: [type: "array", items: [type: "string"], description: "Optional IPv4 addresses to ICMP-ping (max 5 per call).[[FLAT_TRIM]] Each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved — pass IPs only.[[/FLAT_TRIM]]"],
                     pingCount: [type: "integer", description: "Packets to send per host (1-5). Default: 3.", default: 3],
                     traceroute: [type: "string", description: "Optional single IPv4 dotted-quad host (e.g. '8.8.8.8') to traceroute; plain-text route table returned under traceroute.output.[[FLAT_TRIM]] Hostnames are rejected — pass an IP.[[/FLAT_TRIM]]"],
-                    speedtest: [type: "boolean", description: "If true, run the hub's ~10s WAN download test; plain-text wget log with the measured speed returned under speedtest.output.[[FLAT_TRIM]] Fixed Hubitat S3 URL, no caller input.[[/FLAT_TRIM]] Default: false."],
+                    speedtest: [type: "boolean", description: "If true, run the hub's WAN download speedtest; plain-text wget log with the measured speed returned under speedtest.output.[[FLAT_TRIM]] Fixed 10 MB Hubitat S3 blob, no caller input; a few seconds on a fast link, up to ~90s on slow ones.[[/FLAT_TRIM]] Default: false."],
                     identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the staleDevices array. Omit to get all stale devices in one response (subject to the universal response-size guard). Pass nextCursor from a prior call to fetch the next page (page size 100). unknownDevices and healthyDevices are always returned in full alongside the page."]
                 ]
