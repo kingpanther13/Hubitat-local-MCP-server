@@ -253,4 +253,235 @@ class RadioGatewaySpec extends ToolSpecBase {
         r.success == true
         r.action == 'pair'
     }
+
+    // ---- Silent-failure fix: a hub fault on a write surfaces as success:false ----
+
+    def "a hub fault on a write GET returns success:false, not a fabricated success"() {
+        given:
+        // No handler registered for /hub/zwave/enable/true -> hubInternalGet throws ->
+        // throwing _radioGet propagates -> the tool's catch reports success:false.
+        when:
+        def r = script.toolSetZwave([enabled: true])
+
+        then:
+        r.success == false
+        r.error
+    }
+
+    def "a hub fault on a destructive reset returns success:false (no fabricated 'unpaired')"() {
+        given:
+        enableWrite()
+        // /hub/zwave/resetJson not registered -> throws -> success:false.
+        when:
+        def r = script.toolCallDestructiveRadio([radio: 'zwave', action: 'reset', confirm: true])
+
+        then:
+        r.success == false
+    }
+
+    // ---- POST-path verification (verb + path + body shape) ----
+
+    def "hub_call_zwave node_refresh POSTs form-encoded zwaveNodeId"() {
+        given:
+        def posted = [:]
+        script.metaClass.hubInternalPostForm = { String path, Map body, int t = 420, boolean retry = false ->
+            posted.path = path; posted.body = body; [data: 'ok']
+        }
+
+        when:
+        def res = script.toolCallZwave([action: 'node_refresh', node_id: '7'])
+
+        then:
+        posted.path == '/hub/zwave/refreshNodeStatus'
+        posted.body == [zwaveNodeId: '7']
+        res.success == true
+    }
+
+    def "hub_call_zwave grant_keys POSTs JSON to /hub/zwave/securityKeys"() {
+        given:
+        def posted = [:]
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
+            posted.path = path; posted.body = body; [success: true]
+        }
+
+        when:
+        def res = script.toolCallZwave([action: 'grant_keys', security_keys: [S2Authenticated: true]])
+
+        then:
+        posted.path == '/hub/zwave/securityKeys'
+        posted.body.contains('S2Authenticated')
+        res.success == true
+    }
+
+    def "hub_call_zwave node_replace POSTs JSON to /hub2/zwave/nodeReplace"() {
+        given:
+        def posted = [:]
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
+            posted.path = path; posted.body = body; [ok: true]
+        }
+
+        when:
+        def res = script.toolCallZwave([action: 'node_replace', node_id: '9'])
+
+        then:
+        posted.path == '/hub2/zwave/nodeReplace'
+        posted.body.contains('zwaveNodeId')
+        posted.body.contains('9')
+        res.success == true
+    }
+
+    def "hub_call_zwave smartstart_delete POSTs nodeDSK to /mobileapi/zwave/smartstart/delete"() {
+        given:
+        def posted = [:]
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
+            posted.path = path; posted.body = body; [ok: true]
+        }
+
+        when:
+        def res = script.toolCallZwave([action: 'smartstart_delete', node_dsk: 'ABCD-1234'])
+
+        then:
+        posted.path == '/mobileapi/zwave/smartstart/delete'
+        posted.body.contains('nodeDSK')
+        posted.body.contains('ABCD-1234')
+    }
+
+    def "hub_call_destructive_radio device_firmware_start POSTs fileName to the firmware endpoint"() {
+        given:
+        enableWrite()
+        def posted = [:]
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
+            posted.path = path; posted.body = body; [ok: true]
+        }
+
+        when:
+        def res = script.toolCallDestructiveRadio([radio: 'zwave', action: 'device_firmware_start', node_id: '5', file_name: 'fw.gbl', confirm: true])
+
+        then:
+        posted.path == '/hub/zwave/deviceFirmware/start'
+        posted.body.contains('fileName')
+        posted.body.contains('fw.gbl')
+        res.success == true
+    }
+
+    // ---- repair_start: modern endpoint + legacy fallback ----
+
+    def "repair_start hits zwaveRepair2 and reports the 5-30 min duration"() {
+        given:
+        hubGet.register('/hub/zwaveRepair2?resetStats=false&maxHealth=10') { p -> 'started' }
+
+        when:
+        def res = script.toolCallZwave([action: 'repair_start'])
+
+        then:
+        res.success == true
+        res.duration?.contains('5-30')
+    }
+
+    def "repair_start falls back to legacy /hub/zwaveRepair when zwaveRepair2 errors"() {
+        given:
+        // zwaveRepair2 unregistered -> _radioGetSafe returns {error} -> legacy fallback fires.
+        hubGet.register('/hub/zwaveRepair') { p -> 'legacy started' }
+
+        when:
+        def res = script.toolCallZwave([action: 'repair_start'])
+
+        then:
+        res.success == true
+    }
+
+    // ---- include_* read folds ----
+
+    def "include_status attaches the zwave/zigbee pollers and omits the dropped matter slot"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true]) }
+        hubGet.register('/hub/zwaveRepair2Status') { p -> JsonOutput.toJson([stage: 'IDLE']) }
+        hubGet.register('/hub/checkZwaveRepairRunning') { p -> JsonOutput.toJson([isZWaveNetworkHealRunning: 'false']) }
+        hubGet.register('/hub/zwaveExclude/status') { p -> JsonOutput.toJson([message: '']) }
+        hubGet.register('/hub/zigbeeInfo/status') { p -> JsonOutput.toJson([networkState: 'ONLINE']) }
+
+        when:
+        def r = script.toolGetRadioDetails([radio: 'zwave', include_status: true])
+
+        then:
+        r.status?.containsKey('zwaveRepair')
+        r.status?.containsKey('zigbee')
+        !r.status?.containsKey('matter')
+    }
+
+    def "a failing include surfaces an {error} under its key without failing the whole read"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true]) }
+        // matterLogs NOT registered -> _radioGetSafe returns {error}; the read still succeeds.
+
+        when:
+        def r = script.toolGetRadioDetails([radio: 'zwave', include_logs: true])
+
+        then:
+        r instanceof Map          // the base read came back, did not throw
+        r.matterLogs?.error       // the failed include is visible, not thrown
+    }
+
+    // ---- config-merge: a region change preserves the radio's other settings ----
+
+    def "hub_set_zwave region change preserves the radio's current long-range channel"() {
+        given:
+        hubGet.register('/hub/zwaveDetails/json') { p ->
+            JsonOutput.toJson([enabled: true, region: 'US', secureJoin: 1, longRangeChannel: 2])
+        }
+        hubGet.register('/hub/zwaveDetails/update?enabled=true&region=EU&secureJoin=1&longRangeChannel=2') { p -> 'ok' }
+
+        when:
+        def r = script.toolSetZwave([region: 'EU'])
+
+        then:
+        r.success == true
+        r.region == 'EU'
+        r.longRangeChannel == 2   // merged from current state, not dropped to a default
+    }
+
+    // ---- remaining GET smokes + confirm-gate + unknown-action default ----
+
+    def "hub_set_zigbee disable is confirm-gated"() {
+        when: script.toolSetZigbee([enabled: false])
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('SAFETY CHECK FAILED')
+    }
+
+    def "hub_call_matter enable hits /hub/matter/enable/true with a reboot warning"() {
+        given:
+        hubGet.register('/hub/matter/enable/true') { p -> 'ok' }
+
+        when:
+        def r = script.toolCallMatter([action: 'enable'])
+
+        then:
+        r.success == true
+        r.warning?.toLowerCase()?.contains('reboot')
+    }
+
+    def "hub_call_zigbee radio_reboot hits /hub/rebootZigbeeRadio"() {
+        given:
+        hubGet.register('/hub/rebootZigbeeRadio') { p -> 'ok' }
+
+        when:
+        def r = script.toolCallZigbee([action: 'radio_reboot'])
+
+        then:
+        r.success == true
+    }
+
+    def "unknown radio actions throw IllegalArgumentException"() {
+        when: script.toolCallZwave([action: 'bogus'])
+        then: thrown(IllegalArgumentException)
+
+        when: script.toolCallZigbee([action: 'bogus'])
+        then: thrown(IllegalArgumentException)
+
+        when: script.toolCallMatter([action: 'bogus'])
+        then: thrown(IllegalArgumentException)
+    }
 }

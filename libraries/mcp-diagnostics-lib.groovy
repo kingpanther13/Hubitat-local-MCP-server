@@ -30,53 +30,62 @@ def toolGetRadioDetails(args) {
 private void _attachRadioIncludes(result, args) {
     if (!(result instanceof Map)) return
 
-    // Per-node Z-Wave state (plain text; "Done" when idle).
+    // Per-node Z-Wave state (plain text; "Done" when idle). Encode the id like the write paths.
     def nodeId = args?.node_id?.toString()?.trim()
     if (nodeId) {
-        result.nodeState = _radioGet("/hub/zwave2/getNodeState?node=${nodeId}")
+        result.nodeState = _radioGetSafe("/hub/zwave2/getNodeState?node=${java.net.URLEncoder.encode(nodeId, 'UTF-8')}")
     }
 
-    // Lifecycle status pollers across all three radios.
+    // Lifecycle status pollers: Z-Wave repair/exclusion + Zigbee network. Matter is
+    // omitted -- /hub/matterPairDeviceStatus is a per-node commissioning poller (empty
+    // without a node), so Matter status comes from hub_get_radio_details(radio='matter').
     if (args?.include_status) {
         result.status = [
-            zwaveRepair: _radioGet("/hub/zwaveRepair2Status"),
-            zwaveRepairRunning: _radioGet("/hub/checkZwaveRepairRunning"),
-            zwaveExclude: _radioGet("/hub/zwaveExclude/status"),
-            zigbee: _radioGet("/hub/zigbeeInfo/status"),
-            matter: _radioGet("/hub/matterPairDeviceStatus?nodeId=")
+            zwaveRepair: _radioGetSafe("/hub/zwaveRepair2Status"),
+            zwaveRepairRunning: _radioGetSafe("/hub/checkZwaveRepairRunning"),
+            zwaveExclude: _radioGetSafe("/hub/zwaveExclude/status"),
+            zigbee: _radioGetSafe("/hub/zigbeeInfo/status")
         ]
     }
 
     // Matter chip-tool logs ({text}, ANSI).
-    if (args?.include_logs) result.matterLogs = _radioGet("/hub/matterLogs/json")
+    if (args?.include_logs) result.matterLogs = _radioGetSafe("/hub/matterLogs/json")
 
     // Zigbee channel energy-scan results.
-    if (args?.include_channel_scan) result.channelScan = _radioGet("/hub/zigbeeChannelScanJson")
+    if (args?.include_channel_scan) result.channelScan = _radioGetSafe("/hub/zigbeeChannelScanJson")
 
     // SmartStart provisioning entries (cache-bust the list like the UI does).
-    if (args?.include_smartstart) result.smartStart = _radioGet("/mobileapi/zwave/smartstart/list?t=${now()}")
+    if (args?.include_smartstart) result.smartStart = _radioGetSafe("/mobileapi/zwave/smartstart/list?t=${now()}")
 
     // Firmware-eligible Z-Wave devices + available files.
     if (args?.include_firmware) {
         result.firmware = [
-            devices: _radioGet("/hub/zwave/deviceFirmware/devices"),
-            files: _radioGet("/hub/zwave/deviceFirmware/files")
+            devices: _radioGetSafe("/hub/zwave/deviceFirmware/devices"),
+            files: _radioGetSafe("/hub/zwave/deviceFirmware/files")
         ]
     }
 }
 
 // Shared radio GET: authenticated internal GET, parsed as JSON when the body is
 // JSON, returned as a trimmed raw string otherwise (several radio endpoints return
-// plain text -- getNodeState, the topology table). On request failure returns an
-// {error:...} map so a per-include miss is visible without throwing.
+// plain text -- getNodeState, the topology table). THROWS on a hub fault (4xx/5xx/
+// timeout) so a WRITE path's existing catch reports success:false rather than a
+// fabricated success:true with the error buried in the response. Resilient READS
+// (the hub_get_radio_details includes) use _radioGetSafe instead.
 private _radioGet(String path) {
-    try {
-        def txt = hubInternalGet(path)
-        if (!txt) return null
-        try { return new groovy.json.JsonSlurper().parseText(txt) }
-        catch (Exception parseErr) { return txt.take(8000) }
-    } catch (Exception e) {
-        mcpLog("debug", "hub-admin", "_radioGet ${path} failed: ${e.message}")
+    def txt = hubInternalGet(path)
+    if (!txt) return null
+    try { return new groovy.json.JsonSlurper().parseText(txt) }
+    catch (Exception parseErr) { return txt.take(8000) }
+}
+
+// Non-throwing read variant: a hub fault becomes an {error} map instead of
+// propagating, so one bad include (an absent radio or older firmware) does not
+// fail the whole hub_get_radio_details read -- the miss stays visible per-include.
+private _radioGetSafe(String path) {
+    try { return _radioGet(path) }
+    catch (Exception e) {
+        mcpLog("debug", "hub-admin", "_radioGetSafe ${path} failed: ${e.message}")
         return [error: "Failed to fetch ${path}: ${e.message}"]
     }
 }
@@ -1347,7 +1356,8 @@ def runPingChecks(List rawHosts, Integer count) {
 // channel. Idempotent. Disable is confirm-gated (radio off strands every Z-Wave
 // device). Config updates preserve the radio's other current settings (enabled,
 // region, secureJoin, longRangeChannel) -- the /hub/zwaveDetails/update endpoint
-// is a full PUT, so we read current state first and only override what changed.
+// is a full-replacement GET (takes the complete param set, not a partial patch),
+// so we read current state first and only override what changed.
 def toolSetZwave(args) {
     def hasEnabled = args.containsKey("enabled")
     def hasConfig = (args.region != null || args.long_range_channel != null)
@@ -1454,11 +1464,12 @@ def toolCallZwave(args) {
         def resp
         switch (action) {
             case "repair_start":
-                // Modern zwaveRepair2 (C-7+) is a GET; fall back to the legacy
-                // /hub/zwaveRepair GET (C-5/earlier) if the modern endpoint errors.
-                // _radioGet returns an {error:...} map rather than throwing, so detect
-                // the miss explicitly instead of relying on a catch.
-                resp = _radioGet("/hub/zwaveRepair2?resetStats=false")
+                // Modern zwaveRepair2 (C-7+) is a GET (UI sends resetStats=false&maxHealth=10);
+                // fall back to legacy /hub/zwaveRepair (C-5/earlier) if it errors. Probe with
+                // the non-throwing _radioGetSafe so we can detect the {error} map and fall back;
+                // the legacy attempt uses throwing _radioGet so a real failure there surfaces as
+                // success:false rather than a fabricated success.
+                resp = _radioGetSafe("/hub/zwaveRepair2?resetStats=false&maxHealth=10")
                 if (resp instanceof Map && resp.error) {
                     mcpLog("debug", "hub-admin", "zwaveRepair2 missed (${resp.error}); trying legacy /hub/zwaveRepair")
                     resp = _radioGet("/hub/zwaveRepair")
@@ -2097,7 +2108,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     radio: [type: "string", enum: ["zwave", "zigbee", "matter"], description: "Which radio to query. Omit to return both Z-Wave and Zigbee; pass 'matter' for the Matter fabric and commissioned-device list."],
                     include_topology: [type: "boolean", description: "Also include the mesh route/topology map[[FLAT_TRIM]] (Z-Wave nodes+connectors and raw route table; Zigbee children+neighbors+routes)[[/FLAT_TRIM]]. Z-Wave/Zigbee only. Read-only. Default false."],
                     node_id: [type: "string", description: "Attach per-node Z-Wave state for this node id (plain text; 'Done' when idle), under result.nodeState."],
-                    include_status: [type: "boolean", description: "Attach lifecycle status pollers under result.status[[FLAT_TRIM]]: Z-Wave repair stage, heal-running flag, exclusion status, Zigbee network status (panId/extendedPanId/networkState), and Matter commissioning status[[/FLAT_TRIM]]. Default false."],
+                    include_status: [type: "boolean", description: "Attach lifecycle status pollers under result.status[[FLAT_TRIM]]: Z-Wave repair stage, heal-running flag, exclusion status, and Zigbee network status (panId/extendedPanId/networkState). Matter status is via radio='matter'[[/FLAT_TRIM]]. Default false."],
                     include_logs: [type: "boolean", description: "Attach Matter chip-tool logs ({text}, ANSI) under result.matterLogs. Default false."],
                     include_channel_scan: [type: "boolean", description: "Attach Zigbee channel energy-scan results under result.channelScan (run a fresh scan with hub_call_zigbee action='channel_scan' first). Default false."],
                     include_smartstart: [type: "boolean", description: "Attach the Z-Wave SmartStart provisioning list under result.smartStart (each entry's nodeDSK feeds hub_call_zwave action='smartstart_delete'). Default false."],
@@ -2117,7 +2128,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     matterData: [type: "object", description: "Parsed Matter details; present for radio='matter'. {enabled, installed, networkState, ipAddresses, fabricId, devices[]}"],
                     topology: [type: "object", description: "Mesh route/topology; present only when include_topology=true. {endpoint, routes (parsed node/route graph), zwaveTopologyTable (raw, Z-Wave only), error?}"],
                     nodeState: [description: "Per-node Z-Wave state; present when node_id given (parsed JSON or plain text)"],
-                    status: [type: "object", description: "Lifecycle status pollers; present when include_status=true. {zwaveRepair, zwaveRepairRunning, zwaveExclude, zigbee, matter}"],
+                    status: [type: "object", description: "Lifecycle status pollers; present when include_status=true. {zwaveRepair, zwaveRepairRunning, zwaveExclude, zigbee}"],
                     matterLogs: [type: "object", description: "Matter chip-tool logs; present when include_logs=true. {text}"],
                     channelScan: [description: "Zigbee channel energy-scan results; present when include_channel_scan=true"],
                     smartStart: [type: "object", description: "SmartStart provisioning entries; present when include_smartstart=true. {items:[...]}"],
