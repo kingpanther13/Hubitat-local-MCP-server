@@ -39,6 +39,23 @@ class RadioGatewaySpec extends ToolSpecBase {
         ])
     }
 
+    def "executeTool routes the hub_manage_radio gateway NAME to handleGateway (regression: missing dispatch case)"() {
+        given:
+        settingsMap.useGateways = true   // gateway mode -> the no-tool call returns the sub-tool catalog
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = true
+
+        when:
+        def r = script.executeTool('hub_manage_radio', [:])
+
+        then:
+        // Was 'Unknown tool: hub_manage_radio' when the gateway lacked an executeTool dispatch case.
+        def text = JsonOutput.toJson(r)
+        !text.contains('Unknown tool')
+        text.contains('hub_set_zwave')
+        text.contains('hub_call_zwave')
+    }
+
     def "hub_get_radio_details is multi-gateway and never stranded (reachable read-only)"() {
         when:
         def g = gw()

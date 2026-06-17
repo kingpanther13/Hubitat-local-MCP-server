@@ -2305,6 +2305,7 @@ def executeTool(toolName, args) {
         case "hub_manage_logs":
         case "hub_manage_mcp":
         case "hub_manage_native_rules_and_apps":
+        case "hub_manage_radio":
         case "hub_manage_rooms":
         case "hub_manage_rule_machine":
         case "hub_manage_variables":
