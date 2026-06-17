@@ -498,11 +498,11 @@ def _getAllToolDefinitions_partSelfAdmin() {
     return [
         [
             name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning parameters) in place. Use this to self-administer the MCP app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit. Allowlisted keys only: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas — any other key is rejected. After changing any enable* toggle, useGateways, or publishOutputSchemas, MCP clients (Claude Code, etc.) may need to restart their connection to refresh the cached tool schema. [[FLAT_TRIM]]Deliberately NOT allowlisted: enableWrite (would disable the tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), selectedDevices (different wire format, has its own tool), and disabled_tools/disabled_gateways (could self-disable this tool).[[/FLAT_TRIM]]",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning) in place — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit. Changing an enable* toggle, useGateways, or publishOutputSchemas reshapes tools/list, so MCP clients may need to reconnect to refresh cached schemas.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g., {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})"],
+                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas — any other key is rejected.[[FLAT_TRIM]] Deliberately NOT allowlisted: enableWrite (would disable this tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), selectedDevices (different wire format, has its own tool), disabled_tools/disabled_gateways (could self-disable this tool).[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["settings", "confirm"]
