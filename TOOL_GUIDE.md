@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 30 items (11 core + 19 gateways) covering 99 total tools. Use `hub_search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 31 items (11 core + 20 gateways) covering 104 total tools. Use `hub_search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
@@ -14,7 +14,7 @@ Gateway verbs encode mutation: **`hub_read_*`** gateways are pure-read (every su
 
 **Read gateways:** `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (5), `hub_read_variables` (3)
 
-**Manage gateways:** `hub_manage_code` (11), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (3), `hub_manage_devices` (7), `hub_manage_diagnostics` (8), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (10), `hub_manage_rooms` (5), `hub_manage_rule_machine` (10), `hub_manage_variables` (8)
+**Manage gateways:** `hub_manage_code` (11), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (4), `hub_manage_devices` (7), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (10), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (10), `hub_manage_variables` (8)
 
 All safety gates are preserved: the Read/Write master gate runs centrally in `executeTool()` and re-applies per sub-tool when a gateway routes back through it, and the destructive `confirm`+backup checks run in the handlers of the destructive write tools.
 
@@ -135,10 +135,16 @@ All destructive write tools (the `confirm`+backup tier) require these steps:
 - For Z-Wave/Zigbee: Warn user to do proper exclusion first to avoid ghost nodes
 - All device details logged to MCP debug logs for audit
 
-**hub_call_zwave_repair** (via `hub_manage_diagnostics`)
-- Effects: 5-30 min duration, Z-Wave devices may be unresponsive
-- Best run during off-peak hours
-- Only use when user explicitly requests Z-Wave repair
+**hub_call_destructive_radio** (via `hub_manage_destructive_ops`)
+- Destructive radio operations selected by `action`: Z-Wave/Zigbee reset/wipe and radio firmware update — NO UNDO
+- Three-layer safety gate: Write master + hub backup within 24h + explicit `confirm=true`
+- Resetting a radio orphans all of its paired devices; warn the user before proceeding
+- Only use when user explicitly requests the operation
+
+**hub_call_zwave** (via `hub_manage_radio`)
+- Z-Wave radio operations selected by `action` — network repair is one action
+- Repair effects: 5-30 min duration, Z-Wave devices may be unresponsive; best run during off-peak hours
+- Only use when user explicitly requests the operation
 
 **hub_delete_room** (via `hub_manage_rooms`)
 - Devices become unassigned (not deleted)

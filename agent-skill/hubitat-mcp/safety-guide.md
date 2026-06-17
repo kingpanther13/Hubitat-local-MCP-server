@@ -67,10 +67,18 @@ ALL destructive write tools (`confirm`+backup tier) require these steps in order
 - **This is NOT a reboot** - the hub stays off until someone manually unplugs and replugs it
 - **Only when**: User explicitly requests shutdown (e.g., for maintenance or moving the hub)
 
-#### hub_call_zwave_repair (via hub_manage_diagnostics)
-- **Effects**: 5-30 minute background process, Z-Wave devices may be unresponsive during
+#### hub_call_zwave (via hub_manage_radio)
+- Z-Wave radio operations selected by `action`; **network repair** is one such action
+- **Repair effects**: 5-30 minute background process, Z-Wave devices may be unresponsive during
 - **Best run**: During off-peak hours when automations aren't critical
-- **Only when**: User reports Z-Wave issues and explicitly requests repair
+- **Only when**: User reports Z-Wave issues and explicitly requests the operation
+
+#### hub_call_destructive_radio (via hub_manage_destructive_ops)
+- **DESTRUCTIVE - NO UNDO**: Z-Wave/Zigbee radio reset/wipe and radio firmware update, selected by `action`
+- **Three-layer gate**: Write master + hub backup within 24h + explicit `confirm=true`
+- **Effects**: Resetting/wiping a radio orphans every device paired to it; firmware update interrupts the radio
+- **Pre-flight**: Warn the user that paired devices will need to be re-included before proceeding
+- **Only when**: User explicitly requests the radio reset/wipe or firmware update
 
 #### hub_delete_device (via hub_manage_destructive_ops)
 - **THE MOST DESTRUCTIVE TOOL - NO UNDO**

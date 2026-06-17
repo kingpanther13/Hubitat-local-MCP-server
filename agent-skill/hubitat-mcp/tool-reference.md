@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 99 MCP tools. The server exposes **30 items on `tools/list`**: 11 flat core tools + 19 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
+Quick reference for all 104 MCP tools. The server exposes **31 items on `tools/list`**: 11 flat core tools + 20 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
 
 For the most authoritative reference, call `hub_get_tool_guide` via MCP.
 
@@ -23,7 +23,7 @@ Opt-in cursor pagination is wired into the read-only list-returning tools below.
 
 ## Core Tools (11) — Always flat and visible on tools/list
 
-These 11 tools are never behind a gateway. Every other tool is reachable through one or more of the 19 gateways below.
+These 11 tools are never behind a gateway. Every other tool is reachable through one or more of the 20 gateways below.
 
 ### Virtual Device Tools (1)
 
@@ -49,11 +49,11 @@ These 11 tools are never behind a gateway. Every other tool is reachable through
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `hub_search_tools` | BM25 natural language search across all 99 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `hub_search_tools` | BM25 natural language search across all 104 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
-## Gateway Tools (19) — Each proxies multiple tools
+## Gateway Tools (20) — Each proxies multiple tools
 
 Call a gateway with no arguments to see full parameter schemas for all its tools. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
@@ -202,15 +202,16 @@ Manage hub rooms: list, view details, create, delete, and rename.
 | `hub_delete_room` | Delete a room (devices become unassigned). | Write master |
 | `hub_update_room` | Rename an existing room. | Write master |
 
-### hub_manage_destructive_ops (3 tools)
+### hub_manage_destructive_ops (4 tools)
 
-Destructive hub operations: reboot, shutdown, and device deletion.
+Destructive hub operations: reboot, shutdown, device deletion, and destructive radio operations.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_reboot` | Reboot hub (1-3 min downtime). | Write master |
 | `hub_shutdown` | Power off hub (needs manual restart). | Write master |
 | `hub_delete_device` | Permanently delete a device. **NO UNDO.** For ghost/orphaned devices only. | Write master |
+| `hub_call_destructive_radio` | Destructive radio operations selected by `action`: Z-Wave/Zigbee reset/wipe and radio firmware update. **NO UNDO** — orphans paired devices. | Write master + confirm + recent backup |
 
 ### hub_manage_code (11 tools)
 
@@ -243,7 +244,7 @@ Hub and MCP log access, performance stats, and log configuration.
 | `hub_delete_debug_logs` | Clear all MCP debug logs. | None |
 | `hub_set_log_level` | Set MCP log level (debug/info/warn/error). | None |
 
-### hub_manage_diagnostics (8 tools)
+### hub_manage_diagnostics (7 tools)
 
 Performance monitoring, health checks, diagnostics, radio info, memory / GC, and state capture.
 
@@ -251,12 +252,24 @@ Performance monitoring, health checks, diagnostics, radio info, memory / GC, and
 |------|-------------|-------------|
 | `hub_get_metrics` | Retrieve hub metrics with CSV trend history (read-only; `recordSnapshot` defaults to false). | Read master |
 | `hub_get_device_health` | Find stale/offline devices. Optional `cursor` opt-in pagination over `staleDevices` (page size 100). | Read master |
-| `hub_get_radio_details` | Radio info -- Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. | Read master |
+| `hub_get_radio_details` | Radio info -- Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. (also in `hub_read_diagnostics`, `hub_manage_radio`) | Read master |
 | `hub_get_memory_history` | Free OS memory + CPU load history (with Java heap + NIO buffer tracking for leak detection). | Read master |
 | `hub_call_gc` | Force JVM GC and return before/after memory comparison. | Read master |
-| `hub_call_zwave_repair` | Start Z-Wave network repair (5-30 min). | Write master |
 | `hub_list_captured_states` | List saved device state snapshots. | None |
 | `hub_delete_captured_state` | Delete a captured device state snapshot. Omit `stateId` to delete all snapshots. | None |
+
+### hub_manage_radio (6 tools)
+
+Z-Wave, Zigbee, and Matter radio administration: radio info, configuration, and non-destructive radio operations (incl. Z-Wave network repair). Destructive radio ops live in `hub_manage_destructive_ops` as `hub_call_destructive_radio`.
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `hub_get_radio_details` | Radio info -- Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. (also in `hub_read_diagnostics`, `hub_manage_diagnostics`) | Read master |
+| `hub_set_zwave` | Configure Z-Wave radio settings. | Write master |
+| `hub_call_zwave` | Z-Wave radio operations selected by `action`, including network repair (5-30 min). | Write master |
+| `hub_set_zigbee` | Configure Zigbee radio settings. | Write master |
+| `hub_call_zigbee` | Zigbee radio operations selected by `action`. | Write master |
+| `hub_call_matter` | Matter radio operations selected by `action`. | Write master |
 
 ### hub_manage_files (4 tools)
 

@@ -1074,19 +1074,21 @@ def getGatewayConfig() {
         ],
         // Option A: Virtual device tools moved to core tools/list (full inputSchema visible)
         // manage_hub_info dissolved — zwave/zigbee moved to hub_manage_diagnostics, hub_get_update_status promoted to core
-        // hub_create_backup promoted to core, hub_call_zwave_repair moved to hub_manage_diagnostics
+        // hub_create_backup promoted to core; the old hub_call_zwave_repair was absorbed into hub_call_zwave (hub_manage_radio)
         hub_manage_destructive_ops: [
-            description: "DESTRUCTIVE hub operations: reboot, shutdown, and permanent device deletion. All operations are irreversible or cause significant downtime — confirm with user first.",
-            tools: ["hub_reboot", "hub_shutdown", "hub_delete_device"],
+            description: "DESTRUCTIVE hub operations: reboot, shutdown, permanent device deletion, and radio network/fabric resets + firmware flashes. All operations are irreversible or cause significant downtime — confirm with user first.",
+            tools: ["hub_reboot", "hub_shutdown", "hub_delete_device", "hub_call_destructive_radio"],
             summaries: [
                 hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime); updatePlatform=true installs the pending platform update instead. Args: confirm=true",
                 hub_shutdown: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
-                hub_delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true"
+                hub_delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true",
+                hub_call_destructive_radio: "Reset a radio's network/fabric (unpairs ALL devices) or flash firmware (can brick hardware). Args: radio (zwave|zigbee|matter), action (reset|device_firmware_start|device_firmware_abort|zwave_chip_firmware|zigbee_firmware), confirm=true"
             ],
             searchHints: [
                 hub_reboot: "restart reset power cycle update platform firmware upgrade",
                 hub_shutdown: "power off turn off stop halt",
-                hub_delete_device: "remove ghost orphan zwave zigbee stuck failed pairing"
+                hub_delete_device: "remove ghost orphan zwave zigbee stuck failed pairing",
+                hub_call_destructive_radio: "reset wipe zwave zigbee matter network fabric exclude all firmware flash chip radio ota brick factory"
             ]
         ],
         hub_read_apps_code: [
@@ -1171,15 +1173,14 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_diagnostics: [
-            description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, radio info, Z-Wave repair, and state snapshots. (Custom-rule diagnostics: use hub_get_custom_rule with detailed=true.)",
-            tools: ["hub_get_metrics", "hub_get_memory_history", "hub_call_gc", "hub_get_device_health", "hub_get_radio_details", "hub_call_zwave_repair", "hub_list_captured_states", "hub_delete_captured_state"],
+            description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, radio info, and state snapshots. (Z-Wave/Zigbee/Matter radio writes — repair, inclusion, config, reset — live in hub_manage_radio. Custom-rule diagnostics: use hub_get_custom_rule with detailed=true.)",
+            tools: ["hub_get_metrics", "hub_get_memory_history", "hub_call_gc", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states", "hub_delete_captured_state"],
             summaries: [
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; recordSnapshot=true also persists a snapshot. Args: recordSnapshot, trendPoints",
                 hub_get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Read master",
                 hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires the Write master",
                 hub_get_device_health: "Check device staleness; run network diagnostics: ICMP-ping arbitrary IPs (router, NAS, server), traceroute to one IPv4, WAN download speedtest; and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), traceroute (IPv4), speedtest (bool), identifyHub",
-                hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count), or Matter fabric/device details. Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee). Requires Read master",
-                hub_call_zwave_repair: "Z-Wave network repair (⚠️ DISRUPTIVE, 5-30 min, devices unresponsive). Args: confirm=true",
+                hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + the read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists). Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee), node_id?, include_topology/status/logs/channel_scan/smartstart/firmware?. Requires Read master",
                 hub_list_captured_states: "List saved device state snapshots",
                 hub_delete_captured_state: "Delete a captured state by stateId, or ALL captured states when stateId is omitted. Args: stateId (optional)"
             ],
@@ -1188,10 +1189,29 @@ def getGatewayConfig() {
                 hub_get_memory_history: "ram free used leak trending over time java heap nio",
                 hub_call_gc: "gc garbage collection free reclaim ram cleanup java heap memory",
                 hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router gateway traceroute route hops speedtest bandwidth wan download internet speed identify led blink locate physical hub",
-                hub_get_radio_details: "zwave zigbee matter thread fabric mesh network frequency firmware 908mhz 700 800 series channel pan coordinator 2400mhz radio commissioned node",
-                hub_call_zwave_repair: "fix heal network mesh routing neighbor rebuild",
+                hub_get_radio_details: "zwave zigbee matter thread fabric mesh network frequency firmware 908mhz 700 800 series channel pan coordinator 2400mhz radio commissioned node topology smartstart status",
                 hub_list_captured_states: "saved snapshot bookmark remember device values",
                 hub_delete_captured_state: "remove delete clear saved snapshot bookmark all"
+            ]
+        ],
+        hub_manage_radio: [
+            description: "Manage the Z-Wave, Zigbee, and Matter radios: configure (enable/disable, region, channel, power) and run lifecycle operations (repair, inclusion/exclusion, node maintenance, replace/remove, Zigbee reboot/rebuild/scan, Matter pair/window). Reads live in hub_get_radio_details (also in hub_read_diagnostics). DESTRUCTIVE resets + firmware flashes live in hub_manage_destructive_ops (hub_call_destructive_radio).",
+            tools: ["hub_get_radio_details", "hub_set_zwave", "hub_set_zigbee", "hub_call_zwave", "hub_call_zigbee", "hub_call_matter"],
+            summaries: [
+                hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists). Args: radio?, node_id?, include_topology/status/logs/channel_scan/smartstart/firmware?",
+                hub_set_zwave: "Configure the Z-Wave radio (idempotent): enable/disable, region, long-range channel. Args: enabled?, region?, long_range_channel?, confirm (to disable)",
+                hub_set_zigbee: "Configure the Zigbee radio (idempotent): enable/disable, channel, power. Args: enabled?, channel?, power_level?, confirm (to disable)",
+                hub_call_zwave: "Z-Wave lifecycle ops. Args: action (repair_start/cancel, repair_node, inclusion_start/stop, grant_keys/grant_code, exclusion_start/stop ⚠️, node_refresh/rediscover/reinitialize, refresh_stats, node_replace, node_remove ⚠️, antenna_test_start/continue, smartstart_delete), node_id? (per-node), confirm (exclusion_start/node_remove)",
+                hub_call_zigbee: "Zigbee ops. Args: action (radio_reboot, rebuild_network, channel_scan)",
+                hub_call_matter: "Matter ops. Args: action (enable/disable — needs hub reboot, pair, open_pairing_window), setup_code? (pair), node_id? (open_pairing_window), confirm (disable)"
+            ],
+            searchHints: [
+                hub_get_radio_details: "zwave zigbee matter thread fabric mesh network firmware channel pan coordinator radio commissioned node topology smartstart status read",
+                hub_set_zwave: "zwave radio enable disable turn on off region rf frequency long range channel configure settings idempotent",
+                hub_set_zigbee: "zigbee radio enable disable turn on off channel power level transmit configure settings idempotent",
+                hub_call_zwave: "zwave repair heal rebuild mesh include pair join exclude unpair remove failed node refresh rediscover reinitialize reinit replace antenna test smartstart s2 dsk security grant secure",
+                hub_call_zigbee: "zigbee reboot restart radio rebuild network mesh channel scan energy",
+                hub_call_matter: "matter enable disable thread pair commission setup code open pairing window share fabric node"
             ]
         ],
         hub_manage_files: [
@@ -1636,7 +1656,8 @@ def getToolDisplayMeta() {
         hub_manage_destructive_ops: [title: "Manage Destructive Ops", summary: "Reboot or shut down the hub, or permanently delete devices."],
         hub_manage_code: [title: "Manage Code", summary: "Install, update, and delete apps, drivers, libraries, and code bundles; restore backups."],
         hub_manage_logs: [title: "Manage Logs", summary: "Read hub logs and performance stats; clear MCP debug logs and set log level."],
-        hub_manage_diagnostics: [title: "Manage Diagnostics", summary: "Diagnostics plus maintenance actions: GC, Z-Wave repair, state snapshots."],
+        hub_manage_diagnostics: [title: "Manage Diagnostics", summary: "Diagnostics plus maintenance actions: GC and state snapshots."],
+        hub_manage_radio: [title: "Manage Radio", summary: "Configure and operate the Z-Wave, Zigbee, and Matter radios: repair, inclusion, exclusion, channels."],
         hub_manage_files: [title: "Manage Files", summary: "List, read, write, and delete File Manager files."],
         hub_manage_rule_machine: [title: "Manage Rule Machine", summary: "Author, trigger, pause, inspect, and delete Visual Rules Builder and Rule Machine rules."],
         hub_manage_native_rules_and_apps: [title: "Manage Native Rules and Apps", summary: "Runtime control of Rule Machine rules plus create, edit, clone, export, import, and delete classic native apps."],
@@ -2179,7 +2200,14 @@ def executeTool(toolName, args) {
         case "hub_create_backup": return toolCreateHubBackup(args)
         case "hub_reboot": return toolRebootHub(args)
         case "hub_shutdown": return toolShutdownHub(args)
-        case "hub_call_zwave_repair": return toolZwaveRepair(args)
+
+        // Radio management (hub_manage_radio + destructive radio in hub_manage_destructive_ops)
+        case "hub_set_zwave": return toolSetZwave(args)
+        case "hub_set_zigbee": return toolSetZigbee(args)
+        case "hub_call_zwave": return toolCallZwave(args)
+        case "hub_call_zigbee": return toolCallZigbee(args)
+        case "hub_call_matter": return toolCallMatter(args)
+        case "hub_call_destructive_radio": return toolCallDestructiveRadio(args)
 
         // Device Admin
         case "hub_delete_device": return toolDeleteDevice(args)
@@ -3939,11 +3967,15 @@ def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = 
     if (pageName) {
         body.formAction = "update"
         body.currentPage = pageName
-        // FUTURE-FIRMWARE-RISK: breadcrumb depth is hardcoded to a single
-        // mainPage ancestor. If RM adds multi-level sub-pages (e.g. a
-        // sub-wizard nested under selectTriggers), the correct breadcrumb
-        // would be '["mainPage","selectTriggers"]' or deeper. Verify against
-        // a Chrome network capture if a new wizard level starts rejecting clicks.
+        // Breadcrumb depth is correct for this path: _rmClickAppButton only
+        // clicks buttons on pages that are DIRECT children of mainPage
+        // (hasAll on selectTriggers, actionDone on selectActions), so a single
+        // mainPage ancestor is right. RM DOES nest deeper sub-pages today
+        // (Periodic Schedule, Cron String, etc.) -- but those commit through
+        // _rmSubmitSubPageDone, which emits the correct '["mainPage",parent]'
+        // depth (live-captured fw 2.5.0.123). The only thing that would break
+        // this hardcode is a future button-click directly on a depth-2 page;
+        // verify against a network capture if a new wizard level rejects clicks.
         body.pageBreadcrumbs = '["mainPage"]'
         // The hub uses `version` to detect concurrent edits. Fetch the
         // current value so we replay the exact one the UI would send.
@@ -4884,7 +4916,9 @@ All Write master tools require these steps:
 
 **hub_shutdown** - Powers OFF completely, requires physical restart. NOT a reboot. Only when user explicitly requests.
 
-**hub_call_zwave_repair** - 5-30 min duration, Z-Wave devices may be unresponsive. Best during off-peak hours.
+**hub_call_zwave (action=repair_start)** - 5-30 min duration, Z-Wave devices may be unresponsive. Best during off-peak hours. exclusion_start and node_remove unpair/disrupt devices (confirm=true).
+
+**hub_call_destructive_radio** - IRREVERSIBLE. reset unpairs EVERY device on a radio; a firmware flash can brick hardware if interrupted. Backup <24h, explicit radio+action+confirm=true, never power-cycle during a flash.
 
 **hub_delete_device** - MOST DESTRUCTIVE, NO UNDO. For ghost/orphaned devices, stale DB records, stuck virtual devices.
 - Use hub_get_device to verify correct device

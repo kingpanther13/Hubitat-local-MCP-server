@@ -834,12 +834,12 @@ class TestRunner:
         names = {t.get("name") for t in tools}
         # hub_update_package is a Developer-Mode-only TOP-LEVEL tool (issue #250): it shows on
         # tools/list ONLY with Developer Mode on (this e2e hub has it on -- a documented precondition).
-        # The documented DEFAULT catalog is 30 (11 core + 19 gateways); exclude the dev-mode tool so
+        # The documented DEFAULT catalog is 31 (11 core + 20 gateways); exclude the dev-mode tool so
         # the count matches the default regardless of the toggle, then assert the dev-mode tool is
         # present on this dev-on hub.
         default_tools = [t for t in tools if t.get("name") != "hub_update_package"]
-        assert len(default_tools) == 30, \
-            f"Expected 30 default tools (11 core + 19 gateways), got {len(default_tools)}: {sorted(names)}"
+        assert len(default_tools) == 31, \
+            f"Expected 31 default tools (11 core + 20 gateways), got {len(default_tools)}: {sorted(names)}"
         assert "hub_update_package" in names, \
             "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
 
@@ -1059,6 +1059,134 @@ class TestRunner:
         assert isinstance(st, dict), f"speedtest fold did not attach a speedtest object: {result}"
         assert ("output" in st) or ("error" in st), \
             f"speedtest produced neither output nor a structured error: {st}"
+
+    # ---- hub_manage_radio gateway (#257 radio surface) ----
+    # The e2e hub has NO paired devices, so device-dependent paths (join/pair/exclude/
+    # per-node) only validate at the wire/validation level. Reads + gateway routing are
+    # fully exercisable. Destructive writes ARE allowed on the e2e hub (no devices, the hub
+    # is rebootable/rebuildable) but are kept conservative here.
+
+    @test("diagnostics")
+    def test_radio_details_include_status(self) -> None:
+        # Folded lifecycle-status pollers: include_status attaches repair/exclusion/Zigbee/Matter
+        # status reads onto hub_get_radio_details. Resilient to whatever radio the e2e hub has —
+        # assert the call succeeds and, when status fired, it's a structured object (not an error).
+        result = self.client.call_tool("hub_get_radio_details", {"radio": "zwave", "include_status": True})
+        assert isinstance(result, dict), f"radio details include_status did not return an object: {result}"
+        # A Z-Wave-capable hub returns a recognized shape; the fold must not error the call.
+        assert "error" not in result or isinstance(result.get("error"), str), f"unexpected error shape: {result}"
+
+    @test("diagnostics")
+    def test_radio_details_include_firmware(self) -> None:
+        # include_firmware attaches the firmware-eligible device/file lists (read-only).
+        result = self.client.call_tool("hub_get_radio_details", {"radio": "zwave", "include_firmware": True})
+        assert isinstance(result, dict), f"radio details include_firmware did not return an object: {result}"
+
+    @test("diagnostics")
+    def test_manage_radio_gateway_lists_subtools(self) -> None:
+        # Calling the gateway with no tool returns its sub-tool catalog — proves hub_manage_radio
+        # exists and routes. The radio write tools must appear in the disclosure.
+        listing = self.client.call_tool("hub_manage_radio", {})
+        text = json.dumps(listing) if not isinstance(listing, str) else listing
+        for sub in ("hub_set_zwave", "hub_call_zwave", "hub_set_zigbee", "hub_call_zigbee", "hub_call_matter"):
+            assert sub in text, f"hub_manage_radio catalog missing sub-tool {sub}: {text[:400]}"
+
+    # ---- hub_manage_radio WRITE ops (#257 radio surface) ----
+    # These exercise the radio write/destructive tools on the no-devices e2e hub.
+    # Each tolerates relay 5xx and radio-absent / structured-error outcomes: the fold
+    # may dispatch to a hub endpoint that 5xx-es behind the cloud relay, or return a
+    # {success: false, error: ...} envelope when the radio is absent. The load-bearing
+    # assertion is that the write dispatched (a structured object came back, or the
+    # request reached the hub) — NOT that the radio acted, since the hub has no devices.
+
+    @staticmethod
+    def _radio_write_outcome(result: Any) -> bool:
+        # A radio write reached its handler if it returned a structured object carrying a
+        # success flag, an error envelope, or a hub response/note — any of these proves the
+        # dispatch fired rather than falling through to "Unknown tool".
+        if isinstance(result, dict):
+            return any(k in result for k in ("success", "error", "response", "note", "message", "warning"))
+        # A non-empty string body (e.g. raw hub text) also proves the call landed.
+        return isinstance(result, str) and bool(result.strip())
+
+    def _resilient_radio_write(self, name: str, args: dict, describe: str) -> bool:
+        # Returns True if the write dispatched (or was acceptably lost to a relay 5xx /
+        # refused by a structured tool error). Raises on a non-5xx JSON-RPC transport error
+        # so a genuine dispatch break (e.g. Unknown tool) still fails the test.
+        try:
+            result = self.client.call_tool(name, args)
+        except McpToolError as exc:
+            # isError envelope raised top-level: radio absent / hub refusal -- the tool ran.
+            print(f"    {describe}: structured tool error (acceptable on a no-device hub): {str(exc)[:160]}")
+            return True
+        except (McpError, requests.HTTPError) as exc:
+            if any(code in str(exc) for code in ("502", "503", "504")):
+                print(f"    {describe}: response lost to relay 5xx (acceptable; dispatch reached the hub)")
+                return True
+            raise
+        assert self._radio_write_outcome(result), \
+            f"{describe} did not return a structured radio result (dispatch may have fallen through): {result}"
+        return True
+
+    @test("diagnostics")
+    def test_set_zwave_enabled_idempotent(self) -> None:
+        # hub_set_zwave(enabled=true) is a safe, idempotent state assignment: every Hubitat has a
+        # Z-Wave radio and enabling an already-enabled radio is a no-op (no confirm needed -- confirm
+        # is only required to DISABLE). After the write, read the config back via hub_get_radio_details.
+        assert self._resilient_radio_write(
+            "hub_set_zwave", {"enabled": True}, "hub_set_zwave(enabled=true)")
+        # Config read-back: the read-only details surface still answers after the write.
+        details = self.client.call_tool("hub_get_radio_details", {"radio": "zwave"})
+        assert isinstance(details, dict), f"hub_get_radio_details read-back did not return an object: {details}"
+
+    @test("diagnostics")
+    def test_set_zigbee_enabled_idempotent(self) -> None:
+        # hub_set_zigbee(enabled=true): same safe/idempotent enable path as Z-Wave. Resilient to a
+        # hub without a Zigbee radio (structured error / 5xx tolerated). Config read-back after.
+        assert self._resilient_radio_write(
+            "hub_set_zigbee", {"enabled": True}, "hub_set_zigbee(enabled=true)")
+        details = self.client.call_tool("hub_get_radio_details", {"radio": "zigbee"})
+        assert isinstance(details, dict), f"hub_get_radio_details read-back did not return an object: {details}"
+
+    @test("diagnostics")
+    def test_call_zwave_repair_start_then_cancel(self) -> None:
+        # hub_call_zwave repair lifecycle (absorbs the former hub_call_zwave_repair). repair_start
+        # then repair_cancel is safe on a hub with no paired devices -- a repair on an empty mesh is
+        # a no-op and cancel stops it cleanly. Neither needs confirm (only exclusion_start/node_remove
+        # do). Both must dispatch through hub_manage_radio's hub_call_zwave.
+        assert self._resilient_radio_write(
+            "hub_call_zwave", {"action": "repair_start"}, "hub_call_zwave(repair_start)")
+        assert self._resilient_radio_write(
+            "hub_call_zwave", {"action": "repair_cancel"}, "hub_call_zwave(repair_cancel)")
+
+    @test("diagnostics")
+    def test_call_zigbee_rebuild_network(self) -> None:
+        # hub_call_zigbee(rebuild_network): non-idempotent mesh rebuild. Safe to trigger on a
+        # no-device hub (nothing to disrupt). Resilient to a Zigbee-less hub / relay 5xx.
+        assert self._resilient_radio_write(
+            "hub_call_zigbee", {"action": "rebuild_network"}, "hub_call_zigbee(rebuild_network)")
+
+    @test("diagnostics")
+    def test_call_destructive_radio_requires_confirm(self) -> None:
+        # hub_call_destructive_radio is confirm-gated and MUST NOT be executed for real here (a reset
+        # wipes a radio's network; a firmware flash can brick hardware). Assert the safety gate:
+        # calling reset WITHOUT confirm is refused. confirm is a REQUIRED schema param, so the refusal
+        # surfaces as an isError envelope ("Missing required parameter: confirm") returned as a dict by
+        # call_tool, OR a raised McpError/-32602 -- accept either. The radio is never actually reset.
+        refused = False
+        detail = None
+        try:
+            detail = self.client.call_tool(
+                "hub_call_destructive_radio", {"radio": "zwave", "action": "reset"})
+            blob = (detail if isinstance(detail, str) else json.dumps(detail)).lower()
+            refused = (isinstance(detail, dict) and bool(detail.get("isError"))) \
+                or "confirm" in blob or "required parameter" in blob or "safety check" in blob
+        except McpError as exc:  # also catches McpToolError (subclass): raised envelope / -32602
+            detail = str(exc)
+            refused = any(s in detail.lower()
+                          for s in ("confirm", "safety check", "required parameter"))
+        assert refused, \
+            f"hub_call_destructive_radio reset without confirm must be refused by the safety gate, got: {detail}"
 
     @test("native_apps")
     def test_set_app_disabled_roundtrip(self) -> None:

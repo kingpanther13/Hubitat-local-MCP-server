@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 99 MCP tools (30 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 104 MCP tools (31 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 99 tools total — 11 core tools are always visible, while the rest are organized behind 19 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 104 tools total — 11 core tools are always visible, while the rest are organized behind 20 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -267,9 +267,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (99 total — 30 on tools/list)
+### MCP Tools (104 total — 31 on tools/list)
 
-The server has 99 tools total. To keep the MCP `tools/list` manageable, **11 core tools** are always visible and the remaining tools are organized behind **19 domain-named gateways** (7 read-only `hub_read_*` gateways + 12 write-bearing `hub_manage_*` gateways). The AI sees 30 items on `tools/list` (11 + 19 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 104 tools total. To keep the MCP `tools/list` manageable, **11 core tools** are always visible and the remaining tools are organized behind **20 domain-named gateways** (7 read-only `hub_read_*` gateways + 13 write-bearing `hub_manage_*` gateways). The AI sees 31 items on `tools/list` (11 + 20 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (11) — Always visible on tools/list
 
@@ -481,13 +481,14 @@ Monitoring tools are gated by the Read master (ON by default).
 </details>
 
 <details>
-<summary><b>hub_manage_destructive_ops</b> (3) — Destructive hub operations</summary>
+<summary><b>hub_manage_destructive_ops</b> (4) — Destructive hub operations</summary>
 
 | Tool | Description |
 |------|-------------|
 | `hub_reboot` | Reboot the hub (1-3 min downtime) |
 | `hub_shutdown` | Power OFF the hub (requires physical restart) |
 | `hub_delete_device` | Permanently delete any device (**no undo**) |
+| `hub_call_destructive_radio` | Destructive radio operations — Z-Wave/Zigbee reset/wipe and radio firmware update (**no undo**) |
 
 All operations are disruptive. These tools are gated by the Write master (ON by default) and enforce a **three-layer safety gate**: Write master enabled + hub backup within 24 hours + explicit `confirm=true`.
 
@@ -531,7 +532,7 @@ Read tools are gated by the Read master; clear/set-level writes by the Write mas
 </details>
 
 <details>
-<summary><b>hub_manage_diagnostics</b> (8) — Diagnostics, memory, radio details, and state capture</summary>
+<summary><b>hub_manage_diagnostics</b> (7) — Diagnostics, memory, radio details, and state capture</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -539,10 +540,25 @@ Read tools are gated by the Read master; clear/set-level writes by the Write mas
 | `hub_get_memory_history` | Free OS memory and CPU load history with summary stats (Read master) (also in `hub_read_diagnostics`) |
 | `hub_call_gc` | Force JVM garbage collection; returns before/after free memory (Write master) |
 | `hub_get_device_health` | Find stale/offline devices (also in `hub_read_diagnostics`) |
-| `hub_get_radio_details` | Radio info — Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. (also in `hub_read_diagnostics`) |
-| `hub_call_zwave_repair` | Z-Wave network repair (5-30 min) |
+| `hub_get_radio_details` | Radio info — Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. (also in `hub_read_diagnostics`, `hub_manage_radio`) |
 | `hub_list_captured_states` | List saved device state snapshots (also in `hub_read_diagnostics`) |
 | `hub_delete_captured_state` | Delete a captured device state snapshot. Omit `stateId` to delete all snapshots. |
+
+</details>
+
+<details>
+<summary><b>hub_manage_radio</b> (6) — Z-Wave, Zigbee, and Matter radio administration</summary>
+
+| Tool | Description |
+|------|-------------|
+| `hub_get_radio_details` | Radio info — Z-Wave (firmware, devices) or Zigbee (channel, PAN ID, devices). `radio`: "zwave" or "zigbee"; omit for both. (also in `hub_read_diagnostics`, `hub_manage_diagnostics`) |
+| `hub_set_zwave` | Configure Z-Wave radio settings |
+| `hub_call_zwave` | Z-Wave radio operations including network repair (5-30 min) via `action` |
+| `hub_set_zigbee` | Configure Zigbee radio settings |
+| `hub_call_zigbee` | Zigbee radio operations via `action` |
+| `hub_call_matter` | Matter radio operations via `action` |
+
+Non-destructive radio operations. Destructive radio ops (reset/wipe, firmware update) live in `hub_manage_destructive_ops` as `hub_call_destructive_radio`. Read tools are gated by the Read master; writes by the Write master (both ON by default).
 
 </details>
 

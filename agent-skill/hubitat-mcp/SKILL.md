@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 99 distinct MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, HPM package state introspection, and Developer Mode self-administration. The tools are organized as **11 flat core tools** (always visible) plus **19 domain-named gateways** that proxy the remaining tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute. That makes **30 entries** on `tools/list` in gateway mode (11 flat + 19 gateways) — **31 when Developer Mode is on**, which surfaces `hub_update_package` as an additional top-level tool. Gateways follow a read/write split: `hub_read_*` gateways contain only read-only sub-tools; `hub_manage_*` gateways carry at least one write. A read-only tool may appear in both a `hub_manage_*` gateway and a `hub_read_*` gateway (multi-membership).
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 104 distinct MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, HPM package state introspection, and Developer Mode self-administration. The tools are organized as **11 flat core tools** (always visible) plus **20 domain-named gateways** that proxy the remaining tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute. That makes **31 entries** on `tools/list` in gateway mode (11 flat + 20 gateways) — **32 when Developer Mode is on**, which surfaces `hub_update_package` as an additional top-level tool. Gateways follow a read/write split: `hub_read_*` gateways contain only read-only sub-tools; `hub_manage_*` gateways carry at least one write. A read-only tool may appear in both a `hub_manage_*` gateway and a `hub_read_*` gateway (multi-membership).
 
 ## Core Principles
 
@@ -148,9 +148,9 @@ Core hub admin tools: `hub_create_backup`, `hub_get_update_status`, `hub_report_
 
 Additional hub admin tools are accessed via gateways:
 
-### Via `hub_manage_destructive_ops` gateway (3 tools)
+### Via `hub_manage_destructive_ops` gateway (4 tools)
 
-Destructive write operations (require the Write master + confirm + backup): `hub_reboot`, `hub_shutdown`, `hub_delete_device`
+Destructive write operations (require the Write master + confirm + backup): `hub_reboot`, `hub_shutdown`, `hub_delete_device`, `hub_call_destructive_radio` (Z-Wave/Zigbee reset/wipe + radio firmware update via `action`)
 
 ### Via `hub_read_apps_code` gateway (9 tools — read-only)
 
@@ -178,13 +178,14 @@ For complete safety protocols and tool-specific requirements, see [safety-guide.
 - `hub_reboot` - 1-3 min downtime, automations stop
 - `hub_shutdown` - Powers off completely, needs manual restart
 - `hub_delete_device` - No undo, intended for ghost/orphaned devices only
+- `hub_call_destructive_radio` - Z-Wave/Zigbee reset/wipe + radio firmware update; orphans paired devices, no undo
 - `hub_delete_item` (via `hub_manage_code`, `type`: "app"/"driver"/"library") - Auto-backs up source first
 
 ## Diagnostics and Monitoring
 
 `hub_list_device_events` (via `hub_read_devices` / `hub_manage_devices`) - recent events for a device; add `hoursBack` for up to 7 days of device or location event history (omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events)
 
-The pure-read `hub_read_diagnostics` gateway (9 tools) surfaces the read-only diagnostics for safe access: `hub_get_logs`, `hub_get_performance_stats`, `hub_get_jobs`, `hub_get_debug_logs`, `hub_get_metrics`, `hub_get_memory_history`, `hub_get_device_health`, `hub_get_radio_details`, `hub_list_captured_states`. The write-bearing diagnostics live in `hub_manage_logs` and `hub_manage_diagnostics` below (reads multi-membered into both surfaces).
+The pure-read `hub_read_diagnostics` gateway (9 tools) surfaces the read-only diagnostics for safe access: `hub_get_logs`, `hub_get_performance_stats`, `hub_get_jobs`, `hub_get_debug_logs`, `hub_get_metrics`, `hub_get_memory_history`, `hub_get_device_health`, `hub_get_radio_details`, `hub_list_captured_states`. The write-bearing diagnostics live in `hub_manage_logs`, `hub_manage_diagnostics`, and `hub_manage_radio` below (reads multi-membered into those surfaces).
 
 Via `hub_manage_logs` gateway (6 tools):
 - `hub_get_logs` - Hub log entries, most recent first; filter by level/source/pattern (regex) or multi-pattern AND/OR (`patternMode`); time-window via `since`/`until` (ISO-8601 or relative offset like `'30m'`, max 30d -- throws if exceeded; use ISO-8601 for longer ranges); or scope server-side to a single `deviceId` / `appId` (mutually exclusive). `pattern` matches the message field only (not source/name). Pathological regex like `(.*)*` may hang the matcher; prefer simple alternation.
@@ -193,16 +194,22 @@ Via `hub_manage_logs` gateway (6 tools):
 - `hub_get_debug_logs` / `hub_delete_debug_logs` - MCP-specific debug logs; pass `mode='status'` to `hub_get_debug_logs` to view logging system statistics
 - `hub_set_log_level` - Set MCP log level
 
-Via `hub_manage_diagnostics` gateway (8 tools):
+Via `hub_manage_diagnostics` gateway (7 tools):
 - `hub_get_metrics` - Retrieve hub metrics with CSV trend history (read-only by default; `recordSnapshot` defaults to false — also in `hub_read_diagnostics`)
 - `hub_get_memory_history` - Free OS memory and CPU load history with summary stats (Read master)
 - `hub_call_gc` - Force JVM GC; returns before/after free memory (Write master)
 - `hub_get_device_health` - Find stale/offline devices; optional ICMP ping for arbitrary IPs
-- `hub_get_radio_details` - Radio info; `radio`: "zwave" or "zigbee" (omit for both)
-- `hub_call_zwave_repair` - Start Z-Wave network repair (5-30 min)
+- `hub_get_radio_details` - Radio info; `radio`: "zwave" or "zigbee" (omit for both — also in `hub_manage_radio`)
 - `hub_list_captured_states` / `hub_delete_captured_state` - State snapshots (omit `stateId` on delete to clear all)
 
-(For per-rule diagnostics, use `hub_get_custom_rule` with `detailed=true`.)
+Via `hub_manage_radio` gateway (6 tools):
+- `hub_get_radio_details` - Radio info; `radio`: "zwave" or "zigbee" (omit for both — also in `hub_read_diagnostics` / `hub_manage_diagnostics`)
+- `hub_set_zwave` / `hub_set_zigbee` - Configure Z-Wave / Zigbee radio settings (Write master)
+- `hub_call_zwave` - Z-Wave radio operations incl. network repair (5-30 min) via `action` (Write master)
+- `hub_call_zigbee` - Zigbee radio operations via `action` (Write master)
+- `hub_call_matter` - Matter radio operations via `action` (Write master)
+
+(Destructive radio ops — reset/wipe, firmware — are `hub_call_destructive_radio` in `hub_manage_destructive_ops`. For per-rule diagnostics, use `hub_get_custom_rule` with `detailed=true`.)
 
 ## File Manager
 

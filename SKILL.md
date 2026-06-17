@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 99 tools (30 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, HPM package state introspection, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 104 tools (31 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, HPM package state introspection, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -32,7 +32,7 @@ The Hubitat-runtime code has no external dependencies -- everything runs inside 
 │  │  MCP Rule Server (parent app)             │  │
 │  │  - OAuth endpoint: /apps/api/<id>/mcp     │  │
 │  │  - JSON-RPC 2.0 handler                   │  │
-│  │  - 99 tools (30 on tools/list + gateways)  │  │
+│  │  - 104 tools (31 on tools/list + gateways) │  │
 │  │  - Device access gate (selectedDevices)   │  │
 │  │  - Hub Admin tools (internal API calls)   │  │
 │  │  - Hub Security cookie auth               │  │
@@ -93,19 +93,19 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 99 items to 30. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 104 items to 31. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
 
 **Architecture:**
-- `getGatewayConfig()` — defines 19 gateways, each with a description, tools list, and summaries map
-- `getToolDefinitions()` — returns 11 core tools + 19 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 99 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getGatewayConfig()` — defines 20 gateways, each with a description, tools list, and summaries map
+- `getToolDefinitions()` — returns 11 core tools + 20 gateway tool definitions (client-visible)
+- `getAllToolDefinitions()` — returns all 104 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
 1. AI calls `<gateway>()` with no args → gets full tool schemas (catalog mode)
 2. AI calls `<gateway>(tool="tool_name", args={...})` → executes the proxied tool
 
-**19 gateways (7 read + 12 manage):**
+**20 gateways (7 read + 13 manage):**
 
 Read gateways (`hub_read_*`, every sub-tool read-only):
 | Gateway | Tools | Domain |
@@ -124,12 +124,13 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 | `hub_manage_custom_rules` | 8 | Custom-engine rule get/create/update/delete/test/export/import/clone |
 | `hub_manage_variables` | 8 | Hub connector and rule engine variables (CRUD + connector + history) |
 | `hub_manage_rooms` | 5 | Room CRUD |
-| `hub_manage_destructive_ops` | 3 | Hub reboot, shutdown, device deletion (write) |
+| `hub_manage_destructive_ops` | 4 | Hub reboot, shutdown, device deletion, destructive radio ops (reset/wipe + radio firmware via `hub_call_destructive_radio`) (write) |
 | `hub_manage_code` | 11 | Install/update apps+drivers+libraries, install/delete/export HPM-style bundles, delete item (app/driver/library), restore backup (write) |
 | `hub_manage_devices` | 7 | Device command/swap/update (writes) + list/get devices, attributes, events (reads) |
 | `hub_manage_logs` | 6 | Logs, performance stats, hub jobs, debug tools (read + clear/set-level write) |
-| `hub_manage_diagnostics` | 8 | Diagnostics, state capture/delete, radio details (zwave/zigbee), zwave repair, memory history, metrics, GC |
+| `hub_manage_diagnostics` | 7 | Diagnostics, state capture/delete, radio details (zwave/zigbee), memory history, metrics, GC |
 | `hub_manage_files` | 4 | File Manager CRUD |
+| `hub_manage_radio` | 6 | Z-Wave/Zigbee/Matter radio admin — radio details, configure (`hub_set_zwave`/`hub_set_zigbee`), and radio ops incl. Z-Wave network repair (`hub_call_zwave`/`hub_call_zigbee`/`hub_call_matter`); destructive radio ops are in `hub_manage_destructive_ops` |
 | `hub_manage_native_rules_and_apps` | 10 | Rule Machine RMUtils interop (list/run/set-paused/boolean) + generic admin-layer CRUD on any classic SmartApp (`hub_set_native_app` create/edit, delete, clone, export, import + `hub_get_rule_health` — Room Lighting, Button Controllers, Basic Rules, Notifier, etc.). RM rule authoring (`hub_set_rule`) lives in `hub_manage_rule_machine`. |
 | `hub_manage_rule_machine` | 10 | Rule Machine authoring (`hub_set_rule` create/edit) + RMUtils interop (list/run/set-paused/boolean) + rule health + delete (`hub_delete_native_app`) + Visual Rules Builder CRUD (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`) |
 | `hub_manage_mcp` | 1 | Developer Mode self-administration — update MCP rule app's own settings (allowlist-gated, requires `enableDeveloperMode`) |

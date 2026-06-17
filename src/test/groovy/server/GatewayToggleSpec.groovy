@@ -63,6 +63,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         !names.contains('hub_manage_files')
         !names.contains('hub_manage_logs')
         !names.contains('hub_manage_diagnostics')
+        !names.contains('hub_manage_radio')
         !names.contains('hub_manage_custom_rules')
         !names.contains('hub_manage_native_rules_and_apps')
         !names.contains('hub_manage_mcp')
@@ -73,6 +74,8 @@ class GatewayToggleSpec extends ToolSpecBase {
         names.contains('hub_list_files')
         names.contains('hub_get_logs')
         names.contains('hub_get_radio_details')
+        names.contains('hub_set_zwave')
+        names.contains('hub_call_zwave')
         names.contains('hub_list_rules')
 
         and: 'core tools still appear'
@@ -147,7 +150,9 @@ class GatewayToggleSpec extends ToolSpecBase {
             'hub_get_debug_logs', 'hub_delete_debug_logs', 'hub_set_log_level',
             'hub_get_metrics', 'hub_get_memory_history', 'hub_call_gc',
             'hub_get_device_health',
-            'hub_get_radio_details', 'hub_call_zwave_repair',
+            'hub_get_radio_details',
+            'hub_set_zwave', 'hub_set_zigbee',
+            'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',
             'hub_list_captured_states', 'hub_delete_captured_state',
             'hub_list_files', 'hub_read_file', 'hub_write_file', 'hub_delete_file',
             'hub_list_device_dependents', 'hub_get_app_config', 'hub_list_app_pages',

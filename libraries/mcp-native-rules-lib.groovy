@@ -41,7 +41,7 @@ def _getAllToolDefinitions_partNativeRM() {
                 type: "object",
                 properties: [
                     ruleId: [type: "integer", description: "Rule ID from hub_list_rules"],
-                    action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. 'rule'=runRule (re-evaluate the rule's conditions, then run the matching true/false action set); 'actions'=runRuleAct (run the action list directly, skipping condition evaluation); 'stop'=halt the rule's in-progress actions; 'start'=re-enable a stopped rule (also resets its private boolean). stop/start toggle the stopRule UI button, not RMUtils (RMUtils has no startRule verb). Default: rule"]
+                    action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. Default: rule.[[FLAT_TRIM]] 'rule'=runRule (re-evaluate the rule's conditions, then run the matching true/false action set); 'actions'=runRuleAct (run the action list directly, skipping condition evaluation); 'stop'=halt the rule's in-progress actions; 'start'=re-enable a stopped rule (also resets its private boolean). stop/start toggle the stopRule UI button, not RMUtils (RMUtils has no startRule verb).[[/FLAT_TRIM]]"]
                 ],
                 required: ["ruleId"]
             ],
@@ -136,7 +136,7 @@ Requires the Write master + confirm=true + recent hub backup.""",
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.[[FLAT_TRIM]] Routes through the controller's add-button flow; returns buttonRuleId with the Button trigger auto-seeded — author its actions via hub_set_rule(appId=buttonRuleId, addAction=...). The controller must already have a button device assigned.[[/FLAT_TRIM]]", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    walkStep: [type: "object", description: "Generic classic-dynamicPage walker for stateful multi-page classic apps -- introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep (see hub_get_tool_guide(section='set_rule_reference')). For Rule Machine RULES use hub_set_rule."],
+                    walkStep: [type: "object", description: "Generic classic-dynamicPage walker for stateful multi-page classic apps -- introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call.[[FLAT_TRIM]] Same shape as hub_set_rule's walkStep (see hub_get_tool_guide(section='set_rule_reference')). For Rule Machine RULES use hub_set_rule.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
@@ -172,29 +172,29 @@ Requires the Write master + confirm=true + recent hub backup.""",
         ],
         [
             name: "hub_set_rule",
-            description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool for the full rule-authoring surface. Omit appId to CREATE a new rule (provide name; optionally bundle addTriggers / addActions / addTrigger / addAction / addRequiredExpression to populate it in the same call -- other edit-only ops like replaceActions/walkStep require an existing appId). Provide appId to EDIT an existing rule.
-
+            description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool for the full rule-authoring surface (triggers, actions, conditions, required expressions, local variables). Omit appId to CREATE a new rule (provide name; optionally bundle addTriggers / addActions / addTrigger / addAction / addRequiredExpression to populate it in the same call -- other edit-only ops like replaceActions/walkStep require an existing appId). Provide appId to EDIT an existing rule.
+[[FLAT_TRIM]]
 Prefer the high-level structured shortcuts, each of which orchestrates the full RM 5.1 wizard in one call: addTrigger / addAction / addRequiredExpression / replaceRequiredExpression; bulk addTriggers / addActions / replaceActions; and removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / addLocalVariable / patches. For a capability the shortcuts don't cover, walkStep drives one wizard page at a time, or write page inputs via settings and click page-transition buttons via button directly (raw mode).
-
-BEFORE EVERY edit-write a full snapshot (configure/json + statusJson) is saved to File Manager; the response carries backup.backupKey for hub_restore_backup (in hub_manage_code) if a write goes wrong. Partial-success on CREATE: the tool always returns the new appId even if a bundled trigger/action only partially bakes — inspect partial / partialTriggers / partialActions / repairHints (full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference')).
+[[/FLAT_TRIM]]
+BEFORE EVERY edit-write a full snapshot (configure/json + statusJson) is saved to File Manager; the response carries backup.backupKey for hub_restore_backup (in hub_manage_code) if a write goes wrong. Partial-success on CREATE: the new appId is returned even if a bundled trigger/action only partially bakes — inspect partial/partialTriggers/partialActions/repairHints; full protocol: hub_get_tool_guide(section='set_rule_create_reference').
 
 For NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule, etc.) use hub_set_native_app instead — this tool is RM-only. Completely separate from the MCP custom rule engine (hub_*_custom_rule).
-
+[[FLAT_TRIM]]
 Full capability reference — trigger/action/expression families, extended condition shapes, the raw settings/button wizard flow, and walkStep — is one call away: pass guide:true to get it back inline (no separate tool call), or see hub_get_tool_guide(section='set_rule_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
-
+[[/FLAT_TRIM]]
 Requires the Write master + confirm=true + recent hub backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "RM rule ID (the rule's installed-app id). OMIT to CREATE a new rule (then `name` is required); PROVIDE to EDIT an existing rule."],
                     name: [type: "string", description: "Label for the new rule (shown in Hubitat's Rule Machine app list). Required on CREATE (when appId is omitted); ignored when appId is provided."],
-                    settings: [type: "object", description: "Map {inputName: value}: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs. The multiple=true 3-field contract (settings[name]=csv + name.type=capability.X + name.multiple=true) is emitted automatically and post-write verified with one auto-retry — you don't manage it."],
-                    button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule, refreshActions for RM; analogous buttons for other app types — discover them via hub_get_app_config)."],
+                    settings: [type: "object", description: "Map {inputName: value}: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs.[[FLAT_TRIM]] The multiple=true 3-field contract (settings[name]=csv + name.type=capability.X + name.multiple=true) is emitted automatically and post-write verified with one auto-retry — you don't manage it.[[/FLAT_TRIM]]"],
+                    button: [type: "string", description: "Page-transition button name[[FLAT_TRIM]] (e.g. updateRule, editCond, pausRule, refreshActions for RM; analogous buttons for other app types — discover them via hub_get_app_config)[[/FLAT_TRIM]]."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add a Rule Machine TRIGGER via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- `{type: 'switch', ...}` is rejected with "addTrigger.capability is required". Pass `addTrigger: {discover: true}` for the live per-capability schema, or `hub_get_tool_guide(section='set_rule_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally (discover index, walk the schema-aware writes, commit, auto-finalize the residual isCondTrig prompt) and fires updateRule so subscriptions populate; returns result.triggerIndex. Bulk addTriggers[] fires updateRule once at the end.
+                        description: """Add a Rule Machine TRIGGER via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- `{type: 'switch', ...}` is rejected with "addTrigger.capability is required". Pass `addTrigger: {discover: true}` for the live per-capability schema, or `hub_get_tool_guide(section='set_rule_reference')` for the `addTrigger` families reference. The tool orchestrates the full RM 5.1 wizard internally and fires updateRule so subscriptions populate; returns result.triggerIndex. Bulk addTriggers[] fires updateRule once at the end.[[FLAT_TRIM]]
 
 Capability families (NAMES; full per-field specs via discover:true or the guide): Device-state (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source), Numeric (Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints), Button, Custom Attribute, Time / Sunrise / Sunset, Mode, Periodic Schedule. Modifiers: andStays, allOfThese.
 
@@ -203,88 +203,88 @@ Optional on every spec:
   - condition — Map {capability, deviceIds?, variable?, compareToVariable?, state?, comparator?, value?, attribute?, not?, rawSettings?} (selectTriggers supports a NARROWER set than addRequiredExpression/addAction — see guide).
   - rawSettings — escape hatch {fieldName: value} using the `@N` token for the auto-assigned index, e.g. {'xVar@N': 'myVar'} writes `xVar1` when the trigger lands at index 1.
 
-PARTIAL-SUCCESS: success:true can come with partial:true — check partial/repairHints; on a rejected trailing updateRule the trigger is written but not subscribed (subscriptionsNotLive:true), retry hub_set_rule(button='updateRule', confirm=true). Full protocol: guide:true or hub_get_tool_guide(section='set_rule_reference')."""
+PARTIAL-SUCCESS: success:true can come with partial:true — check partial/repairHints; on a rejected trailing updateRule the trigger is written but not subscribed (subscriptionsNotLive:true), retry hub_set_rule(button='updateRule', confirm=true). Full protocol: guide:true or hub_get_tool_guide(section='set_rule_reference').[[/FLAT_TRIM]]"""
                     ],
                     addTriggers: [
                         type: "array",
-                        description: "Bulk-add multiple triggers in one call (each item the same shape as addTrigger). updateRule fires ONCE at the end, so subscriptions populate from a fully-loaded rule; pairs with addActions to build a whole rule in one call. Empty/omitted falls back to single addTrigger. On a rejected post-bulk updateRule: subscriptionsNotLive:true — retry hub_set_rule(button='updateRule', confirm=true).",
+                        description: "Bulk-add multiple triggers in one call (each item the same shape as addTrigger). updateRule fires ONCE at the end, so subscriptions populate from a fully-loaded rule; pairs with addActions to build a whole rule in one call.[[FLAT_TRIM]] Empty/omitted falls back to single addTrigger. On a rejected post-bulk updateRule: subscriptionsNotLive:true — retry hub_set_rule(button='updateRule', confirm=true).[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     addRequiredExpression: [
                         type: "object",
                         description: """Add a Rule Machine 5.1 Required Expression (RM's pre-trigger gate conditioning whether the rule may fire) via the high-level structured API. The tool orchestrates STPage's full wizard internally and fires updateRule; returns result.conditionIndices.
 
-Spec: {conditions:[{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}, ...], operator:'AND'|'OR'|'XOR' OR operators:[...] (one per gap, for mixed expressions; equal precedence, left-to-right)}. comparator is REQUIRED with attribute for Custom Attribute, and with variable+value for Variable (ASCII !=/<>/== auto-map to RM glyphs). For the full STPage capability list, all extended per-capability shapes (Mode, Between two times, Variable incl. compareToVariable, device-relative compareToDevice, nested subExpression) and the partial-success/failure contract, pass guide:true or hub_get_tool_guide(section='set_rule_reference').
+Spec: {conditions:[{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}, ...], operator:'AND'|'OR'|'XOR' OR operators:[...] (one per gap, for mixed expressions; equal precedence, left-to-right)}. comparator is REQUIRED with attribute for Custom Attribute, and with variable+value for Variable (ASCII !=/<>/== auto-map to RM glyphs). Full reference: hub_get_tool_guide(section='set_rule_reference').[[FLAT_TRIM]] For the full STPage capability list, all extended per-capability shapes (Mode, Between two times, Variable incl. compareToVariable, device-relative compareToDevice, nested subExpression) and the partial-success/failure contract, pass guide:true or hub_get_tool_guide(section='set_rule_reference').
 
-PARTIAL-SUCCESS: partial:true / expressionNotLive / wizardStuck can accompany success — check repairHints; on a rejected trailing updateRule the expression is committed but not live (expressionNotLive:true), retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true call hub_set_rule(button='cancelCapab', pageName='STPage', confirm=true) first (restoreHint has the exact command)."""
+PARTIAL-SUCCESS: partial:true / expressionNotLive / wizardStuck can accompany success — check repairHints; on a rejected trailing updateRule the expression is committed but not live (expressionNotLive:true), retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true call hub_set_rule(button='cancelCapab', pageName='STPage', confirm=true) first (restoreHint has the exact command).[[/FLAT_TRIM]]"""
                     ],
                     replaceRequiredExpression: [
                         type: "object",
-                        description: """Replace an existing RM 5.1 Required Expression in place (same appId, no clone) -- whole-expression replace. Same spec as addRequiredExpression ({conditions:[...], operator|operators}); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing if there is nothing to replace). The delete is destructive, but the entire spec is validated BEFORE it (a malformed spec leaves the existing expression intact) and any failure after the delete -- including a rejected trailing updateRule -- auto-restores the pre-op backup (requiredExpressionRestored): a failed replace is always reported, never silent data loss. Per-condition shapes and the full partial-success/failure contract: guide:true or hub_get_tool_guide(section='set_rule_reference')."""
+                        description: """Replace an existing RM 5.1 Required Expression in place (same appId, no clone) -- whole-expression replace. Same spec as addRequiredExpression ({conditions:[...], operator|operators}); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing if there is nothing to replace). The delete is destructive, but the entire spec is validated BEFORE it (a malformed spec leaves the existing expression intact) and any failure after the delete -- including a rejected trailing updateRule -- auto-restores the pre-op backup (requiredExpressionRestored): a failed replace is always reported, never silent data loss.[[FLAT_TRIM]] Per-condition shapes and the full partial-success/failure contract: guide:true or hub_get_tool_guide(section='set_rule_reference').[[/FLAT_TRIM]]"""
                     ],
 
                     addActions: [
                         type: "array",
-                        description: "Bulk-add multiple actions in one call (each item the same shape as addAction; actions self-bake via doActPage). updateRule fires ONCE at the end. Pairs with addTriggers to add many triggers + actions in one call. On a rejected post-bulk updateRule: subscriptionsNotLive:true — retry hub_set_rule(button='updateRule', confirm=true).",
+                        description: "Bulk-add multiple actions in one call (each item the same shape as addAction; actions self-bake via doActPage). updateRule fires ONCE at the end. Pairs with addTriggers to add many triggers + actions in one call.[[FLAT_TRIM]] On a rejected post-bulk updateRule: subscriptionsNotLive:true — retry hub_set_rule(button='updateRule', confirm=true).[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     addLocalVariable: [
                         type: "object",
-                        description: "Add a local variable. Spec: {name, type, value} where type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive) and value matches the type (DateTime wants an ISO timestamp). Used as %name% in actions/expressions; stored in state.allLocalVars (verify via statusJson appState.allLocalVars, not appSettings). Returns success=false with repair hints if a value/type mismatch makes RM silently reject."
+                        description: "Add a local variable. Spec: {name, type, value} where type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive) and value matches the type (DateTime wants an ISO timestamp). Used as %name% in actions/expressions.[[FLAT_TRIM]] Stored in state.allLocalVars (verify via statusJson appState.allLocalVars, not appSettings). Returns success=false with repair hints if a value/type mismatch makes RM silently reject.[[/FLAT_TRIM]]"
                     ],
                     patches: [
                         type: "array",
-                        description: "Atomic multi-mutation: each item is a sub-spec with ONE operation key (settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction). Operations run sequentially; updateRule fires ONCE at the end. Per-op outcome in patches[i]; an individual op failing doesn't abort the rest.",
+                        description: "Atomic multi-mutation: each item is a sub-spec with ONE operation key (settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction). Operations run sequentially; updateRule fires ONCE at the end.[[FLAT_TRIM]] Per-op outcome in patches[i]; an individual op failing doesn't abort the rest.[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     removeAction: [
                         type: "object",
-                        description: "Delete a single action by its index. Pass {index: <N>}. RM preserves remaining indices (no renumbering on delete). updateRule fires after the deletion."
+                        description: "Delete a single action by its index. Pass {index: <N>}.[[FLAT_TRIM]] RM preserves remaining indices (no renumbering on delete). updateRule fires after the deletion.[[/FLAT_TRIM]]"
                     ],
                     clearActions: [
                         type: "boolean",
-                        description: "Pass true to delete every action (highest index first) -- the 'wipe and rebuild' pattern. The delete commits synchronously; updateRule fires after. Rare late-commit recovery (asyncCommitLikely:true): verify via hub_get_app_config(appId), do NOT call cancelTrash (it can commit pending deletes); full protocol: guide:true."
+                        description: "Pass true to delete every action (highest index first) -- the 'wipe and rebuild' pattern. The delete commits synchronously; updateRule fires after.[[FLAT_TRIM]] Rare late-commit recovery (asyncCommitLikely:true): verify via hub_get_app_config(appId), do NOT call cancelTrash (it can commit pending deletes); full protocol: guide:true.[[/FLAT_TRIM]]"
                     ],
                     replaceActions: [
                         type: "array",
-                        description: "Atomically replace the rule's entire action list: clears all existing actions, bulk-adds every spec here (same shape as addAction items), then fires updateRule once. Useful for editing or reordering; pass [] to clear all (equivalent to clearActions=true). Rare late-commit recovery (asyncCommitLikely:true): verify via hub_get_app_config(appId), re-add the echoed pendingActionsToAdd, do NOT call cancelTrash; full protocol: guide:true.",
+                        description: "Atomically replace the rule's entire action list: clears all existing actions, bulk-adds every spec here (same shape as addAction items), then fires updateRule once. Useful for editing or reordering; pass [] to clear all (equivalent to clearActions=true).[[FLAT_TRIM]] Rare late-commit recovery (asyncCommitLikely:true): verify via hub_get_app_config(appId), re-add the echoed pendingActionsToAdd, do NOT call cancelTrash; full protocol: guide:true.[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     moveAction: [
                         type: "object",
-                        description: "Move a single action up or down by one slot. Pass {index: <N>, direction: 'up'|'down'}. For arbitrary reorders, prefer replaceActions with the new order — that's a single atomic operation."
+                        description: "Move a single action up or down by one slot. Pass {index: <N>, direction: 'up'|'down'}.[[FLAT_TRIM]] For arbitrary reorders, prefer replaceActions with the new order — that's a single atomic operation.[[/FLAT_TRIM]]"
                     ],
                     removeTrigger: [
                         type: "object",
-                        description: "Delete a single trigger by its index. Pass {index: <N>}. RM preserves remaining trigger indices (no renumbering on delete). updateRule fires after the deletion. Use addTrigger to add a replacement."
+                        description: "Delete a single trigger by its index. Pass {index: <N>}.[[FLAT_TRIM]] RM preserves remaining trigger indices (no renumbering on delete). updateRule fires after the deletion. Use addTrigger to add a replacement.[[/FLAT_TRIM]]"
                     ],
                     modifyTrigger: [
                         type: "object",
-                        description: "Change the state field of an existing trigger: {index: <N>, mods: {state: '<new-state>'}}. Opens editCond, writes tstate<N>, commits, fires updateRule. Only the 'state' field is supported, and only device-state triggers (Switch, Motion, Contact, Lock, Presence, ...) expose one -- Time/Periodic/Mode triggers throw with a removeTrigger+addTrigger workaround hint. To change capability or deviceIds, use removeTrigger + addTrigger."
+                        description: "Change the state field of an existing trigger: {index: <N>, mods: {state: '<new-state>'}}.[[FLAT_TRIM]] Opens editCond, writes tstate<N>, commits, fires updateRule. Only the 'state' field is supported, and only device-state triggers (Switch, Motion, Contact, Lock, Presence, ...) expose one -- Time/Periodic/Mode triggers throw with a removeTrigger+addTrigger workaround hint. To change capability or deviceIds, use removeTrigger + addTrigger.[[/FLAT_TRIM]]"
                     ],
                     walkStep: [
                         type: "object",
-                        description: """Schema-aware wizard walker -- the escape hatch when the high-level addAction/addTrigger helpers don't cover the capability (Periodic Schedule sub-pages, conditional-trigger binding, IF/THEN/ELSE flow control, later-firmware features).
+                        description: """Schema-aware wizard walker -- the escape hatch when the high-level addAction/addTrigger helpers don't cover the capability (Periodic Schedule sub-pages, conditional-trigger binding, IF/THEN/ELSE flow control, later-firmware features). operation='drive' runs a whole steps=[...] loop in one call; the single-step primitives are introspect / write / click / navigate / done.[[FLAT_TRIM]]
 
 PREFERRED -- operation='drive' runs the whole loop in ONE call: pass steps=[ {operation, page?, write?/click?/navigate?/done?, hrefContext?}, ... ] and the tool performs them in order (introspect → navigate into a sub-page → write each field → done → finalize), carrying the page forward across navigate/done and stopping at the first failed step (stopOnError=false to continue). Returns {steps:[per-step diff/valueEcho/health], success, health}. This does the progressive loop for you instead of issuing N separate calls.
 
 Single-step operations (the primitives drive composes; call directly for fine control): introspect (fetch schema, no mutation) | write (one field, exactly one key per call) | click (a regular button: cancelCapab, hasAll, moreCond, ...) | navigate (forward into a sub-page via its href) | done (BACK-navigate to the parent via _action_previous=Done, carrying the sub-page's settings; REQUIRED for sub-pages like Periodic whose parent row otherwise renders "?" -- pass hrefContext={fromPage:<parent>, hrefParams:{n:<idx>}}).
 
-Spec: {page, operation, write?:{<field>:<value>}, click?:{name, stateAttribute?}, navigate?:{targetPage}, validateEnum?, hrefContext?:{fromPage, hrefName, hrefParams?, hrefIndex?}, steps?:[...] (drive)}; page is e.g. selectTriggers/selectActions/doActPage/mainPage/periodic. Always check `silentRejection`, `valueEcho.match`, `health.ok` -- the fail-loud signals. Full reference: guide:true or hub_get_tool_guide(section='set_rule_reference')."""
+Spec: {page, operation, write?:{<field>:<value>}, click?:{name, stateAttribute?}, navigate?:{targetPage}, validateEnum?, hrefContext?:{fromPage, hrefName, hrefParams?, hrefIndex?}, steps?:[...] (drive)}; page is e.g. selectTriggers/selectActions/doActPage/mainPage/periodic. Always check `silentRejection`, `valueEcho.match`, `health.ok` -- the fail-loud signals. Full reference: guide:true or hub_get_tool_guide(section='set_rule_reference').[[/FLAT_TRIM]]"""
                     ],
                     addAction: [
                         type: "object",
                         description: """Add a Rule Machine ACTION via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- `{type: 'log', ...}` is rejected with "addAction.capability is required (e.g. 'switch')". Pass `addAction: {discover: true}` for the live per-field schema (returns immediately, no hub mutation), or see docs/rm_action_subtype_schemas.md / hub_get_tool_guide(section='set_rule_reference'). The tool orchestrates the full RM 5.1 action wizard internally; returns result.actionIndex (no trailing updateRule needed -- doActPage self-bakes the action).
 
-Capability families (NAMES; full per-field specs via discover:true or the guide): switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, shade, fan, mode, setVariable, log / notification / httpGet / httpPost / ping, volume / mute / chime / siren, privateBoolean / runRule / cancelTimers / pauseRule, capture / restore / refresh / poll / disableDevice, fileWrite / fileAppend / fileDelete, zwavePoll, and flow control (delay / delayPerMode / cancelDelay / repeat / stopRepeat / repeatWhile / waitExpression / waitEvents / ifThen / elseIf / else / endIf / exitRule / comment). The expression-based ones (ifThen / elseIf / repeatWhile / waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents action per rule (RM stores wait events globally, not per-action).
+Capability families (NAMES; full per-field specs via discover:true or the guide): switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, shade, fan, mode, setVariable, log / notification / httpGet / httpPost / ping, volume / mute / chime / siren, privateBoolean / runRule / cancelTimers / pauseRule, capture / restore / refresh / poll / disableDevice, fileWrite / fileAppend / fileDelete, zwavePoll, and flow control (delay / delayPerMode / cancelDelay / repeat / stopRepeat / repeatWhile / waitExpression / waitEvents / ifThen / elseIf / else / endIf / exitRule / comment).[[FLAT_TRIM]] The expression-based ones (ifThen / elseIf / repeatWhile / waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents action per rule (RM stores wait events globally, not per-action).
 
 Per-condition shape inside any expression: {capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}. Pass singular deviceId:N or deviceIds:[N] (array form preferred -- a bare integer silently stores {N: null}). Nested subExpression is NOT supported here (use addRequiredExpression). Extended per-capability shapes (Mode, Between two times, Variable, Custom Attribute, compareToDevice) and discrete-event state names: guide:true.
 
 Optional on any spec: delay {hours, minutes, seconds, cancelable}; rawSettings {fieldName: value} escape hatch using the '@N' token for the auto-assigned action index (e.g. {'flashRate.@N': 750}). Variable-sourced values and the not-yet-mapped capability workarounds (HSM/Garage/Valve): guide:true.
 
-PARTIAL-SUCCESS: partial:true is orthogonal to success — the action row exists but needs repair (repairHints names next steps); for unrecoverable rows (hubRenderError=true) use removeAction(index:N) then retry. On failure wizardStuck:true means call hub_set_rule(button='cancelCapab', pageName='doActPage', confirm=true) before retry (restoreHint has the exact command). Full protocol: guide:true."""
+PARTIAL-SUCCESS: partial:true is orthogonal to success — the action row exists but needs repair (repairHints names next steps); for unrecoverable rows (hubRenderError=true) use removeAction(index:N) then retry. On failure wizardStuck:true means call hub_set_rule(button='cancelCapab', pageName='doActPage', confirm=true) before retry (restoreHint has the exact command). Full protocol: guide:true.[[/FLAT_TRIM]]"""
                     ],
-                    guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference (trigger/action/expression families, extended condition shapes, the raw settings/button wizard flow, and walkStep) inline — same content as hub_get_tool_guide(section='set_rule_reference'), without a separate tool call. Makes NO change to any rule."],
+                    guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline[[FLAT_TRIM]] (trigger/action/expression families, extended condition shapes, the raw settings/button wizard flow, and walkStep) — same content as hub_get_tool_guide(section='set_rule_reference'), without a separate tool call[[/FLAT_TRIM]]. Makes NO change to any rule."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller (RM-family).[[FLAT_TRIM]] Routes through the controller's add-button flow; returns buttonRuleId with the Button trigger auto-seeded — then author actions with addAction on that appId. Controller must already have a button device. Same handler as hub_set_native_app.buttonRule.[[/FLAT_TRIM]]", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
@@ -404,12 +404,12 @@ PARTIAL-SUCCESS: partial:true is orthogonal to success — the action row exists
         ],
         [
             name: "hub_delete_native_app",
-            description: """Delete any classic native automation app (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them. Two modes:
-
+            description: """Delete any classic native automation app (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them. force=false (default) soft-deletes (hub refuses if the app has child apps/devices); force=true hard-deletes with no child safety checks.
+[[FLAT_TRIM]]
 force=false (default): soft delete via /installedapp/delete. Hub refuses if the app has child apps or devices; response includes hubMessage explaining why.
 
 force=true: hard delete via /installedapp/forcedelete/quiet — the same path the hub UI uses internally for its own \"Delete\" buttons. No child safety checks.
-
+[[/FLAT_TRIM]]
 BEFORE DELETE: full snapshot saved to File Manager. Response includes backup.backupKey; call hub_restore_backup (in hub_manage_code) with that key to recreate the app with all its settings re-applied.
 
 Requires Write master + confirm=true + recent hub backup.""",
