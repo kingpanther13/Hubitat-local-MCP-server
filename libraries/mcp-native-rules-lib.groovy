@@ -373,7 +373,7 @@ PARTIAL-SUCCESS: partial:true is orthogonal to success — the action row exists
         ],
         [
             name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report -- detect broken rules without curl. Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule), which share RM's configPage protocol. Prefers the rule's compiled state (RM `broken` via /app/ruleBuilderJson, or a graph VRB's validationErrors via /app/ruleBuilder20Json) with the HTML render scan as cross-check + fallback; `ruleFormat` (rm / vrb-graph / vrb-classic / basic-rule / button-controller / classic-app) says which engine answered. The report surfaces the compiled-state broken verdict, validationErrors, config-page render errors, RM *BROKEN* / **Broken Trigger|Action|Condition** markers, multiple-flag corruption, structural IF/Repeat imbalance, and a compiled-vs-HTML cross-check (full key list + brokenMarkerCounts: outputSchema below). Run after every mutation to confirm the change didn't leave the rule broken; hub_set_rule attaches it as `health` on every response. ok=false means at least one issue was found; the issues list explains what.""",
+            description: """Inspect a rule's current state and return a structured health report -- detect broken rules without curl. Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule). Run after every mutation; hub_set_rule attaches it as `health` on every response. ok=false means at least one issue was found; the issues list explains what.[[FLAT_TRIM]] These apps share RM's configPage protocol. Prefers the rule's compiled state (RM `broken` via /app/ruleBuilderJson, or a graph VRB's validationErrors via /app/ruleBuilder20Json) with the HTML render scan as cross-check + fallback; `ruleFormat` (rm / vrb-graph / vrb-classic / basic-rule / button-controller / classic-app) says which engine answered. The report surfaces the compiled-state broken verdict, validationErrors, config-page render errors, RM *BROKEN* / **Broken Trigger|Action|Condition** markers, multiple-flag corruption, structural IF/Repeat imbalance, and a compiled-vs-HTML cross-check (full key list + brokenMarkerCounts: outputSchema below).[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -436,7 +436,80 @@ Requires Write master + confirm=true + recent hub backup.""",
                 required: ["success"]
             ]
         ],
+        [
+            name: "hub_set_app_disabled",
+            description: "Enable or disable any installed app (the admin UI red-X) without deleting it — reversible and preserves the app's config. For Rule Machine rules use hub_set_rule_paused instead. Write master; the disabled flag is read-back verified.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    app_id: [type: "integer", description: "Installed-app ID to enable/disable (from hub_list_apps)."],
+                    disabled: [type: "boolean", description: "true = disable the app (stop it running), false = enable it."]
+                ],
+                required: ["app_id", "disabled"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the disabled flag now matches the requested value (read-back verified)"],
+                    appId: [type: "integer", description: "App ID"],
+                    disabled: [type: "boolean", description: "The app's disabled flag after the call"],
+                    message: [type: "string", description: "Human-readable result on success"],
+                    error: [type: "string", description: "Present on failure"],
+                    note: [type: "string", description: "Recovery guidance on failure"]
+                ],
+                required: ["success"]
+            ]
+        ],
     ]
+}
+
+// Enable/disable any installed app via POST /installedapp/disable {id, disable} -- the documented
+// Vue admin wire format (red-X). Reversible (re-enable with disabled=false). A POST that doesn't
+// throw is NOT proof; the disabled flag is read back from /installedapp/json/<id>.
+def toolSetAppDisabled(args) {
+    def id = (args?.app_id != null) ? args.app_id : args?.appId
+    if (id == null || !id.toString().isInteger() || id.toString().toInteger() <= 0) {
+        throw new IllegalArgumentException("app_id must be a positive integer (got: '${id}')")
+    }
+    int appId = id.toString().toInteger()
+    if (args?.disabled == null) {
+        throw new IllegalArgumentException("disabled is required (true to disable the app, false to enable it)")
+    }
+    boolean disable = (args.disabled == true || args.disabled?.toString() == "true")
+    try {
+        hubInternalPostJson("/installedapp/disable", groovy.json.JsonOutput.toJson([id: appId, disable: disable]))
+    } catch (Exception e) {
+        return [success: false, appId: appId, error: "POST /installedapp/disable failed: ${e.message}", note: "Verify the app id with hub_list_apps and retry."]
+    }
+    // Read the flag back. Distinguish empty body / GET exception / missing-key so a read-back
+    // miss can't masquerade as a clean false-RED, and a missing 'disabled' key can't be read as
+    // false (a silent false-GREEN). A bare GET exception means the WRITE may have committed.
+    def observed = null
+    def readErr = null
+    try {
+        def txt = hubInternalGet("/installedapp/json/${appId}")
+        if (txt) {
+            def parsed = new groovy.json.JsonSlurper().parseText(txt)
+            if (parsed instanceof Map && parsed.containsKey("disabled")) {
+                observed = (parsed.disabled == true)
+            } else {
+                readErr = "read-back response carried no 'disabled' field"
+            }
+        } else {
+            readErr = "read-back returned an empty body"
+        }
+    } catch (Exception e) {
+        readErr = e.message
+        mcpLog("warn", "hub-admin", "hub_set_app_disabled ${appId}: read-back of /installedapp/json/${appId} failed: ${e.message}")
+    }
+    if (observed == disable) {
+        mcpLog("info", "hub-admin", "Set installed app ${appId} disabled=${disable}")
+        return [success: true, appId: appId, disabled: disable, message: "App ${appId} disabled flag is now ${disable}."]
+    }
+    if (observed == null) {
+        return [success: false, appId: appId, error: "POST /installedapp/disable was accepted but the disabled state could not be confirmed (${readErr ?: 'unparseable read-back'}).", note: "The change may already be applied -- re-check with hub_list_apps before retrying; do NOT blindly re-POST."]
+    }
+    return [success: false, appId: appId, disabled: observed, error: "POST accepted but read-back shows disabled=${observed} (wanted ${disable}).", note: "The hub may not have committed the flag; retry, or check the app in the hub UI."]
 }
 
 // List all Rule Machine rules via the official hubitat.helper.RMUtils API.
@@ -2693,7 +2766,7 @@ private Map _rmActionSchemaForDiscover() {
                 optionalFields: [
                     [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. String, boolean, and datetime hub-variable targets are not supported via 'value'; use 'sourceVariable', or set those types via rawSettings."],
                     [name: "sourceVariable", type: "String", description: "Hub variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. Schema-gated: the source-variable field is only revealed by RM after the numOp=variable write; fails loud (success=false) if the hub does not reveal it. See docs/rm_wire_format.md for the wire sequence."],
-                    [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable -- RM does not offer the device-attribute source for String/Boolean/DateTime variables (rejected with success=false before the hub write). Maps to numOp='device attribute'. deviceId may be ANY hub device (RM's device picker spans all hub devices, not just the MCP-selected set); it is validated only as a positive integer id, not against the MCP device set. The device picker and the attribute enum are schema-gated and revealed in sequence (deviceId reveals an attribute enum FILTERED to that device's live attributes); fails loud (success=false) if the device picker is not revealed. An attribute not in the device's filtered enum is rejected with success=false and the device's available-attribute list. See docs/rm_wire_format.md for the wire sequence."],
+                    [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable. Maps to numOp='device attribute'.[[FLAT_TRIM]] RM does not offer the device-attribute source for String/Boolean/DateTime variables (rejected with success=false before the hub write). deviceId may be ANY hub device (RM's device picker spans all hub devices, not just the MCP-selected set); it is validated only as a positive integer id, not against the MCP device set. The device picker and the attribute enum are schema-gated and revealed in sequence (deviceId reveals an attribute enum FILTERED to that device's live attributes); fails loud (success=false) if the device picker is not revealed. An attribute not in the device's filtered enum is rejected with success=false and the device's available-attribute list. See docs/rm_wire_format.md for the wire sequence.[[/FLAT_TRIM]]"],
                     [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable -- RM does not offer the variable-math source for String/Boolean/DateTime variables (rejected with success=false before the hub write). Maps to numOp='variable math'. A Number operand becomes a constant; a String operand is treated as a hub variable name. Binary operators (+ - * / %) require 'right'; unary operators (negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees) reject 'right'. Operand fields are schema-gated and revealed in sequence; fails loud (success=false) if a required field is not revealed. See docs/rm_wire_format.md for the wire sequence."],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
@@ -11920,7 +11993,7 @@ def _idempotentWriteToolNames_partNativeRM() {
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
     return [
         // Native rules / classic apps
-        "hub_set_rule_paused", "hub_set_rule_private_boolean"
+        "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_app_disabled"
     ]
 }
 
@@ -11935,6 +12008,7 @@ def _toolDisplayMeta_partNativeRM() {
         hub_set_rule: [title: "Author Rule Machine Rule", summary: "Create or edit a Rule Machine rule."],
         hub_get_rule_health: [title: "Get Rule Health", summary: "Read-only health check on any installed app."],
         hub_set_native_app: [title: "Create or Edit Native App", summary: "Create or edit a classic native app (Room Lighting, Notifier, etc.)."],
-        hub_delete_native_app: [title: "Delete Native App", summary: "Delete a classic native app (auto-snapshot first)."]
+        hub_delete_native_app: [title: "Delete Native App", summary: "Delete a classic native app (auto-snapshot first)."],
+        hub_set_app_disabled: [title: "Enable or Disable App", summary: "Enable or disable any installed app without deleting it (reversible)."]
     ]
 }

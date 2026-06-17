@@ -55,8 +55,41 @@ def toolGetZwaveDetails(args) {
         result.note = "Extended Z-Wave info unavailable from all endpoints. Showing basic info from hub SDK."
     }
 
+    if (args?.include_topology) result.topology = _fetchRadioTopology("zwave")
+
     mcpLog("info", "hub-admin", "Retrieved Z-Wave details")
     return result
+}
+
+// Read-only mesh route/topology for a radio. Z-Wave: /hub/zwave/getChildAndRouteInfoJson
+// (nodes + source->target connectors) + /hub/zwaveTopology (raw route table). Zigbee:
+// /hub/zigbee/getChildAndRouteInfoJson (children + neighbors + routes with status/age/nextHopId).
+// All GET/read-only -- no radio mutation, so this does not touch the no-radio-ops guardrail.
+private Map _fetchRadioTopology(String radio) {
+    def topo = [:]
+    def jsonEndpoint = (radio == "zwave") ? "/hub/zwave/getChildAndRouteInfoJson" : "/hub/zigbee/getChildAndRouteInfoJson"
+    topo.endpoint = jsonEndpoint
+    try {
+        def txt = hubInternalGet(jsonEndpoint)
+        if (txt) {
+            try { topo.routes = new groovy.json.JsonSlurper().parseText(txt) }
+            catch (Exception parseErr) { topo.rawRoutes = txt?.take(8000); topo.note = "Route info was not JSON format" }
+        }
+    } catch (Exception e) {
+        topo.error = "Failed to fetch ${jsonEndpoint}: ${e.message}"
+    }
+    if (radio == "zwave") {
+        try {
+            def t = hubInternalGet("/hub/zwaveTopology")
+            if (t) topo.zwaveTopologyTable = t.take(8000)
+        } catch (Exception e) {
+            // The raw route table is optional context on top of the JSON route info above, but
+            // record the miss so an absent table can't be mistaken for an empty one.
+            topo.zwaveTopologyTableError = "Failed to fetch /hub/zwaveTopology: ${e.message}"
+            mcpLog("debug", "hub-admin", "_fetchRadioTopology zwaveTopology miss: ${e.message}")
+        }
+    }
+    return topo
 }
 
 def toolGetZigbeeDetails(args) {
@@ -101,6 +134,8 @@ def toolGetZigbeeDetails(args) {
         result.source = "sdk_only"
         result.note = "Extended Zigbee info unavailable from all endpoints. Showing basic info from hub SDK."
     }
+
+    if (args?.include_topology) result.topology = _fetchRadioTopology("zigbee")
 
     mcpLog("info", "hub-admin", "Retrieved Zigbee details")
     return result
@@ -1543,11 +1578,12 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_radio_details",
-            description: "Get Z-Wave and/or Zigbee radio info (firmware, home/PAN ID, channel, device nodes). radio='zwave' or 'zigbee' for one radio; omit to return both. Requires Read master.",
+            description: "Get Z-Wave and/or Zigbee radio info (firmware, home/PAN ID, channel, device nodes); omit radio to return both. include_topology=true adds the read-only mesh route map for diagnosing weak or unresponsive nodes. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    radio: [type: "string", enum: ["zwave", "zigbee"], description: "Which radio to query. Omit to return both."]
+                    radio: [type: "string", enum: ["zwave", "zigbee"], description: "Which radio to query. Omit to return both."],
+                    include_topology: [type: "boolean", description: "Also include the mesh route/topology map (Z-Wave nodes+connectors and raw route table; Zigbee children+neighbors+routes). Read-only. Default false."]
                 ]
             ],
             outputSchema: [
@@ -1560,6 +1596,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     zigbeeChannel: [description: "Zigbee channel; present for radio='zigbee'"],
                     zigbeeId: [description: "Zigbee ID; present for radio='zigbee'"],
                     zigbeeData: [type: "object", description: "Parsed Zigbee info; present for radio='zigbee'"],
+                    topology: [type: "object", description: "Mesh route/topology; present only when include_topology=true. {endpoint, routes (parsed node/route graph), zwaveTopologyTable (raw, Z-Wave only), error?}"],
                     source: [type: "string", description: "Where data came from: hub_api, hub_api_raw, or sdk_only"],
                     endpoint: [type: "string", description: "Internal API endpoint used"],
                     rawResponse: [type: "string", description: "Raw body when response was not JSON"],

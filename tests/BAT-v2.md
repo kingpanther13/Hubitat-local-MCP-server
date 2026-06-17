@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B 19-gateway read/write split (11 flat core + 19 gateways = 30 on tools/list, 98 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B 19-gateway read/write split (11 flat core + 19 gateways = 30 on tools/list, 99 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2364,7 +2364,7 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 11 |
 | Gateways on `tools/list` | 19 |
 | Total visible on `tools/list` | 30 |
-| Total distinct tools in codebase | 98 |
+| Total distinct tools in codebase | 99 |
 
 **7 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (5), `hub_read_variables` (3)
 
@@ -2374,7 +2374,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 ### Tool Coverage (non-destructive tools only)
 
-All 98 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 99 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -3986,7 +3986,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 Key differences from the original BAT.md (which targets the pre-v0.8.0 architecture):
 
-1. **Architecture**: 18 core + 8 gateways (26 total) → **11 flat core + 19 gateways (30 on tools/list, 98 total distinct tools)** post installed-apps + RM interop + native CRUD + hub_list_app_pages + poll_until_attribute + library management + HPM package state + the PR1B read/write gateway split (was 23 core + 13 gateways / 36 total / 103 tools before PR1B; 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
+1. **Architecture**: 18 core + 8 gateways (26 total) → **11 flat core + 19 gateways (30 on tools/list, 99 total distinct tools)** post installed-apps + RM interop + native CRUD + hub_list_app_pages + poll_until_attribute + library management + HPM package state + the PR1B read/write gateway split (was 23 core + 13 gateways / 36 total / 103 tools before PR1B; 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
 2. **Merged tools**: `enable_rule`/`disable_rule` → `hub_update_custom_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `hub_manage_virtual_device` (action enum)
 3. **Promoted to core**: `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `hub_manage_diagnostics`, other tools merged into `hub_get_info` (core) or promoted

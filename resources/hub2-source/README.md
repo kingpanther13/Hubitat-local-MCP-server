@@ -105,8 +105,11 @@ user-facing app type ("Visual Rules Builder" parent; children are hidden type
 | `GET  /app/ruleBuilderPause/<id>/<true\|false>` | Pause/resume a Visual Rule — boolean rides in the path → `{success}` |
 | `GET  /app/ruleBuilderGenerateRule?appId=&prompt=` | VRB AI generate (Gemini cloud) → `{success, whenNodes, thenNodes, elseNodes}` |
 | `GET  /app/ruleBuilderSuggestions` | Prompt suggestions for the VRB AI-generate dialog |
-| `GET  /device/listWithCapabilities/json` | Device list with capabilities — feeds the VRB device pickers |
+| `GET  /device/listWithCapabilities/json` | All-hub device list with capabilities (`id`, `label`, `capabilities`) — feeds the VRB device pickers AND `hub_list_devices` `scope='all'`, which tags each device `mcpAuthorized` true/false. This is the only way the app sees devices it isn't granted (the Groovy device model is authorization-scoped) |
 | `GET  /device/listJson?capability=<cap>` | Classic `dynamicPage` device-input picker feed (`appUI.js` line 209 `$.getJSON('/device/listJson?capability='…)`, `main.js`) — a capability-filtered device list. The MCP server reaches the same data via `/device/fullJson` + `hub_list_devices`; this is the older classic-engine path, distinct from the Vue `listWithCapabilities/json` above |
+| `GET  /hub/zwave/getChildAndRouteInfoJson` | Z-Wave mesh route map — `{nodes, connectors}` (per-node route/neighbor graph). Read-only. Feeds `hub_get_radio_details(include_topology=true)` |
+| `GET  /hub/zigbee/getChildAndRouteInfoJson` | Zigbee mesh route map — `{children, neighbors, routes}` (routes carry `status`/`age`/`nextHopId`). Read-only. Feeds `hub_get_radio_details(include_topology=true)` |
+| `GET  /hub/zwaveTopology` | Z-Wave raw route table (plain text). Read-only companion to the JSON route map above |
 | `GET  /modes/list/json` | Location modes list — feeds the VRB mode trigger/condition/action dialogs |
 | `GET  /appui/createBasicRulesChild` | Server-creates a new Basic Rules child → `{success, appId}` |
 | `GET  /appui/clearEmptyBasicRules` | Sweeps empty (never-saved) Basic Rules children |
@@ -120,7 +123,7 @@ user-facing app type ("Visual Rules Builder" parent; children are hidden type
 | `GET  /installedapp/eventsJson/<id>` | Events history JSON |
 | `POST /installedapp/forcedelete/<id>/quiet` | Force-delete, no prompts |
 | `GET  /installedapp/createchild/<namespace>/<appName>/parent/<parentId>` | Server-creates a child app instance under a parent — a raw GET that 302-redirects to the new child's `configure/<id>` page. Used by the MCP server (`_rmCreateChildApp`) to instantiate classic child apps (Basic Rule, RM child, etc.) |
-| `POST /installedapp/disable` | Enable/disable an installed app — body `{id, disable:<bool>}` (`true` disables, `false` enables). Posted by `main.js` `enableApp()`/`disableApp()`. Not currently called by the MCP server |
+| `POST /installedapp/disable` | Enable/disable an installed app — body `{id, disable:<bool>}` (`true` disables, `false` enables). Posted by `main.js` `enableApp()`/`disableApp()`. Used by `hub_set_app_disabled` (read-back verified via `/installedapp/json/<id>`) |
 | `GET  /installedapp/direct/<alias>` | NOT a Vue CRUD endpoint — a name-addressed 302 redirect chain: `direct/<alias>` → `create/<typeId>` → `configure/<instanceId>` (type ids vary per hub; the alias is the stable key). Get-or-create, so it doubles as a stable name→id resolver (fw 2.5.0.143) |
 | `GET  /installedapp/direct/hubVariables` | Singleton: the chain lands on the SAME instance every visit. The Vue `HubVariables` component is a non-functional stub — the classic `hubVar` wizard is the real variable-CRUD contract |
 | `GET  /installedapp/direct/swapDevice` | Transient: every visit CREATES a fresh instance (1802, then 1803 observed) — callers own cleanup of instances they don't drive to completion. The swap flow itself is the classic `mainPage` wizard; its pickers offer only free-standing devices (app-owned child/component devices are excluded from both `oldDev` and `newDev`); `oldDev` additionally lists only devices referenced by at least one app, while `newDev` offers any compatible free-standing device (fw 2.5.0.143) |

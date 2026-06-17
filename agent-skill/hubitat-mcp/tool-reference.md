@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 98 MCP tools. The server exposes **30 items on `tools/list`**: 11 flat core tools + 19 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
+Quick reference for all 99 MCP tools. The server exposes **30 items on `tools/list`**: 11 flat core tools + 19 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
 
 For the most authoritative reference, call `hub_get_tool_guide` via MCP.
 
@@ -49,7 +49,7 @@ These 11 tools are never behind a gateway. Every other tool is reachable through
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `hub_search_tools` | BM25 natural language search across all 98 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `hub_search_tools` | BM25 natural language search across all 99 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
