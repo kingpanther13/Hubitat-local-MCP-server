@@ -1000,6 +1000,44 @@ class TestRunner:
         assert "routes" in topo or "rawRoutes" in topo, \
             f"include_topology returned no route data: {topo}"
 
+    @test("diagnostics")
+    def test_radio_details_matter(self) -> None:
+        # FOLD 1 (#257): radio='matter' folds Matter fabric/device details into hub_get_radio_details
+        # (GET /hub/matterDetails/json). Resilient to a hub without a Matter radio: on such a hub the
+        # helper returns source='sdk_only' with a C-8 note; on a Matter-capable hub it returns
+        # source='hub_api' with a parsed matterData object. Either way the fold path must have fired
+        # (a valid source string), proving radio='matter' dispatched rather than erroring.
+        result = self.client.call_tool("hub_get_radio_details", {"radio": "matter"})
+        assert isinstance(result, dict), "hub_get_radio_details radio='matter' did not return an object"
+        source = result.get("source")
+        assert source in ("hub_api", "hub_api_raw", "sdk_only"), \
+            f"radio='matter' did not set a recognized source (fold path didn't fire?): {result}"
+        if source == "hub_api":
+            matter = result.get("matterData")
+            assert isinstance(matter, dict), f"source=hub_api but matterData missing/!dict: {result}"
+            # Rich Matter shape from the live endpoint -- assert the documented top-level keys exist.
+            assert "fabricId" in matter or "networkState" in matter or "devices" in matter, \
+                f"matterData missing expected Matter keys: {matter}"
+        else:
+            # No Matter radio on this hub -- the note must steer toward the C-8 / C-8 Pro requirement.
+            assert "matter" in str(result.get("note", "")).lower(), \
+                f"sdk_only fallback missing an actionable Matter note: {result}"
+
+    @test("diagnostics")
+    def test_device_health_traceroute(self) -> None:
+        # FOLD 2 (#257): traceroute folds the hub's route trace into hub_get_device_health
+        # (GET /hub/networkTest/traceroute/<ipv4>). Use a stable public IPv4 (8.8.8.8). The fold path
+        # must produce a result.traceroute object carrying the target host; on a hub with WAN it returns
+        # output (the plain-text route table), otherwise a structured error -- tolerate either so the
+        # test is resilient, but assert the fold fired (traceroute present with host + output|error).
+        result = self.client.call_tool("hub_get_device_health", {"traceroute": "8.8.8.8"})
+        assert isinstance(result, dict), "hub_get_device_health did not return an object"
+        tr = result.get("traceroute")
+        assert isinstance(tr, dict), f"traceroute fold did not attach a traceroute object: {result}"
+        assert tr.get("host") == "8.8.8.8", f"traceroute did not echo the target host: {tr}"
+        assert ("output" in tr) or ("error" in tr), \
+            f"traceroute produced neither output nor a structured error: {tr}"
+
     @test("native_apps")
     def test_set_app_disabled_roundtrip(self) -> None:
         # Item 2 (#257): toggle a standalone non-e2e app's disabled flag and restore it.

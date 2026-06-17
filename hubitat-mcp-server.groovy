@@ -1177,8 +1177,8 @@ def getGatewayConfig() {
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; recordSnapshot=true also persists a snapshot. Args: recordSnapshot, trendPoints",
                 hub_get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Read master",
                 hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires the Write master",
-                hub_get_device_health: "Check device staleness, ICMP-ping arbitrary IPs (router, NAS, server), and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), identifyHub",
-                hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count). Args: radio (zwave|zigbee, omit for both). Requires Read master",
+                hub_get_device_health: "Check device staleness; run network diagnostics: ICMP-ping arbitrary IPs (router, NAS, server), traceroute to one IPv4, ~10s WAN speedtest; and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), traceroute (IPv4), speedtest (bool), identifyHub",
+                hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count), or Matter fabric/device details. Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee). Requires Read master",
                 hub_call_zwave_repair: "Z-Wave network repair (⚠️ DISRUPTIVE, 5-30 min, devices unresponsive). Args: confirm=true",
                 hub_list_captured_states: "List saved device state snapshots",
                 hub_delete_captured_state: "Delete a captured state by stateId, or ALL captured states when stateId is omitted. Args: stateId (optional)"
@@ -1187,8 +1187,8 @@ def getGatewayConfig() {
                 hub_get_metrics: "temperature database size trending monitoring over time health alerts safe mode radio offline backup failed low memory",
                 hub_get_memory_history: "ram free used leak trending over time java heap nio",
                 hub_call_gc: "gc garbage collection free reclaim ram cleanup java heap memory",
-                hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router gateway identify led blink locate physical hub",
-                hub_get_radio_details: "zwave zigbee mesh network frequency firmware 908mhz 700 800 series channel pan coordinator 2400mhz radio",
+                hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router gateway traceroute route hops speedtest bandwidth wan download internet speed identify led blink locate physical hub",
+                hub_get_radio_details: "zwave zigbee matter thread fabric mesh network frequency firmware 908mhz 700 800 series channel pan coordinator 2400mhz radio commissioned node",
                 hub_call_zwave_repair: "fix heal network mesh routing neighbor rebuild",
                 hub_list_captured_states: "saved snapshot bookmark remember device values",
                 hub_delete_captured_state: "remove delete clear saved snapshot bookmark all"
@@ -1220,8 +1220,8 @@ def getGatewayConfig() {
                 hub_get_debug_logs: "Get MCP internal debug logs (mode='logs') or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
-                hub_get_device_health: "Check device staleness, ICMP-ping arbitrary IPs, and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, identifyHub",
-                hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count). Args: radio (zwave|zigbee, omit for both)",
+                hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, ~10s WAN speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, traceroute, speedtest, identifyHub",
+                hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count), or Matter fabric/device details. Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee)",
                 hub_list_captured_states: "List saved device state snapshots"
             ],
             searchHints: [
@@ -1231,8 +1231,8 @@ def getGatewayConfig() {
                 hub_get_debug_logs: "mcp internal troubleshoot trace logging status buffer capacity level",
                 hub_get_metrics: "temperature database size trending monitoring memory over time snapshot history health alerts safe mode radio offline backup failed weak mesh",
                 hub_get_memory_history: "ram free used leak trending over time java heap nio",
-                hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router identify led blink locate",
-                hub_get_radio_details: "zwave zigbee mesh network frequency firmware channel pan coordinator radio",
+                hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router traceroute route hops speedtest bandwidth wan download internet speed identify led blink locate",
+                hub_get_radio_details: "zwave zigbee matter thread fabric mesh network frequency firmware channel pan coordinator radio commissioned node",
                 hub_list_captured_states: "saved snapshot bookmark remember device values"
             ]
         ],

@@ -6,11 +6,52 @@ library(name: "McpDiagnosticsLib", namespace: "mcp", author: "kingpanther13", de
 // parameterless-closure vs open-block) even though hubitat_ci's parser accepts it.
 def toolGetRadioDetails(args) {
     def radio = args.radio
-    if (radio != null && !(radio in ["zwave", "zigbee"]))
-        throw new IllegalArgumentException("radio must be 'zwave' or 'zigbee' (or omit for both)")
+    if (radio != null && !(radio in ["zwave", "zigbee", "matter"]))
+        throw new IllegalArgumentException("radio must be 'zwave', 'zigbee', or 'matter' (or omit for both Z-Wave and Zigbee)")
     if (radio == "zwave") return toolGetZwaveDetails(args)
     if (radio == "zigbee") return toolGetZigbeeDetails(args)
+    if (radio == "matter") return toolGetMatterDetails(args)
+    // OMIT (both-shape) is deliberately Z-Wave + Zigbee only -- Matter is opt-in
+    // via radio="matter" so existing callers that omit radio keep their shape.
     return [zwave: toolGetZwaveDetails(args), zigbee: toolGetZigbeeDetails(args)]
+}
+
+def toolGetMatterDetails(args) {
+
+    def result = [:]
+
+    // Matter fabric + commissioned-device details via internal API. The hub's
+    // Matter controller exposes /hub/matterDetails/json on firmware that supports
+    // a Matter radio (C-8 / C-8 Pro); older hubs / non-Matter models return nothing.
+    def endpoint = "/hub/matterDetails/json"
+    def matterSuccess = false
+    try {
+        def responseText = hubInternalGet(endpoint)
+        if (responseText) {
+            try {
+                result.matterData = new groovy.json.JsonSlurper().parseText(responseText)
+                result.source = "hub_api"
+                result.endpoint = endpoint
+                matterSuccess = true
+            } catch (Exception parseErr) {
+                result.rawResponse = responseText?.take(3000)
+                result.source = "hub_api_raw"
+                result.endpoint = endpoint
+                result.note = "Response was not JSON format"
+                matterSuccess = true
+            }
+        }
+    } catch (Exception e) {
+        mcpLog("debug", "hub-admin", "Matter endpoint ${endpoint} failed: ${e.message}")
+    }
+
+    if (!matterSuccess) {
+        result.source = "sdk_only"
+        result.note = "Matter details unavailable. Matter requires a Hubitat C-8 or C-8 Pro on supported firmware with the Matter integration enabled."
+    }
+
+    mcpLog("info", "hub-admin", "Retrieved Matter details")
+    return result
 }
 
 def toolGetZwaveDetails(args) {
@@ -992,6 +1033,40 @@ def toolDeviceHealthCheck(args) {
 
     def pingResults = pingHosts ? runPingChecks(pingHosts, pingCount) : null
 
+    // Optional WAN/route network diagnostics, both read-only (GET, no hub mutation).
+    Map tracerouteResult = null
+    if (args?.traceroute != null) {
+        def host = args.traceroute.toString().trim()
+        // Same dotted-quad IPv4 validation runPingChecks uses; hostnames are rejected
+        // (the hub's traceroute endpoint takes a literal IPv4 in the path).
+        if (!(host ==~ /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/)) {
+            throw new IllegalArgumentException("traceroute must be a dotted-quad IPv4 literal (hostnames not supported, pass an IP), got '${host}'")
+        }
+        def endpoint = "/hub/networkTest/traceroute/${host}"
+        tracerouteResult = [host: host, endpoint: endpoint]
+        try {
+            def txt = hubInternalGet(endpoint, [:], 30)
+            tracerouteResult.output = txt?.take(8000)
+        } catch (Exception e) {
+            tracerouteResult.error = "traceroute failed: ${e.message}"
+            mcpLog("warn", "monitoring", "hub_get_device_health traceroute to ${host} failed: ${e.message}")
+        }
+    }
+
+    Map speedtestResult = null
+    if (args?.speedtest == true) {
+        def endpoint = "/hub/networkTest/speedtest"
+        speedtestResult = [endpoint: endpoint]
+        try {
+            // ~10s synchronous WAN download test (fixed Hubitat S3 URL); allow headroom over the default timeout.
+            def txt = hubInternalGet(endpoint, [:], 30)
+            speedtestResult.output = txt?.take(8000)
+        } catch (Exception e) {
+            speedtestResult.error = "speedtest failed: ${e.message}"
+            mcpLog("warn", "monitoring", "hub_get_device_health speedtest failed: ${e.message}")
+        }
+    }
+
     Map identifyHubFields = null
     if (args?.identifyHub == true) {
         try {
@@ -1010,6 +1085,8 @@ def toolDeviceHealthCheck(args) {
             summary: [totalDevices: 0, healthyCount: 0, staleCount: 0, unknownCount: 0]
         ]
         if (pingResults != null) emptyResult.pingResults = pingResults
+        if (tracerouteResult != null) emptyResult.traceroute = tracerouteResult
+        if (speedtestResult != null) emptyResult.speedtest = speedtestResult
         if (identifyHubFields != null) emptyResult.putAll(identifyHubFields)
         return emptyResult
     }
@@ -1110,6 +1187,14 @@ def toolDeviceHealthCheck(args) {
 
     if (pingResults != null) {
         result.pingResults = pingResults
+    }
+
+    if (tracerouteResult != null) {
+        result.traceroute = tracerouteResult
+    }
+
+    if (speedtestResult != null) {
+        result.speedtest = speedtestResult
     }
 
     if (identifyHubFields != null) {
@@ -1528,14 +1613,16 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_device_health",
-            description: "Check device staleness and (optionally) ICMP-ping arbitrary hosts. Stale check covers only devices authorized for MCP access (the app's selected device list) with no activity in staleHours; MCP-managed virtual/child devices (from hub_create_virtual_device) are a SEPARATE population and are NOT included here — list those via hub_list_devices(filter='virtual'). Ping check uses hubitat.helper.NetworkUtils.ping() to verify network reachability of any IPs in pingHosts (router, NAS, server, LAN-attached devices). Either or both may be used in a single call. Pass cursor (opaque string from a prior nextCursor) to page the staleDevices list at 100 per page when the full response would be too large.",
+            description: "Hub network diagnostics + device-staleness checks. Stale check covers only devices authorized for MCP access (the app's selected device list) with no activity in staleHours;[[FLAT_TRIM]] MCP-managed virtual/child devices (from hub_create_virtual_device) are a SEPARATE population and are NOT included here — list those via hub_list_devices(filter='virtual').[[/FLAT_TRIM]] Network diagnostics (any combination, all read-only): pingHosts ICMP-pings LAN IPs; traceroute runs the hub's route trace to one IPv4; speedtest runs the hub's ~10s WAN download test.[[FLAT_TRIM]] Any of these may be combined in a single call. Pass cursor (opaque string from a prior nextCursor) to page the staleDevices list at 100 per page when the full response would be too large.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     staleHours: [type: "integer", description: "Flag devices with no activity in this many hours. Default: 24.", default: 24],
                     includeHealthy: [type: "boolean", description: "Include healthy devices in the response (can be large). Default: false.", default: false],
-                    pingHosts: [type: "array", items: [type: "string"], description: "Optional IPv4 addresses to ICMP-ping (max 5 per call). Each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved — pass IPs only."],
+                    pingHosts: [type: "array", items: [type: "string"], description: "Optional IPv4 addresses to ICMP-ping (max 5 per call).[[FLAT_TRIM]] Each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved — pass IPs only.[[/FLAT_TRIM]]"],
                     pingCount: [type: "integer", description: "Packets to send per host (1-5). Default: 3.", default: 3],
+                    traceroute: [type: "string", description: "Optional single IPv4 dotted-quad host (e.g. '8.8.8.8') to traceroute; plain-text route table returned under traceroute.output.[[FLAT_TRIM]] Hostnames are rejected — pass an IP.[[/FLAT_TRIM]]"],
+                    speedtest: [type: "boolean", description: "If true, run the hub's ~10s WAN download test; plain-text wget log with the measured speed returned under speedtest.output.[[FLAT_TRIM]] Fixed Hubitat S3 URL, no caller input.[[/FLAT_TRIM]] Default: false."],
                     identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the staleDevices array. Omit to get all stale devices in one response (subject to the universal response-size guard). Pass nextCursor from a prior call to fetch the next page (page size 100). unknownDevices and healthyDevices are always returned in full alongside the page."]
                 ]
@@ -1566,6 +1653,17 @@ def _getAllToolDefinitions_partDiagnostics() {
                         packetLoss: [description: "Packet-loss percentage"],
                         rttAvg: [description: "Average round-trip time"]
                     ]]],
+                    traceroute: [type: "object", description: "Present when traceroute supplied. {host, endpoint, output (plain-text route table), error (present on fetch failure)}", properties: [
+                        host: [type: "string", description: "Target IPv4"],
+                        endpoint: [type: "string", description: "Internal API endpoint used"],
+                        output: [type: "string", description: "Plain-text traceroute route table (truncated to 8000 chars)"],
+                        error: [type: "string", description: "Present when the traceroute fetch failed"]
+                    ]],
+                    speedtest: [type: "object", description: "Present when speedtest=true. {endpoint, output (plain-text wget log with WAN download speed), error (present on fetch failure)}", properties: [
+                        endpoint: [type: "string", description: "Internal API endpoint used"],
+                        output: [type: "string", description: "Plain-text speedtest wget log incl. WAN download speed (truncated to 8000 chars)"],
+                        error: [type: "string", description: "Present when the speedtest fetch failed"]
+                    ]],
                     recommendation: [type: "string", description: "Present when stale/unknown devices exist"],
                     total: [type: "integer", description: "Total stale devices; present in cursor mode"],
                     nextCursor: [type: "string", description: "Pagination cursor; present when more stale devices remain"],
@@ -1578,12 +1676,12 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_radio_details",
-            description: "Get Z-Wave and/or Zigbee radio info (firmware, home/PAN ID, channel, device nodes); omit radio to return both. include_topology=true adds the read-only mesh route map for diagnosing weak or unresponsive nodes. Requires Read master.",
+            description: "Get Z-Wave and/or Zigbee radio info (firmware, home/PAN ID, channel, device nodes); omit radio to return both Z-Wave and Zigbee, or 'matter' for Matter fabric/device details (fabricId, networkState, commissioned device list).[[FLAT_TRIM]] include_topology=true adds the read-only mesh route map for diagnosing weak or unresponsive Z-Wave/Zigbee nodes.[[/FLAT_TRIM]] Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    radio: [type: "string", enum: ["zwave", "zigbee"], description: "Which radio to query. Omit to return both."],
-                    include_topology: [type: "boolean", description: "Also include the mesh route/topology map (Z-Wave nodes+connectors and raw route table; Zigbee children+neighbors+routes). Read-only. Default false."]
+                    radio: [type: "string", enum: ["zwave", "zigbee", "matter"], description: "Which radio to query. Omit to return both Z-Wave and Zigbee; pass 'matter' for the Matter fabric and commissioned-device list."],
+                    include_topology: [type: "boolean", description: "Also include the mesh route/topology map[[FLAT_TRIM]] (Z-Wave nodes+connectors and raw route table; Zigbee children+neighbors+routes)[[/FLAT_TRIM]]. Z-Wave/Zigbee only. Read-only. Default false."]
                 ]
             ],
             outputSchema: [
@@ -1596,6 +1694,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     zigbeeChannel: [description: "Zigbee channel; present for radio='zigbee'"],
                     zigbeeId: [description: "Zigbee ID; present for radio='zigbee'"],
                     zigbeeData: [type: "object", description: "Parsed Zigbee info; present for radio='zigbee'"],
+                    matterData: [type: "object", description: "Parsed Matter details; present for radio='matter'. {enabled, installed, networkState, ipAddresses, fabricId, devices[]}"],
                     topology: [type: "object", description: "Mesh route/topology; present only when include_topology=true. {endpoint, routes (parsed node/route graph), zwaveTopologyTable (raw, Z-Wave only), error?}"],
                     source: [type: "string", description: "Where data came from: hub_api, hub_api_raw, or sdk_only"],
                     endpoint: [type: "string", description: "Internal API endpoint used"],
@@ -1731,8 +1830,9 @@ def _openWorldToolNames_partDiagnostics() {
     // Tools in this library that reach BEYOND the hub to the open internet (MCP
     // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
     return [
-        // pingHosts sends caller-directed ICMP to ANY routable IPv4 (the tool's
-        // own description says "arbitrary hosts"), which can leave the LAN.
+        // pingHosts sends caller-directed ICMP to ANY routable IPv4, traceroute
+        // traces a route to an arbitrary IPv4, and speedtest pulls from a fixed
+        // Hubitat S3 URL -- all three reach beyond the LAN to the open internet.
         "hub_get_device_health"
     ]
 }
@@ -1748,8 +1848,8 @@ def _toolDisplayMeta_partDiagnostics() {
         hub_get_metrics: [title: "Get Hub Metrics", summary: "Hub metrics with CSV trend history."],
         hub_get_memory_history: [title: "Get Memory History", summary: "Free-memory and CPU-load history with summary stats."],
         hub_call_gc: [title: "Force Garbage Collection", summary: "Force JVM garbage collection and report freed memory."],
-        hub_get_device_health: [title: "Get Device Health", summary: "Find stale devices, ICMP-ping LAN hosts, and optionally blink the hub identify LED."],
-        hub_get_radio_details: [title: "Get Radio Details", summary: "Z-Wave and Zigbee radio details and device tables."],
+        hub_get_device_health: [title: "Get Device Health", summary: "Find stale devices, ICMP-ping LAN hosts, run traceroute/WAN speedtest, and optionally blink the hub identify LED."],
+        hub_get_radio_details: [title: "Get Radio Details", summary: "Z-Wave, Zigbee, and Matter radio details and device tables."],
         hub_call_zwave_repair: [title: "Run Z-Wave Repair", summary: "Start a Z-Wave network repair (5-30 minutes)."],
         hub_list_captured_states: [title: "List Captured States", summary: "List saved device state snapshots."],
         hub_delete_captured_state: [title: "Delete Captured State", summary: "Delete one or all captured device state snapshots."]
