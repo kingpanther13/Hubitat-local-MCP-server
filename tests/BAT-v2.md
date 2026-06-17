@@ -2722,7 +2722,19 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 }
 ```
 
-**Expected**: AI calls `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{useGateways:<flipped>}, confirm:true})`. The key is **accepted** (NOT rejected as outside the allowlist — this is the regression guard for the dev-mode gateway self-switch), result `{success:true, updated:{useGateways:<flipped>}, message:"...may need to reconnect to refresh cached tool schemas if you toggled an enable* flag or useGateways."}`. The WARN `[developer-mode]` audit line fires. AI explains the client must reconnect (`/mcp refresh`) before tools/list reflects the new gateway-vs-flat surface. Teardown restores the original value.
+**Expected**: AI calls `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{useGateways:<flipped>}, confirm:true})`. The key is **accepted** (NOT rejected as outside the allowlist — this is the regression guard for the dev-mode gateway self-switch), result `{success:true, updated:{useGateways:<flipped>}, message:"...may need to reconnect to refresh cached tool schemas if you toggled an enable* flag, useGateways, or publishOutputSchemas."}`. The WARN `[developer-mode]` audit line fires. AI explains the client must reconnect (`/mcp refresh`) before tools/list reflects the new gateway-vs-flat surface. Teardown restores the original value.
+
+### T223c — hub_update_mcp_settings flips publishOutputSchemas (outputSchema opt-in, #290)
+
+```json
+{
+  "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists, and the server is in gateway mode (useGateways ON). publishOutputSchemas is OFF (its default).",
+  "test_prompt": "Use hub_update_mcp_settings to set publishOutputSchemas to true. Report the response message, then explain what changes about the advertised tool list and why a strict client like Claude Desktop could be affected.",
+  "teardown_prompt": "Use hub_update_mcp_settings to set publishOutputSchemas back to false, then reconnect (/mcp refresh) so the advertised tool schema matches the server again."
+}
+```
+
+**Expected**: AI calls `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{publishOutputSchemas:true}, confirm:true})`. The key is **accepted** (NOT rejected as outside the allowlist — the regression guard for the #290 opt-in toggle), result `{success:true, updated:{publishOutputSchemas:true}, message:"...may need to reconnect to refresh cached tool schemas if you toggled an enable* flag, useGateways, or publishOutputSchemas."}`. The WARN `[developer-mode]` audit line fires. AI explains that with the toggle ON, gateway-mode base tools and the gateway catalog advertise `outputSchema` again, so strict MCP clients (e.g. Claude Desktop) that require `structuredContent` will then reject tool calls with JSON-RPC -32600 — which is exactly why it defaults OFF. Teardown restores publishOutputSchemas=false.
 
 ### T224 — hub_delete_variable removes a stale rule_engine variable
 

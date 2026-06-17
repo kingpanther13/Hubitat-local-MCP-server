@@ -258,6 +258,9 @@ def mainPage() {
             input "useGateways", "bool", title: "Consolidate tools behind category gateways",
                   description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and hub_search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other settings (the Read/Write masters, the Custom Rule Engine, and Advanced per-tool/per-gateway overrides) also add or remove entries from tools/list independently of this setting.",
                   defaultValue: true
+            input "publishOutputSchemas", "bool", title: "Publish tool output schemas (advanced)",
+                  description: "Leave OFF (default). When OFF, the server never advertises a tool's outputSchema on any tools/list surface or the gateway catalog, so strict MCP clients (e.g. Claude Desktop) that require structured content work normally. When ON, outputSchema is re-added to gateway-mode base tools and the gateway catalog as a documentation aid -- but because this server returns text-only results, strict clients will then reject every tool call with JSON-RPC -32600 ('has an output schema but did not return structured content'). The flat tool list never advertises outputSchema regardless of this setting.",
+                  defaultValue: false
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
                   options: ["debug": "Debug (verbose)", "info": "Info (normal)", "warn": "Warnings only", "error": "Errors only (recommended)"],
@@ -757,8 +760,10 @@ def serverInstructions() {
 
 // Protocol versions this server can speak, newest first. Echo-allowlist:
 // handleInitialize honors the client's requested version when it is one of
-// these, else falls back to the default. PR1C ships outputSchema (a 2025-06-18
-// feature) on every tool, so a strict 2025-06-18 client is fully supported.
+// these, else falls back to the default. outputSchema (a 2025-06-18 feature) is
+// declared on every tool but, by default, NOT advertised on the wire (issue #290:
+// strict clients reject an advertised schema returned without structuredContent);
+// enable publishOutputSchemas to advertise it.
 def supportedProtocolVersions() { ["2025-06-18", "2025-03-26", "2024-11-05"] }
 def defaultProtocolVersion() { "2024-11-05" }
 
@@ -1284,7 +1289,7 @@ def getGatewayConfig() {
                 hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Args: settings (map of key→value), confirm=true. Allowlist-gated."
             ],
             searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation"
+                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways publishOutputSchemas outputSchema output schema structured content claude desktop gateway mode consolidate flat tools ci automation"
             ]
         ],
         hub_read_devices: [
@@ -1723,10 +1728,11 @@ def handleGateway(gatewayName, toolName, toolArgs) {
                 def entry = [name: name, description: d?.description, inputSchema: d?.inputSchema]
                 def title = displayMeta[name]?.title
                 if (title) entry.title = title as String
-                // Forward outputSchema when the tool declares one (PR1C). The flat
-                // tools/list path drops it for size; the gateway catalog is the
-                // disclosure surface where full schemas belong.
-                if (d?.outputSchema != null) entry.outputSchema = d.outputSchema
+                // Forward outputSchema only when the advanced publishOutputSchemas
+                // setting is on (issue #290) -- OFF by default so strict clients (e.g.
+                // Claude Desktop) that reject an outputSchema returned without
+                // structuredContent work. The flat tools/list path never emits it (size).
+                if (settings.publishOutputSchemas == true && d?.outputSchema != null) entry.outputSchema = d.outputSchema
                 entry
             }
         ]
@@ -1923,10 +1929,10 @@ def getToolDefinitions() {
         // [[FLAT_TRIM]] markers to recover headroom under the hub's 124,000-byte cap.
         def transformed = applyDescriptionTransform(filtered, true)
         return transformed.collect { tool ->
-            // Flat mode drops outputSchema to protect the 124,000-byte tools/list cap
-            // (this is the all-tools-individually surface). outputSchema is still
-            // published in gateway mode (base tools) and the gateway catalog disclosure,
-            // where the per-response budget has headroom.
+            // Flat mode ALWAYS drops outputSchema to protect the 124,000-byte tools/list
+            // cap (this is the all-tools-individually surface) -- independent of the
+            // publishOutputSchemas setting (issue #290), which only gates the gateway-mode
+            // base tools and the gateway catalog disclosure, where the budget has headroom.
             tool.findAll { it.key != 'outputSchema' } + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
         }
     }
@@ -1972,13 +1978,20 @@ def getToolDefinitions() {
     // [[FLAT_TRIM]] markers, but strip-tokens-only is cheap and keeps us honest
     // if a future author adds one to a base-tool description.
     def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
+    // outputSchema is opt-in (issue #290): the flat path above always strips it; on this
+    // gateway-mode base-tool surface (and the gateway catalog) it is emitted only when the
+    // advanced publishOutputSchemas setting is on. OFF by default so strict clients (e.g.
+    // Claude Desktop) that reject an outputSchema returned without structuredContent work.
+    boolean publishSchemas = settings.publishOutputSchemas == true
     return transformed.collect { tool ->
-        // Gateway entries already carry annotations from the collectMany above;
-        // leaf base tools get theirs from the canonical set. The presence of
-        // readOnlyHint (not just the annotations map) is the load-bearing
-        // signal -- a partial pre-populated map without readOnlyHint still
-        // needs the leaf classifier to merge in the missing key.
-        tool.annotations?.containsKey('readOnlyHint') ? tool : tool + [annotations: (tool.annotations ?: [:]) + annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
+        // Gateway entries already carry annotations (incl. readOnlyHint) from the
+        // collectMany above and never carry outputSchema, so return them untouched. Leaf
+        // base tools get their annotations from the canonical set here -- the presence of
+        // readOnlyHint (not just the annotations map) is the load-bearing signal -- and
+        // have their outputSchema stripped unless publishOutputSchemas is on.
+        if (tool.annotations?.containsKey('readOnlyHint')) return tool
+        def leaf = publishSchemas ? tool : tool.findAll { it.key != 'outputSchema' }
+        leaf + [annotations: (leaf.annotations ?: [:]) + annotationsForLeaf(leaf.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
     }
 }
 
