@@ -119,6 +119,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         atomicStateMap.toolSearchTokens = [['x']]
         atomicStateMap.toolSearchCorpusVersion = 'v-test'
         atomicStateMap.requiredParamsByTool = [hub_get_room: ['room']]
+        atomicStateMap.requiredParamsByToolFingerprint = 'fp-test'
         script.metaClass.initialize = { -> }
 
         when:
@@ -129,6 +130,9 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         atomicStateMap.toolSearchTokens == null
         atomicStateMap.toolSearchCorpusVersion == null
         atomicStateMap.requiredParamsByTool == null
+
+        and: 'the memo fingerprint is cleared in lockstep -- a stranded fingerprint would let the next rebuild miscompare'
+        atomicStateMap.requiredParamsByToolFingerprint == null
 
         and: 'the legacy state entry is never reintroduced'
         !stateMap.containsKey('toolSearchCorpus')

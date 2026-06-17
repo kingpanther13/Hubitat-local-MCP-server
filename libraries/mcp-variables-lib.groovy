@@ -428,17 +428,13 @@ def toolCreateVariable(args) {
     return _createOneVariable(appId, name, type, value)
 }
 
-// Bulk create driver: validates the array shape, resolves the Hub Variables
-// app id ONCE, then creates each item sequentially. Per-item try/catch so one
-// failure never aborts the rest -- a failed item carries its own `error`.
+// Bulk create driver: requires a non-empty List at the batch level, resolves the
+// Hub Variables app id ONCE, then creates each item sequentially. Per-item
+// try/catch so one failure never aborts the rest -- a malformed (non-Map) item or
+// a bad name/type/value fails only itself and carries its own `error`.
 private Map _createVariablesBulk(variables) {
     if (!(variables instanceof List) || variables.isEmpty()) {
         throw new IllegalArgumentException("variables must be a non-empty array of {name, type, value} objects.")
-    }
-    variables.eachWithIndex { item, idx ->
-        if (!(item instanceof Map)) {
-            throw new IllegalArgumentException("variables[${idx}] must be an object with name, type, and value.")
-        }
     }
 
     def appId = _findHubVariablesAppId()
@@ -447,8 +443,13 @@ private Map _createVariablesBulk(variables) {
     int failedCount = 0
 
     variables.eachWithIndex { item, idx ->
-        def itemName = item.name?.toString()?.trim()
+        // A malformed (non-Map) item fails only itself, never the whole batch --
+        // same per-item isolation as a bad name/type/value below.
+        def itemName = (item instanceof Map) ? item.name?.toString()?.trim() : null
         try {
+            if (!(item instanceof Map)) {
+                throw new IllegalArgumentException("variables[${idx}] must be an object with name, type, and value.")
+            }
             _validateHubVarName(itemName)
             def itemType = _validateHubVarType(item.type?.toString())
             _validateInitialValue(itemName, itemType, item.value)
@@ -468,8 +469,10 @@ private Map _createVariablesBulk(variables) {
             createdCount++
         } catch (Exception e) {
             // Fall back to the array index when the item carried no usable name, so
-            // every failed entry is traceable to its request position.
-            results << [name: (itemName ?: item?.name ?: "variables[${idx}]"), success: false, error: e.message ?: e.toString()]
+            // every failed entry is traceable to its request position. Guard the
+            // .name read behind the Map check -- a non-Map item has no name property.
+            def rawName = (item instanceof Map) ? item.name : null
+            results << [name: (itemName ?: rawName ?: "variables[${idx}]"), success: false, error: e.message ?: e.toString()]
             failedCount++
         }
     }
@@ -939,14 +942,14 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_create_variable",
-            description: "Create a new hub variable (global variable visible to apps and Rule Machine), one at a time or several in one call. Use this before hub_set_variable for a name that doesn't exist yet — Hubitat's setGlobalVar cannot create, only update.[[FLAT_TRIM]] Drives the Settings → Hub Variables wizard, since creation isn't exposed via the public app API. Name must not contain any of these characters: ' \" \\ ~ [ : ] < >.[[/FLAT_TRIM]] A String variable's initial value must be non-empty (an empty String reports success but never persists). Single form: name + type + value. Bulk form: variables=[{name,type,value}, ...] -- mutually exclusive with the single form.[[FLAT_TRIM]] Bulk items are created sequentially; each succeeds or fails independently and the result reports per-item status. To also expose the variable to device-only apps, follow up with hub_create_connector.[[/FLAT_TRIM]]",
+            description: "Create a new hub variable (global variable visible to apps and Rule Machine), one at a time or several in one call. Single form: name + type + value.[[FLAT_TRIM]] Bulk form: variables=[{name,type,value}, ...] -- mutually exclusive with the single form. Use this before hub_set_variable for a name that doesn't exist yet -- Hubitat's setGlobalVar cannot create, only update. Drives the Settings -> Hub Variables wizard, since creation isn't exposed via the public app API. Name must not contain any of these characters: ' \" \\ ~ [ : ] < >. A String variable's initial value must be non-empty (an empty String reports success but never persists). Bulk items are created sequentially; each succeeds or fails independently and the result reports per-item status. To also expose the variable to device-only apps, follow up with hub_create_connector.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "Single form: new variable name, e.g. \"vacationMode\".[[FLAT_TRIM]] Must not contain: ' \" \\ ~ [ : ] < >.[[/FLAT_TRIM]] Omit when using variables."],
-                    type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Single form: variable type.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
-                    value: [description: "Single form: initial value, must match the type.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
-                    variables: [type: "array", description: "Bulk form: several variables in one call (mutually exclusive with name/type/value).", items: [
+                    name: [type: "string", description: "New variable name, e.g. \"vacationMode\". Omit when using variables.[[FLAT_TRIM]] Must not contain: ' \" \\ ~ [ : ] < >.[[/FLAT_TRIM]]"],
+                    type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type. Omit when using variables."],
+                    value: [description: "Initial value, must match the type. Omit when using variables."],
+                    variables: [type: "array", description: "Bulk form: several variables in one call.[[FLAT_TRIM]] Mutually exclusive with name/type/value.[[/FLAT_TRIM]]", items: [
                         type: "object",
                         properties: [
                             name: [type: "string", description: "New variable name (same character rules as the single form)"],

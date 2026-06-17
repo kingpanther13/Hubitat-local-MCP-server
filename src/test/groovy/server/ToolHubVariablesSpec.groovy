@@ -883,6 +883,105 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         result.results[2].success == true
     }
 
+    def "hub_create_variable bulk form: a non-Map item fails only itself while the others still create"() {
+        given:
+        enableWrite()
+
+        and: 'getGlobalVar: null pre-flight, populated after commit (good names only)'
+        def seen = [:]
+        script.metaClass.getGlobalVar = { String n ->
+            if (!seen[n]) { seen[n] = true; return null }
+            return [name: n, type: 'Number', value: 1, deviceId: null, attribute: null]
+        }
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null ->
+            if (applied != null) applied << key
+        }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
+
+        when: 'the middle item is a bare integer, not a {name,type,value} object'
+        def result = script.toolCreateVariable([confirm: true, variables: [
+            [name: 'goodOne', type: 'Number', value: 1],
+            42,
+            [name: 'goodTwo', type: 'Number', value: 3]
+        ]])
+
+        then: 'the malformed item is isolated to its own entry -- both good items still create (a top-level throw would have lost them)'
+        result.success == false
+        result.createdCount == 2
+        result.failedCount == 1
+        result.results.size() == 3
+        result.results[0].name == 'goodOne'
+        result.results[0].success == true
+        result.results[1].success == false
+        result.results[1].name == 'variables[1]'
+        result.results[1].error.contains('must be an object')
+        result.results[2].name == 'goodTwo'
+        result.results[2].success == true
+    }
+
+    def "hub_create_variable bulk form: an empty variables array is a batch-level rejection"() {
+        given:
+        enableWrite()
+
+        when: 'variables is present but empty -- nothing to create'
+        script.toolCreateVariable([confirm: true, variables: []])
+
+        then: 'rejected at the batch level (a non-empty List is a genuine precondition, not a per-item failure)'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('non-empty')
+    }
+
+    def "hub_create_variable bulk form: a per-item verify timeout is isolated, others still create"() {
+        given:
+        enableWrite()
+
+        and: 'getGlobalVar drives the REAL _createOneVariable verify-backoff: null pre-flight for all, then visible for the good names AFTER their wizard but null PERSISTENTLY for timesOut (the verify-backoff exhausts and throws for that one item only)'
+        // Models the genuine mid-wizard runtime failure (verify timeout) that validation
+        // never catches -- exercising the REAL _createOneVariable, not a private-method
+        // stub (a private call dispatches in-class and bypasses a metaClass override).
+        def committed = [:]   // name -> visible, flipped on this item's varValue write
+        script.metaClass.getGlobalVar = { String n ->
+            // timesOut never becomes visible; the others appear once their wizard committed.
+            if (n == 'timesOut') return null
+            return committed[n] ? [name: n, type: 'Number', value: 1, deviceId: null, attribute: null] : null
+        }
+
+        and: 'wizard primitives stubbed; the varValue write marks the (good) item visible to the verify-read'
+        script.metaClass._rmClickAppButton = { Integer appId, String btnName, String stateAttr, String pageName -> [status: 200] }
+        def pendingName = null
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null ->
+            if (key == 'hbVar') pendingName = value
+            if (key == 'varValue' && pendingName != 'timesOut') committed[pendingName] = true
+            if (applied != null) applied << key
+        }
+        script.metaClass._findHubVariablesAppId = { -> 1424 }
+        script.metaClass.backupItemSource = { String type, String id -> [:] }
+        // Keep the verify-backoff loop instant (real code sleeps 500ms/attempt).
+        script.metaClass.pauseExecution = { long ms -> }
+
+        when: 'three valid-shaped items but the middle one never becomes visible (wizard runtime failure, not validation)'
+        def result = script.toolCreateVariable([confirm: true, variables: [
+            [name: 'createsA', type: 'Number', value: 1],
+            [name: 'timesOut', type: 'Number', value: 2],
+            [name: 'createsB', type: 'Number', value: 3]
+        ]])
+
+        then: 'the verify timeout is isolated to its own entry -- the other two still create'
+        result.success == false
+        result.createdCount == 2
+        result.failedCount == 1
+        result.results.size() == 3
+        result.results[0].name == 'createsA'
+        result.results[0].success == true
+        result.results[1].name == 'timesOut'
+        result.results[1].success == false
+        result.results[1].error.contains('not visible via getGlobalVar')
+        result.results[2].name == 'createsB'
+        result.results[2].success == true
+    }
+
     def "hub_create_variable rejects supplying both the single form and the bulk array"() {
         given:
         enableWrite()

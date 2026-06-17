@@ -1781,11 +1781,12 @@ def handleGateway(gatewayName, toolName, toolArgs) {
 
     // Option D: Pre-validate required parameters and return a helpful error.
     def safeArgs = toolArgs ?: [:]
-    // Read this tool's required-param list from the small memoized map instead of
-    // rebuilding the whole ~111-tool catalog on every gateway call. A missing key
-    // means the tool has no required params. The full catalog (with the
-    // [[FLAT_TRIM]]-stripped param descriptions for the hint) is rebuilt lazily
-    // only inside the if (missing) branch below, which fires rarely.
+    // Read this tool's required-param list from the memoized map. Computing the
+    // memo key walks the catalog once per gateway call; the memo saves the per-tool
+    // map re-derivation, not the catalog walk. A missing key means the tool has no
+    // required params. The full catalog (with the [[FLAT_TRIM]]-stripped param
+    // descriptions for the hint) is rebuilt lazily only inside the if (missing)
+    // branch below, which fires rarely.
     def required = requiredParamsByTool()[toolName]
     // Gate-bypassing meta-calls return pure static content with NO hub mutation and
     // short-circuit at the very top of their handler (before any gate / appId check),
@@ -2012,11 +2013,12 @@ def getAllToolDefinitions() {
 // hub_update_app) recompiles the class without firing updated() or bumping
 // currentVersion() (PRs ride the same version), so neither updated() invalidation
 // nor a version stamp catches a same-version required-array change -- a content
-// fingerprint does. Cheap append pass, no per-tool allocation; kept as the raw
-// string (no sandbox digest API assumed, String equality is cheap).
-def requiredParamsCatalogFingerprint() {
+// fingerprint does. Operates on a pre-fetched defs list so the caller can build
+// both the key and the memo from one catalog walk; kept as the raw string (no
+// sandbox digest API assumed, String equality is cheap).
+def requiredParamsCatalogFingerprint(List defs) {
     def sb = new StringBuilder()
-    getAllToolDefinitions().each { tool ->
+    defs.each { tool ->
         def req = tool?.inputSchema?.required
         if (req instanceof List && !req.isEmpty()) {
             sb.append(tool.name as String).append(':').append(req.join(',')).append(';')
@@ -2026,19 +2028,21 @@ def requiredParamsCatalogFingerprint() {
 }
 
 // Memo of each tool's required-params array (fresh String copies, never the
-// mutable raw def list) for the gateway missing-param pre-check, so handleGateway
-// need not rebuild the full catalog per call. Keyed on the catalog fingerprint so
-// it self-heals on a same-version code deploy, and cleared in updated() alongside
-// the BM25 corpus. Tools with no/empty inputSchema.required are omitted, so a
-// miss == "no required params".
+// mutable raw def list) for the gateway missing-param pre-check. The full catalog
+// is walked once per call to compute the fingerprint key; the memo saves the
+// per-tool map re-derivation (the String-copy allocation), not the catalog build.
+// Keyed on the catalog fingerprint so it self-heals on a same-version code deploy,
+// and cleared in updated() alongside the BM25 corpus. Tools with no/empty
+// inputSchema.required are omitted, so a miss == "no required params".
 def requiredParamsByTool() {
-    def fp = requiredParamsCatalogFingerprint()
+    def defs = getAllToolDefinitions()
+    def fp = requiredParamsCatalogFingerprint(defs)
     def cached = atomicState.requiredParamsByTool
     if (cached instanceof Map && atomicState.requiredParamsByToolFingerprint == fp) {
         return cached
     }
     def built = [:]
-    getAllToolDefinitions().each { tool ->
+    defs.each { tool ->
         def req = tool?.inputSchema?.required
         if (req instanceof List && !req.isEmpty()) {
             built[tool.name as String] = req.collect { it as String }
