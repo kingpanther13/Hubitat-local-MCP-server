@@ -173,10 +173,10 @@ Requires the Write master + confirm=true + recent hub backup.""",
         [
             name: "hub_set_rule",
             description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool for the full rule-authoring surface (triggers, actions, conditions, required expressions, local variables). Omit appId to CREATE a new rule (provide name; optionally bundle addTriggers / addActions / addTrigger / addAction / addRequiredExpression to populate it in the same call -- other edit-only ops like replaceActions/walkStep require an existing appId). Provide appId to EDIT an existing rule.
-[[FLAT_TRIM]]
-Prefer the high-level structured shortcuts, each of which orchestrates the full RM 5.1 wizard in one call: addTrigger / addAction / addRequiredExpression / replaceRequiredExpression; bulk addTriggers / addActions / replaceActions; and removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / addLocalVariable / patches. For a capability the shortcuts don't cover, walkStep drives one wizard page at a time, or write page inputs via settings and click page-transition buttons via button directly (raw mode).
-[[/FLAT_TRIM]]
-BEFORE EVERY edit-write a full snapshot (configure/json + statusJson) is saved to File Manager; the response carries backup.backupKey for hub_restore_backup (in hub_manage_code) if a write goes wrong. Partial-success on CREATE: the new appId is returned even if a bundled trigger/action only partially bakes — inspect partial/partialTriggers/partialActions/repairHints; full protocol: hub_get_tool_guide(section='set_rule_create_reference').
+
+Prefer the high-level structured shortcuts, each of which orchestrates the full RM 5.1 wizard in one call.[[FLAT_TRIM]] The shortcuts: addTrigger / addAction / addRequiredExpression / replaceRequiredExpression; bulk addTriggers / addActions / replaceActions; and removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / addLocalVariable / removeLocalVariable / patches. For a capability the shortcuts don't cover, walkStep drives one wizard page at a time, or write page inputs via settings and click page-transition buttons via button directly (raw mode).[[/FLAT_TRIM]]
+
+BEFORE EVERY edit-write a full snapshot (configure/json + statusJson) is saved to File Manager; the response carries backup.backupKey for hub_restore_backup (in hub_manage_code) if a write goes wrong. Partial-success on CREATE: the tool always returns the new appId even if a bundled trigger/action only partially bakes — inspect partial / partialTriggers / partialActions / repairHints (full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference')).
 
 For NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule, etc.) use hub_set_native_app instead — this tool is RM-only. Completely separate from the MCP custom rule engine (hub_*_custom_rule).
 [[FLAT_TRIM]]
@@ -230,11 +230,15 @@ PARTIAL-SUCCESS: partial:true / expressionNotLive / wizardStuck can accompany su
                     ],
                     addLocalVariable: [
                         type: "object",
-                        description: "Add a local variable. Spec: {name, type, value} where type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive) and value matches the type (DateTime wants an ISO timestamp). Used as %name% in actions/expressions.[[FLAT_TRIM]] Stored in state.allLocalVars (verify via statusJson appState.allLocalVars, not appSettings). Returns success=false with repair hints if a value/type mismatch makes RM silently reject.[[/FLAT_TRIM]]"
+                        description: "Add a local variable. Spec: {name, type, value}.[[FLAT_TRIM]] type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive) and value matches the type (DateTime wants an ISO timestamp). Used as %name% in actions/expressions; stored in state.allLocalVars (verify via statusJson appState.allLocalVars, not appSettings). Returns success=false with repair hints if a value/type mismatch makes RM silently reject.[[/FLAT_TRIM]]"
+                    ],
+                    removeLocalVariable: [
+                        type: "object",
+                        description: "Remove a local variable. Spec: {name}.[[FLAT_TRIM]] Drives RM's deleteGV/delConfirm wizard, then verifies the variable left state.allLocalVars and re-checks rule health. An unknown name is rejected with the available local-variable list. WARNING: RM does NOT reliably refuse to delete a referenced local -- deleting a local that an action still references usually SUCCEEDS at removing it and leaves the referencing action Broken. In that case this returns success=false (deleted=true) with a specific error + a repairHint to restore the pre-delete backup (backupKey in the response) or remove the references first. A delete that fails to verify at all returns success=false with partial=true + repair hints. To read current locals use hub_list_rule_local_variables (in hub_read_rules).[[/FLAT_TRIM]]"
                     ],
                     patches: [
                         type: "array",
-                        description: "Atomic multi-mutation: each item is a sub-spec with ONE operation key (settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction). Operations run sequentially; updateRule fires ONCE at the end.[[FLAT_TRIM]] Per-op outcome in patches[i]; an individual op failing doesn't abort the rest.[[/FLAT_TRIM]]",
+                        description: "Atomic multi-mutation: each item is a sub-spec with ONE operation key (settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction). Operations run sequentially; updateRule fires ONCE at the end.[[FLAT_TRIM]] Per-op outcome in patches[i]; an individual op failing doesn't abort the rest.[[/FLAT_TRIM]]",
                         items: [type: "object"]
                     ],
                     removeAction: [
@@ -276,7 +280,7 @@ Spec: {page, operation, write?:{<field>:<value>}, click?:{name, stateAttribute?}
                         type: "object",
                         description: """Add a Rule Machine ACTION via the high-level structured API. DISCRIMINATOR: use `capability` (NOT `type`) -- `{type: 'log', ...}` is rejected with "addAction.capability is required (e.g. 'switch')". Pass `addAction: {discover: true}` for the live per-field schema (returns immediately, no hub mutation), or see docs/rm_action_subtype_schemas.md / hub_get_tool_guide(section='set_rule_reference'). The tool orchestrates the full RM 5.1 action wizard internally; returns result.actionIndex (no trailing updateRule needed -- doActPage self-bakes the action).
 
-Capability families (NAMES; full per-field specs via discover:true or the guide): switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, shade, fan, mode, setVariable, log / notification / httpGet / httpPost / ping, volume / mute / chime / siren, privateBoolean / runRule / cancelTimers / pauseRule, capture / restore / refresh / poll / disableDevice, fileWrite / fileAppend / fileDelete, zwavePoll, and flow control (delay / delayPerMode / cancelDelay / repeat / stopRepeat / repeatWhile / waitExpression / waitEvents / ifThen / elseIf / else / endIf / exitRule / comment).[[FLAT_TRIM]] The expression-based ones (ifThen / elseIf / repeatWhile / waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents action per rule (RM stores wait events globally, not per-action).
+Capability families (NAMES; full per-field specs via discover:true or the guide): switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, shade, fan, mode, setVariable / setLocalVariable, log / notification / httpGet / httpPost / ping, volume / mute / chime / siren, privateBoolean / runRule / cancelTimers / pauseRule, capture / restore / refresh / poll / disableDevice, fileWrite / fileAppend / fileDelete, zwavePoll, and flow control (delay / delayPerMode / cancelDelay / repeat / stopRepeat / repeatWhile / waitExpression / waitEvents / ifThen / elseIf / else / endIf / exitRule / comment).[[FLAT_TRIM]] The expression-based ones (ifThen / elseIf / repeatWhile / waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents action per rule (RM stores wait events globally, not per-action).
 
 Per-condition shape inside any expression: {capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}. Pass singular deviceId:N or deviceIds:[N] (array form preferred -- a bare integer silently stores {N: null}). Nested subExpression is NOT supported here (use addRequiredExpression). Extended per-capability shapes (Mode, Between two times, Variable, Custom Attribute, compareToDevice) and discrete-event state names: guide:true.
 
@@ -341,8 +345,8 @@ PARTIAL-SUCCESS: partial:true is orthogonal to success — the action row exists
                     actSubType: [type: "string", description: "addAction: action subtype"],
                     patches: [type: "array", description: "patches: per-patch results", items: [type: "object"]],
                     patchesNotLive: [type: "boolean", description: "patches: not live after update"],
-                    variable: [type: "object", description: "addLocalVariable: created variable"],
-                    variableNotLive: [type: "boolean", description: "addLocalVariable: not live after update"],
+                    variable: [type: "object", description: "addLocalVariable: created variable {name, type, value}. removeLocalVariable: {name, deleted} -- no type/value because a deleted variable has neither (the sub-shape differs by operation; the key is shared)."],
+                    variableNotLive: [type: "boolean", description: "addLocalVariable/removeLocalVariable: not live after update (trailing updateRule rejected)"],
                     conditionIndices: [type: "array", description: "addRequiredExpression/replaceRequiredExpression: condition indices", items: [type: "integer"]],
                     expressionNotLive: [type: "boolean", description: "addRequiredExpression/replaceRequiredExpression: not live after update"],
                     requiredExpressionAlreadyExists: [type: "boolean", description: "addRequiredExpression: the rule already has a Required Expression (success:false with actionable error); to change it use replaceRequiredExpression"],
@@ -400,6 +404,30 @@ PARTIAL-SUCCESS: partial:true is orthogonal to success — the action row exists
                     issues: [type: "array", description: "All issues; ok is false iff non-empty", items: [type: "string"]]
                 ],
                 required: ["ok"]
+            ]
+        ],
+        [
+            name: "hub_list_rule_local_variables",
+            description: "List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals).[[FLAT_TRIM]] Hub globals are covered by hub_list_variables; locals are created via hub_set_rule addLocalVariable / removeLocalVariable. Reads state.allLocalVars from the rule's statusJson appState; returns each local's name, type, and current value. Pure read -- no wizard, no mutation. Use to confirm a local exists (and its type) before targeting it with the setLocalVariable action or removeLocalVariable shortcut.[[/FLAT_TRIM]] Requires the Read master.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "integer", description: "The Rule Machine rule's installed-app id (the rule whose local variables to list)."]
+                ],
+                required: ["appId"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    appId: [type: "integer", description: "The rule id queried"],
+                    localVariables: [type: "array", description: "The rule's local variables; empty when the rule has none", items: [type: "object", properties: [
+                        name: [type: "string", description: "Local variable name (use as %name% in actions/expressions)"],
+                        type: [type: "string", description: "Internal type token as RM stores it (integer/bigdecimal/string/boolean/datetime)"],
+                        value: [description: "Current value"]
+                    ]]],
+                    total: [type: "integer", description: "Number of local variables"]
+                ],
+                required: ["appId", "localVariables", "total"]
             ]
         ],
         [
@@ -2764,10 +2792,26 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "variable", type: "String", description: "Hub variable name to write (the target). Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state."]
                 ],
                 optionalFields: [
-                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. String, boolean, and datetime hub-variable targets are not supported via 'value'; use 'sourceVariable', or set those types via rawSettings."],
+                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the write otherwise -- RM renders numOp/valNumber only for numeric targets). String, boolean, and datetime targets are not supported via 'value'; use 'sourceVariable', or set those types via rawSettings."],
                     [name: "sourceVariable", type: "String", description: "Hub variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. Schema-gated: the source-variable field is only revealed by RM after the numOp=variable write; fails loud (success=false) if the hub does not reveal it. See docs/rm_wire_format.md for the wire sequence."],
                     [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable. Maps to numOp='device attribute'.[[FLAT_TRIM]] RM does not offer the device-attribute source for String/Boolean/DateTime variables (rejected with success=false before the hub write). deviceId may be ANY hub device (RM's device picker spans all hub devices, not just the MCP-selected set); it is validated only as a positive integer id, not against the MCP device set. The device picker and the attribute enum are schema-gated and revealed in sequence (deviceId reveals an attribute enum FILTERED to that device's live attributes); fails loud (success=false) if the device picker is not revealed. An attribute not in the device's filtered enum is rejected with success=false and the device's available-attribute list. See docs/rm_wire_format.md for the wire sequence.[[/FLAT_TRIM]]"],
                     [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable -- RM does not offer the variable-math source for String/Boolean/DateTime variables (rejected with success=false before the hub write). Maps to numOp='variable math'. A Number operand becomes a constant; a String operand is treated as a hub variable name. Binary operators (+ - * / %) require 'right'; unary operators (negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees) reject 'right'. Operand fields are schema-gated and revealed in sequence; fails loud (success=false) if a required field is not revealed. See docs/rm_wire_format.md for the wire sequence."],
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "setLocalVariable",
+                family: "hub",
+                notes: "Set a rule-LOCAL variable (distinct from setVariable, which targets hub globals). Same source modes and wire path as setVariable; the only difference is that the target name is validated against the rule's local variables (state.allLocalVars). Use this -- not setVariable -- when a local and a hub variable share a name and you mean the local. Exactly ONE source mode (value | sourceVariable | fromDevice | math) per action.",
+                requiredFields: [
+                    [name: "variable", type: "String", description: "Local variable name to write (the target). Must be an existing local variable on this rule (create one first via hub_set_rule addLocalVariable) -- an unknown name is rejected before the hub write to prevent silent broken-action state."]
+                ],
+                optionalFields: [
+                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. String, boolean, and datetime local-variable targets are not supported via 'value'; use 'sourceVariable', or set those types via rawSettings."],
+                    [name: "sourceVariable", type: "String", description: "Variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. RM's source picker spans BOTH local and hub variables, so the source may be either; validated against the live revealed enum (fails loud, success=false, if the hub does not reveal it). See docs/rm_wire_format.md for the wire sequence."],
+                    [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same wire and validation as setVariable's fromDevice."],
+                    [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same operator set and wire as setVariable's math; operand variables may be local or hub (validated against the live revealed enum)."],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
                 ]
@@ -4687,8 +4731,15 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             modeValue = matched.id
         }
         fields = ["mode.@N": modeValue]
-    } else if (cap == "variable" || cap == "setVariable") {
-        // modeActs/getSetVariable -- Set Hub Variable to a value.
+    } else if (cap == "variable" || cap == "setVariable" || cap == "setLocalVariable") {
+        // modeActs/getSetVariable -- Set Hub Variable OR rule-local variable to a value.
+        // RM exposes locals and globals through the SAME getSetVariable action and the SAME
+        // xVarV picker (locals appear in the picker alongside globals), so the wire path is
+        // identical -- the only difference is WHICH variable namespace the target name is
+        // validated against. setLocalVariable validates against the rule's local variables
+        // (state.allLocalVars) so it cannot silently target a same-named hub global; the
+        // value/sourceVariable/fromDevice/math source modes and every post-write reveal block
+        // are shared verbatim with the global path.
         // Verified wire format (RM 5.1, actType=modeActs, actSubType=getSetVariable):
         //   xVarV.<N>       = hub variable name (enum from hub variables list). GATES the
         //                     numOp.<N> reveal -- numOp does not render until xVarV is set, so
@@ -4715,8 +4766,13 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         // Source mode is exactly one of value | sourceVariable | fromDevice | math.
         actType = "modeActs"
         actSubType = "getSetVariable"
+        // setLocalVariable targets the rule's LOCAL variable namespace; setVariable/variable
+        // target hub GLOBALS. capLabel keeps the caller-facing error text aligned with the
+        // capability they actually called; isLocalVar selects the validation namespace below.
+        boolean isLocalVar = (cap == "setLocalVariable")
+        String capLabel = isLocalVar ? "setLocalVariable" : "setVariable"
         if (!actionSpec.variable) {
-            throw new IllegalArgumentException("setVariable action requires 'variable' (hub variable name)")
+            throw new IllegalArgumentException("${capLabel} action requires 'variable' (${isLocalVar ? "local variable name" : "hub variable name"})")
         }
         // != null (not truthiness): value=0 is a valid numeric constant that a truthy-check would wrongly reject.
         // Count the source modes provided: exactly one is required.
@@ -4726,16 +4782,16 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         if (actionSpec.fromDevice != null) srcModes << "fromDevice"
         if (actionSpec.math != null) srcModes << "math"
         if (srcModes.size() > 1) {
-            throw new IllegalArgumentException("setVariable action: provide exactly one source mode (value, sourceVariable, fromDevice, or math); got ${srcModes.size()} (${srcModes.join(', ')})")
+            throw new IllegalArgumentException("${capLabel} action: provide exactly one source mode (value, sourceVariable, fromDevice, or math); got ${srcModes.size()} (${srcModes.join(', ')})")
         }
         if (srcModes.isEmpty()) {
-            throw new IllegalArgumentException("setVariable action requires exactly one source mode: 'value' (numeric constant), 'sourceVariable' (hub variable name to copy from), 'fromDevice' ({deviceId, attribute}), or 'math' ({left, op, right})")
+            throw new IllegalArgumentException("${capLabel} action requires exactly one source mode: 'value' (numeric constant), 'sourceVariable' (variable name to copy from), 'fromDevice' ({deviceId, attribute}), or 'math' ({left, op, right})")
         }
         // valNumber.<N> is a numeric field; writing a non-numeric value produces a broken action
         // that RM silently accepts but renders incorrectly. Reject early so the caller gets a
         // clear message rather than a broken rule.
         if (actionSpec.value != null && !(actionSpec.value instanceof Number)) {
-            throw new IllegalArgumentException("setVariable: 'value' must be a numeric constant (Integer, Long, BigDecimal, etc.); got '${actionSpec.value}' -- use a number literal, not a string")
+            throw new IllegalArgumentException("${capLabel}: 'value' must be a numeric constant (Integer, Long, BigDecimal, etc.); got '${actionSpec.value}' -- use a number literal, not a string")
         }
         // fromDevice shape + math shape/arity validation happen up-front so bad inputs fail
         // before any hub write, mirroring the runCommand parameter pre-validation pattern.
@@ -4743,12 +4799,12 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         boolean mathRightProvided = false
         if (actionSpec.fromDevice != null) {
             if (!(actionSpec.fromDevice instanceof Map)) {
-                throw new IllegalArgumentException("setVariable: 'fromDevice' must be a Map {deviceId, attribute}; got '${actionSpec.fromDevice}'")
+                throw new IllegalArgumentException("${capLabel}: 'fromDevice' must be a Map {deviceId, attribute}; got '${actionSpec.fromDevice}'")
             }
             def fdDev = actionSpec.fromDevice.deviceId
             def fdAttr = actionSpec.fromDevice.attribute
-            if (fdDev == null) throw new IllegalArgumentException("setVariable fromDevice requires 'deviceId' (the source device id)")
-            if (!fdAttr?.toString()?.trim()) throw new IllegalArgumentException("setVariable fromDevice requires 'attribute' (the device attribute name to read)")
+            if (fdDev == null) throw new IllegalArgumentException("${capLabel} fromDevice requires 'deviceId' (the source device id)")
+            if (!fdAttr?.toString()?.trim()) throw new IllegalArgumentException("${capLabel} fromDevice requires 'attribute' (the device attribute name to read)")
             // deviceId must be a positive WHOLE-number id. Not validated against findDevice():
             // RM's customDev.<N> picker spans ALL hub devices, while findDevice() only sees the
             // MCP-exposed selectedDevices set -- gating here would falsely reject a valid hub
@@ -4757,12 +4813,12 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             // BigDecimal with no fractional part (72.0), or a digit string -- via _rmAsPositiveDeviceId,
             // which returns null for non-integers / non-positive / non-numeric so only those are rejected.
             if (_rmAsPositiveDeviceId(fdDev) == null) {
-                throw new IllegalArgumentException("setVariable fromDevice: 'deviceId' must be a positive integer device id; got '${fdDev}'")
+                throw new IllegalArgumentException("${capLabel} fromDevice: 'deviceId' must be a positive integer device id; got '${fdDev}'")
             }
         }
         if (actionSpec.math != null) {
             if (!(actionSpec.math instanceof Map)) {
-                throw new IllegalArgumentException("setVariable: 'math' must be a Map {left, op, right}; got '${actionSpec.math}'")
+                throw new IllegalArgumentException("${capLabel}: 'math' must be a Map {left, op, right}; got '${actionSpec.math}'")
             }
             // Trim string operands so " temp " resolves to the "temp" variable (mirrors op.trim()).
             // Number operands pass through unchanged (a Number has no surrounding whitespace).
@@ -4771,92 +4827,145 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             mathOp = actionSpec.math.op?.toString()?.trim()
             mathRightProvided = actionSpec.math.containsKey("right") && actionSpec.math.right != null
             mathRight = _trimOperand(actionSpec.math.right)
-            if (mathLeft == null) throw new IllegalArgumentException("setVariable math requires 'left' (a hub variable name or a number)")
-            if (!mathOp) throw new IllegalArgumentException("setVariable math requires 'op' (an operator). Binary: ${_rmMathBinaryOps().join(' ')}; Unary: ${_rmMathUnaryOps().join(' ')}")
+            if (mathLeft == null) throw new IllegalArgumentException("${capLabel} math requires 'left' (a hub variable name or a number)")
+            if (!mathOp) throw new IllegalArgumentException("${capLabel} math requires 'op' (an operator). Binary: ${_rmMathBinaryOps().join(' ')}; Unary: ${_rmMathUnaryOps().join(' ')}")
             boolean isBinary = _rmMathBinaryOps().contains(mathOp)
             boolean isUnary = _rmMathUnaryOps().contains(mathOp)
             if (!isBinary && !isUnary) {
-                throw new IllegalArgumentException("setVariable math: operator '${mathOp}' is not recognized. Binary: ${_rmMathBinaryOps().join(' ')}; Unary: ${_rmMathUnaryOps().join(' ')}")
+                throw new IllegalArgumentException("${capLabel} math: operator '${mathOp}' is not recognized. Binary: ${_rmMathBinaryOps().join(' ')}; Unary: ${_rmMathUnaryOps().join(' ')}")
             }
             if (isBinary && !mathRightProvided) {
-                throw new IllegalArgumentException("setVariable math: binary operator '${mathOp}' requires a second operand (right)")
+                throw new IllegalArgumentException("${capLabel} math: binary operator '${mathOp}' requires a second operand (right)")
             }
             if (isUnary && mathRightProvided) {
-                throw new IllegalArgumentException("setVariable math: unary operator '${mathOp}' takes no second operand -- remove 'right'")
+                throw new IllegalArgumentException("${capLabel} math: unary operator '${mathOp}' takes no second operand -- remove 'right'")
             }
             // Each operand is either a number (becomes a constant) or a String (a hub variable
             // name). Reject any other type (e.g. Boolean, Map, List) up-front with a precise
             // message rather than coercing it to a string and blaming a nonexistent variable.
             [[role: "left", operand: mathLeft], [role: "right", operand: mathRight]].each { o ->
                 if (o.operand != null && !(o.operand instanceof Number) && !(o.operand instanceof CharSequence)) {
-                    throw new IllegalArgumentException("setVariable math: ${o.role} operand must be a number or a hub variable name; got '${o.operand}'")
+                    throw new IllegalArgumentException("${capLabel} math: ${o.role} operand must be a number or a hub variable name; got '${o.operand}'")
                 }
             }
         }
-        // Validate target variable and sourceVariable exist in the hub's variable enum.
+        // Reject the xVarV picker's two sentinel header rows as targets. RM emits the
+        // leading-space strings " --LOCAL VARIABLES--" / " --HUB VARIABLES--" as selectable
+        // enum values; they are section headers, not real variable names, and writing one
+        // produces a broken action. Guard before any namespace lookup so the message is precise.
+        def pickerSectionHeaders = [" --LOCAL VARIABLES--", " --HUB VARIABLES--"]
+        if (actionSpec.variable?.toString() in pickerSectionHeaders) {
+            throw new IllegalArgumentException("${capLabel}: '${actionSpec.variable}' is a picker section header, not a variable name. Pass a real variable name.")
+        }
+        // Validate the target variable (and sourceVariable / math operands) against the
+        // appropriate namespace. setVariable/variable validate against hub GLOBALS via
+        // getAllGlobalVars(); setLocalVariable validates against the rule's LOCALS via the
+        // statusJson appState.allLocalVars map. Both are normalized to {name -> [type:<token>]}
+        // so the shared name + numeric-target checks below read identically.
         // Fail loud: an unknown variable name causes the hub to silently reject the write,
         // producing a broken-looking action with no caller-visible error.
-        // API throws (unavailable) -> skip validation and log warn (null sentinel).
-        // API returns [:] (hub has no variables) -> every name is invalid -> validate and fail.
+        // Source unavailable -> skip validation and log warn (null sentinel).
+        // Source empty -> every name is invalid -> validate and fail.
+        def varDisplayKind = isLocalVar ? "local variables" : "hub variables"
+        def emptyDisplay = isLocalVar ? "(none -- rule has no local variables defined)" : "(none -- hub has no variables defined)"
         def allVars = null
-        try { allVars = getAllGlobalVars() } catch (Exception e) {
-            mcpLog("warn", "rm-native", "setVariable: getAllGlobalVars() unavailable (${e.class.simpleName}: ${e.message ?: e.toString()}) -- variable-name validation skipped; write will proceed unvalidated")
-            // Signal to the caller that validation was bypassed. The partial=true plumbing at
-            // result assembly treats any non-empty skipped list as "incomplete"; the sentinel key
-            // is distinct from field-write skips so the caller can distinguish the two.
-            skipped << [key: "variable-validation", reason: "api_unavailable"]
+        if (isLocalVar) {
+            // Read state.allLocalVars (the rule-local namespace) from the rule's statusJson
+            // appState. Normalize to the same {name -> [type:<token>]} shape getAllGlobalVars
+            // returns so the downstream checks are namespace-agnostic. The stored type token
+            // ('integer'/'bigdecimal'/'string'/...) matches what _rmIsNumericVarType expects.
+            def localsRead = _rmReadLocalVarsMap(appId)
+            if (localsRead.ok) {
+                // statusJson answered (an empty map means the rule simply has no locals).
+                allVars = [:]
+                localsRead.vars.each { lvName, lvMeta ->
+                    allVars[lvName?.toString()] = [type: (lvMeta instanceof Map ? lvMeta?.type?.toString() : null)]
+                }
+            } else {
+                mcpLog("warn", "rm-native", "setLocalVariable: local-variable read (statusJson appState.allLocalVars) unavailable for app ${appId} (${localsRead.error}) -- variable-name validation skipped; write will proceed unvalidated")
+                skipped << [key: "variable-validation", reason: "api_unavailable"]
+            }
+        } else {
+            try { allVars = getAllGlobalVars() } catch (Exception e) {
+                mcpLog("warn", "rm-native", "setVariable: getAllGlobalVars() unavailable (${e.class.simpleName}: ${e.message ?: e.toString()}) -- variable-name validation skipped; write will proceed unvalidated")
+                // Signal to the caller that validation was bypassed. The partial=true plumbing at
+                // result assembly treats any non-empty skipped list as "incomplete"; the sentinel key
+                // is distinct from field-write skips so the caller can distinguish the two.
+                skipped << [key: "variable-validation", reason: "api_unavailable"]
+            }
         }
         if (allVars != null) {
             def allVarNames = (allVars.keySet() ?: []) as List<String>
-            def emptyDisplay = "(none -- hub has no variables defined)"
             def targetVar = actionSpec.variable.toString()
             if (!allVarNames.any { it?.toString() == targetVar }) {
                 def available = allVarNames.isEmpty() ? emptyDisplay : allVarNames.sort().join(', ')
-                throw new IllegalArgumentException("setVariable: variable '${targetVar}' not found. Available hub variables: ${available}")
+                throw new IllegalArgumentException("${capLabel}: variable '${targetVar}' not found. Available ${varDisplayKind}: ${available}")
             }
-            // The device-attribute (fromDevice) and variable-math (math) source modes are
-            // NUMERIC-TARGET-ONLY: RM renders the numOp source-mode field only for a Number/Decimal
-            // target variable, so requesting either mode into a String/Boolean/DateTime target makes
-            // numOp never reveal -- a doActPage write would then fail deep in the reveal walk with a
-            // misleading not-in-schema message. Fail loud HERE, before any hub write, with the actual
-            // requirement and the supported alternatives. (Type is read from the same getAllGlobalVars
-            // map already fetched for name validation; an unavailable map skips this with everything else.)
-            // getAllGlobalVars reports the INTERNAL type token, NOT the UI label: a Number var is
+            // The value (numeric constant), device-attribute (fromDevice), and variable-math (math)
+            // source modes are all NUMERIC-TARGET-ONLY. value writes numOp=number + valNumber.<N>,
+            // and RM renders numOp/valNumber ONLY for a Number/Decimal target -- against a
+            // String/Boolean/DateTime target those fields never reveal, so the write skips them and
+            // bakes a partial:true action with no assigned value. fromDevice/math have the same gate:
+            // numOp never reveals their source option for a non-numeric target, so the reveal walk
+            // fails deep with a misleading not-in-schema message. Fail loud HERE, before any hub
+            // write, with the actual requirement and the ONE supported alternative (sourceVariable,
+            // which copies from another variable; RM's source picker spans all types). (Type is read
+            // from the same namespace map already fetched for name validation; an unavailable map
+            // skips this with everything else.)
+            // The INTERNAL type token (NOT the UI label) is what both namespaces store: a Number var is
             // "integer", a Decimal var is "bigdecimal" (the two numeric kinds), and String/Boolean/
             // DateTime report "string"/"boolean"/"datetime" (live-confirmed). _rmIsNumericVarType is
             // the single source of truth. Fail CLOSED: the target var's name is already validated to
             // exist, so a null or non-numeric token means we cannot prove it is numeric -- reject
             // rather than silently allowing an un-typeable target through to a doomed reveal walk.
-            if (actionSpec.fromDevice != null || actionSpec.math != null) {
-                def targetType = allVars[targetVar]?.type?.toString()
+            if (actionSpec.value != null || actionSpec.fromDevice != null || actionSpec.math != null) {
+                def targetMeta = allVars[targetVar]
+                def targetType = (targetMeta instanceof Map) ? targetMeta?.type?.toString() : null
                 if (!_rmIsNumericVarType(targetType)) {
-                    def modeName = actionSpec.fromDevice != null ? "device-attribute (fromDevice)" : "variable-math (math)"
-                    def typeDisplay = targetType ?: "an unknown type"
-                    throw new IllegalArgumentException("setVariable: the ${modeName} source mode requires a Number or Decimal target variable; '${targetVar}' is ${typeDisplay}. For a String/Boolean/DateTime target use 'value' (a literal) or 'sourceVariable' (copy from another variable).")
+                    def modeName = actionSpec.value != null ? "numeric-constant (value)"
+                        : (actionSpec.fromDevice != null ? "device-attribute (fromDevice)" : "variable-math (math)")
+                    // Distinguish a recognized-but-non-numeric type (string/boolean/datetime)
+                    // from metadata we could not parse a type out of at all -- the latter is a
+                    // shape problem, not a "this variable is the wrong type" problem.
+                    def typeDisplay = targetType ? "of type '${targetType}'" : "of an unreadable type (its variable metadata did not carry a recognizable type token)"
+                    throw new IllegalArgumentException("${capLabel}: the ${modeName} source mode requires a Number or Decimal target variable; '${targetVar}' is ${typeDisplay}. To assign a String/Boolean/DateTime target use 'sourceVariable' (copy from another variable).")
                 }
             }
-            if (actionSpec.sourceVariable != null) {
+            // sourceVariable + math-operand names: pre-validate against the global namespace for
+            // setVariable only; for setLocalVariable the pre-check is SKIPPED entirely.
+            // RM's source/operand pickers (xVar3/xVar4) span BOTH locals and globals, so a local
+            // target legitimately copies from a global source -- pre-checking a setLocalVariable
+            // source against the locals-only map would falsely reject that. For setLocalVariable
+            // the authoritative check is the live revealed-enum validation in the
+            // __setVariableSourceVar / __setVariableMath post-write blocks (which read the actual
+            // picker spanning both namespaces); skip the pre-check here so it never over-rejects.
+            if (!isLocalVar && actionSpec.sourceVariable != null) {
                 def srcVar = actionSpec.sourceVariable.toString()
                 if (!allVarNames.any { it?.toString() == srcVar }) {
                     def available = allVarNames.isEmpty() ? emptyDisplay : allVarNames.sort().join(', ')
-                    throw new IllegalArgumentException("setVariable: sourceVariable '${srcVar}' not found. Available hub variables: ${available}")
+                    throw new IllegalArgumentException("${capLabel}: sourceVariable '${srcVar}' not found. Available ${varDisplayKind}: ${available}")
                 }
             }
             // Math operands that are variable names (non-Number operands) must also exist.
             // A Number operand becomes a (constant) and needs no variable-list check.
-            if (actionSpec.math != null) {
+            if (!isLocalVar && actionSpec.math != null) {
                 [[role: "left", operand: mathLeft], [role: "right", operand: mathRight]].each { o ->
                     if (o.operand != null && !(o.operand instanceof Number)) {
                         def opVar = o.operand.toString()
                         if (!allVarNames.any { it?.toString() == opVar }) {
                             def available = allVarNames.isEmpty() ? emptyDisplay : allVarNames.sort().join(', ')
-                            throw new IllegalArgumentException("setVariable math: ${o.role} operand variable '${opVar}' not found. Available hub variables: ${available}")
+                            throw new IllegalArgumentException("${capLabel} math: ${o.role} operand variable '${opVar}' not found. Available ${varDisplayKind}: ${available}")
                         }
                     }
                 }
             }
         }
         fields = ["xVarV.@N": actionSpec.variable.toString()]
+        // Stash the capability label so the schema-gated post-write blocks
+        // (__setVariableSourceVar / __setVariableMath, which run after fields.each and
+        // are out of capLabel's scope) name the ACTUAL capability the caller invoked --
+        // a setLocalVariable caller must not see "setVariable:" in a deferred error.
+        actionSpec.__setVariableCapLabel = capLabel
         if (actionSpec.sourceVariable != null) {
             // Write numOp=variable (the full word -- "var" is rejected by RM 5.1 live).
             // The source-variable field (xVar3.<N>) is schema-gated and only revealed
@@ -5316,7 +5425,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         actSubType = "getEndIf"
         fields = [:]
     } else {
-        throw new IllegalArgumentException("Unsupported capability '${cap}' -- supported: switch, dimmer, color, colorTemp, lock, thermostat, shade, fan, mode, setVariable, runCommand, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat, repeatWhile, ifThen, elseIf, else, endIf, waitExpression, waitEvents. For not-yet-mapped subtypes (per-mode/per-button/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
+        throw new IllegalArgumentException("Unsupported capability '${cap}' -- supported: switch, dimmer, color, colorTemp, lock, thermostat, shade, fan, mode, setVariable, setLocalVariable, runCommand, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat, repeatWhile, ifThen, elseIf, else, endIf, waitExpression, waitEvents. For not-yet-mapped subtypes (per-mode/per-button/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
     }
 
     // Open the new-action editor.
@@ -5789,6 +5898,9 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
     // would silently be skipped, leaving an action that bakes without a source variable.
     if (actionSpec.__setVariableSourceVar != null) {
         def srcVar = actionSpec.__setVariableSourceVar.toString()
+        // Name the actual capability the caller invoked (setVariable vs setLocalVariable),
+        // stashed when the markers were set; defaults to setVariable for safety.
+        def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
         // numOp=variable must have landed for the schema-gated source-variable field to appear.
         _rmAssertNumOpLanded(idx, applied, skipped, "source-variable")
         def srcCfg = _rmFetchConfigJson(appId, "doActPage")
@@ -5801,13 +5913,13 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         }
         if (!xVarMatches) {
             def visibleNames = srcInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
-            throw new IllegalArgumentException("setVariable: source-variable field was not revealed after writing numOp=variable for action ${idx} -- hub may not support copy-from-variable at this action position. Expected a field matching xVar<digits>.${idx}. Visible fields: ${visibleNames}")
+            throw new IllegalArgumentException("${capLbl}: source-variable field was not revealed after writing numOp=variable for action ${idx} -- hub may not support copy-from-variable at this action position. Expected a field matching xVar<digits>.${idx}. Visible fields: ${visibleNames}")
         }
         if (xVarMatches.size() > 1) {
             // More than one numeric xVar at this action slot is unexpected. Surface it loudly
             // so the caller can inspect the schema rather than silently picking the first.
             def allNames = xVarMatches.collect { it?.name?.toString() }.join(', ')
-            throw new IllegalArgumentException("setVariable: schema contains ${xVarMatches.size()} candidate source-variable fields for action ${idx} (${allNames}); expected exactly one. Use rawSettings to write the correct field explicitly.")
+            throw new IllegalArgumentException("${capLbl}: schema contains ${xVarMatches.size()} candidate source-variable fields for action ${idx} (${allNames}); expected exactly one. Use rawSettings to write the correct field explicitly.")
         }
         def xVar3Input = xVarMatches[0]
         def xVar3Field = xVar3Input.name.toString()
@@ -5817,10 +5929,13 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         // Fail loud when the revealed enum is empty: an unvalidated write would produce a
         // silently-broken action with no source variable persisted.
         if (xVar3Opts == null || xVar3Opts.isEmpty()) {
-            throw new IllegalArgumentException("setVariable: revealed field '${xVar3Field}' has no enumerable options -- cannot validate sourceVariable '${srcVar}'. Hub may not expose the variable list at this action position.")
+            throw new IllegalArgumentException("${capLbl}: revealed field '${xVar3Field}' has no enumerable options -- cannot validate sourceVariable '${srcVar}'. Hub may not expose the variable list at this action position.")
         }
         if (!xVar3Opts.any { it == srcVar }) {
-            throw new IllegalArgumentException("setVariable: sourceVariable '${srcVar}' is not in the revealed enum for '${xVar3Field}'. Available: ${xVar3Opts.sort().join(', ')}")
+            // The target + numOp=variable already landed before this deferred reveal-enum
+            // check, so the throw leaves a partial action row (target set, no source). Warn
+            // the caller and point at the auto-snapshot taken before the edit for recovery.
+            throw new IllegalArgumentException("${capLbl}: sourceVariable '${srcVar}' is not in the revealed enum for '${xVar3Field}'. Available: ${xVar3Opts.sort().join(', ')}. A partial action row was written (target variable set, no source) -- remove it with hub_set_rule(removeAction:{index:N}) or restore the pre-edit auto-snapshot via hub_restore_backup.")
         }
         _rmWriteSettingOnPage(appId, "doActPage", xVar3Field, srcVar, applied, null, skipped)
     }
@@ -5834,6 +5949,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
     // are hardcoded -- unlike __setVariableSourceVar, whose copy-variable slot number can
     // vary by firmware and is therefore regex-discovered.
     if (actionSpec.__setVariableFromDevice != null) {
+        def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
         def fd = actionSpec.__setVariableFromDevice
         def fdDeviceId = fd.deviceId.toString()
         def fdAttr = fd.attribute.toString()
@@ -5856,14 +5972,14 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps).
         def attrOpts = _rmReadPickerOptionStrings(tCustomAttrInput)
         if (attrOpts == null || attrOpts.isEmpty()) {
-            throw new IllegalArgumentException("setVariable: revealed attribute enum '${tCustomAttrField}' has no enumerable options -- cannot validate attribute '${fdAttr}'. Device '${fdDeviceId}' may expose no readable attributes at this action position.")
+            throw new IllegalArgumentException("${capLbl}: revealed attribute enum '${tCustomAttrField}' has no enumerable options -- cannot validate attribute '${fdAttr}'. Device '${fdDeviceId}' may expose no readable attributes at this action position.")
         }
         // Match case-insensitively, then write the CANONICAL enum option (the hub's exact casing),
         // not the caller's -- RM stores the option verbatim, so the caller's casing could bake a
         // value the enum does not contain.
         def canonicalAttr = attrOpts.find { it?.equalsIgnoreCase(fdAttr) }
         if (canonicalAttr == null) {
-            throw new IllegalArgumentException("setVariable fromDevice: attribute '${fdAttr}' is not in the device's attribute enum for action ${idx}. Available: ${attrOpts.sort().join(', ')}")
+            throw new IllegalArgumentException("${capLbl} fromDevice: attribute '${fdAttr}' is not in the device's attribute enum for action ${idx}. Available: ${attrOpts.sort().join(', ')}")
         }
         _rmWriteSettingOnPage(appId, "doActPage", tCustomAttrField, canonicalAttr, applied, null, skipped)
     }
@@ -5876,6 +5992,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
     // (existence check gates each write). The names are fixed by RM's UI contract for these
     // math slots, so they are hardcoded (unlike __setVariableSourceVar's regex-discovered slot).
     if (actionSpec.__setVariableMath != null) {
+        def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
         def m = actionSpec.__setVariableMath
         _rmAssertNumOpLanded(idx, applied, skipped, "variable-math")
         // The "(constant)" sentinel is RM's enum option that switches an operand to a literal.
@@ -5889,10 +6006,10 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         def assertInEnum = { String field, Object input, String wanted, String role ->
             def opts = optsOf(input)
             if (opts == null || opts.isEmpty()) {
-                throw new IllegalArgumentException("setVariable math: revealed field '${field}' has no enumerable options -- cannot validate ${role} '${wanted}'. Hub may not expose the ${role} list at this action position.")
+                throw new IllegalArgumentException("${capLbl} math: revealed field '${field}' has no enumerable options -- cannot validate ${role} '${wanted}'. Hub may not expose the ${role} list at this action position.")
             }
             if (!opts.any { it == wanted }) {
-                throw new IllegalArgumentException("setVariable math: ${role} '${wanted}' is not in the revealed enum for '${field}'. Available: ${opts.sort().join(', ')}")
+                throw new IllegalArgumentException("${capLbl} math: ${role} '${wanted}' is not in the revealed enum for '${field}'. Available: ${opts.sort().join(', ')}")
             }
         }
         // Step 1: first operand (xVar3.<N>) + operator (valMathOp.<N>) appear after numOp.
@@ -5904,7 +6021,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         def valMathOpInput = mInputs.find { it?.name?.toString() == valMathOpField }
         if (!xVar3Input || !valMathOpInput) {
             def visibleNames = mInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
-            throw new IllegalArgumentException("setVariable: variable-math operand/operator fields ('${xVar3Field}' + '${valMathOpField}') were not revealed after writing numOp=variable math for action ${idx} -- hub may not support variable math at this action position. Visible fields: ${visibleNames}")
+            throw new IllegalArgumentException("${capLbl}: variable-math operand/operator fields ('${xVar3Field}' + '${valMathOpField}') were not revealed after writing numOp=variable math for action ${idx} -- hub may not support variable math at this action position. Visible fields: ${visibleNames}")
         }
         // Validate the operator against valMathOp's options up-front (the field is already
         // revealed). _rmMathBinaryOps/_rmMathUnaryOps is the project's known partition, but the
@@ -7285,7 +7402,13 @@ private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     atomicState.itemBackupManifest = mfst
 
     mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
-    return [backupKey: backupKey] + entry
+    // brokenBefore: the rule's pre-write broken state, derived from the config this snapshot
+    // already fetched (no extra hub read). A mutation that needs to know whether IT caused a
+    // post-write break (vs the rule being broken beforehand) reads this off the returned backup to
+    // steer its error wording, then STRIPS it -- it is a transient internal signal, never surfaced
+    // to the caller and deliberately kept off the persisted manifest `entry` (not part of the
+    // durable backup record). null when no config was readable (VRB-only snapshot).
+    return [backupKey: backupKey, brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config))] + entry
 }
 
 // Soft delete via /installedapp/delete/<id>. Refuses if the app has
@@ -7345,7 +7468,7 @@ def toolSetRule(args) {
         // never silent-success (hub_set_native_app's create arm enforces the
         // same posture for the shortcuts it does not honor).
         def CREATE_HONORED = ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression'] as Set
-        def EDIT_ONLY = ['replaceRequiredExpression', 'addLocalVariable', 'patches', 'replaceActions', 'removeAction', 'clearActions',
+        def EDIT_ONLY = ['replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions', 'removeAction', 'clearActions',
                          'moveAction', 'removeTrigger', 'modifyTrigger', 'walkStep', 'settings', 'button']
         def droppedOnCreate = EDIT_ONLY.findAll { args instanceof Map && args.containsKey(it) }
         if (droppedOnCreate) {
@@ -7407,7 +7530,7 @@ def toolSetNativeApp(args) {
         // call returned success:true on an empty shell -- same honor-or-
         // loudly-reject posture as hub_set_rule's create gate.
         def droppedOnCreate = ['addTrigger', 'addTriggers', 'addAction', 'addActions',
-                               'addRequiredExpression', 'replaceRequiredExpression', 'addLocalVariable', 'patches', 'replaceActions',
+                               'addRequiredExpression', 'replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions',
                                'removeAction', 'clearActions', 'moveAction', 'removeTrigger',
                                'modifyTrigger', 'walkStep', 'settings', 'button'].findAll {
             args instanceof Map && args.containsKey(it)
@@ -7450,7 +7573,7 @@ def _createButtonRuleViaController(args) {
     // gates). confirm rides along; everything else is a caller mistake.
     def bundledExtras = ['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute',
                          'walkStep', 'addTrigger', 'addTriggers', 'addAction', 'addActions',
-                         'addRequiredExpression', 'replaceRequiredExpression', 'addLocalVariable', 'patches', 'replaceActions',
+                         'addRequiredExpression', 'replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions',
                          'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger'].findAll {
         args instanceof Map && args.containsKey(it)
     }
@@ -7829,6 +7952,45 @@ def _createNativeAppShell(args) {
     }
 }
 
+// Read a rule's local-variable namespace (state.allLocalVars) from its
+// statusJson appState. The single source of truth for the allLocalVars shape:
+// every site that reads a rule's locals goes through here so the appState
+// list-of-entries traversal and the shape guards live in one place.
+//
+// appState is a LIST of {name, value} entries; the allLocalVars entry's value
+// is the {name -> {type, value}} map. Returns:
+//   [ok:true,  vars:<Map>]  -- read succeeded; vars is the locals map ([:] when
+//                              the rule has no locals, i.e. no allLocalVars entry).
+//   [ok:false, vars:[:]]    -- the status read itself threw (channel down).
+// A non-List appState (a shape RM is not expected to emit) is treated as
+// "no locals" but logged as a shape mismatch so a silent zero-locals read of a
+// changed contract is visible rather than mistaken for a genuinely empty rule.
+private Map _rmReadLocalVarsMap(Integer appId) {
+    def status
+    try {
+        status = _rmFetchStatusJson(appId)
+    } catch (Exception e) {
+        return [ok: false, vars: [:], error: "${e.class.simpleName}: ${e.message ?: e.toString()}"]
+    }
+    def appState = status?.appState
+    if (appState != null && !(appState instanceof List)) {
+        // appState has always been a List-of-entries; a non-List shape would make the
+        // .find below read zero locals silently. An EMPTY non-List (e.g. [:]) carries no
+        // data to lose, so treat it as a plain no-locals read. A NON-EMPTY non-List shape
+        // carries data we cannot interpret -- returning ok:true would mask a read failure
+        // as a genuinely-empty rule, so surface it as ok:false (a read failure) instead, so
+        // callers (hub_list_rule_local_variables) report a read error rather than total:0.
+        if (appState instanceof Map ? !appState.isEmpty() : true) {
+            def shapeLabel = (appState instanceof Map) ? "a Map" : "a non-List value"
+            mcpLog("warn", "rm-native", "_rmReadLocalVarsMap: app ${appId} statusJson appState is ${shapeLabel} (expected a List of {name,value} entries) -- treating as a read failure; the allLocalVars contract may have changed.")
+            return [ok: false, vars: [:], error: "statusJson appState was ${shapeLabel}, not the expected List of entries -- cannot read local variables (the allLocalVars contract may have changed)"]
+        }
+        return [ok: true, vars: [:]]
+    }
+    def raw = (appState ?: []).find { it?.name?.toString() == "allLocalVars" }?.value
+    return [ok: true, vars: (raw instanceof Map) ? raw : [:]]
+}
+
 // Add a local variable to a Rule Machine 5.1 rule.
 //
 // RM 5.1's variable wizard lives on selectActions. The flow:
@@ -7905,21 +8067,18 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
     def attempts = 0
     def lastFetchErr = null
     while (attempts < 3 && !committed) {
-        try {
-            def status = _rmFetchStatusJson(appId)
-            def allLocalVars = (status?.appState ?: []).find { it?.name?.toString() == "allLocalVars" }?.value
-            if (allLocalVars instanceof Map && allLocalVars.containsKey(name)) {
-                committed = true
-            }
-        } catch (Exception fetchExc) {
-            lastFetchErr = fetchExc.message
+        def lvRead = _rmReadLocalVarsMap(appId)
+        if (lvRead.ok) {
+            if (lvRead.vars.containsKey(name)) committed = true
+        } else {
+            lastFetchErr = lvRead.error
         }
         attempts++
         if (!committed && attempts < 3) {
             // Tickle the page once to nudge RM's persistence cycle.
             try { _rmFetchConfigJson(appId, "selectActions") }
             catch (Exception tickleExc) {
-                lastFetchErr = lastFetchErr ?: tickleExc.message
+                lastFetchErr = lastFetchErr ?: "${tickleExc.class.simpleName}: ${tickleExc.message ?: tickleExc.toString()}"
             }
         }
     }
@@ -7954,6 +8113,319 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
         settingsApplied: applied,
         settingsSkipped: skipped
     ]
+}
+
+// Remove a rule-local variable. Drives the same two-step delete wizard the
+// Hub Variables system app uses for globals (deleteGV opens the confirm prompt,
+// delConfirm commits), but on the rule's own selectActions page and verified
+// against state.allLocalVars rather than getGlobalVar.
+//
+// The first click sequence can be dropped silently by the hub (a state-machine
+// race the configure/status prime alone does not always defeat), so the WHOLE
+// sequence is retried once and the result verified by re-reading appState
+// allLocalVars between attempts.
+//
+// Returns [success, name, deleted] on commit. On a verify miss after both
+// attempts it returns success=false + partial=true + a diagnostic envelope
+// (the var name still present, repair hints) rather than throwing, so the outer
+// dispatcher can surface it. The legitimate verify-miss case is RM refusing to
+// delete a variable still referenced by an action or expression.
+//
+// future: the hub-global delete path runs a structurally similar deleteGV/delConfirm
+// retry+verify loop, but on the hubVar page and verified through getGlobalVar -- a
+// shared primitive would have to live outside both libraries (cross-library #include
+// is forbidden under #include's textual-paste model), so the two loops stay separate.
+private Map _rmRemoveLocalVariable(Integer appId, String varName) {
+    def name = varName?.toString()?.trim()
+    if (!name) throw new IllegalArgumentException("removeLocalVariable.name is required")
+
+    // The var name is spliced verbatim into the deleteGV click's settings[<name>]
+    // POST form key (_rmClickAppButton builds settings[buttonName] from the button
+    // name, and deleteGV uses the var name as the button). A name carrying a form-key
+    // metacharacter ([ ] & =) or a non-ASCII byte corrupts that key, so the click
+    // targets the wrong field and the delete silently no-ops -- the verify loop then
+    // misreports it. RM constrains real local-variable names to a safe alphabet, so a
+    // name containing one of these can never match an actual variable; reject up front
+    // with the rule rather than letting it corrupt the wire.
+    if (name =~ /[\[\]&=]/ || !(name ==~ /\p{ASCII}+/)) {
+        throw new IllegalArgumentException("removeLocalVariable: variable name '${name}' contains characters that are not valid in a Rule Machine local-variable name (no [, ], &, = or non-ASCII characters). Check the name via hub_list_rule_local_variables.")
+    }
+
+    // Pre-read: confirm the variable exists before attempting the delete, so a
+    // typo'd / already-gone name fails with a clear list instead of a silent
+    // no-op that the verify loop would then misreport. preReadOk distinguishes a
+    // genuine read (the var is authoritatively absent -- incl. a rule with ZERO
+    // locals) from a transient read failure (channel down) where we must NOT reject
+    // -- a missing-name guard keyed only on a non-empty map would skip the
+    // zero-locals case and report a false deleted:true.
+    def preRead = _rmReadLocalVarsMap(appId)
+    def localVarsBefore = preRead.vars
+    if (!preRead.ok) {
+        // Read channel down -- skip the existence pre-check and let the delete
+        // sequence + verify decide. Log so the operator can see the read failed.
+        mcpLog("warn", "rm-native", "removeLocalVariable: pre-read of appState.allLocalVars failed for app ${appId} (${preRead.error}) -- proceeding without existence pre-check")
+    }
+    if (preRead.ok && !localVarsBefore.containsKey(name)) {
+        def available = localVarsBefore.keySet().sort().join(', ') ?: "(none -- rule has no local variables)"
+        throw new IllegalArgumentException("removeLocalVariable: local variable '${name}' not found. Available local variables: ${available}")
+    }
+
+    // Two attempts of the full prime -> deleteGV -> delConfirm -> verify cycle, both
+    // run unconditionally. On a live hub the first deleteGV/delConfirm sequence can
+    // transiently miss (an RM state-machine race), and the second attempt is what
+    // lands the delete -- so BOTH attempts always run; a fail-fast after attempt 1
+    // would kill the retry and falsely report an un-referenced variable as "still
+    // referenced".
+    def stillThere = true
+    def lastFetchErr = null
+    def verifyReadOk = false
+    for (int attempt = 0; attempt < 2; attempt++) {
+        // Prime the wizard state (configure/json + statusJson) so the clicks land --
+        // both fetches are required: configure/json is the page the clicks post
+        // against, and statusJson settles RM's state machine so the deleteGV button
+        // resolves. Dropping either lets the first click sequence silently miss.
+        try {
+            hubInternalGet("/installedapp/configure/json/${appId}")
+            hubInternalGet("/installedapp/statusJson/${appId}")
+        } catch (Exception primeExc) {
+            mcpLog("debug", "rm-native", "removeLocalVariable: wizard prime attempt-${attempt + 1} for app ${appId} threw ${primeExc.class.simpleName}: ${primeExc.message ?: primeExc.toString()}")
+        }
+        // deleteGV opens the confirm prompt (name=varName, stateAttribute=deleteGV);
+        // delConfirm commits it (name=delConfirm, stateAttribute=deleteConfirm). The
+        // confirm button's stateAttribute differs from its name -- both values mirror
+        // RM's own delete request. Clicks are scoped to selectActions for page context.
+        // A click throw (e.g. a 400 POST) mid-sequence leaves RM's confirm prompt
+        // half-open; close it with cancelCapab before propagating so the next edit does
+        // not inherit a stuck wizard, and embed the wizardStuck marker so the dispatcher
+        // surfaces the cancelCapab recovery hint (matches the addAction/STPage flow).
+        try {
+            _rmClickAppButton(appId, name, "deleteGV", "selectActions")
+            _rmClickAppButton(appId, "delConfirm", "deleteConfirm", "selectActions")
+        } catch (Exception clickExc) {
+            def cleanupFailed = false
+            def cleanupErr = null
+            try { _rmClickAppButton(appId, "cancelCapab", null, "selectActions") }
+            catch (Exception cancelExc) {
+                cleanupFailed = true
+                cleanupErr = cancelExc.message ?: cancelExc.toString()
+                mcpLog("warn", "rm-native", "removeLocalVariable: cancelCapab cleanup failed for app ${appId} after a deleteGV/delConfirm click threw (var '${name}'): ${cleanupErr} -- the delete wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
+            }
+            def baseMsg = clickExc.message ?: clickExc.toString()
+            if (cleanupFailed) {
+                throw new IllegalStateException("${baseMsg} [wizardStuck -- cancelCapab cleanup also failed: ${cleanupErr}]")
+            }
+            throw new IllegalStateException("removeLocalVariable: deleteGV/delConfirm click failed for '${name}' -- ${baseMsg}. The in-flight delete wizard was closed (cancelCapab); retry the removal.")
+        }
+        // Verify: poll appState.allLocalVars until the var is gone. Settle before each
+        // read -- RM persists the delete a moment after delConfirm, so reading first
+        // would catch the var still present and waste a poll iteration.
+        verifyReadOk = false
+        for (int v = 0; v < 4; v++) {
+            try { pauseExecution(500) } catch (Exception pe) { mcpLog("debug", "rm-native", "removeLocalVariable: verify-poll pauseExecution interrupted for app ${appId}: ${pe.class.simpleName}: ${pe.message ?: pe.toString()}") }
+            def lvRead = _rmReadLocalVarsMap(appId)
+            if (lvRead.ok) {
+                verifyReadOk = true
+                stillThere = lvRead.vars.containsKey(name)
+            } else {
+                lastFetchErr = lvRead.error
+                mcpLog("debug", "rm-native", "removeLocalVariable: verify-read poll v=${v} attempt=${attempt + 1} for app ${appId} (var '${name}') failed: ${lvRead.error}")
+                // Leave stillThere as-is and keep polling; a transient read error
+                // should not be read as "committed".
+            }
+            if (!stillThere) break
+        }
+        if (!stillThere) break
+    }
+
+    if (stillThere) {
+        def readMayHaveSucceeded = (lastFetchErr != null && !verifyReadOk)
+        def error
+        def repairHints
+        if (readMayHaveSucceeded) {
+            // Every verify read failed -- the delete may well have committed; we just
+            // could not confirm it. Lead with that so the caller does not chase a
+            // "still present" red herring.
+            error = "Local variable '${name}' could not be confirmed deleted -- every verify read of state.allLocalVars failed (last error: ${lastFetchErr}). The delete may have succeeded; the verify read did not complete."
+            repairHints = [
+                "Re-check whether '${name}' is gone via hub_list_rule_local_variables -- the delete may already have committed.",
+                "If it is still present, the delete wizard may have been rejected; remove any expression/condition that references '${name}' and retry."
+            ]
+        } else {
+            // The var remains after both attempts. RM does NOT reliably refuse a referenced-local
+            // delete (live, it usually deletes the local and breaks the referencing action -- that
+            // case lands as deleted:true with a broken rule, handled by the apply-result envelope).
+            // Reaching here means the delete wizard itself did not take, which RM can still do for
+            // some expression/condition references on certain firmware; report it as a wizard miss
+            // rather than asserting a blanket "RM refuses referenced locals" rule.
+            error = "Local variable '${name}' did not delete -- state.allLocalVars still contains it after the deleteGV+delConfirm attempt(s). The delete wizard did not take; on some firmware an expression/condition reference can block it.${lastFetchErr ? " Last verify-read error: ${lastFetchErr}." : ""}"
+            repairHints = [
+                "Remove any expression or condition that references '${name}', then retry the removal.",
+                "Inspect the current locals via hub_list_rule_local_variables."
+            ]
+        }
+        return [
+            success: false,
+            partial: true,
+            name: name,
+            deleted: false,
+            error: error,
+            repairHints: repairHints
+        ]
+    }
+
+    return [
+        success: true,
+        name: name,
+        deleted: true
+    ]
+}
+
+// Scan a /installedapp/configure/json config Map for RM's rendered broken-state markers,
+// returning true if any **Broken Trigger/Action/Condition** appears. Reads BOTH render
+// formats the hub serves -- the body-element format (sect.body[] where element is
+// 'paragraph'/'href') AND the paragraphs-array format -- mirroring the live scan in
+// _rmCheckRuleHealth. Used to derive a PRE-mutation broken baseline from a backup
+// snapshot's captured configJson without a fresh hub read. A null/unparseable config
+// returns false (cannot prove the rule was broken).
+private boolean _rmConfigHasBrokenMarkers(config) {
+    if (!(config instanceof Map)) return false
+    def sections = config?.configPage?.sections ?: []
+    def texts = (sections as List).collectMany { sect ->
+        def fromBody = (sect?.body ?: [])
+            .findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
+            .collect { it.description?.toString() ?: "" }
+        def fromParagraphs = (sect?.paragraphs ?: []).collect { it?.toString() ?: "" }
+        fromBody + fromParagraphs
+    }
+    return texts.any { text ->
+        ["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"].any { text.contains(it) }
+    }
+}
+
+// Shared dispatch-envelope for the local-variable add/remove shortcuts. Both fire
+// a trailing updateRule (re-evaluates the rule's action map / subscriptions against
+// the new or removed local), brief-settle, health-check, then assemble a response
+// that ORs the inner helper's partial into the outer partial. opKind ('add'|'remove')
+// drives the only two real differences: the variable SUB-SHAPE (add returns
+// {name,type,value} + settings*, remove returns {name,deleted}) and the wording of
+// the repairHint / note. varResult is the inner helper's Map (it may itself be a
+// structured success:false + partial:true + repairHints when the commit/verify
+// missed -- those slots ride out unchanged).
+private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, String opKind) {
+    def isAdd = (opKind == "add")
+    def updateRuleFailed = false
+    def variableNotLive = false
+    def updateRuleError = null
+    try { _rmClickAppButton(appId, "updateRule") }
+    catch (Exception updateExc) {
+        updateRuleFailed = true
+        variableNotLive = true
+        updateRuleError = updateExc.message
+        mcpLog("warn", "rm-native", "${isAdd ? 'add' : 'remove'}LocalVariable: trailing updateRule click failed for app ${appId} -- ${isAdd ? 'variable' : 'removal'} may not be live: ${updateExc.message}")
+    }
+    // Brief settle so the post-updateRule health re-fetch reads the recompiled rule
+    // state, not the pre-recompile snapshot (a loaded hub can answer ruleBuilderJson
+    // before the recompile lands, yielding a transient false broken:true).
+    try { pauseExecution(300) } catch (Exception pe) { mcpLog("debug", "rm-native", "${isAdd ? 'add' : 'remove'}LocalVariable: pre-health-check settle interrupted for app ${appId}: ${pe.class.simpleName}: ${pe.message ?: pe.toString()}") }
+    def health = _rmCheckRuleHealth(appId)
+    def repairHints = []
+    if (updateRuleFailed) {
+        repairHints << (isAdd
+            ? "updateRule click was rejected after the local variable committed. The variable is created on the hub but the rule's action map will not pick it up until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            : "updateRule click was rejected after the local variable was removed. The variable is gone but the rule's action map will not re-evaluate until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails.")
+    }
+    def variableShape = isAdd
+        ? [name: varResult?.name, type: varResult?.type, value: varResult?.value]
+        : [name: varResult?.name, deleted: varResult?.deleted == true]
+    // Broken-after-delete (remove path): RM does NOT reliably refuse to delete a referenced
+    // local. Live (RM 5.1 / fw 2.5.0.x), deleting a local that an action still references
+    // SUCCEEDS at removing the variable and leaves the referencing action Broken. So a clean
+    // delete (deleted:true) can co-exist with health.ok=false -- the variable is gone but the
+    // rule is now broken. Detect that here and convert it into a self-consistent failure
+    // envelope: the helper's deleted:true rides through (the delete really happened), but the
+    // envelope reports success:false + partial:true with a SPECIFIC error + repairHint, so a
+    // consumer is never handed deleted:true + error:null + a clean "removed" note while the
+    // rule sits broken. The still-referenced -> partial branch in the helper still covers the
+    // case where RM DOES refuse (may occur for expression/condition refs on some firmware).
+    //
+    // deleteBrokeRule fires on EVERY broken-after-successful-delete so the envelope is always
+    // coherent (success:false must never ride with error:null). The pre-delete broken state
+    // (brokenBefore, kept INTERNAL -- derived by the backup snapshot from the config it fetched
+    // BEFORE the delete, no extra hub round-trip) only steers the WORDING: a rule that was
+    // ALREADY broken beforehand must NOT be told the delete caused it (and that restoring fixes
+    // it -- it would only undo the delete while the pre-existing break remains). brokenBefore:
+    // false -> the delete caused it (causation wording); true -> pre-existing (do not blame the
+    // delete, restore won't fix it); null -> indeterminate (softened, no causation claim).
+    Boolean brokenBefore = (backup?.brokenBefore instanceof Boolean) ? (Boolean) backup.brokenBefore : null
+    // brokenBefore is an internal wording signal only -- rule-health state does not belong on the
+    // backup metadata object the envelope surfaces. Strip it before it can ride out on envelope.backup.
+    if (backup instanceof Map) backup.remove("brokenBefore")
+    boolean deleteBrokeRule = (!isAdd) && (varResult?.deleted == true) && (varResult?.success != false) && !health.ok
+    String deleteBrokeError = null
+    if (deleteBrokeRule) {
+        def markerHint = (health.brokenMarkers instanceof List && !health.brokenMarkers.isEmpty()) ? " (${health.brokenMarkers.join(', ')})" : ""
+        if (brokenBefore == true) {
+            // Pre-existing breakage -- removing this local did not cause it; restore won't fix it.
+            deleteBrokeError = "Local variable '${varResult?.name}' was deleted; the rule is broken${markerHint}, but it was ALREADY broken before this delete (pre-existing -- removing this local did not cause it). Restoring backup (backupKey='${backup?.backupKey}') undoes the delete but will NOT fix the pre-existing breakage; inspect the rule's broken action(s)/expression(s)."
+            repairHints << "The rule was already broken before this delete (pre-existing). Restoring backupKey='${backup?.backupKey}' only undoes the delete and will NOT repair the pre-existing breakage -- inspect the rule's broken action(s)/expression(s)."
+        } else if (brokenBefore == false) {
+            // Clean before -- the delete caused the break; restore undoes it.
+            deleteBrokeError = "Local variable '${varResult?.name}' was deleted, but that broke the action(s)/expression(s) that referenced it -- the rule is now broken${markerHint}. Restore the pre-delete backup (backupKey='${backup?.backupKey}') via hub_restore_backup to undo, or remove the references first and then retry the removal."
+            repairHints << "The deleted local variable was still referenced; the rule is now broken. Restore via hub_restore_backup with backupKey='${backup?.backupKey}', or remove the referencing action(s)/expression(s) and retry."
+        } else {
+            // Indeterminate baseline (pre-delete config unreadable) -- do not claim causation.
+            deleteBrokeError = "The rule is broken after removing '${varResult?.name}'${markerHint} (could not determine whether it was already broken beforehand). Restore the backup (backupKey='${backup?.backupKey}') via hub_restore_backup to undo this delete, or inspect the rule's action(s)/expression(s)."
+            repairHints << "The rule is broken after this delete; whether it was already broken beforehand is unknown. Restore via hub_restore_backup with backupKey='${backup?.backupKey}' to undo the delete, or inspect the rule's action(s)/expression(s)."
+        }
+    }
+    // Guard the add-path note the same way the remove-path note guards on deleted:
+    // a non-committed add (hubRenderError / success:false) must NOT render a clean
+    // "added with value X" -- that would contradict the failure envelope. addCommitted
+    // tracks the helper's own commit verdict (success:false or hubRenderError:true means
+    // the var never landed in state.allLocalVars).
+    boolean addCommitted = isAdd && (varResult?.success != false) && (varResult?.hubRenderError != true)
+    def note
+    if (isAdd) {
+        note = addCommitted
+            ? "Local variable '${varResult?.name}' (${varResult?.type}) added with value ${varResult?.value}; updateRule ${updateRuleFailed ? 'FAILED -- variable may not be live' : 'fired'}."
+            : "Local variable '${varResult?.name}' (${varResult?.type}) NOT added (commit miss -- see repairHints); updateRule ${updateRuleFailed ? 'FAILED -- variable may not be live' : 'fired (add unconfirmed)'}."
+    } else if (deleteBrokeRule) {
+        // Baseline-aware: only claim the delete broke the rule when it was clean beforehand.
+        def brokeClause = (brokenBefore == false)
+            ? "a reference to it broke the rule"
+            : (brokenBefore == true
+                ? "the rule is broken (it was already broken beforehand -- not caused by this delete)"
+                : "the rule is broken (cause indeterminate)")
+        note = "Local variable '${varResult?.name}' was deleted but ${brokeClause} (see error/repairHints); updateRule ${updateRuleFailed ? 'FAILED -- removal may not be live' : 'fired'}."
+    } else {
+        note = "Local variable '${varResult?.name}' ${varResult?.deleted == true ? 'removed' : 'NOT removed (verify miss -- see repairHints)'}; updateRule ${updateRuleFailed ? 'FAILED -- removal may not be live' : (varResult?.deleted == true ? 'fired' : 'fired (removal unconfirmed)')}."
+    }
+    def envelope = [
+        success: (varResult?.success != false) && health.ok && !updateRuleFailed,
+        // committed-but-not-clean -> partial:true: on the broken-after-delete path the delete
+        // committed (deleted:true) but the rule is not healthy, so the operation is partial.
+        partial: (varResult?.partial == true) || updateRuleFailed || deleteBrokeRule,
+        appId: appId,
+        backup: backup,
+        variable: variableShape,
+        // On a broken-after-delete the helper's own error is null (the delete succeeded), so
+        // synthesize the specific error here; otherwise pass the helper's error through.
+        error: deleteBrokeError ?: varResult?.error,
+        updateRuleFailed: updateRuleFailed,
+        variableNotLive: variableNotLive,
+        updateRuleError: updateRuleError,
+        repairHints: ((varResult?.repairHints as List) ?: []) + repairHints,
+        health: health,
+        note: note
+    ]
+    if (isAdd) {
+        // add-only diagnostic slots: the moreVar wizard tracks per-field apply/skip and
+        // can report a hubRenderError when varValue persists but never renders into appState.
+        envelope.settingsApplied = varResult?.settingsApplied
+        envelope.settingsSkipped = varResult?.settingsSkipped
+        envelope.hubRenderError = varResult?.hubRenderError
+    }
+    return envelope
 }
 
 // Clear RM's residual atomicState.predCapabs via the "ghost ifThen" workaround.
@@ -10485,6 +10957,7 @@ def _applyNativeAppEdit(args) {
     def addRequiredExpressionSpec = args?.addRequiredExpression instanceof Map ? args.addRequiredExpression : null
     def replaceRequiredExpressionSpec = args?.replaceRequiredExpression instanceof Map ? args.replaceRequiredExpression : null
     def addLocalVariableSpec = args?.addLocalVariable instanceof Map ? args.addLocalVariable : null
+    def removeLocalVariableSpec = args?.removeLocalVariable instanceof Map ? args.removeLocalVariable : null
     def patchesList = args?.patches instanceof List ? (args.patches as List) : null
     def removeActionSpec = args?.removeAction instanceof Map ? args.removeAction : null
     def clearActionsFlag = args?.clearActions == true
@@ -10503,8 +10976,8 @@ def _applyNativeAppEdit(args) {
     def removeTriggerSpec = args?.removeTrigger instanceof Map ? args.removeTrigger : null
     def modifyTriggerSpec = args?.modifyTrigger instanceof Map ? args.modifyTrigger : null
     if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList
-            && !addRequiredExpressionSpec && !replaceRequiredExpressionSpec && !addLocalVariableSpec && !patchesList && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec && !removeTriggerSpec && !modifyTriggerSpec) {
-        throw new IllegalArgumentException("Editing an app requires one of: 'settings' (Map) or 'button' (String) for any classic app; or, for Rule Machine rules via hub_set_rule, a structured shortcut -- 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'replaceRequiredExpression' (Map), 'addLocalVariable' (Map), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
+            && !addRequiredExpressionSpec && !replaceRequiredExpressionSpec && !addLocalVariableSpec && !removeLocalVariableSpec && !patchesList && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec && !removeTriggerSpec && !modifyTriggerSpec) {
+        throw new IllegalArgumentException("Editing an app requires one of: 'settings' (Map) or 'button' (String) for any classic app; or, for Rule Machine rules via hub_set_rule, a structured shortcut -- 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'replaceRequiredExpression' (Map), 'addLocalVariable' (Map), 'removeLocalVariable' ({name}), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
     }
 
     // Always snapshot before writing. No exceptions — this is the
@@ -10517,13 +10990,14 @@ def _applyNativeAppEdit(args) {
         (addRequiredExpressionSpec ? "pre-addRequiredExpression" :
         (replaceRequiredExpressionSpec ? "pre-replaceRequiredExpression" :
         (addLocalVariableSpec ? "pre-addLocalVariable" :
+        (removeLocalVariableSpec ? "pre-removeLocalVariable" :
         (removeActionSpec ? "pre-removeAction" :
         (clearActionsFlag ? "pre-clearActions" :
         (replaceActionsList != null ? "pre-replaceActions" :
         (moveActionSpec ? "pre-moveAction" :
         (removeTriggerSpec ? "pre-removeTrigger" :
         (modifyTriggerSpec ? "pre-modifyTrigger" :
-        (walkStepSpec ? "pre-walkStep" : "pre-update"))))))))))))))
+        (walkStepSpec ? "pre-walkStep" : "pre-update")))))))))))))))
     def backup = _rmBackupRuleSnapshot(appId, backupReason)
 
     // walkStep — schema-aware single-step wizard walker. Lets a caller
@@ -11234,6 +11708,10 @@ def _applyNativeAppEdit(args) {
                         patchResults << ([op: "replaceRequiredExpression"] + replRes)
                     } else if (pm.containsKey("addLocalVariable")) {
                         patchResults << ([op: "addLocalVariable"] + _rmAddLocalVariable(appId, pm.addLocalVariable as Map))
+                    } else if (pm.containsKey("removeLocalVariable")) {
+                        def rlvName = (pm.removeLocalVariable instanceof Map) ? pm.removeLocalVariable.name?.toString()?.trim() : null
+                        if (!rlvName) throw new IllegalArgumentException("removeLocalVariable requires 'name'")
+                        patchResults << ([op: "removeLocalVariable"] + _rmRemoveLocalVariable(appId, rlvName))
                     } else if (pm.containsKey("removeAction")) {
                         if (pm.removeAction.index == null) throw new IllegalArgumentException("removeAction.index required")
                         // Capture the helper's rich return so per-patch entries
@@ -11345,7 +11823,7 @@ def _applyNativeAppEdit(args) {
                             partial: mvRes?.partial == true
                         ]
                     } else {
-                        patchResults << [success: false, error: "patches[${pi}] has no recognized operation key. Supported: settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeAction, clearActions, replaceActions, moveAction.", spec: p]
+                        patchResults << [success: false, error: "patches[${pi}] has no recognized operation key. Supported: settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction.", spec: p]
                     }
                 } catch (Exception subExc) {
                     // Strip the internal asyncCommit sentinel from the user-
@@ -11479,54 +11957,37 @@ def _applyNativeAppEdit(args) {
             mcpLogError("rm-native", "addLocalVariable failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup)
         }
-        // Trailing-updateRule failure propagation (sibling pattern from F2 on
-        // the addRequiredExpression dispatcher branch's trailing-updateRule catch
-        // block). variableNotLive: the variable was
-        // created on the hub (varResult is non-null) but the rule's action map
-        // never re-evaluates against the new variable until updateRule fires.
-        def updateRuleFailed = false
-        def variableNotLive = false
-        def updateRuleError = null
-        try { _rmClickAppButton(appId, "updateRule") }
-        catch (Exception updateExc) {
-            updateRuleFailed = true
-            variableNotLive = true
-            updateRuleError = updateExc.message
-            mcpLog("warn", "rm-native", "addLocalVariable: trailing updateRule click failed for app ${appId} -- variable may not be live: ${updateExc.message}")
+        // Shared add/remove envelope: fires the trailing updateRule, settles, health-
+        // checks, and ORs the inner helper's partial/error/repairHints (incl. the
+        // commit-verification {success:false, partial:true, hubRenderError:true, ...}
+        // shape) into the outer response, so callers can distinguish "trailing updateRule
+        // rejected" from "variable never rendered into appState".
+        return _rmApplyLocalVarResult(appId, (varResult ?: [:]) as Map, backup, "add")
+    }
+
+    if (removeLocalVariableSpec) {
+        // Local variable removal. Drives selectActions' deleteGV/delConfirm two-step
+        // delete wizard, then verifies the var left state.allLocalVars. The envelope
+        // FOLLOWS the addLocalVariableSpec branch's PLUMBING (capture the helper Map, fire
+        // the trailing updateRule, health-check, OR the inner partial into the outer
+        // partial), but the variable SUB-SHAPE intentionally differs: add returns
+        // {name, type, value} (the created variable), remove returns {name, deleted}
+        // (no type/value -- a deleted variable has neither). Same plumbing, different payload.
+        def varName = removeLocalVariableSpec.name?.toString()?.trim()
+        if (!varName) throw new IllegalArgumentException("removeLocalVariable requires 'name' (the local variable to delete)")
+        def varResult
+        try {
+            varResult = _rmRemoveLocalVariable(appId, varName)
+        } catch (Exception e) {
+            mcpLogError("rm-native", "removeLocalVariable failed for app ${appId}", e)
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup, "selectActions")
         }
-        def health = _rmCheckRuleHealth(appId)
-        def repairHints = []
-        if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the local variable committed. The variable is created on the hub but the rule's action map will not pick it up until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
-        }
-        // Propagate partial/error/hubRenderError/repairHints from the inner
-        // helper. _rmAddLocalVariable's commit-verification path can return
-        // {success:false, partial:true, hubRenderError:true, error:..., repairHints:[...]}
-        // when the variable settings persist but the rule status never picks
-        // them up. Without the propagation here the outer envelope clobbered
-        // those slots with updateRuleFailed-only signals -- callers had no
-        // way to distinguish "trailing updateRule rejected" from "variable
-        // never rendered into appState". Mirrors the addRequiredExpression
-        // dispatcher branch below (`addRequiredExpressionSpec` block --
-        // same {success / partial / repairHints / *NotLive / updateRule*}
-        // propagation shape).
-        return [
-            success: (varResult?.success != false) && health.ok && !updateRuleFailed,
-            partial: (varResult?.partial == true) || updateRuleFailed,
-            appId: appId,
-            backup: backup,
-            variable: [name: varResult?.name, type: varResult?.type, value: varResult?.value],
-            settingsApplied: varResult?.settingsApplied,
-            settingsSkipped: varResult?.settingsSkipped,
-            error: varResult?.error,
-            hubRenderError: varResult?.hubRenderError,
-            updateRuleFailed: updateRuleFailed,
-            variableNotLive: variableNotLive,
-            updateRuleError: updateRuleError,
-            repairHints: ((varResult?.repairHints as List) ?: []) + repairHints,
-            health: health,
-            note: "Local variable '${varResult?.name}' (${varResult?.type}) added with value ${varResult?.value}; updateRule ${updateRuleFailed ? 'FAILED -- variable may not be live' : 'fired'}."
-        ]
+        // Shared add/remove envelope (opKind='remove' -> {name, deleted} variable shape,
+        // remove-specific repairHint/note wording). A verify miss returns
+        // {success:false, partial:true, error, repairHints} from the helper; the shared
+        // assembler ORs that into the outer partial so a caller never treats an
+        // unconfirmed delete as done.
+        return _rmApplyLocalVarResult(appId, (varResult ?: [:]) as Map, backup, "remove")
     }
 
     if (addRequiredExpressionSpec) {
@@ -11976,15 +12437,43 @@ def toolCheckRuleHealth(args) {
     return _rmCheckRuleHealth(appId, source)
 }
 
+// hub_list_rule_local_variables -- read a rule's local-variable namespace
+// (state.allLocalVars) from its statusJson appState. Pure read; no wizard.
+// Returns {appId, localVariables:[{name, type, value}], total}. The statusJson
+// allLocalVars map is {name: {type, value}}; an absent map means the rule has
+// no locals (returns an empty list, not an error).
+def toolListRuleLocalVariables(args) {
+    if (args?.appId == null) throw new IllegalArgumentException("appId is required")
+    def appId = normalizeRuleId(args.appId)
+    // _rmReadLocalVarsMap throws nothing (it wraps the status read); a read failure
+    // surfaces as ok:false. Re-raise it here so the pure-read tool reports the read
+    // error rather than silently returning an empty list that looks like "no locals".
+    def lvRead = _rmReadLocalVarsMap(appId)
+    if (!lvRead.ok) {
+        throw new IllegalStateException("hub_list_rule_local_variables: could not read rule ${appId} status (${lvRead.error}).")
+    }
+    def localVariables = []
+    lvRead.vars.each { lvName, lvMeta ->
+        localVariables << [
+            name: lvName?.toString(),
+            type: (lvMeta instanceof Map ? lvMeta?.type?.toString() : null),
+            value: (lvMeta instanceof Map ? lvMeta?.value : null)
+        ]
+    }
+    localVariables = localVariables.sort { it.name }
+    return [appId: appId, localVariables: localVariables, total: localVariables.size()]
+}
+
 // ==================== PER-TOOL METADATA (issue #209) ====================
 
 def _readOnlyToolNames_partNativeRM() {
     // Read-only classification for this library's tools (issue #209: per-tool metadata lives
     // with the tool), contributed to the app's getReadOnlyToolNames() aggregator.
     return [
-        // Native rules (read) -- hub_get_rule_health inspects only.
+        // Native rules (read) -- hub_get_rule_health inspects only;
+        // hub_list_rule_local_variables reads state.allLocalVars only.
         // (hub_export_native_app -- in McpAppClonerLib -- instantiates a cloner app + persists, so it stays write.)
-        "hub_list_rules", "hub_get_rule_health"
+        "hub_list_rules", "hub_get_rule_health", "hub_list_rule_local_variables"
     ]
 }
 
@@ -12007,6 +12496,7 @@ def _toolDisplayMeta_partNativeRM() {
         hub_set_rule_private_boolean: [title: "Set Rule Private Boolean", summary: "Set a Rule Machine rule's private boolean."],
         hub_set_rule: [title: "Author Rule Machine Rule", summary: "Create or edit a Rule Machine rule."],
         hub_get_rule_health: [title: "Get Rule Health", summary: "Read-only health check on any installed app."],
+        hub_list_rule_local_variables: [title: "List Rule Local Variables", summary: "Read-only list of a Rule Machine rule's local variables."],
         hub_set_native_app: [title: "Create or Edit Native App", summary: "Create or edit a classic native app (Room Lighting, Notifier, etc.)."],
         hub_delete_native_app: [title: "Delete Native App", summary: "Delete a classic native app (auto-snapshot first)."],
         hub_set_app_disabled: [title: "Enable or Disable App", summary: "Enable or disable any installed app without deleting it (reversible)."]

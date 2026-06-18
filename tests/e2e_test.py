@@ -2450,14 +2450,86 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_rule_required_expression_and_local_var(self) -> None:
-        # hub_set_rule edit -> addLocalVariable + addRequiredExpression (STPage) wizards.
+        # hub_set_rule edit -> addLocalVariable + addRequiredExpression (STPage) wizards,
+        # plus the local-variable surface: setLocalVariable action, the
+        # hub_list_rule_local_variables read, and the removeLocalVariable shortcut.
         sw = int(self.get_test_switch_id())
         app_id = self._create_native_rule("ReqExpr")
         try:
             self._set_rule(app_id, {"addLocalVariable": {"name": "batCounter", "type": "Number", "value": 0}}, strict=True)
+
+            # hub_list_rule_local_variables (read, via the pure-read hub_read_rules gateway)
+            # sees the freshly created local with its type/value.
+            listed = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
+            names = [lv.get("name") for lv in (listed.get("localVariables") or [])]
+            assert "batCounter" in names, f"hub_list_rule_local_variables missing batCounter: {listed}"
+
+            # setLocalVariable action assigns the local a constant (validated against the
+            # rule's locals, NOT hub globals). Distinct capability from setVariable.
+            added = self._set_rule(app_id, {"addAction": {
+                "capability": "setLocalVariable", "variable": "batCounter", "value": 5}}, strict=True)
+            set_local_idx = added.get("actionIndex")
+            assert set_local_idx is not None, \
+                f"addAction setLocalVariable did not return an actionIndex: {added}"
+
             self._set_rule(app_id, {"addRequiredExpression": {"conditions": [
                 {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}}, strict=True)
             self._assert_rule_healthy(app_id)
+
+            # removeLocalVariable clean path: the referencing action is removed first (using
+            # the index the addAction returned -- RM does not guarantee index 0) so the rule
+            # stays healthy after the delete, then verify it left state.allLocalVars via the
+            # read tool. NOTE: RM does NOT refuse a referenced-local delete -- removing the
+            # reference first is to keep the rule HEALTHY, not because RM would block it (the
+            # broken-after-delete behaviour is covered by its own scenario).
+            self._set_rule(app_id, {"removeAction": {"index": set_local_idx}}, strict=True)
+            rm = self._set_rule(app_id, {"removeLocalVariable": {"name": "batCounter"}}, strict=True)
+            assert rm.get("variable", {}).get("deleted") is True, \
+                f"removeLocalVariable did not confirm deletion: {rm}"
+            relisted = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
+            assert "batCounter" not in [lv.get("name") for lv in (relisted.get("localVariables") or [])], \
+                f"batCounter still present after removeLocalVariable: {relisted}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_remove_referenced_local_breaks_rule(self) -> None:
+        # removeLocalVariable broken-after-delete contract: RM does NOT refuse to delete a
+        # local that an action still references -- it DELETES the local and leaves the
+        # referencing action Broken. The tool must surface that as a SELF-CONSISTENT failure:
+        # deleted=true + success=false + a specific error naming the broken outcome + a
+        # repairHint pointing at the backup restore (NOT a contradictory clean "removed").
+        app_id = self._create_native_rule("RmRefLocal")
+        try:
+            self._set_rule(app_id, {"addLocalVariable": {"name": "refLocal", "type": "Number", "value": 0}}, strict=True)
+            # Reference the local from an action; leave the reference in place (the broken-maker).
+            self._set_rule(app_id, {"addAction": {
+                "capability": "setLocalVariable", "variable": "refLocal", "value": 9}}, strict=True)
+
+            # Delete the still-referenced local. The delete succeeds; the rule goes broken.
+            rm = self._rm_call_soft({"appId": app_id, "removeLocalVariable": {"name": "refLocal"}, "confirm": True}, strict=True)
+            if rm.get("relayDropped"):
+                return  # response lost to relay; the strict path re-runs the small test
+            assert rm.get("variable", {}).get("deleted") is True, \
+                f"the local should have been deleted even though it was referenced: {rm}"
+            assert rm.get("success") is False, \
+                f"removing a referenced local that breaks the rule must report success=false: {rm}"
+            assert rm.get("error"), \
+                f"broken-after-delete must carry a specific error (not null): {rm}"
+            assert "broke" in str(rm.get("error")) or "broken" in str(rm.get("error")).lower(), \
+                f"the error must name the broken-after-delete outcome: {rm}"
+            assert (rm.get("health") or {}).get("ok") is False, \
+                f"health must report the rule broken after the delete: {rm}"
+            hints = rm.get("repairHints") or []
+            assert any("hub_restore_backup" in str(h) for h in hints), \
+                f"a repairHint must point at the backup restore: {rm}"
+            # The local really is gone (delete committed), confirming the deleted=true is honest.
+            relisted = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
+            assert "refLocal" not in [lv.get("name") for lv in (relisted.get("localVariables") or [])], \
+                f"refLocal should be gone after the (broken-making) delete: {relisted}"
         finally:
             self._delete_native(app_id)
 
