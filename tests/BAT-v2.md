@@ -129,7 +129,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` with `command=on`, then `hub_get_device_attribute` to verify.
+**Expected**: Calls `hub_call_device_command` with `command=on`, then `hub_get_device_attribute` to confirm. The command response now includes a `state` map keyed by attribute name (each entry its current value + a freshness timestamp; the device's attributes, no per-attribute auth filter) -- the switch attribute appears there with value `on` and a recent timestamp (a virtual device reports synchronously; for async Z-Wave/Zigbee devices the snapshot may lag until the device reports back, so `hub_get_device_attribute` is the confirmation step).
 
 ### T06 — hub_call_device_command (setLevel)
 

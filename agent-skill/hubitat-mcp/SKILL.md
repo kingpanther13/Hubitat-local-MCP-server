@@ -48,7 +48,9 @@ Use `hub_call_device_command` with the device ID and command name. Common comman
 
 Always check the device's `supportedCommands` (from `hub_get_device`) before sending commands.
 
-After sending a command, use `hub_get_device_attribute` with an `expectedValue` to block-poll until the state change takes effect rather than sleeping. Example: after `hub_call_device_command(on)` call `hub_get_device_attribute(attribute=switch, expectedValue="on", timeoutMs=5000)`. Note: `timeoutMs` is in MILLISECONDS (5000 = 5 seconds, max 60000ms). At least one of `expectedValue` or `expectedValues` is required to enable polling. Polling BLOCKS the MCP request for up to `timeoutMs`; use sparingly and prefer event-driven flows when available. Avoid running it in parallel with other MCP calls.
+`hub_call_device_command` returns an immediate post-command `state` snapshot — a map keyed by attribute name, each entry `{value, timestamp}`. For virtual/local devices this often already shows the new value (they report synchronously); for async Z-Wave/Zigbee devices it may still show the PRE-command value until the device reports back, so the per-attribute `timestamp` is the freshness signal.
+
+To CONFIRM an effect (not just read the snapshot), use `hub_get_device_attribute` with an `expectedValue` to block-poll until the state change takes effect rather than sleeping. Example: after `hub_call_device_command(on)` call `hub_get_device_attribute(attribute=switch, expectedValue="on", timeoutMs=5000)`. Note: `timeoutMs` is in MILLISECONDS (5000 = 5 seconds, max 60000ms). At least one of `expectedValue` or `expectedValues` is required to enable polling. Polling BLOCKS the MCP request for up to `timeoutMs`; use sparingly and prefer event-driven flows when available. Avoid running it in parallel with other MCP calls.
 
 ### Virtual Devices
 

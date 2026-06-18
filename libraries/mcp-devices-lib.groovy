@@ -497,8 +497,47 @@ def toolSendCommand(deviceId, command, parameters) {
         success: true,
         device: deviceLabel,
         command: command,
-        parameters: parameters
+        parameters: parameters,
+        // Per-attribute timestamp is a freshness signal: a command is fire-and-forget
+        // and real radios report new state asynchronously, so an unchanged timestamp
+        // means the device has not reported the command's effect yet.
+        state: _snapshotDeviceState(device, deviceLabel)
     ]
+}
+
+// Compact current-state snapshot for a command response: per attribute, its current
+// value plus the event timestamp (freshness signal). Reads device.currentStates (each
+// State has name/value/date). Includes only attributes that have a current state; if the
+// device reports no states at all, falls back to supportedAttributes + currentValue (each
+// with a null timestamp). Never returns the full device object -- values and timestamps only.
+private Map _snapshotDeviceState(device, deviceLabel) {
+    def snapshot = [:]
+    try {
+        def states = device.currentStates
+        if (states) {
+            states.each { st ->
+                if (st?.name != null) {
+                    // st.date is a java.util.Date on a live hub -- format it directly
+                    // (formatTimestamp has no Date branch and would mangle it via toString).
+                    snapshot[st.name] = [value: st.value, timestamp: st.date ? st.date.format("yyyy-MM-dd HH:mm:ss") : null]
+                }
+            }
+        } else {
+            device.supportedAttributes?.each { attr ->
+                def name = attr?.name
+                if (name != null) {
+                    snapshot[name] = [value: device.currentValue(name), timestamp: null]
+                }
+            }
+        }
+    } catch (Throwable t) {
+        // Read-back must never break the command (which already fired). Discard any
+        // partial snapshot built before a mid-iteration throw so the contract holds:
+        // on failure the state map is empty, not partially populated. t.message can be null.
+        mcpLog("warn", "send-command", "Failed to snapshot device state for ${deviceLabel}: ${t.class.simpleName}: ${t.message ?: '(no message)'}")
+        return [:]
+    }
+    return snapshot
 }
 
 def normalizeCommandParams(params) {
@@ -1849,7 +1888,7 @@ Only query devices the user has mentioned or that are relevant to their request.
         ],
         [
             name: "hub_call_device_command",
-            description: """Send a command (e.g. on, off, setLevel) to a device. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead. Always verify the state changed after sending (commands are fire-and-forget — the hub returns acceptance, not effect).
+            description: """Send a command (e.g. on, off, setLevel) to a device. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead. Returns an immediate post-command device-state snapshot (per-attribute value + freshness timestamp) in the `state` field. Commands are fire-and-forget — Z-Wave/Zigbee devices report new state asynchronously, so the snapshot may still show the PRE-command value until the device reports back; the per-attribute timestamp is the freshness signal. To confirm an effect, re-read with hub_get_device_attribute.
 
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
@@ -1867,7 +1906,11 @@ If no exact device match: suggest similar devices and get user confirmation befo
                     success: [type: "boolean", description: "Whether the command was sent"],
                     device: [type: "string", description: "Device label"],
                     command: [type: "string", description: "Command sent"],
-                    parameters: [type: "array", description: "Normalized parameters passed to the command"]
+                    parameters: [type: "array", description: "Normalized parameters passed to the command"],
+                    state: [type: "object", description: "Immediate post-command attribute snapshot keyed by attribute name; each entry is {value, timestamp}. Includes the attributes that have a current state; timestamp is that attribute's last-event time (null if the attribute has never reported). Fire-and-forget: async devices may still show the pre-command value -- the timestamp is the freshness signal.", additionalProperties: [type: "object", properties: [
+                        value: [type: ["string", "number", "boolean", "object", "null"], description: "Current attribute value (mixed-type across capabilities)"],
+                        timestamp: [type: ["string", "null"], description: "Last-event timestamp for this attribute (yyyy-MM-dd HH:mm:ss), or null if the attribute has never reported"]
+                    ]]]
                 ],
                 required: ["success", "device", "command"]
             ]

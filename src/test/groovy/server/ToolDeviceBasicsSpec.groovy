@@ -184,12 +184,17 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     // ---- toolSendCommand dispatch -------------------------------------------
 
     def "toolSendCommand dispatches command to device and returns success"() {
-        given: 'a TestDevice that supports on/off'
+        given: 'a TestDevice that supports on/off and reports its switch state'
+        // Live hubs hand back java.util.Date in State.date -- mock the LIVE type so this
+        // exercises the production direct Date.format(String) path (a String mock would
+        // not, and could mask a Date-handling regression).
+        def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
         def device = Spy(TestDevice) {
             getId() >> 10
             getName() >> 'TestSwitch'
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getCurrentStates() >> [[name: 'switch', value: 'on', date: stateDate]]
         }
         childDevicesList << device
 
@@ -203,17 +208,142 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.success == true
         result.command == 'on'
         result.device == 'Test Switch'
+
+        and: 'the post-command state snapshot carries the attribute value (not just an empty map)'
+        result.state instanceof Map
+        result.state.switch?.value == 'on'
+    }
+
+    def "toolSendCommand returns a post-command state snapshot from currentStates (value + timestamp)"() {
+        given: 'a device whose currentStates expose name/value/date as a real Date (the live type)'
+        def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getCurrentStates() >> [
+                [name: 'switch', value: 'on', date: stateDate],
+                [name: 'level', value: 75, date: null]
+            ]
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommand('10', 'on', [])
+
+        then: 'a Date is formatted as yyyy-MM-dd HH:mm:ss (guards against the formatTimestamp-on-Date toString mangle)'
+        result.state.switch.value == 'on'
+        result.state.switch.timestamp == '2025-01-15 10:30:00'
+        result.state.switch.timestamp ==~ /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/
+
+        and: 'an attribute with no event date carries a null timestamp (never the literal "Never")'
+        result.state.level.value == 75
+        result.state.level.timestamp == null
+    }
+
+    @spock.lang.Unroll
+    def "toolSendCommand snapshot falls back to supportedAttributes + currentValue when currentStates is falsy (#emptyStates)"() {
+        given: 'a device with no currentStates (null OR empty list both falsy) but declared attributes'
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getCurrentStates() >> emptyStates
+            getSupportedAttributes() >> [[name: 'switch']]
+            currentValue('switch') >> 'on'
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommand('10', 'on', [])
+
+        then: 'the fallback path reports the current value with a null timestamp'
+        result.state.switch.value == 'on'
+        result.state.switch.timestamp == null
+
+        where: 'both falsy shapes -- guards a future "if (states != null)" refactor from skipping the empty-list case'
+        emptyStates << [null, []]
+    }
+
+    def "toolSendCommand snapshot is an empty map when the device exposes no states and no attributes"() {
+        given: 'a device that reports neither currentStates nor supportedAttributes'
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getCurrentStates() >> []
+            getSupportedAttributes() >> []
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommand('10', 'on', [])
+
+        then: 'the command succeeds with an empty snapshot'
+        result.success == true
+        result.state == [:]
+    }
+
+    def "toolSendCommand snapshot read-back failure never breaks the command response"() {
+        given: 'a device whose state read throws after the command fires'
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getCurrentStates() >> { throw new RuntimeException('boom') }
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommand('10', 'on', [])
+
+        then: 'the command still succeeds and the snapshot degrades to an empty map'
+        1 * device.on()
+        result.success == true
+        result.state == [:]
+    }
+
+    def "toolSendCommand snapshot discards the partial map when a later attribute throws mid-iteration"() {
+        given: 'currentStates whose SECOND entry throws when read, after the first was already added'
+        def goodDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
+        def throwingState = new Object() {
+            String getName() { throw new RuntimeException('exploding state') }
+            Object getValue() { 'x' }
+            Date getDate() { null }
+        }
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getCurrentStates() >> [[name: 'switch', value: 'on', date: goodDate], throwingState]
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommand('10', 'on', [])
+
+        then: 'the partial snapshot (the switch entry built before the throw) is discarded, not leaked'
+        1 * device.on()
+        result.success == true
+        result.state == [:]
     }
 
     @spock.lang.Unroll
     def "via dispatch: hub_call_device_command dispatches command to device and returns success (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
+        def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
         def device = Spy(TestDevice) {
             getId() >> 10
             getName() >> 'TestSwitch'
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getCurrentStates() >> [[name: 'switch', value: 'on', date: stateDate]]
         }
         childDevicesList << device
 
@@ -223,13 +353,15 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then: 'the device method was invoked exactly once'
         1 * device.on()
 
-        and: 'the dispatch envelope carries the success result'
+        and: 'the dispatch envelope carries the success result plus the post-command state snapshot'
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.command == 'on'
         inner.device == 'Test Switch'
+        inner.state.switch.value == 'on'
+        inner.state.switch.timestamp == '2025-01-15 10:30:00'
 
         where:
         useGateways << [true, false]

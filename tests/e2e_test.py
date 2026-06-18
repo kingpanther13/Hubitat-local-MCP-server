@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import random
+import re
 import sys
 import time
 from datetime import UTC, datetime
@@ -1469,6 +1470,26 @@ class TestRunner:
             cmd = self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": value})
             assert not (isinstance(cmd, dict) and cmd.get("success") is False), \
                 f"'{value}' command reported failure: {cmd}"
+            # The response now always carries a compact post-command state snapshot
+            # ({attr: {value, timestamp}}). Assert the SHAPE here, not
+            # the async lag: a Virtual Switch sendEvents synchronously, so its switch
+            # attribute is present in the snapshot with a value and a freshness
+            # timestamp the moment the command returns.
+            assert isinstance(cmd, dict) and isinstance(cmd.get("state"), dict), \
+                f"'{value}' command response missing post-command state snapshot: {cmd}"
+            snap = cmd["state"].get("switch")
+            assert isinstance(snap, dict) and "value" in snap and "timestamp" in snap, \
+                f"'{value}' snapshot missing switch value/timestamp: {cmd['state']}"
+            # The timestamp must be a properly-formatted "yyyy-MM-dd HH:mm:ss" string, not
+            # a JVM Date.toString() (which a formatTimestamp-on-Date regression would emit).
+            ts = snap.get("timestamp")
+            assert isinstance(ts, str) and re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", ts), \
+                f"'{value}' snapshot switch timestamp not formatted yyyy-MM-dd HH:mm:ss: {snap!r}"
+            # A Virtual Switch reports synchronously, so the immediate snapshot already
+            # reflects the commanded state -- the read-back is the device's real current
+            # value, not an echo of the request.
+            assert snap.get("value") == value, \
+                f"'{value}' snapshot value should reflect the commanded state, got {snap.get('value')!r}"
             return _poll_switch(value)
 
         try:
