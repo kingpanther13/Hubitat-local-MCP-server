@@ -1,0 +1,119 @@
+name: E2E experiment (TEMPORARY — delete me)
+
+# TEMPORARY, dispatch-only scaffold for the PR #298 e2e-perf experiment.
+# Runs a FILTERED slice of tests/e2e_test.py against the shared test hub WITHOUT
+# deploying/arming/restoring server code (this PR changes ONLY the test runner, so
+# the hub's code is irrelevant and stays on whatever it already runs). Serializes on
+# the SAME hub lease as the real e2e (lease_acquire.sh) so it can never overlap a live
+# run. Lives only on the throwaway `e2e-perf-exp` branch; never merged, deleted after.
+# The real hub-e2e.yml is intentionally NOT touched.
+
+on:
+  # Push-triggered (NOT workflow_dispatch): a dispatch-only workflow that lives only on a
+  # non-default branch isn't dispatchable (GitHub requires the file on the default branch).
+  # A push event runs the workflow from the pushed branch's own file, so re-running == edit
+  # the params below + push again. Scoped to the throwaway branch so it can never fire elsewhere.
+  push:
+    branches: [e2e-perf-exp]
+  workflow_dispatch:
+    inputs:
+      test_filter:
+        description: 'substring passed to --test (blank = whole suite)'
+        required: false
+        default: 'walker_compare_to_device'
+      reps:
+        description: 'how many times to run the filtered slice (flakiness sample)'
+        required: false
+        default: '6'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hub-e2e-experiment
+  cancel-in-progress: false
+
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
+      WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Mask access tokens
+        run: |
+          for U in "$MCP_URL" "$WATCHDOG_URL"; do
+            T="$(echo "$U" | sed -nE 's|.*access_token=(.*)|\1|p')"
+            if [ -n "$T" ]; then echo "::add-mask::$T"; fi
+          done
+
+      - name: Guard — secret present
+        run: |
+          if [ -z "$MCP_URL" ]; then
+            echo "::error::LEVEL99_TEST_HUB_MCP_URL not available"; exit 1
+          fi
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - run: pip install requests
+
+      - name: Parse MCP_URL into HUBITAT_* env vars
+        run: |
+          if [[ ! "$MCP_URL" =~ ^https://cloud\.hubitat\.com/api/[^/]+/apps/[0-9]+/mcp\?access_token=.+$ ]]; then
+            echo "::error::MCP_URL malformed"; exit 1
+          fi
+          BASE=$(echo "$MCP_URL"  | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\1|')
+          APPID=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\2|')
+          TOKEN=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\3|')
+          {
+            echo "HUBITAT_HUB_URL=$BASE"
+            echo "HUBITAT_APP_ID=$APPID"
+            echo "HUBITAT_ACCESS_TOKEN=$TOKEN"
+          } >> "$GITHUB_ENV"
+
+      - name: Acquire test hub lease (serialize vs real e2e)
+        run: bash .github/scripts/lease_acquire.sh "exp-${{ github.run_id }}"
+
+      - name: Configure test environment (enable toggles, capture pre-state)
+        run: bash .github/scripts/mcp_setup_env.sh
+
+      - name: Run filtered slice x reps
+        env:
+          # Tests delete their own native-rule fixtures inline (no disarm sweep runs here).
+          E2E_DEFER_NATIVE_DELETES: '0'
+        run: |
+          FILTER='${{ inputs.test_filter }}'
+          [ -z "$FILTER" ] && FILTER='walker_compare_to_device'
+          REPS='${{ inputs.reps }}'
+          case "$REPS" in ''|*[!0-9]*) REPS=6 ;; esac
+          pass=0; fail=0
+          for i in $(seq 1 "$REPS"); do
+            echo "::group::rep $i/$REPS (filter='${FILTER:-<all>}')"
+            if [ -n "$FILTER" ]; then
+              if python tests/e2e_test.py --test "$FILTER"; then pass=$((pass+1)); else fail=$((fail+1)); fi
+            else
+              if python tests/e2e_test.py; then pass=$((pass+1)); else fail=$((fail+1)); fi
+            fi
+            echo "::endgroup::"
+            sleep 4
+          done
+          echo "=== tests-only RESULT: ${pass}/$((pass+fail)) reps PASSED (filter='${FILTER:-<all>}') ==="
+          echo "tests-only: ${pass}/$((pass+fail)) reps passed (filter='${FILTER:-<all>}')" >> "$GITHUB_STEP_SUMMARY"
+          [ "$fail" -eq 0 ]
+
+      - name: Cleanup BAT_E2E_ artifacts
+        if: always()
+        run: python tests/e2e_test.py --cleanup-only
+
+      - name: Restore test environment
+        if: always()
+        run: bash .github/scripts/mcp_restore_env.sh
+
+      - name: Release test hub lease
+        if: always()
+        run: bash .github/scripts/lease_release.sh
