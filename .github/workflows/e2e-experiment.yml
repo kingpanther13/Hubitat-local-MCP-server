@@ -87,16 +87,16 @@ jobs:
           E2E_DEFER_NATIVE_DELETES: '0'
         run: |
           # Hardcoded (the inputs context is empty on a push event); edit + push to change config.
-          GROUPS='system_tools,diagnostics,protocol,infrastructure'
-          echo "groups under test: $GROUPS"
+          TGRP='system_tools,diagnostics,protocol,infrastructure'
+          echo "groups under test: $TGRP"
           for POOL in 0 2 3; do
-            echo "===== E2E_PARALLEL=$POOL, groups=$GROUPS ====="
-            E2E_PARALLEL="$POOL" python tests/e2e_test.py --only-groups "$GROUPS" 2>&1 \
+            echo "===== E2E_PARALLEL=$POOL, groups=$TGRP ====="
+            E2E_PARALLEL="$POOL" python tests/e2e_test.py --only-groups "$TGRP" 2>&1 \
               | tee "/tmp/p$POOL.log" | grep -aE "Total:|parallel pool|504 Gateway|LimitExceed" || true
             sleep 10
           done
-          echo "===== SCALING SUMMARY (groups=$GROUPS) ====="
-          { echo "### Parallel scaling over \`$GROUPS\`"; } >> "$GITHUB_STEP_SUMMARY"
+          echo "===== SCALING SUMMARY (groups=$TGRP) ====="
+          { echo "### Parallel scaling over \`$TGRP\`"; } >> "$GITHUB_STEP_SUMMARY"
           for POOL in 0 2 3; do
             LINE=$(grep -aE 'Total:' "/tmp/p$POOL.log" | tail -1)
             echo "pool=$POOL  $LINE"
