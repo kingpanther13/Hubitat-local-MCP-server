@@ -89,6 +89,10 @@ class HubitatMcpClient:
         self.access_token = access_token
         self.verbose = verbose
         self._request_id = 0
+        # One reused connection for the whole run: HTTP keep-alive amortizes the TCP + TLS
+        # handshake (~300-500ms each over the cloud relay) across every MCP call instead of
+        # paying it per request.
+        self.session = requests.Session()
         # Per-op wall-clock timings (op_key, seconds) for the end-of-run "Per-op wall-clock" summary --
         # the only place real per-operation cost (RM create vs edit vs delete, etc.) is visible, since
         # the >> call traces are verbose-gated and never reach the CI log.
@@ -122,9 +126,6 @@ class HubitatMcpClient:
 
         self._log(f">> {method} {json.dumps(params or {})[:300]}")
 
-        # Rate-limit: don't overwhelm the hub
-        time.sleep(0.2)
-
         # NEVER transport-replay a WRITE. The retry loop below re-sends the identical request
         # on a 5xx or network error -- but a relay 504 means the response was LOST while the hub
         # kept processing, so replaying a non-idempotent wizard write commits it AGAIN (observed
@@ -154,7 +155,7 @@ class HubitatMcpClient:
         for attempt in range(3):
             resp = None
             try:
-                resp = requests.post(
+                resp = self.session.post(
                     self.endpoint,
                     params={"access_token": self.access_token},
                     json=payload,
@@ -230,11 +231,10 @@ class HubitatMcpClient:
         envelope (batch caps, 202-for-notifications, JSON-RPC framing) — paths
         the result-unwrapping call_tool/_send helpers deliberately hide.
         """
-        time.sleep(0.2)
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                resp = requests.post(
+                resp = self.session.post(
                     self.endpoint,
                     params={"access_token": self.access_token},
                     json=payload,
