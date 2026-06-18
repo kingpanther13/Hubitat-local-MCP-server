@@ -1606,6 +1606,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.7.1** - feat: add hub_update_firmware to install pending hub firmware. PRs: [#297](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/297)
 - **v2.7.0** - feat: hub_manage_radio gateway — full Z-Wave/Zigbee/Matter radio control. PRs: [#295](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/295)
 - **v2.6.1** - fix: lean hub_update_mcp_settings description to restore flat tools/list budget; feat: bulk form for hub_create_variable + RM variable-source doc notes. PRs: [#293](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/293), [#287](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/287)
 - **v2.6.0** - ci: stop the e2e required check from blocking docs-only PRs (also completes hub2-source inventory); docs: fix Claude Desktop MCP setup instructions (mcp-remote bridge); docs: choose the Claude Desktop bridge proxy by OS; fix: make outputSchema publishing opt-in (default off) so strict MCP clients work; feat: all-hub device scope, app enable/disable tool, and mesh topology (#257). PRs: [#286](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/286), [#288](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/288), [#292](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/292), [#291](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/291), [#289](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/289)
