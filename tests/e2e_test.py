@@ -23,12 +23,15 @@ import json
 import os
 import random
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
 
 # ---------------------------------------------------------------------------
 # Artifact prefix — every test-created resource uses this for safe cleanup
@@ -91,8 +94,16 @@ class HubitatMcpClient:
         self._request_id = 0
         # One reused connection for the whole run: HTTP keep-alive amortizes the TCP + TLS
         # handshake (~300-500ms each over the cloud relay) across every MCP call instead of
-        # paying it per request.
+        # paying it per request. pool_maxsize is bumped so E2E_PARALLEL workers each keep a pooled
+        # connection instead of serializing on the default size-1 pool.
         self.session = requests.Session()
+        _pool = max(10, (int(os.environ.get("E2E_PARALLEL", "0") or 0)) + 4)
+        _adapter = HTTPAdapter(pool_connections=_pool, pool_maxsize=_pool)
+        self.session.mount("http://", _adapter)
+        self.session.mount("https://", _adapter)
+        # Guards shared client mutable state (the request-id counter + op_timings) so the
+        # E2E_PARALLEL worker pool can drive _send concurrently for the non-RM tests.
+        self._id_lock = threading.Lock()
         # Per-op wall-clock timings (op_key, seconds) for the end-of-run "Per-op wall-clock" summary --
         # the only place real per-operation cost (RM create vs edit vs delete, etc.) is visible, since
         # the >> call traces are verbose-gated and never reach the CI log.
@@ -115,10 +126,12 @@ class HubitatMcpClient:
         Retries JSONDecodeError on the same budget — this catches transient
         Cloudflare HTML error pages on cloud endpoints under load.
         """
-        self._request_id += 1
+        with self._id_lock:
+            self._request_id += 1
+            _rid = self._request_id
         payload: dict[str, Any] = {
             "jsonrpc": "2.0",
-            "id": self._request_id,
+            "id": _rid,
             "method": method,
         }
         if params is not None:
@@ -282,7 +295,8 @@ class HubitatMcpClient:
         op_key = _op_key(name, args)   # gateway sub-tool / flat name; hub_set_rule split create-vs-edit
         _t0 = time.monotonic()
         result = self._send("tools/call", {"name": name, "arguments": args})
-        self.op_timings.append((op_key, time.monotonic() - _t0))
+        with self._id_lock:
+            self.op_timings.append((op_key, time.monotonic() - _t0))
 
         # Check for tool-level error
         if result.get("isError"):
@@ -318,6 +332,13 @@ class HubitatMcpClient:
 
 TEST_REGISTRY: list[tuple[str, str, str]] = []  # (group, display_name, method_name)
 
+# Groups safe to run on the E2E_PARALLEL thread pool: non-RM, read-heavy, no shared wizard/atomicState
+# and no shared fixtures. Conservative first set (the staged-experiment blast radius) -- the RM groups
+# (native_apps/visual_rules/rule_crud/*_types/complex_patterns) and the global-singleton groups
+# (developer_mode/poll_until_attribute/action_types/error_verification) stay strictly serial. Expand
+# only after a clean width run proves no rate-limiter trip.
+PARALLEL_GROUPS = {"system_tools", "diagnostics", "protocol", "infrastructure"}
+
 
 def test(group: str):
     """Decorator that registers a TestRunner method in a named group."""
@@ -337,6 +358,8 @@ class TestRunner:
         self.client = client
         self.verbose = verbose
         self.results: list[dict] = []  # {name, group, status, message, duration}
+        # Guards results/created_* shared lists when the E2E_PARALLEL pool runs non-RM tests concurrently.
+        self._state_lock = threading.Lock()
 
         # Cleanup tracking
         self.created_device_dnis: list[str] = []
@@ -599,13 +622,14 @@ class TestRunner:
         tag = {"pass": "[PASS]", "fail": "[FAIL]", "skip": "[SKIP]"}[status]
         suffix = f": {message}" if message else ""
         print(f"  {tag} {name}{suffix}")
-        self.results.append({
-            "name": name,
-            "group": group,
-            "status": status,
-            "message": message,
-            "duration": duration,
-        })
+        with self._state_lock:
+            self.results.append({
+                "name": name,
+                "group": group,
+                "status": status,
+                "message": message,
+                "duration": duration,
+            })
 
     def _run_one(self, group: str, name: str, method_name: str) -> None:
         method = getattr(self, method_name)
@@ -6074,13 +6098,17 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     # -----------------------------------------------------------------------
 
     def run(self, filter_group: str | None = None,
-            filter_test: str | None = None) -> bool:
+            filter_test: str | None = None,
+            only_groups: list[str] | None = None) -> bool:
         """Run tests. Returns True if all passed."""
         self._test_start_time = datetime.now(UTC).isoformat()
 
+        only_set = set(only_groups) if only_groups else None
         tests_to_run = []
         for group, display_name, method_name in TEST_REGISTRY:
             if filter_group and group != filter_group:
+                continue
+            if only_set and group not in only_set:
                 continue
             if filter_test and filter_test not in display_name:
                 continue
@@ -6090,13 +6118,27 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             print("No tests matched the filter criteria.")
             return True
 
-        # Group for display
-        current_group = None
-        for group, display_name, method_name in tests_to_run:
-            if group != current_group:
-                current_group = group
-                print(f"\n[{group}]")
-            self._run_one(group, display_name, method_name)
+        def _run_serial(items: list) -> None:
+            current_group = None
+            for group, display_name, method_name in items:
+                if group != current_group:
+                    current_group = group
+                    print(f"\n[{group}]")
+                self._run_one(group, display_name, method_name)
+
+        # E2E_PARALLEL=<N>: run the non-RM PARALLELIZABLE groups on a bounded thread pool while the RM
+        # and global-singleton groups stay strictly serial (shared RM atomicState wizard accumulator).
+        # Default 0/1 = the original fully-serial path, so behaviour is unchanged unless opted in.
+        pool = int(os.environ.get("E2E_PARALLEL", "0") or 0)
+        par = [t for t in tests_to_run if t[0] in PARALLEL_GROUPS]
+        ser = [t for t in tests_to_run if t[0] not in PARALLEL_GROUPS]
+        if pool > 1 and par:
+            print(f"\n[parallel pool={pool}] groups={sorted({t[0] for t in par})} ({len(par)} tests)")
+            with ThreadPoolExecutor(max_workers=pool) as ex:
+                list(ex.map(lambda t: self._run_one(*t), par))
+            _run_serial(ser)
+        else:
+            _run_serial(tests_to_run)
 
         # Always clean up
         self.cleanup()
@@ -6257,6 +6299,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Hubitat MCP Server E2E Tests")
     parser.add_argument("--test", help="Run tests matching this substring")
     parser.add_argument("--group", help="Run only this test group")
+    parser.add_argument("--only-groups",
+                        help="Comma-separated subset of groups to run (experiment filter, e.g. system_tools,diagnostics)")
     parser.add_argument("--cleanup-only", action="store_true",
                         help="Just clean up BAT_E2E_ test artifacts")
     parser.add_argument("--verbose", "-v", action="store_true",
@@ -6390,7 +6434,8 @@ def main() -> None:
                 print(f"  [WARN] Backup failed: {exc}")
                 print("  Tests requiring backup may fail.\n")
 
-    all_passed = runner.run(filter_group=args.group, filter_test=args.test)
+    only_groups = [g.strip() for g in args.only_groups.split(",")] if args.only_groups else None
+    all_passed = runner.run(filter_group=args.group, filter_test=args.test, only_groups=only_groups)
     sys.exit(0 if all_passed else 1)
 
 

@@ -82,29 +82,33 @@ jobs:
       - name: Configure test environment (enable toggles, capture pre-state)
         run: bash .github/scripts/mcp_setup_env.sh
 
-      - name: Run filtered slice x reps
+      - name: Parallelization A/B over the read-heavy groups
         env:
-          # Tests delete their own native-rule fixtures inline (no disarm sweep runs here).
           E2E_DEFER_NATIVE_DELETES: '0'
         run: |
-          FILTER='${{ inputs.test_filter }}'
-          [ -z "$FILTER" ] && FILTER='walker_compare_to_device'
-          REPS='${{ inputs.reps }}'
-          case "$REPS" in ''|*[!0-9]*) REPS=6 ;; esac
-          pass=0; fail=0
-          for i in $(seq 1 "$REPS"); do
-            echo "::group::rep $i/$REPS (filter='${FILTER:-<all>}')"
-            if [ -n "$FILTER" ]; then
-              if python tests/e2e_test.py --test "$FILTER"; then pass=$((pass+1)); else fail=$((fail+1)); fi
-            else
-              if python tests/e2e_test.py; then pass=$((pass+1)); else fail=$((fail+1)); fi
-            fi
-            echo "::endgroup::"
-            sleep 4
-          done
-          echo "=== tests-only RESULT: ${pass}/$((pass+fail)) reps PASSED (filter='${FILTER:-<all>}') ==="
-          echo "tests-only: ${pass}/$((pass+fail)) reps passed (filter='${FILTER:-<all>}')" >> "$GITHUB_STEP_SUMMARY"
-          [ "$fail" -eq 0 ]
+          GROUPS="${{ inputs.test_filter }}"
+          [ -z "$GROUPS" ] && GROUPS='system_tools,diagnostics,protocol,infrastructure'
+          POOL="${{ inputs.reps }}"
+          case "$POOL" in ''|*[!0-9]*) POOL=2 ;; esac
+          echo "===== SERIAL baseline (E2E_PARALLEL=0), groups=$GROUPS ====="
+          E2E_PARALLEL=0 python tests/e2e_test.py --only-groups "$GROUPS" 2>&1 | tee /tmp/serial.log | grep -aE "Total:|\[PASS\]|\[FAIL\]|504 Gateway|LimitExceed" || true
+          sleep 10
+          echo "===== PARALLEL (E2E_PARALLEL=$POOL), groups=$GROUPS ====="
+          E2E_PARALLEL="$POOL" python tests/e2e_test.py --only-groups "$GROUPS" 2>&1 | tee /tmp/par.log | grep -aE "Total:|parallel pool|\[FAIL\]|504 Gateway|LimitExceed" || true
+          S=$(grep -aE 'Total:' /tmp/serial.log | tail -1)
+          P=$(grep -aE 'Total:' /tmp/par.log | tail -1)
+          echo "===== A/B SUMMARY (pool=$POOL, groups=$GROUPS) ====="
+          echo "SERIAL   $S"
+          echo "PARALLEL $P"
+          { echo "### Parallelization A/B (pool=$POOL, groups=\`$GROUPS\`)"; echo "- SERIAL   $S"; echo "- PARALLEL $P"; } >> "$GITHUB_STEP_SUMMARY"
+          if grep -aqE "504 Gateway|LimitExceed" /tmp/par.log; then
+            echo "::warning::limiter/504 observed in the PARALLEL run -- pool too aggressive or shared-state collision"
+            { echo "- WARNING: limiter/504 in parallel run"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Fail the step only if a test actually FAILED (not on timing); both runs must be all-pass.
+          if grep -aqE "[1-9][0-9]* failed" /tmp/serial.log || grep -aqE "[1-9][0-9]* failed" /tmp/par.log; then
+            echo "::error::a test FAILED in the A/B (see logs above)"; exit 1
+          fi
 
       - name: Cleanup BAT_E2E_ artifacts
         if: always()
