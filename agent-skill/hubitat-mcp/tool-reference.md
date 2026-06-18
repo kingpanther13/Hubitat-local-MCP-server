@@ -41,7 +41,7 @@ These 11 tools are never behind a gateway. Every other tool is reachable through
 | `hub_get_hsm_status` | Get Home Security Monitor status. | None |
 | `hub_set_hsm` | Change HSM arm mode. | None |
 | `hub_create_backup` | Create full hub database backup. | Write master |
-| `hub_get_update_status` | Check for MCP server updates. | None |
+| `hub_update_firmware` | Install the hub's pending platform/firmware update (downloads, installs, reboots). Version/update checks fold into `hub_get_info`. | Write master |
 | `hub_report_issue` | Generate comprehensive diagnostic report. | None |
 
 ### Reference (2)

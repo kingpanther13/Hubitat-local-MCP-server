@@ -1,8 +1,16 @@
 # Hub firmware update — research notes & resilience plan
 
-Status: **research only, not implemented.** Compiled (AI-assisted) from Hubitat community
-reverse-engineering, the HPM source, and this repo's code. Captured so we can act on it later;
-several exact details are flagged as needing a live-hub network capture.
+Status: **apply + status IMPLEMENTED** as `hub_update_firmware` (#259); rollback + a richer
+check remain unbuilt. Originally compiled (AI-assisted) from Hubitat community reverse-engineering,
+the HPM source, and this repo's code.
+
+> **UPDATE (#259, live-verified on FW 2.5.0.157):** the `/hub/cloud/*` family is the working,
+> token-free path and is what `hub_update_firmware` uses — this supersedes the `/management/*`
+> token-gated guess and the "no local check endpoint" gap noted below:
+> - `GET /hub/cloud/checkForUpdate` → `{version, upgrade, status:"UPDATE_AVAILABLE"|..., releaseNotesUrl, beta, accountEmails[...]}` (a working local availability check; `accountEmails` carries the hub owner's email, so the tool drops it).
+> - `GET /hub/cloud/updatePlatform` → applies (downloads, installs, self-reboots).
+> - `GET /hub/cloud/checkUpdateStatus` → `{status:"IDLE"|...}` (install progress; `hub_update_firmware(statusOnly=true)` polls it).
+> Note: `/hub/cloud/checkForUpdate` was MORE current than `/hub2/hubData.alerts.platformUpdateAvailable` (cloud said UPDATE_AVAILABLE 2.5.0.159 while hubData still read false). Rollback is still UI-only.
 
 ## Why this matters
 
@@ -14,13 +22,15 @@ it's "stay current and re-test."
 
 ## Current state
 
-We have **no** firmware check / apply / rollback capability.
+Firmware **apply + status-poll** now exist as `hub_update_firmware` (#259). Rollback and
+version-comparison logic remain unbuilt.
 
-- The only firmware **read** is `hub_get_info.firmwareVersion`, from `hub.firmwareVersionString`
-  (`hubitat-mcp-server.groovy`). It is displayed, never compared.
-- `hub_get_update_status` is **not** firmware — it checks GitHub for a newer *MCP Rule Server app*
-  version (`:2925`).
-- All firmware-conditional code uses endpoint-existence/fallback, not version comparison.
+- Firmware **reads** live on `hub_get_info`: `firmwareVersion` (from `hub.firmwareVersionString`)
+  plus `platformUpdate` (pending hub update, from `/hub2/hubData`). The MCP-server-app GitHub check
+  is `hub_get_info(includeAppUpdate=true)` → `appUpdate` (this folded in the former standalone
+  `hub_get_update_status`).
+- Firmware **install** is `hub_update_firmware` (confirm-gated; `statusOnly=true` polls progress).
+- All firmware-conditional code still uses endpoint-existence/fallback, not version comparison.
 
 ## Hub platform-update endpoints (firmware 2.3.9.176+)
 

@@ -180,55 +180,75 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         result.response == 'ok'
     }
 
-    def "hub_reboot updatePlatform=true fires checkForUpdate then updatePlatform (no plain-reboot POST)"() {
+    def "hub_update_firmware fires checkForUpdate then updatePlatform (no plain-reboot POST)"() {
         given:
         enableWrite()
         def gets = []
-        hubGet.register('/hub/cloud/checkForUpdate') { params -> gets << '/hub/cloud/checkForUpdate'; '{"version":"2.5.0.157","upgrade":true}' }
+        hubGet.register('/hub/cloud/checkForUpdate') { params -> gets << '/hub/cloud/checkForUpdate'; '{"version":"2.5.0.157","upgrade":true,"status":"UPDATE_AVAILABLE","accountEmails":["secret@example.com"]}' }
         hubGet.register('/hub/cloud/updatePlatform') { params -> gets << '/hub/cloud/updatePlatform'; '{"success":"true"}' }
         def postedPath = null
         script.metaClass.hubInternalPost = { String path, Map body = null -> postedPath = path; 'ok' }
 
         when:
-        def result = script.toolRebootHub([confirm: true, updatePlatform: true])
+        def result = script.toolUpdateFirmware([confirm: true])
 
         then:
         gets == ['/hub/cloud/checkForUpdate', '/hub/cloud/updatePlatform']
-        postedPath == null                       // platform-update mode must NOT plain-reboot
+        postedPath == null                       // firmware install must NOT plain-reboot
         result.success == true
-        result.message.contains('Platform update')
-        result.checkForUpdate.contains('2.5.0.157')
-        result.warning.contains('hub_get_update_status')
+        result.message.contains('Firmware update')
+        result.available.version == '2.5.0.157'
+        result.available.upgradeAvailable == true
+        !result.available.containsKey('accountEmails')   // the owner email is never surfaced
+        result.warning.contains('hub_get_info')
     }
 
-    def "hub_reboot updatePlatform=true still requires the destructive confirm gate"() {
+    def "hub_update_firmware requires the destructive confirm gate to apply"() {
         given:
         enableWrite()
 
         when:
-        script.toolRebootHub([updatePlatform: true])
+        script.toolUpdateFirmware([:])
 
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('SAFETY CHECK FAILED')
     }
 
-    def "hub_reboot updatePlatform=true surfaces an update failure instead of false-greening"() {
+    def "hub_update_firmware statusOnly polls checkUpdateStatus without applying or a confirm gate"() {
+        given:
+        def gets = []
+        hubGet.register('/hub/cloud/checkUpdateStatus') { params -> gets << '/hub/cloud/checkUpdateStatus'; '{"status":"IDLE"}' }
+        def postedPath = null
+        script.metaClass.hubInternalPost = { String path, Map body = null -> postedPath = path; 'ok' }
+
+        when:
+        def result = script.toolUpdateFirmware([statusOnly: true])   // no confirm needed
+
+        then:
+        gets == ['/hub/cloud/checkUpdateStatus']
+        postedPath == null
+        result.success == true
+        result.statusOnly == true
+        result.status.status == 'IDLE'
+    }
+
+    def "hub_update_firmware surfaces an install failure instead of false-greening"() {
         given:
         enableWrite()
         hubGet.register('/hub/cloud/checkForUpdate') { params -> '{"upgrade":true}' }
         hubGet.register('/hub/cloud/updatePlatform') { params -> throw new RuntimeException('boom') }
 
         when:
-        def result = script.toolRebootHub([confirm: true, updatePlatform: true])
+        def result = script.toolUpdateFirmware([confirm: true])
 
         then:
         result.success == false
-        result.error.contains('Platform update failed')
+        result.error.contains('Firmware update failed')
     }
 
     @spock.lang.Unroll
-    def "hub_reboot via dispatch applies the platform update (useGateways=#useGateways)"() {
+    def "hub_update_firmware via dispatch applies the platform update (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -236,14 +256,14 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         hubGet.register('/hub/cloud/updatePlatform') { params -> '{"success":"true"}' }
 
         when:
-        def response = mcpDriver.callTool('hub_reboot', [confirm: true, updatePlatform: true])
+        def response = mcpDriver.callTool('hub_update_firmware', [confirm: true])
 
         then:
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.message.contains('Platform update')
+        inner.message.contains('Firmware update')
 
         where:
         useGateways << [true, false]

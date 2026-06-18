@@ -10,8 +10,8 @@ import support.ToolSpecBase
  * Contract spec for the /hub2/hubData surfacing (pending platform/firmware update + hub health
  * alerts + safeMode). Asserts the three tools that fold it in behave correctly against the real
  * endpoint shape captured from a C-8 on 2.5.0.143:
- *   - hub_get_info        -> platformUpdate + safeMode always; healthAlerts only with the opt-in arg
- *   - hub_get_update_status -> platformUpdate alongside the (preserved) MCP-app version check
+ *   - hub_get_info        -> platformUpdate + safeMode always; healthAlerts + appUpdate (the
+ *                            folded-in MCP-app version check) only with their opt-in args
  *   - hub_get_metrics     -> the full healthAlerts block alongside the trend metrics
  * And the defensive path: when /hub2/hubData is unreadable, callers degrade (available=null, no
  * safeMode, healthAlerts=null) rather than throwing.
@@ -160,20 +160,33 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         !result.containsKey('healthAlerts')
     }
 
-    def "hub_get_update_status surfaces platformUpdate while preserving the MCP-app version fields"() {
+    def "hub_get_info surfaces platformUpdate always, plus the MCP-app version check under appUpdate when includeAppUpdate=true"() {
         given:
         sharedLocation.hub = hubOnFirmware('2.5.0.143')
         hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
 
         when:
-        def result = script.toolCheckForUpdate([:])
+        def result = script.toolGetHubInfo([includeAppUpdate: true])
 
         then:
-        result.success == true
-        result.containsKey('installedVersion')      // MCP server app check preserved
-        result.containsKey('updateAvailable')
-        result.platformUpdate.available == true
+        result.platformUpdate.available == true             // pending HUB firmware
         result.platformUpdate.availableVersion == '2.5.0.153'
+        result.appUpdate != null                            // folded-in MCP server app check
+        result.appUpdate.containsKey('installedVersion')
+        result.appUpdate.containsKey('updateAvailable')
+    }
+
+    def "hub_get_info omits appUpdate unless includeAppUpdate=true"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+
+        when:
+        def result = script.toolGetHubInfo([:])
+
+        then:
+        result.platformUpdate.available == true             // firmware read always present
+        !result.containsKey('appUpdate')                    // app-version GitHub check is opt-in
     }
 
     // -------- #13: health alerts + safeMode --------

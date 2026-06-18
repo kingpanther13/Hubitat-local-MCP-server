@@ -144,7 +144,7 @@ Mark test/throwaway rules with `testRule: true` to skip backup on deletion.
 
 Every tool is gated by two universal masters — **Read** and **Write**, both ON by default. Read tools are blocked when the Read master is OFF ("Read tools are disabled…"); all other (write) tools are blocked when the Write master is OFF ("Write tools are disabled…"). Destructive write tools additionally require `confirm=true` + a backup within 24h. Individual tools or whole gateways can also be disabled below the masters under **Advanced: Per-tool Overrides** (deny-only) — a disabled tool drops from `tools/list`/`hub_search_tools` and returns "…is disabled in Advanced settings (Per-tool Overrides)…" if still called.
 
-Core hub admin tools: `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`
+Core hub admin tools: `hub_create_backup`, `hub_update_firmware` (install pending hub firmware; version reads fold into `hub_get_info`), `hub_report_issue`
 
 Additional hub admin tools are accessed via gateways:
 

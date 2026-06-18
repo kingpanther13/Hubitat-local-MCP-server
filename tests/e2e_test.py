@@ -4749,12 +4749,38 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"platformUpdate leaked into healthAlerts.details: {sorted(ha['details'])}"
 
     @test("system_tools")
-    def test_hub_get_update_status_platform_update(self) -> None:
-        # #12: hub_get_update_status surfaces the hub firmware update separately from the MCP-app check.
-        res = self.client.call_tool("hub_get_update_status", {})
-        assert "installedVersion" in res, f"missing MCP-app installedVersion: {sorted(res)}"
+    def test_hub_get_info_update_reads(self) -> None:
+        # Folded (was hub_get_update_status): hub_get_info carries platformUpdate (the pending HUB
+        # firmware) always, and the MCP-app version check under appUpdate when includeAppUpdate=true.
+        res = self.client.call_tool("hub_get_info", {"includeAppUpdate": True})
         assert "platformUpdate" in res, f"missing platformUpdate: {sorted(res)}"
         assert "available" in res["platformUpdate"], f"platformUpdate shape wrong: {res['platformUpdate']}"
+        assert "appUpdate" in res, f"includeAppUpdate did not attach appUpdate: {sorted(res)}"
+        assert "installedVersion" in res["appUpdate"], f"appUpdate shape wrong: {res['appUpdate']}"
+
+    @test("system_tools")
+    def test_hub_update_firmware_status_only(self) -> None:
+        # hub_update_firmware(statusOnly) polls install progress WITHOUT applying anything — safe on
+        # the e2e hub (it never triggers a real firmware install/reboot). status is IDLE when idle.
+        res = self.client.call_tool("hub_update_firmware", {"statusOnly": True})
+        assert res.get("success") is True, f"statusOnly poll failed: {res}"
+        assert res.get("statusOnly") is True, f"not flagged statusOnly: {res}"
+
+    @test("system_tools")
+    def test_hub_update_firmware_requires_confirm(self) -> None:
+        # Applying (no statusOnly) without confirm MUST be refused by the destructive gate, so the
+        # e2e hub is never actually firmware-updated by the test.
+        refused = False
+        detail = None
+        try:
+            detail = self.client.call_tool("hub_update_firmware", {})
+            blob = (detail if isinstance(detail, str) else json.dumps(detail)).lower()
+            refused = (isinstance(detail, dict) and bool(detail.get("isError"))) \
+                or any(s in blob for s in ("confirm", "safety check", "backup"))
+        except McpError as exc:
+            detail = str(exc)
+            refused = any(s in detail.lower() for s in ("confirm", "safety check", "backup", "required"))
+        assert refused, f"hub_update_firmware apply without confirm must be refused, got: {detail}"
 
     @test("system_tools")
     def test_hub_get_metrics_health_alerts(self) -> None:

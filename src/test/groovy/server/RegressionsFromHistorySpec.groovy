@@ -468,32 +468,29 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         "not-a-version" | "0.12.0"    | false   // non-semver string: semver pattern guard fires
     }
 
-    // Companion dispatch feature for the isNewerVersion data table: exercises
-    // hub_get_update_status through the envelope so the version-check tool surface
-    // is locked under both gateway modes. The data-table above pins the pure
-    // helper; this pins the tool that consumes it.
+    // Dispatch-surface regression: a core system write tool must route cleanly through the
+    // JSON-RPC envelope under BOTH gateway modes. Replaces the former hub_get_update_status
+    // companion (that tool folded into hub_get_info); the version-comparison helper itself is
+    // still pinned by the isNewerVersion data table above. statusOnly is a no-op poll (no
+    // confirm/backup), so it never triggers a real firmware install.
     @Unroll
-    def "hub_get_update_status via dispatch returns success envelope with installedVersion (useGateways=#useGateways)"() {
-        given: 'clear any prior updateCheck so the tool forces a fresh async check'
+    def "hub_update_firmware(statusOnly) via dispatch returns a status envelope (useGateways=#useGateways)"() {
+        given:
         settingsMap.useGateways = useGateways
-        stateMap.remove('updateCheck')
-
-        and: 'intercept doUpdateCheck so the async path does not actually fire'
-        script.metaClass.doUpdateCheck = { -> /* no-op: tool returns current snapshot */ }
+        settingsMap.enableWrite = true
+        hubGet.register('/hub/cloud/checkUpdateStatus') { params -> '{"status":"IDLE"}' }
 
         when:
-        def response = mcpDriver.callTool('hub_get_update_status', [:])
+        def response = mcpDriver.callTool('hub_update_firmware', [statusOnly: true])
 
-        then: 'JSON-RPC success envelope; tool body reports success + a version'
+        then: 'JSON-RPC success envelope; tool body reports the status poll'
         response.jsonrpc == '2.0'
         response.id == mcpDriver.lastSentId
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.installedVersion instanceof String
-        // Semver-ish pin; mirrors HandleMcpRequestDispatchSpec's initialize check.
-        (inner.installedVersion as String) ==~ /\d+\.\d+\.\d+.*/
+        inner.statusOnly == true
 
         where:
         useGateways << [true, false]
