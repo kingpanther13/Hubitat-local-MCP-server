@@ -325,6 +325,45 @@ class WatchdogV2Spec extends Specification {
         r.error?.contains("did not confirm")
     }
 
+    def "adminPurgeE2eArtifacts force-deletes only BAT_E2E_ apps + removes only BAT_E2E_ vars (one local sweep)"() {
+        given:
+        // /hub2/appsList returns a mix; the purge must touch ONLY the BAT_E2E_-prefixed entries
+        // (incl. a nested child) and leave real apps alone -- the prefix is the only safety scope.
+        def appsJson = groovy.json.JsonOutput.toJson([apps: [
+            [data: [id: 100, name: "BAT_E2E_Rule1", type: "rule"], children: []],
+            [data: [id: 200, name: "Real Rule", type: "rule"], children: [
+                [data: [id: 201, name: "BAT_E2E_Child", type: "x"], children: []]]],
+        ]])
+        def forced = []
+        script.metaClass.hubGet = { String path, Map q -> path == "/hub2/appsList" ? appsJson : "" }
+        script.metaClass.hubGetStatus = { String path, Map q ->
+            if (path.startsWith("/installedapp/forcedelete/")) { forced << path; [status: 302, location: "/installedapp/list", data: null] }
+            else { [status: 404, location: null, data: null] }   // gone-check: absent
+        }
+        def removedVars = []
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_v1: [type: "string"], RealVar: [type: "string"], BAT_E2E_v2: [type: "integer"]] }
+        script.metaClass.removeGlobalVariable = { String n -> removedVars << n; true }
+
+        when:
+        def r = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        r.success == true
+        r.deletedCount == 2
+        (r.deleted*.id).collect { it as Integer }.sort() == [100, 201]
+        forced.sort() == ["/installedapp/forcedelete/100/quiet", "/installedapp/forcedelete/201/quiet"]
+        r.variablesDeletedCount == 2
+        removedVars.sort() == ["BAT_E2E_v1", "BAT_E2E_v2"]
+    }
+
+    def "adminPurgeE2eArtifacts requires confirm (never deletes without it)"() {
+        when:
+        script.adminPurgeE2eArtifacts([:])
+
+        then:
+        thrown(Exception)
+    }
+
     @Unroll
     def "adminSetAppDisabled posts the Vue wire format and trusts only the read-back (#scenario)"() {
         given:
