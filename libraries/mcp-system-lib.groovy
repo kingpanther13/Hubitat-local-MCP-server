@@ -1,4 +1,4 @@
-library(name: "McpSystemLib", namespace: "mcp", author: "kingpanther13", description: "Hub system tool implementations (hub info/modes/HSM/backup/reboot/shutdown/update-status) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpSystemLib", namespace: "mcp", author: "kingpanther13", description: "Hub system tool implementations (hub info/modes/HSM/backup/reboot/shutdown/firmware-update) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 // /hub2/hubData is the data the modern hub UI computes server-side. It carries the hub's OWN
 // authoritative health alerts plus the pending-platform-update flag (what the UI "bell" reads) --
@@ -20,9 +20,9 @@ def _getHub2HubData() {
     }
 }
 
-// platformUpdate block: the pending HUB FIRMWARE update. Distinct from hub_get_update_status's
-// MCP-server-app version check. currentVersion is the hub firmware string; available +
-// availableVersion come from /hub2/hubData.alerts (platformUpdateAvailable / platformUpdateVersion).
+// platformUpdate block: the pending HUB FIRMWARE update. Distinct from the appUpdate MCP-server-app
+// version check (hub_get_info with includeAppUpdate=true). currentVersion is the hub firmware string;
+// available + availableVersion come from /hub2/hubData.alerts (platformUpdateAvailable / platformUpdateVersion).
 def _platformUpdateFromHub2(hub2) {
     def fw = null
     try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception e) { }
@@ -550,7 +550,7 @@ def toolUpdateFirmware(args) {
     requireDestructiveConfirm(args.confirm)
     mcpLog("warn", "hub-admin", "Hub firmware update initiated by MCP (install + self-reboot)")
     try {
-        def check = _summarizeFirmwareCheck(hubInternalGet("/hub/cloud/checkForUpdate", null, 60))
+        def check = _parseFirmwareCheck(hubInternalGet("/hub/cloud/checkForUpdate", null, 60))
         def resp = hubInternalGet("/hub/cloud/updatePlatform", null, 60)
         return [
             success: true,
@@ -570,16 +570,16 @@ def toolUpdateFirmware(args) {
     }
 }
 
-// Parse /hub/cloud/checkForUpdate into the useful fields, DROPPING accountEmails (the raw response
-// carries the hub owner's account email -- never surface it through the tool).
-private Map _summarizeFirmwareCheck(rawText) {
+// Parse /hub/cloud/checkForUpdate. Returns the hub's own fields verbatim so the caller sees exactly
+// what the cloud check reports -- {version, upgrade, status, releaseNotesUrl, beta, hubCount,
+// accountEmails}. accountEmails is the hub owner's own account email (returned to that same owner; not
+// redacted). Falls back to the raw text if the response is not a JSON object.
+private Map _parseFirmwareCheck(rawText) {
     try {
         def p = rawText ? new groovy.json.JsonSlurper().parseText(rawText) : null
-        if (!(p instanceof Map)) return [raw: rawText?.take(200)]
-        return [version: p.version, upgradeAvailable: (p.upgrade == true), status: p.status,
-                releaseNotesUrl: p.releaseNotesUrl, beta: (p.beta == true)]
+        return (p instanceof Map) ? p : [raw: rawText?.take(500)]
     } catch (Exception e) {
-        return [parseError: e.message, raw: rawText?.take(200)]
+        return [parseError: e.message, raw: rawText?.take(500)]
     }
 }
 
@@ -797,7 +797,7 @@ Requires Write master.""",
         ],
         [
             name: "hub_update_firmware",
-            description: """⚠️ DESTRUCTIVE: Install the hub's pending platform/firmware update. The hub downloads + installs it and then REBOOTS ITSELF (5-10 min of full downtime; all automations and device communications stop).[[FLAT_TRIM]] Uses the hub's own cloud-update path (/hub/cloud/checkForUpdate + /hub/cloud/updatePlatform). Read whether an update is pending first with hub_get_info (platformUpdate). Poll install progress with statusOnly=true (status IDLE when none is running); the endpoint goes dark during the reboot, then confirm the new firmwareVersion via hub_get_info.[[/FLAT_TRIM]]
+            description: """⚠️ DESTRUCTIVE: Install the hub's pending platform/firmware update. The hub downloads + installs it and then REBOOTS ITSELF (5-10 min of full downtime; all automations and device communications stop).[[FLAT_TRIM]] Uses the hub's own cloud-update path (/hub/cloud/checkForUpdate + /hub/cloud/updatePlatform). Read whether an update is pending first with hub_get_info (platformUpdate). On apply, the `available` field returns the checkForUpdate payload verbatim (version, upgrade, status, releaseNotesUrl, beta, hubCount, and the hub owner's accountEmails). Poll install progress with statusOnly=true (status IDLE when none is running); the endpoint goes dark during the reboot, then confirm the new firmwareVersion via hub_get_info.[[/FLAT_TRIM]]
 
 PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually pending 3) Tell user about the downtime 4) Get explicit confirmation 5) Set confirm=true
 Requires Write master.""",
@@ -813,9 +813,9 @@ Requires Write master.""",
                 properties: [
                     success: [type: "boolean", description: "Whether the install was initiated (or the status poll ran)"],
                     statusOnly: [type: "boolean", description: "True when this was a status poll (no install)"],
-                    status: [description: "Parsed /hub/cloud/checkUpdateStatus payload; present for statusOnly (e.g. {status:'IDLE'})"],
+                    status: [description: "The /hub/cloud/checkUpdateStatus payload; present for statusOnly. Usually a parsed object (e.g. {status:'IDLE'}) but can be a plain string if the hub returns a non-JSON body (e.g. during the reboot)."],
                     message: [type: "string", description: "Human-readable result; present on apply"],
-                    available: [type: "object", description: "Pending-update summary from checkForUpdate {version, upgradeAvailable, status, releaseNotesUrl, beta}; present on apply (account email is dropped)"],
+                    available: [type: "object", description: "The /hub/cloud/checkForUpdate payload, returned verbatim; present on apply. Fields: version (the available firmware version), upgrade (bool, whether one is pending), status (e.g. 'UPDATE_AVAILABLE'), releaseNotesUrl, beta (bool), hubCount, and accountEmails (the hub owner's own account email)."],
                     lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
                     warning: [type: "string", description: "Downtime/reboot warning"],
                     response: [type: "string", description: "Truncated hub response body"],

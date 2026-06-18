@@ -164,6 +164,9 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         given:
         sharedLocation.hub = hubOnFirmware('2.5.0.143')
         hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        // Seed the app-version-check snapshot + no-op the async refresh so appUpdate carries real values.
+        stateMap.updateCheck = [latestVersion: '9.9.9', updateAvailable: true]
+        script.metaClass.doUpdateCheck = { -> /* no-op: return the seeded snapshot */ }
 
         when:
         def result = script.toolGetHubInfo([includeAppUpdate: true])
@@ -171,9 +174,23 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         then:
         result.platformUpdate.available == true             // pending HUB firmware
         result.platformUpdate.availableVersion == '2.5.0.153'
-        result.appUpdate != null                            // folded-in MCP server app check
-        result.appUpdate.containsKey('installedVersion')
-        result.appUpdate.containsKey('updateAvailable')
+        result.appUpdate.latestVersion == '9.9.9'           // folded-in MCP server app check, real values
+        result.appUpdate.updateAvailable == true
+        (result.appUpdate.installedVersion as String) ==~ /\d+\.\d+\.\d+.*/
+    }
+
+    def "hub_get_info appUpdate surfaces an app-check error without losing the firmware read"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        script.metaClass.doUpdateCheck = { -> throw new RuntimeException('github down') }
+
+        when:
+        def result = script.toolGetHubInfo([includeAppUpdate: true])
+
+        then:
+        result.appUpdate.error.contains('App-version check failed')   // failed app check is visible...
+        result.platformUpdate.available == true                       // ...and the firmware read still survives
     }
 
     def "hub_get_info omits appUpdate unless includeAppUpdate=true"() {
