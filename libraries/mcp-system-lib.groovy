@@ -1,4 +1,4 @@
-library(name: "McpSystemLib", namespace: "mcp", author: "kingpanther13", description: "Hub system tool implementations (hub info/modes/HSM/backup/reboot/shutdown/update-status) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpSystemLib", namespace: "mcp", author: "kingpanther13", description: "Hub system tool implementations (hub info/modes/HSM/backup/reboot/shutdown/firmware-update) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 // /hub2/hubData is the data the modern hub UI computes server-side. It carries the hub's OWN
 // authoritative health alerts plus the pending-platform-update flag (what the UI "bell" reads) --
@@ -20,9 +20,9 @@ def _getHub2HubData() {
     }
 }
 
-// platformUpdate block: the pending HUB FIRMWARE update. Distinct from hub_get_update_status's
-// MCP-server-app version check. currentVersion is the hub firmware string; available +
-// availableVersion come from /hub2/hubData.alerts (platformUpdateAvailable / platformUpdateVersion).
+// platformUpdate block: the pending HUB FIRMWARE update. Distinct from the appUpdate MCP-server-app
+// version check (hub_get_info with includeAppUpdate=true). currentVersion is the hub firmware string;
+// available + availableVersion come from /hub2/hubData.alerts (platformUpdateAvailable / platformUpdateVersion).
 def _platformUpdateFromHub2(hub2) {
     def fw = null
     try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception e) { }
@@ -201,6 +201,26 @@ def toolGetHubInfo(args = null) {
         if (ha != null) info.healthAlerts = ha
     }
 
+    // Opt-in MCP Rule Server APP version check on GitHub (distinct from platformUpdate, the hub's
+    // own firmware). Off by default: it is asynchronous (the first call may return latestVersion
+    // 'unknown (check in progress)' -- call again in a few seconds) AND reaches the open internet,
+    // so it must not run on a basic info read.
+    if (args?.includeAppUpdate == true) {
+        try {
+            if (state.updateCheck) state.updateCheck.checkedAt = null
+            doUpdateCheck()
+            def uc = state.updateCheck ?: [:]
+            info.appUpdate = [
+                installedVersion: currentVersion(),
+                latestVersion: uc.latestVersion ?: "unknown (check in progress)",
+                updateAvailable: uc.updateAvailable ?: false,
+                lastChecked: uc.checkedAt ? formatTimestamp(uc.checkedAt) : "checking now"
+            ]
+        } catch (Exception e) {
+            info.appUpdate = [error: "App-version check failed: ${e.message}", installedVersion: currentVersion()]
+        }
+    }
+
     return info
 }
 
@@ -358,34 +378,6 @@ def backupResponseSink(response, data) {
 def toolRebootHub(args) {
     requireDestructiveConfirm(args.confirm)
 
-    if (args.updatePlatform == true) {
-        // Install the hub's PENDING platform update instead of a plain reboot -- the admin UI's own
-        // path (/hub/cloud/updatePlatform downloads + installs; the hub reboots itself when done).
-        // Folded into hub_reboot rather than a new tool: the operation IS a reboot with the update
-        // taken on the way down, and it inherits the same destructive gate. Status/progress is the
-        // existing read tool hub_get_update_status.
-        mcpLog("warn", "hub-admin", "Hub platform update initiated by MCP (install + self-reboot)")
-        try {
-            def check = hubInternalGet("/hub/cloud/checkForUpdate", null, 60)
-            def responseText = hubInternalGet("/hub/cloud/updatePlatform", null, 60)
-            return [
-                success: true,
-                message: "Platform update initiated. The hub downloads and installs the pending update, then reboots itself (5-10 minutes total).",
-                checkForUpdate: check?.take(500),
-                lastBackup: formatTimestamp(state.lastBackupTimestamp),
-                warning: "All automations and device communications stop during the install and reboot. Confirm the new version afterwards via hub_get_update_status or hub_get_info.",
-                response: responseText?.take(500)
-            ]
-        } catch (Exception e) {
-            mcpLogError("hub-admin", "Hub platform update failed", e)
-            return [
-                success: false,
-                error: "Platform update failed: ${e.message}",
-                note: "The update command could not be sent. Check Hub Security credentials or apply the update from the hub UI."
-            ]
-        }
-    }
-
     mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP")
 
     try {
@@ -533,31 +525,61 @@ def handleUpdateCheckResponse(resp, data) {
     }
 }
 
-def toolCheckForUpdate(args) {
-    try {
-        // Force check by clearing the checkedAt timestamp
-        if (state.updateCheck) {
-            state.updateCheck.checkedAt = null
+// hub_update_firmware: install the hub's pending platform/firmware update via the cloud-update
+// endpoints (/hub/cloud/updatePlatform downloads + installs; the hub reboots itself when the install
+// completes). statusOnly polls /hub/cloud/checkUpdateStatus without applying. The pending-update read
+// lives in hub_get_info (platformUpdate); this tool also runs the live /hub/cloud/checkForUpdate.
+def toolUpdateFirmware(args) {
+    if (args?.statusOnly == true) {
+        try {
+            def st = hubInternalGet("/hub/cloud/checkUpdateStatus", null, 30)
+            def parsed = st?.take(200)
+            try { if (st) parsed = new groovy.json.JsonSlurper().parseText(st) } catch (Exception ignore) { }
+            return [
+                success: true,
+                statusOnly: true,
+                status: parsed,
+                note: "Install progress (status is IDLE when none is running). The endpoint goes dark during the reboot; confirm the new firmwareVersion via hub_get_info afterwards."
+            ]
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "Firmware update status poll failed", e)
+            return [success: false, error: "Update status poll failed: ${e.message}", note: "Check Hub Security credentials."]
         }
-        doUpdateCheck()
-        // Return current state (async call may not have completed yet)
-        def installed = currentVersion()
-        def updateInfo = state.updateCheck ?: [:]
+    }
+
+    requireDestructiveConfirm(args.confirm)
+    mcpLog("warn", "hub-admin", "Hub firmware update initiated by MCP (install + self-reboot)")
+    try {
+        def check = _parseFirmwareCheck(hubInternalGet("/hub/cloud/checkForUpdate", null, 60))
+        def resp = hubInternalGet("/hub/cloud/updatePlatform", null, 60)
         return [
             success: true,
-            installedVersion: installed,
-            latestVersion: updateInfo.latestVersion ?: "unknown (check in progress)",
-            updateAvailable: updateInfo.updateAvailable ?: false,
-            lastChecked: updateInfo.checkedAt ? formatTimestamp(updateInfo.checkedAt) : "checking now",
-            platformUpdate: _platformUpdateFromHub2(_getHub2HubData()),
-            note: "Two distinct updates here. installedVersion/latestVersion/updateAvailable track the MCP Rule Server APP on GitHub (asynchronous -- if latestVersion is 'unknown', call again in a few seconds). platformUpdate is the SEPARATE pending HUBITAT FIRMWARE/platform update on the hub itself (from /hub2/hubData)."
+            message: "Firmware update initiated. The hub downloads and installs the pending update, then reboots itself (5-10 minutes total).",
+            available: check,
+            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            warning: "All automations and device communications stop during the install and reboot. Poll progress with hub_update_firmware(statusOnly=true); confirm the new version via hub_get_info afterwards.",
+            response: resp?.take(500)
         ]
     } catch (Exception e) {
+        mcpLogError("hub-admin", "Hub firmware update failed", e)
         return [
             success: false,
-            error: "Version check failed: ${e.message}",
-            installedVersion: currentVersion()
+            error: "Firmware update failed: ${e.message}",
+            note: "The update command could not be sent. Check Hub Security credentials, or apply it from the hub UI (Settings -> Check for Updates)."
         ]
+    }
+}
+
+// Parse /hub/cloud/checkForUpdate. Returns the hub's own fields verbatim so the caller sees exactly
+// what the cloud check reports -- {version, upgrade, status, releaseNotesUrl, beta, hubCount,
+// accountEmails}. accountEmails is the hub owner's own account email (returned to that same owner; not
+// redacted). Falls back to the raw text if the response is not a JSON object.
+private Map _parseFirmwareCheck(rawText) {
+    try {
+        def p = rawText ? new groovy.json.JsonSlurper().parseText(rawText) : null
+        return (p instanceof Map) ? p : [raw: rawText?.take(500)]
+    } catch (Exception e) {
+        return [parseError: e.message, raw: rawText?.take(500)]
     }
 }
 
@@ -566,12 +588,13 @@ def _getAllToolDefinitions_partSystem() {
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, free memory, internal temperature, database size, MCP server stats, and current security/toggle settings. Also surfaces the pending hub firmware/platform update (platformUpdate) + Safe Mode (safeMode).[[FLAT_TRIM]] Pass includeHealthAlerts=true for the hub's full health-alerts block from /hub2/hubData (radio offline, backup failures, low memory, DB bloat, weak mesh). Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Read master is enabled; otherwise they are omitted.[[/FLAT_TRIM]]",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, free memory, internal temperature, database size, MCP server stats, and current security/toggle settings. Also surfaces the pending hub firmware/platform update (platformUpdate) + Safe Mode (safeMode).[[FLAT_TRIM]] Pass includeHealthAlerts=true for the hub's full health-alerts block from /hub2/hubData (radio offline, backup failures, low memory, DB bloat, weak mesh), or includeAppUpdate=true to also check GitHub for a newer MCP server APP version (returned under appUpdate). Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Read master is enabled; otherwise they are omitted.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
-                    includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block (default false).[[FLAT_TRIM]] Every /hub2/hubData alert flag + messages under healthAlerts; platformUpdate and safeMode are returned regardless.[[/FLAT_TRIM]]", default: false]
+                    includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block (default false).[[FLAT_TRIM]] Every /hub2/hubData alert flag + messages under healthAlerts; platformUpdate and safeMode are returned regardless.[[/FLAT_TRIM]]", default: false],
+                    includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate (default false).[[FLAT_TRIM]] Asynchronous: the first call may return latestVersion 'unknown (check in progress)' -- call again in a few seconds. Distinct from platformUpdate (the hub's own firmware). To INSTALL a pending hub firmware update, use hub_update_firmware.[[/FLAT_TRIM]]", default: false]
                 ]
             ],
             outputSchema: [
@@ -617,7 +640,8 @@ def _getAllToolDefinitions_partSystem() {
                     readDisabledNote: [type: "string", description: "Present when the Read master is disabled; PII excluded"],
                     identifyHubTriggered: [type: "boolean", description: "Present when identifyHub requested; LED blink result"],
                     identifyHubError: [type: "string", description: "Present when identifyHub blink failed"],
-                    platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available), note (only when available=null)}. Distinct from hub_get_update_status's MCP-server-app check; available=null means /hub2/hubData was unreadable/unrecognized and the note explains why."],
+                    platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available), note (only when available=null)}. Distinct from the appUpdate MCP-server-app check; available=null means /hub2/hubData was unreadable/unrecognized and the note explains why. Install a pending update with hub_update_firmware."],
+                    appUpdate: [type: "object", description: "MCP Rule Server APP version check; present only when includeAppUpdate=true. {installedVersion, latestVersion ('unknown (check in progress)' while the async GitHub check is pending), updateAvailable, lastChecked}. Separate from platformUpdate (the hub's own firmware)."],
                     safeMode: [type: "boolean", description: "Whether the hub is running in Safe Mode (from /hub2/hubData). Absent if /hub2/hubData was unreadable."],
                     healthAlerts: [type: "object", description: "Present only when includeHealthAlerts=true: the hub's health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags), details (full alert map + message strings)}."]
                 ]
@@ -723,16 +747,14 @@ Requires Write master + confirm. This is the only write tool that doesn't requir
         ],
         [
             name: "hub_reboot",
-            description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop).
-updatePlatform=true installs the pending platform update instead (install + self-reboot, 5-10 min); versions via hub_get_update_status.
+            description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop). To install a pending hub firmware update instead, use hub_update_firmware.
 
 PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true
 Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."],
-                    updatePlatform: [type: "boolean", description: "true = install the pending platform update instead (hub self-reboots after install)."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
                 ],
                 required: ["confirm"]
             ],
@@ -741,7 +763,6 @@ Requires Write master.""",
                 properties: [
                     success: [type: "boolean", description: "Whether the reboot was initiated"],
                     message: [type: "string", description: "Human-readable result"],
-                    checkForUpdate: [type: "string", description: "Hub's checkForUpdate response (updatePlatform mode only)"],
                     lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
                     warning: [type: "string", description: "Downtime warning"],
                     response: [type: "string", description: "Truncated hub response body"]
@@ -775,24 +796,33 @@ Requires Write master.""",
             ]
         ],
         [
-            name: "hub_get_update_status",
-            description: "Check for available updates: the MCP Rule Server APP version on GitHub (installedVersion/latestVersion/updateAvailable) AND, separately, platformUpdate -- the pending Hubitat FIRMWARE update on the hub.[[FLAT_TRIM]] The app check is asynchronous: the first call usually returns latestVersion='unknown (check in progress)', so call again in a few seconds. platformUpdate comes from /hub2/hubData. The two are unrelated; do not conflate the app update with the firmware update.[[/FLAT_TRIM]]",
+            name: "hub_update_firmware",
+            description: """⚠️ DESTRUCTIVE: Install the hub's pending platform/firmware update. The hub downloads + installs it and then REBOOTS ITSELF (5-10 min of full downtime; all automations and device communications stop).[[FLAT_TRIM]] Uses the hub's own cloud-update path (/hub/cloud/checkForUpdate + /hub/cloud/updatePlatform). Read whether an update is pending first with hub_get_info (platformUpdate). On apply, the `available` field returns the checkForUpdate payload verbatim (version, upgrade, status, releaseNotesUrl, beta, hubCount, and the hub owner's accountEmails). Poll install progress with statusOnly=true (status IDLE when none is running); the endpoint goes dark during the reboot, then confirm the new firmwareVersion via hub_get_info.[[/FLAT_TRIM]]
+
+PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually pending 3) Tell user about the downtime 4) Get explicit confirmation 5) Set confirm=true
+Requires Write master.""",
             inputSchema: [
                 type: "object",
-                properties: [:]
+                properties: [
+                    statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only and return without applying anything. No confirm/backup needed. Default false."],
+                    confirm: [type: "boolean", description: "REQUIRED to apply (omit for statusOnly): must be true. Confirms a backup <24h exists and the user approved the install + reboot."]
+                ]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "Whether the check ran"],
-                    installedVersion: [type: "string", description: "Currently installed MCP Rule Server APP version"],
-                    latestVersion: [type: "string", description: "Latest MCP server app version on GitHub; 'unknown' while async check pending"],
-                    updateAvailable: [type: "boolean", description: "Whether a newer MCP server app version is available"],
-                    lastChecked: [type: "string", description: "When the app-version check last completed"],
-                    platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available), note (only when available=null)}. Separate from the MCP server app check above; available=null when /hub2/hubData was unreadable/unrecognized and the note explains why."],
-                    note: [type: "string", description: "Guidance distinguishing the two update types + async-check hint"]
+                    success: [type: "boolean", description: "Whether the install was initiated (or the status poll ran)"],
+                    statusOnly: [type: "boolean", description: "True when this was a status poll (no install)"],
+                    status: [description: "The /hub/cloud/checkUpdateStatus payload; present for statusOnly. Usually a parsed object (e.g. {status:'IDLE'}) but can be a plain string if the hub returns a non-JSON body (e.g. during the reboot)."],
+                    message: [type: "string", description: "Human-readable result; present on apply"],
+                    available: [type: "object", description: "The /hub/cloud/checkForUpdate payload, returned verbatim; present on apply. Fields: version (the available firmware version), upgrade (bool, whether one is pending), status (e.g. 'UPDATE_AVAILABLE'), releaseNotesUrl, beta (bool), hubCount, and accountEmails (the hub owner's own account email)."],
+                    lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
+                    warning: [type: "string", description: "Downtime/reboot warning"],
+                    response: [type: "string", description: "Truncated hub response body"],
+                    error: [type: "string", description: "Present on failure"],
+                    note: [type: "string", description: "Actionable recovery guidance on failure"]
                 ],
-                required: ["success", "installedVersion"]
+                required: ["success"]
             ]
         ],
     ]
@@ -804,7 +834,7 @@ def _readOnlyToolNames_partSystem() {
     // the tool). A tool absent from every part list is write+destructive by default.
     return [
         // Hub state reads
-        "hub_get_info", "hub_list_modes", "hub_get_hsm_status", "hub_get_update_status"
+        "hub_get_info", "hub_list_modes", "hub_get_hsm_status"
     ]
 }
 
@@ -821,7 +851,9 @@ def _openWorldToolNames_partSystem() {
     // Tools in this library that reach BEYOND the hub to the open internet (MCP
     // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
     return [
-        "hub_get_update_status"
+        // hub_get_info reaches GitHub for the app-version check when includeAppUpdate=true;
+        // hub_update_firmware drives the hub's cloud download/install of the platform update.
+        "hub_get_info", "hub_update_firmware"
     ]
 }
 
@@ -830,16 +862,16 @@ def _toolDisplayMeta_partSystem() {
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return [
         // Hub state + modes
-        hub_get_info: [title: "Get Hub Info", summary: "Comprehensive hub info: hardware, health, network, and MCP stats."],
+        hub_get_info: [title: "Get Hub Info", summary: "Comprehensive hub info: hardware, health, firmware/platform-update status, network, and MCP stats."],
         hub_list_modes: [title: "List Modes", summary: "List the hub's location modes and which one is active."],
         hub_set_mode: [title: "Set Mode", summary: "Change the hub's location mode (Home, Away, Night, etc.)."],
         hub_get_hsm_status: [title: "Get HSM Status", summary: "Get the current Hubitat Safety Monitor arm status."],
         hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
         // Hub utilities
         hub_create_backup: [title: "Create Hub Backup", summary: "Create a full hub backup (required before destructive writes)."],
-        hub_get_update_status: [title: "Check for Updates", summary: "Check for newer MCP server versions and any pending hub firmware update."],
+        hub_update_firmware: [title: "Update Hub Firmware", summary: "Install the hub's pending platform/firmware update (downloads, installs, and reboots the hub)."],
         // Destructive hub ops
-        hub_reboot: [title: "Reboot Hub", summary: "Reboot the hub (1-3 minutes of downtime), optionally installing the pending platform update first."],
+        hub_reboot: [title: "Reboot Hub", summary: "Reboot the hub (1-3 minutes of downtime)."],
         hub_shutdown: [title: "Shut Down Hub", summary: "Power the hub off; a physical restart is required afterwards."]
     ]
 }

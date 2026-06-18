@@ -279,7 +279,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_get_info` (or `hub_get_update_status`) and reports the `platformUpdate` block — whether a hub FIRMWARE update is pending and, if so, the `availableVersion` — keeping it distinct from any MCP server-app update. Makes no changes.
+**Expected**: Calls `hub_get_info` and reports the `platformUpdate` block — whether a hub FIRMWARE update is pending and, if so, the `availableVersion` — keeping it distinct from any MCP server-app update (which is `hub_get_info` with `includeAppUpdate=true`, under `appUpdate`). Makes no changes.
 
 ### T14c — hub health alerts + safe mode
 
@@ -580,7 +580,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected v0.8.0**: Calls `hub_get_info` directly (core tool — health data merged into hub_get_info in v0.8.0).
 
-### T39 — Discover hub_get_update_status (core)
+### T39 — Discover the MCP-app version check (folded into hub_get_info)
 
 ```json
 {
@@ -588,7 +588,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Calls `hub_get_update_status` directly (promoted to core in v0.8.0).
+**Expected**: Calls `hub_get_info` with `includeAppUpdate=true` and reports `appUpdate` (installedVersion/latestVersion/updateAvailable). The former standalone `hub_get_update_status` folded into `hub_get_info`.
 
 ### T40 — Discover hub_create_backup (core)
 
@@ -1441,7 +1441,7 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (11 flat + 19
 }
 ```
 
-**Expected**: 10 calls across core tools and gateways (hub_manage_rooms, hub_manage_variables, hub_get_info (core), hub_create_backup (core), hub_manage_files, hub_read_apps_code (hub_list_apps scope=instances), hub_manage_diagnostics, hub_manage_logs, hub_get_update_status (core), hub_manage_custom_rules). Excluded: `hub_manage_code` (all write tools destructive), `hub_manage_destructive_ops` (destructive ops), `hub_manage_native_rules_and_apps` (separate T200-series scenarios), `hub_manage_mcp` (separate T102 scenarios). All 7 exercised gateways should succeed.
+**Expected**: 10 calls across core tools and gateways (hub_manage_rooms, hub_manage_variables, hub_get_info (core), hub_create_backup (core), hub_manage_files, hub_read_apps_code (hub_list_apps scope=instances), hub_manage_diagnostics, hub_manage_logs, hub_get_info with includeAppUpdate=true (core, the folded app-version check), hub_manage_custom_rules). Excluded: `hub_manage_code` (all write tools destructive), `hub_manage_destructive_ops` (destructive ops), `hub_manage_native_rules_and_apps` (separate T200-series scenarios), `hub_manage_mcp` (separate T102 scenarios). All 7 exercised gateways should succeed.
 
 ### T121 — Rapid rule create-delete cycles
 
@@ -1959,7 +1959,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_get_update_status`.
+**Expected**: `hub_get_info` with `includeAppUpdate=true` (the app-version check, folded in from the former `hub_get_update_status`).
 **Equivalent to**: T39
 
 #### T265 — Save a safety net
@@ -2371,7 +2371,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 **13 manage gateways**: `hub_manage_code` (11), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (4), `hub_manage_devices` (7), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (10), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (10), `hub_manage_variables` (8)
 
-**11 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_set_mode`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_get_update_status`, `hub_create_backup`
+**11 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_set_mode`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
@@ -3989,7 +3989,7 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 
 1. **Architecture**: 18 core + 8 gateways (26 total) → **11 flat core + 19 gateways (30 on tools/list, 99 total distinct tools)** post installed-apps + RM interop + native CRUD + hub_list_app_pages + poll_until_attribute + library management + HPM package state + the PR1B read/write gateway split (was 23 core + 13 gateways / 36 total / 103 tools before PR1B; 21 core + 9 gateways / 30 total / 69 tools at v0.8.0)
 2. **Merged tools**: `enable_rule`/`disable_rule` → `hub_update_custom_rule` (enabled=true/false); `create_virtual_device`/`delete_virtual_device` → `hub_manage_virtual_device` (action enum)
-3. **Promoted to core**: `hub_create_backup`, `hub_get_update_status`, `hub_report_issue`
+3. **Promoted to core**: `hub_create_backup`, `hub_update_firmware` (the firmware INSTALL; the update-status reads folded into `hub_get_info`), `hub_report_issue`
 4. **Dissolved gateway**: `manage_hub_info` — radio details moved to `hub_manage_diagnostics`, other tools merged into `hub_get_info` (core) or promoted
 5. **Gateway renames**: `manage_hub_maintenance` → `hub_manage_destructive_ops` (3 tools); `manage_code_changes` → `hub_manage_code_write` (10 tools, 7 original + 3 library tools)
 6. **Gateway splits from v1**: `hub_manage_code_read` → `hub_manage_code_read` (7 read) + `hub_manage_code_write` (10 write); `manage_logs_diagnostics` → `hub_manage_logs` (8) + `hub_manage_diagnostics` (11)

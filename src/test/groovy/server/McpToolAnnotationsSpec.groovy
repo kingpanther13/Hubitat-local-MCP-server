@@ -342,7 +342,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_export_custom_rule',
             'hub_create_variable',
             'hub_create_backup',
-            'hub_reboot', 'hub_shutdown', 'hub_call_gc',
+            'hub_reboot', 'hub_shutdown', 'hub_update_firmware', 'hub_call_gc',
             'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',
             'hub_manage_virtual_device',
             'hub_create_room',
@@ -362,7 +362,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         // GitHub fetches, bundle-URL downloads, and importUrl source modes leave it.
         expect:
         script.getOpenWorldToolNames() == [
-            'hub_get_update_status', 'hub_update_package', 'hub_install_bundle',
+            'hub_get_info', 'hub_update_firmware', 'hub_update_package', 'hub_install_bundle',
             'hub_create_app', 'hub_create_driver', 'hub_create_library',
             'hub_update_app', 'hub_update_driver', 'hub_update_library',
             'hub_get_device_health'
@@ -378,9 +378,9 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         def tools = script.getToolDefinitions()
         def byName = tools.collectEntries { [(it.name): it.annotations] }
 
-        then: 'read-only core tool: idempotent, closed-world'
-        byName.hub_get_info.idempotentHint == true
-        byName.hub_get_info.openWorldHint == false
+        then: 'read-only core tool: idempotent, closed-world (hub_get_info is open-world via its opt-in app-update check, so use hub_list_modes here)'
+        byName.hub_list_modes.idempotentHint == true
+        byName.hub_list_modes.openWorldHint == false
 
         and: 'pure-read gateway rolls up idempotent + closed-world'
         byName.hub_read_rooms.idempotentHint == true
@@ -482,7 +482,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         def expectedReadOnly = [
             'hub_list_devices', 'hub_get_device', 'hub_get_device_attribute', 'hub_list_device_events',
             'hub_get_custom_rule', 'hub_test_custom_rule',
-            'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status', 'hub_get_update_status',
+            'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status',
             'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
             'hub_list_captured_states',
             'hub_get_debug_logs', 'hub_report_issue',
@@ -514,7 +514,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_delete_captured_state',
             'hub_delete_debug_logs', 'hub_set_log_level',
             'hub_create_backup',
-            'hub_reboot', 'hub_shutdown', 'hub_delete_device',
+            'hub_reboot', 'hub_shutdown', 'hub_update_firmware', 'hub_delete_device',
             'hub_call_gc',
             'hub_set_zwave', 'hub_set_zigbee',
             'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',

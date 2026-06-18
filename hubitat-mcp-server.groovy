@@ -1074,19 +1074,19 @@ def getGatewayConfig() {
             ]
         ],
         // Option A: Virtual device tools moved to core tools/list (full inputSchema visible)
-        // manage_hub_info dissolved — zwave/zigbee moved to hub_manage_diagnostics, hub_get_update_status promoted to core
+        // manage_hub_info dissolved — zwave/zigbee moved to hub_manage_diagnostics; the update-status read folded into hub_get_info (includeAppUpdate) and the firmware INSTALL is the core hub_update_firmware
         // hub_create_backup promoted to core; the old hub_call_zwave_repair was absorbed into hub_call_zwave (hub_manage_radio)
         hub_manage_destructive_ops: [
             description: "DESTRUCTIVE hub operations: reboot, shutdown, permanent device deletion, and radio network/fabric resets + firmware flashes. All operations are irreversible or cause significant downtime — confirm with user first.",
             tools: ["hub_reboot", "hub_shutdown", "hub_delete_device", "hub_call_destructive_radio"],
             summaries: [
-                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime); updatePlatform=true installs the pending platform update instead. Args: confirm=true",
+                hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). To install a pending hub firmware update instead, use hub_update_firmware. Args: confirm=true",
                 hub_shutdown: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
                 hub_delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true",
                 hub_call_destructive_radio: "Reset a radio's network/fabric (unpairs ALL devices) or flash firmware (can brick hardware). Args: radio (zwave|zigbee|matter), action (reset|device_firmware_start|device_firmware_abort|zwave_chip_firmware|zigbee_firmware), confirm=true"
             ],
             searchHints: [
-                hub_reboot: "restart reset power cycle update platform firmware upgrade",
+                hub_reboot: "restart reset power cycle boot",
                 hub_shutdown: "power off turn off stop halt",
                 hub_delete_device: "remove ghost orphan zwave zigbee stuck failed pairing",
                 hub_call_destructive_radio: "reset wipe zwave zigbee matter network fabric exclude all firmware flash chip radio ota brick factory"
@@ -2199,8 +2199,8 @@ def executeTool(toolName, args) {
         case "hub_import_custom_rule": return toolImportRule(args)
         case "hub_clone_custom_rule": return toolCloneRule(args)
 
-        // Version Check
-        case "hub_get_update_status": return toolCheckForUpdate(args)
+        // Hub platform/firmware install (the app-version + pending-firmware READS fold into hub_get_info)
+        case "hub_update_firmware": return toolUpdateFirmware(args)
 
         // Read master Tools (hub_get_details + hub_get_health merged into hub_get_info)
         case "hub_list_apps": return (args?.scope == "types") ? toolListHubApps(args) : toolListInstalledApps(args)
@@ -4934,7 +4934,9 @@ All Write master tools require these steps:
 
 ### Tool-Specific Requirements
 
-**hub_reboot** - 1-3 min downtime, all automations stop, scheduled jobs lost, radios restart. Only when user explicitly requests. updatePlatform=true installs the pending platform update instead (install + self-reboot, 5-10 min).
+**hub_reboot** - 1-3 min downtime, all automations stop, scheduled jobs lost, radios restart. Only when user explicitly requests.
+
+**hub_update_firmware** - Installs the hub's pending platform/firmware update, then the hub self-reboots (5-10 min full downtime). Confirm a pending update via hub_get_info (platformUpdate) first; backup <24h + confirm=true required to apply; poll progress with statusOnly=true. Only when user explicitly requests.
 
 **hub_shutdown** - Powers OFF completely, requires physical restart. NOT a reboot. Only when user explicitly requests.
 

@@ -301,7 +301,7 @@ The server has 104 tools total. To keep the MCP `tools/list` manageable, **11 co
 | Tool | Description |
 |------|-------------|
 | `hub_create_backup` | Create full hub backup (required before admin writes) |
-| `hub_get_update_status` | Check if a newer MCP server version is available |
+| `hub_update_firmware` | Install the hub's pending platform/firmware update (version/update reads fold into `hub_get_info`) |
 | `hub_report_issue` | Generate comprehensive diagnostic report |
 
 </details>
