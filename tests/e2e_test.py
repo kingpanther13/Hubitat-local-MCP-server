@@ -141,6 +141,14 @@ class HubitatMcpClient:
         if "hub_update_mcp_settings" in _pj:
             replay_safe = True
 
+        # Pace writes only. The heavy RM wizard edits (confirm:true) ride the cloud relay's
+        # gateway-timeout edge; a 0.2s pre-send gap caps the server app's short-window duty
+        # cycle so the write finishes before the relay 504s. Reads carry no such load and skip
+        # it -- that is the speedup. `not replay_safe` is the confirm-bearing-write marker;
+        # hub_update_mcp_settings is a light idempotent settings write and stays unpaced.
+        if not replay_safe:
+            time.sleep(0.2)
+
         # Chaos mode (E2E_CHAOS_504=<0..1>): after a WRITE completes, discard its response and
         # raise the exact relay-504 error with probability <rate>. This reproduces on demand the
         # cloud relay's worst behavior -- the op COMMITTED but the response was lost -- so every
