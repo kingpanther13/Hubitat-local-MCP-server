@@ -586,6 +586,7 @@ def executeAdminTool(String toolName, Map args) {
         case "hub_update_library":  return adminUpdateLibrary(args)
         case "hub_delete_item":     return adminDeleteItem(args)
         case "hub_force_delete_app": return adminForceDeleteInstalledApp(args)
+        case "hub_purge_e2e_artifacts": return adminPurgeE2eArtifacts(args)
         case "hub_set_app_disabled": return adminSetAppDisabled(args)
         case "hub_get_metrics":      return adminGetMetrics(args)
         case "hub_update_platform":  return adminUpdatePlatform(args)
@@ -1064,6 +1065,65 @@ def adminForceDeleteInstalledApp(args) {
         return [success: true, message: "Force-deleted installed app ${id} (HTTP ${st}; verified gone).", id: id]
     }
     return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the gone-check could not read /installedapp/json (status=${cst ?: 'none'}) -- keep the id and re-delete to be safe.", id: id]
+}
+
+// hub_purge_e2e_artifacts: ONE-call LOCAL sweep of leftover test fixtures. Enumerates every installed-app
+// instance whose name starts with the BAT_E2E_ test prefix (via /hub2/appsList, the same read
+// adminListAppInstances uses) and force-deletes each by reusing adminForceDeleteInstalledApp's
+// forcedelete+verify-gone path. The whole loop runs loopback-local on the hub, so CI makes ONE cloud
+// round-trip instead of N -- replacing the disarm's per-item reap loop and the post-restore
+// --cleanup-only RM sweep. Hard-scoped to the prefix (never a real app); confirm:true required.
+def adminPurgeE2eArtifacts(args) {
+    requireConfirm(args)
+    String prefix = (args?.prefix instanceof String && args.prefix.trim()) ? args.prefix.trim() : "BAT_E2E_"
+    String raw = hubGet("/hub2/appsList", [:])
+    if (!raw) return [success: false, error: "empty response from /hub2/appsList -- cannot enumerate to purge"]
+    def parsed
+    try { parsed = new groovy.json.JsonSlurper().parseText(raw) }
+    catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}"] }
+    def targets = []
+    def recurse
+    recurse = { Map node ->
+        def d = node?.data ?: [:]
+        if ((d.name instanceof String) && d.name.startsWith(prefix) && d.id != null) {
+            targets << [id: d.id, name: d.name]
+        }
+        node?.children?.each { c -> recurse(c) }
+    }
+    (parsed?.apps ?: []).each { a -> recurse(a) }
+    mcpAdminLog "Purging ${targets.size()} ${prefix}* installed-app instance(s) locally."
+    def deleted = []
+    def failed = []
+    targets.each { t ->
+        def r
+        try { r = adminForceDeleteInstalledApp([id: t.id, confirm: true]) }
+        catch (Exception e) { r = [success: false, error: e.message] }
+        if (r?.success) { deleted << [id: t.id, name: t.name] }
+        else { failed << [id: t.id, name: t.name, error: r?.error] }
+    }
+    // Variables are hub-GLOBAL, so the watchdog (any app) can enumerate + remove them via DSL --
+    // local, no relay, no classic-wizard (the main server's wizard exists only for in-use/connector
+    // safety, which is moot for a BAT_E2E_ purge that runs AFTER the referencing rules are gone).
+    def varsDeleted = []
+    def varsFailed = []
+    try {
+        def allVars = getAllGlobalVars() ?: [:]
+        allVars.keySet().findAll { (it instanceof String) && it.startsWith(prefix) }.each { vn ->
+            try {
+                if (removeGlobalVariable(vn)) { varsDeleted << vn }
+                else { varsFailed << [name: vn, error: "removeGlobalVariable returned false (in use or already gone)"] }
+            } catch (Exception e) { varsFailed << [name: vn, error: e.message] }
+        }
+    } catch (Exception e) {
+        varsFailed << [name: "*", error: "getAllGlobalVars failed: ${e.message}"]
+    }
+    mcpAdminLog "Purge complete: ${deleted.size()} app(s), ${varsDeleted.size()} variable(s) deleted; " +
+                "${failed.size()} app + ${varsFailed.size()} var failure(s)."
+    return [success: failed.isEmpty() && varsFailed.isEmpty(), prefix: prefix,
+            deletedCount: deleted.size(), failedCount: failed.size(), deleted: deleted, failed: failed,
+            variablesDeletedCount: varsDeleted.size(), variablesFailedCount: varsFailed.size(),
+            variablesDeleted: varsDeleted, variablesFailed: varsFailed,
+            note: "Virtual DEVICES are NOT purged here (they are child devices of the main app and the hub's admin device-delete endpoint is not yet mirrored into the watchdog); the post-restore --cleanup-only sweep still reaps BAT_E2E_ devices."]
 }
 
 // hub_set_app_disabled: toggle an installed app's disabled flag (the admin UI's red-X) via
@@ -1733,6 +1793,8 @@ def getAdminToolDefinitions() {
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
         [name: "hub_force_delete_app", description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. confirm:true required.",
          inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
+        [name: "hub_purge_e2e_artifacts", description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_) AND removeGlobalVariable every matching hub variable, all loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Virtual devices are NOT covered (child devices of the main app). Returns per-class {deleted/failed} counts. confirm:true required.",
+         inputSchema: [type: "object", properties: [prefix: [type: "string", description: "Name prefix to purge; default BAT_E2E_."], confirm: [type: "boolean"]], required: ["confirm"]]],
         [name: "hub_set_app_disabled", description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
         [name: "hub_get_metrics", description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
