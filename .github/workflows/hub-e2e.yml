@@ -468,6 +468,7 @@ jobs:
         run: bash .github/scripts/mcp_watchdog_deploy.sh
 
       - name: Run E2E tests
+        id: run_e2e
         if: steps.gate.outputs.available == 'true'
         env:
           # Defer per-test native-rule fixture deletes to the disarm step's force sweep (over
@@ -523,7 +524,9 @@ jobs:
         run: bash .github/scripts/mcp_restore_env.sh
 
       - name: Post-run hub status probe
-        if: always() && steps.gate.outputs.available == 'true'
+        # Diagnostic-only forensics worth the ~22s ONLY on a red run -- on a green run nobody reads it,
+        # so skip it (gated on run_e2e failure) to keep the held-lease teardown short.
+        if: always() && steps.gate.outputs.available == 'true' && steps.run_e2e.outcome == 'failure'
         # The pre-run probe's counterpart: capture what the run LEFT BEHIND (stranded artifacts,
         # load-limiter trips in the error log, memory descent, watchdog flag state) while we still
         # hold the lease. Runs after the cleanup step's restore-completion gate, so the hub is

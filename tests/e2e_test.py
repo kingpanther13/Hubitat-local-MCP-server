@@ -6298,7 +6298,11 @@ def main() -> None:
         main_sha = os.environ.get("MAIN_SHA", "")
         if main_sha:
             print("Waiting for the watchdog's restore-to-main to complete (canonical-main marker)...")
-            for attempt in range(1, 49):
+            # Poll cadence: short early (the restore lands ~2-2.5 min in, so a tight early cadence trims
+            # the overshoot past completion), backing off to 10s for the long failed-restore tail -- same
+            # ~8-min worst-case ceiling, just more attempts at the shorter early intervals.
+            _restore_backoff = (3, 3, 3, 3, 5, 5, 5, 7, 7, 10)
+            for attempt in range(1, 60):
                 try:
                     marker = runner.client.call_tool("hub_manage_files", {
                         "tool": "hub_read_file",
@@ -6310,11 +6314,11 @@ def main() -> None:
                         break
                 except Exception:
                     pass
-                if attempt == 48:
+                if attempt == 59:
                     print("  [WARN] restore-complete marker never matched after ~8 min "
                           "(failed restore, or a slow recompile); sweeping anyway.")
                 else:
-                    time.sleep(10)
+                    time.sleep(_restore_backoff[min(attempt - 1, len(_restore_backoff) - 1)])
         runner.cleanup()
         # Gating verification: cleanup() and the disarm-time deferred sweep are otherwise all
         # best-effort (warn-only), so a silently-failed native-rule cleanup could leave BAT_E2E_ RM
