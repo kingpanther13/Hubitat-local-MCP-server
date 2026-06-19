@@ -587,16 +587,18 @@ private Map _buildWaitForPollArgs(deviceId, device, deviceLabel, waitFor) {
             }
         }
     }
-    // Require Integer (not any Number) so a fractional value is rejected with an honest
-    // message rather than silently truncated by `as Integer` (e.g. 99.9 -> 99).
+    // Accept any Number (not just Integer) so a Long/BigDecimal that the engine would
+    // accept is not wrongly rejected pre-fire -- toolPollUntilAttribute validates these
+    // same fields with `instanceof Number`. The comparison is direct (no `as Integer`
+    // cast), so an in-range fractional passes the bounds check exactly as the engine does.
     if (waitFor.containsKey("timeoutMs")) {
-        if (!(waitFor.timeoutMs instanceof Integer) || waitFor.timeoutMs < 100 || waitFor.timeoutMs > 60000) {
-            throw new IllegalArgumentException("waitFor.timeoutMs must be an integer between 100 and 60000 (got: ${waitFor.timeoutMs})")
+        if (!(waitFor.timeoutMs instanceof Number) || waitFor.timeoutMs < 100 || waitFor.timeoutMs > 60000) {
+            throw new IllegalArgumentException("waitFor.timeoutMs must be a number between 100 and 60000 (got: ${waitFor.timeoutMs})")
         }
     }
     if (waitFor.containsKey("pollIntervalMs")) {
-        if (!(waitFor.pollIntervalMs instanceof Integer) || waitFor.pollIntervalMs < 50 || waitFor.pollIntervalMs > 5000) {
-            throw new IllegalArgumentException("waitFor.pollIntervalMs must be an integer between 50 and 5000 (got: ${waitFor.pollIntervalMs})")
+        if (!(waitFor.pollIntervalMs instanceof Number) || waitFor.pollIntervalMs < 50 || waitFor.pollIntervalMs > 5000) {
+            throw new IllegalArgumentException("waitFor.pollIntervalMs must be a number between 50 and 5000 (got: ${waitFor.pollIntervalMs})")
         }
     }
     def pollArgs = [deviceId: deviceId.toString(), attribute: waitFor.attribute]
@@ -643,7 +645,19 @@ private Map _snapshotDeviceState(device, deviceLabel) {
                 if (st?.name != null) {
                     // st.date is a java.util.Date on a live hub -- format it directly
                     // (formatTimestamp has no Date branch and would mangle it via toString).
-                    snapshot[st.name] = [value: st.value, timestamp: st.date ? st.date.format("yyyy-MM-dd HH:mm:ss") : null]
+                    // Guard ONLY the date format locally: a single date that fails to format
+                    // yields timestamp:null for THAT attribute (keeping its value) instead of
+                    // discarding the whole snapshot. A structural read throw (currentStates /
+                    // name / value) still falls to the outer catch and clears to [:].
+                    def ts = null
+                    if (st.date) {
+                        try {
+                            ts = st.date.format("yyyy-MM-dd HH:mm:ss")
+                        } catch (Throwable dt) {
+                            ts = null
+                        }
+                    }
+                    snapshot[st.name] = [value: st.value, timestamp: ts]
                 }
             }
         } else {

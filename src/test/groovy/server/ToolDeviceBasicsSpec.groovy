@@ -333,6 +333,38 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.state == [:]
     }
 
+    def "toolSendCommand snapshot keeps an attribute with timestamp null when only its date format throws (other attrs intact)"() {
+        given: 'a state whose date is truthy but throws on format, alongside a clean state'
+        def goodDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
+        def explodingDate = new Object() {
+            String format(String pattern) { throw new RuntimeException('bad date') }
+        }
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getCurrentStates() >> [
+                [name: 'switch', value: 'on', date: explodingDate],
+                [name: 'level', value: 75, date: goodDate]
+            ]
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommand('10', 'on', [])
+
+        then: 'the date-only failure degrades that attribute to timestamp null, keeping its value'
+        1 * device.on()
+        result.success == true
+        result.state.switch.value == 'on'
+        result.state.switch.timestamp == null
+
+        and: 'the other attribute and its formatted timestamp survive (snapshot not discarded)'
+        result.state.level.value == 75
+        result.state.level.timestamp == '2025-01-15 10:30:00'
+    }
+
     // ---- toolSendCommand waitFor (block-poll to the resulting state) --------
 
     def "toolSendCommand with waitFor that converges reports converged + snapshot reflects the target (taken AFTER the poll)"() {
@@ -658,7 +690,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         badValue << [42, false, null, '']
     }
 
-    def "toolSendCommand waitFor with a fractional timeoutMs throws (not silently truncated)"() {
+    def "toolSendCommand waitFor with an out-of-range fractional timeoutMs throws before firing the command"() {
         given:
         def device = Spy(TestDevice) {
             getId() >> 10
@@ -669,13 +701,40 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         }
         childDevicesList << device
 
-        when: 'a fractional value that would truncate to an in-range 5000'
-        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 5000.9])
+        when: 'a fractional value above the engine ceiling (60000)'
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 60000.5])
 
-        then: 'rejected as a non-integer rather than truncated'
+        then: 'rejected out-of-range before the device is actuated'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('timeoutMs')
         0 * device.on()
+    }
+
+    def "toolSendCommand waitFor accepts an in-range non-Integer Number for timeoutMs/pollIntervalMs (#desc)"() {
+        given: 'a device that converges immediately so an accepted spec fires the command'
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+            currentValue('switch') >> 'on'
+            getCurrentStates() >> null
+        }
+        childDevicesList << device
+
+        when: 'an in-range Long / BigDecimal that the engine accepts via instanceof Number'
+        def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: t, pollIntervalMs: p])
+
+        then: 'the spec is accepted (not rejected pre-fire) and the command fires'
+        1 * device.on()
+        result.success == true
+        result.waitFor.converged == true
+
+        where:
+        desc                  | t          | p
+        'Long'                | 5000L      | 50L
+        'in-range BigDecimal' | 5000.0G    | 50.0G
     }
 
     def "toolSendCommand waitFor poll-loop exception still returns success + snapshot (command already fired)"() {
