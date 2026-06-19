@@ -2040,6 +2040,7 @@ class TestRunner:
         args = {"name": label, "confirm": True}
         if extra:
             args.update(extra)
+        created = None  # the fresh-create envelope (stays None on the 504 adopt-by-label path, which has none)
         try:
             created = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule", "args": args,
@@ -2068,6 +2069,15 @@ class TestRunner:
                 })
                 app_id = created.get("appId")
         assert app_id, f"hub_set_rule create did not yield an appId for '{label}'"
+        # When a create BUNDLES an authoring shortcut (rank-2 fold), the create arm computes
+        # success = health.ok && !partial; a degraded-but-ok trigger/action reports partial:true. Without
+        # this check that envelope is discarded, so a partial-but-ok shortcut would pass silently --
+        # restore the strict success/not-partial contract the old separate _set_rule write provided. Only
+        # on the fresh-create path (created stays None on the 504 adopt-by-label path, which has no envelope).
+        if created is not None and extra and any(k in extra for k in (
+                "addTrigger", "addTriggers", "addAction", "addActions", "addRequiredExpression")):
+            assert created.get("success") is not False and not created.get("partial"), \
+                f"create-time authoring shortcut did not fully commit (partial or failed): {created}"
         self.created_native_app_ids.append(str(app_id))
         return app_id
 
@@ -2632,6 +2642,10 @@ class TestRunner:
             blob = str(cfg).lower()
             assert "is off" in blob, \
                 f"rendered Required Expression does not show the new 'is off' condition: {str(cfg)[:600]}"
+            # The DIRECT replace call (line ~2607) bypasses the caching write helpers, so seed the cache
+            # with ITS OWN post-replace health -- else _assert_rule_healthy reads the STALE pre-replace
+            # health and the destructive delete+rebuild's health check (this assert's whole point) false-passes.
+            self._cache_write_health(app_id, result)
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
@@ -3176,6 +3190,10 @@ class TestRunner:
                     raise
                 print("    moveAction response lost to relay 504 -- same unknown-commit contract as "
                       "asyncCommitLikely; rule health below is the binding assertion")
+            # The DIRECT moveAction (and its soft/504 paths) bypasses the caching helpers and its commit
+            # may be uncertain, so clear the stale pre-move cache to FORCE a live post-move health fetch --
+            # this assert is the sole verification the reorder didn't corrupt the rule.
+            self._last_write_health = None
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
