@@ -548,11 +548,37 @@ private Map _buildWaitForPollArgs(deviceId, waitFor) {
     if (!hasExpectedValue && !hasExpectedValues) {
         throw new IllegalArgumentException("waitFor: exactly one of expectedValue or expectedValues is required")
     }
-    // Default timeout/interval here so an omitted timeoutMs uses the command-flow default
-    // (5000ms) rather than relying on the poll tool's own default; pass through explicit values.
+    // Validate every pre-checkable field HERE so a bad spec never fires the command. The
+    // numeric bounds and list-element checks below MIRROR toolPollUntilAttribute's own
+    // validation (kept there too as defense-in-depth) -- the intentional small duplication
+    // buys the pre-fire safety guarantee, since the engine's checks only run after the
+    // command has already actuated the device.
+    if (hasExpectedValues) {
+        if (!(waitFor.expectedValues instanceof List) || waitFor.expectedValues.isEmpty()) {
+            throw new IllegalArgumentException("waitFor.expectedValues must be a non-empty list of strings")
+        }
+        waitFor.expectedValues.eachWithIndex { v, i ->
+            if (!(v instanceof String)) {
+                throw new IllegalArgumentException("waitFor.expectedValues[${i}] must be a string, got: ${v}")
+            }
+        }
+    }
+    if (waitFor.containsKey("timeoutMs")) {
+        if (!(waitFor.timeoutMs instanceof Number) || (waitFor.timeoutMs as Integer) < 100 || (waitFor.timeoutMs as Integer) > 60000) {
+            throw new IllegalArgumentException("waitFor.timeoutMs must be an integer between 100 and 60000 (got: ${waitFor.timeoutMs})")
+        }
+    }
+    if (waitFor.containsKey("pollIntervalMs")) {
+        if (!(waitFor.pollIntervalMs instanceof Number) || (waitFor.pollIntervalMs as Integer) < 50 || (waitFor.pollIntervalMs as Integer) > 5000) {
+            throw new IllegalArgumentException("waitFor.pollIntervalMs must be an integer between 50 and 5000 (got: ${waitFor.pollIntervalMs})")
+        }
+    }
     def pollArgs = [deviceId: deviceId.toString(), attribute: waitFor.attribute]
     if (hasExpectedValue)  pollArgs.expectedValue  = waitFor.expectedValue
     if (hasExpectedValues) pollArgs.expectedValues = waitFor.expectedValues
+    // Default the timeout/interval here so an omitted value uses the command-flow default
+    // (5000ms) and pollIntervalMs 250ms -- the 250ms default is the post-command-flow
+    // default by intent (the engine's standalone default is 200ms); explicit values pass through.
     pollArgs.timeoutMs      = waitFor.containsKey("timeoutMs")      ? waitFor.timeoutMs      : 5000
     pollArgs.pollIntervalMs = waitFor.containsKey("pollIntervalMs") ? waitFor.pollIntervalMs : 250
     return pollArgs

@@ -359,7 +359,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.waitFor.expected == 'on'
         result.waitFor.converged == true
         result.waitFor.finalValue == 'on'
-        result.waitFor.elapsedMs != null
+        result.waitFor.elapsedMs instanceof Integer
+        result.waitFor.elapsedMs >= 0
 
         and: 'the snapshot (taken AFTER the poll) reflects the converged value'
         result.state.switch.value == 'on'
@@ -463,9 +464,9 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         when:
         script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', expectedValues: ['on']])
 
-        then:
+        then: 'the BOTH-provided path is distinguished by its own substring'
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('exactly one')
+        ex.message.contains('not both')
         0 * device.on()
     }
 
@@ -482,9 +483,104 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         when:
         script.toolSendCommand('10', 'on', [], [attribute: 'switch'])
 
+        then: 'the NEITHER-provided path is distinguished by its own substring'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('is required')
+        0 * device.on()
+    }
+
+    def "toolSendCommand waitFor with out-of-range timeoutMs throws before firing the command"() {
+        given:
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+        }
+        childDevicesList << device
+
+        when: 'timeoutMs below the engine floor (100)'
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 99])
+
+        then: 'rejected pre-fire so the device is never actuated'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('timeoutMs')
+        0 * device.on()
+    }
+
+    def "toolSendCommand waitFor with out-of-range pollIntervalMs throws before firing the command"() {
+        given:
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+        }
+        childDevicesList << device
+
+        when: 'pollIntervalMs above the engine ceiling (5000)'
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', pollIntervalMs: 5001])
+
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('exactly one')
+        ex.message.contains('pollIntervalMs')
+        0 * device.on()
+    }
+
+    def "toolSendCommand waitFor with an empty expectedValues list throws before firing the command"() {
+        given:
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+        }
+        childDevicesList << device
+
+        when:
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValues: []])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('expectedValues')
+        0 * device.on()
+    }
+
+    def "toolSendCommand waitFor that is not a Map throws before firing the command"() {
+        given:
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+        }
+        childDevicesList << device
+
+        when:
+        script.toolSendCommand('10', 'on', [], 'on')
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('waitFor must be an object')
+        0 * device.on()
+    }
+
+    def "toolSendCommand waitFor with an unknown key throws before firing the command"() {
+        given:
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+        }
+        childDevicesList << device
+
+        when:
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', bogus: 1])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('unknown key')
         0 * device.on()
     }
 
