@@ -332,6 +332,18 @@ def toolGetAppConfig(args) {
         try {
             summaryText = hubInternalGet(summaryPath, null, 30)
         } catch (Exception e) {
+            // Duck-type the HTTP status off the exception (HttpResponseException NCDFEs at parse
+            // time on the test classpath, so read e.response.status defensively). A 404/410 on the
+            // thin identity record means the app is gone (deleted/mid-delete) -- degrade to a clean
+            // not-found at warn, not an opaque ERROR.
+            def resp = null
+            try { resp = e.response } catch (Exception ig) { resp = null }
+            Integer st = null
+            try { st = resp?.status as Integer } catch (Exception ig) { st = null }
+            if (st == 404 || st == 410) {
+                mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr} not found (HTTP ${st} from ${summaryPath})")
+                return [success: false, error: "App ${appIdStr} not found (HTTP ${st} from ${summaryPath}). May be deleted, mid-delete, or a not-yet-committed install shell whose config page cannot render. Verify with hub_get_app_config(summary=true) or hub_list_apps.", appId: appIdStr as Integer, fingerprint: 'app not found (404)', status: st]
+            }
             mcpLogError("hub-admin", "hub_get_app_config summary fetch failed", e)
             return [success: false, error: "Failed to fetch app summary [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
         }
@@ -364,6 +376,18 @@ def toolGetAppConfig(args) {
     try {
         responseText = hubInternalGet(path, null, 30)
     } catch (Exception e) {
+        // Duck-type the HTTP status off the exception (HttpResponseException NCDFEs at parse
+        // time on the test classpath, so read e.response.status defensively). A 404/410 here is
+        // benign: the configure page can't render for a deleted, mid-delete, or not-yet-committed
+        // install shell -- degrade to a clean not-found at warn, not an opaque ERROR.
+        def resp = null
+        try { resp = e.response } catch (Exception ig) { resp = null }
+        Integer st = null
+        try { st = resp?.status as Integer } catch (Exception ig) { st = null }
+        if (st == 404 || st == 410) {
+            mcpLog("warn", "hub-admin", "hub_get_app_config app ${appIdStr} not found (HTTP ${st} from ${path})")
+            return [success: false, error: "App ${appIdStr} not found (HTTP ${st} from ${path}). May be deleted, mid-delete, or a not-yet-committed install shell whose config page cannot render. Verify with hub_get_app_config(summary=true) or hub_list_apps.", appId: appIdStr as Integer, fingerprint: 'app not found (404)', status: st]
+        }
         mcpLogError("hub-admin", "hub_get_app_config fetch failed", e)
         return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
     }
@@ -565,6 +589,18 @@ def toolListAppPages(args) {
     try {
         responseText = hubInternalGet(path, null, 30)
     } catch (Exception e) {
+        // Duck-type the HTTP status off the exception (HttpResponseException NCDFEs at parse
+        // time on the test classpath, so read e.response.status defensively). A 404/410 here is
+        // benign: the configure page can't render for a deleted, mid-delete, or not-yet-committed
+        // install shell -- degrade to a clean not-found at warn, not an opaque ERROR.
+        def resp = null
+        try { resp = e.response } catch (Exception ig) { resp = null }
+        Integer st = null
+        try { st = resp?.status as Integer } catch (Exception ig) { st = null }
+        if (st == 404 || st == 410) {
+            mcpLog("warn", "hub-admin", "hub_list_app_pages app ${appIdStr} not found (HTTP ${st} from ${path})")
+            return [success: false, error: "App ${appIdStr} not found (HTTP ${st} from ${path}). May be deleted, mid-delete, or a not-yet-committed install shell whose config page cannot render. Verify with hub_get_app_config(summary=true) or hub_list_apps.", appId: appIdStr as Integer, fingerprint: 'app not found (404)', status: st]
+        }
         mcpLogError("hub-admin", "hub_list_app_pages fetch failed", e)
         return [success: false, error: "Failed to fetch app config [${e.class.simpleName}]: ${e.message}", appId: appIdStr as Integer]
     }
