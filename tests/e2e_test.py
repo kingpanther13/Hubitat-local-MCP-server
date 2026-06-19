@@ -2174,6 +2174,9 @@ class TestRunner:
             "tool": "hub_set_rule", "args": {"appId": app_id, "addAction": action, "confirm": True},
         })
         assert result.get("success") is not False, f"addAction({action}) reported failure: {result}"
+        # Block CLOSERS land here -- the cache MUST reflect the now-closed (healthy) rule, else a
+        # following _assert_rule_healthy reads the stale mid-build "missing END-IF" health from the opener.
+        self._cache_write_health(app_id, result)
         return result
 
     def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine") -> None:
