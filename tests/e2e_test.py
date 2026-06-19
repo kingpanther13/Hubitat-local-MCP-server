@@ -2394,9 +2394,11 @@ class TestRunner:
         # (never a hardcoded index -- RM action/trigger indices are persistent per-rule
         # counters that survive removals).
         sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("TrigMut")
+        # Fold the first (non-index) addTrigger into the create -- one fewer round-trip; the
+        # index-returning addTrigger below still gets its own call so its triggerIndex is read.
+        app_id = self._create_native_rule(
+            "TrigMut", extra={"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
         try:
-            self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}}, strict=True)
             self._set_rule(app_id, {"addAction": {"capability": "switch", "action": "on", "deviceIds": [sw]}}, strict=True)
             self._assert_rule_healthy(app_id)
 
@@ -2726,46 +2728,43 @@ class TestRunner:
         # not appear in the bulk read for a beat -- and a fresh CREATE settles it. So each attempt
         # is create-then-poll, and on a race (create error OR poll-miss) the WHOLE create is
         # re-issued, up to a few times with short backoff. Only an exhausted retry budget fails.
-        def _create_and_wait(name: str, var_type: str) -> None:
-            self.created_variable_names.append(name)
+        def _create_vars_and_wait(items: list[dict]) -> None:
+            # Bulk-create ALL targets in ONE hub_create_variable call, then ONE shared poll until they
+            # are all visible in the bulk getAllGlobalVars() surface the setVariable validator consults.
+            # On the documented post-write visibility race (a commit that lags the bulk read, or a 504
+            # that still committed), re-issue the whole bulk create. Only an exhausted budget fails.
+            names = [it["name"] for it in items]
+            for n in names:
+                self.created_variable_names.append(n)
             max_attempts = 3
             poll_secs = 12.0
             for attempt in range(1, max_attempts + 1):
                 try:
-                    # A String var MUST get a NON-EMPTY value: an empty-string value does not
-                    # persist a String hub variable (the wizard reports complete but nothing lands
-                    # -> the var never becomes visible to getGlobalVar). Numeric vars take "0", a
-                    # Boolean takes "false", everything else a non-empty placeholder.
-                    init_value = {"Number": "0", "Boolean": "false"}.get(var_type, "init")
                     self.client.call_tool("hub_manage_variables", {
-                        "tool": "hub_create_variable",
-                        "args": {"name": name, "type": var_type, "value": init_value, "confirm": True}})
+                        "tool": "hub_create_variable", "args": {"variables": items, "confirm": True}})
                 except (McpError, McpToolError, requests.HTTPError) as exc:
-                    # A create error is itself a race symptom (or a relay 504 that still committed).
-                    # Don't fail here -- the visibility poll below is the authoritative gate; a
-                    # genuine non-creation surfaces as a poll-miss and triggers a re-create.
-                    print(f"    hub_create_variable({name}) attempt {attempt}/{max_attempts} raised "
+                    print(f"    bulk hub_create_variable attempt {attempt}/{max_attempts} raised "
                           f"({exc}); the visibility poll is authoritative")
-                # Poll the bulk getAllGlobalVars() surface (via hub_list_variables) until the new var
-                # is visible -- the SAME read the setVariable target validator consults.
                 deadline = time.time() + poll_secs
                 while time.time() < deadline:
-                    if self._hub_variable_visible_in_bulk(name):
+                    if all(self._hub_variable_visible_in_bulk(n) for n in names):
                         return
                     time.sleep(1.0)
                 if attempt < max_attempts:
-                    print(f"    hub variable {name!r} not visible in the bulk read after attempt "
-                          f"{attempt}/{max_attempts} (create_variable post-write visibility race); "
-                          f"re-issuing the create")
+                    print(f"    not all of {names} visible after attempt {attempt}/{max_attempts} "
+                          "(create_variable post-write visibility race); re-issuing the bulk create")
                     time.sleep(2.0)
             raise AssertionError(
-                f"hub variable {name!r} never appeared in the bulk getAllGlobalVars() read after "
-                f"{max_attempts} create attempts (the create_variable post-write visibility race "
-                f"did not settle) -- setVariable validation cannot proceed")
+                f"hub variables {names} never all appeared in the bulk getAllGlobalVars() read after "
+                f"{max_attempts} bulk-create attempts -- setVariable validation cannot proceed")
 
-        _create_and_wait(var_name, "Number")
-        _create_and_wait(str_var_name, "String")
-        _create_and_wait(bool_var_name, "Boolean")
+        # A String var MUST get a NON-EMPTY value (an empty string does not persist -- the wizard reports
+        # complete but nothing lands). Numeric -> "0", Boolean -> "false", String -> a non-empty placeholder.
+        _create_vars_and_wait([
+            {"name": var_name, "type": "Number", "value": "0"},
+            {"name": str_var_name, "type": "String", "value": "init"},
+            {"name": bool_var_name, "type": "Boolean", "value": "false"},
+        ])
         # The matrix is split across SMALL rules (<=3 setVariable actions each): the classic wizard
         # re-POSTs the FULL rule page per submitOnChange, so piling many actions into one rule trips
         # the hub's per-app load limiter (a 5th action lands numOp.<N> as not_in_schema). Each rule
