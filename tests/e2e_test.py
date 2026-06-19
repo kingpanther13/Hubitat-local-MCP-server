@@ -337,6 +337,9 @@ class TestRunner:
         self.client = client
         self.verbose = verbose
         self.results: list[dict] = []  # {name, group, status, message, duration}
+        # (app_id, health) the last RM write returned, so _assert_rule_healthy can assert on it without
+        # a second hub_get_rule_health round-trip. Keyed by app; cleared on a relay-dropped/soft write.
+        self._last_write_health: tuple[str, dict] | None = None
 
         # Cleanup tracking
         self.created_device_dnis: list[str] = []
@@ -2101,8 +2104,10 @@ class TestRunner:
             print(f"    hub_set_rule({list(extra)}) response lost to relay 504 -- "
                   "soft contract: verifying the rule still renders instead of hard-failing")
             self._assert_rule_renders(app_id)
+            self._last_write_health = None
             return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
         assert result.get("success") is not False, f"hub_set_rule({list(extra)}) reported failure: {result}"
+        self._cache_write_health(app_id, result)
         return result
 
     def _rm_call_soft(self, args: dict, strict: bool = False) -> Any:
@@ -2113,13 +2118,16 @@ class TestRunner:
         raises so _run_one's test-level retry re-runs the small test on a fresh rule (see
         _set_rule)."""
         try:
-            return self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
+            result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
+            self._cache_write_health(args.get("appId"), result)
+            return result
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if strict or "504" not in str(exc):
                 raise
             print(f"    hub_set_rule(appId={args.get('appId')}) response lost to relay 504 -- "
                   "soft contract: verifying rule health instead of hard-failing")
             self._assert_rule_renders(args.get("appId"))
+            self._last_write_health = None
             return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
 
     def _assert_rule_renders(self, app_id: Any) -> None:
@@ -2133,7 +2141,23 @@ class TestRunner:
             print(f"    rule {app_id} renders with structural imbalance after the dropped response "
                   "(expected mid-build state; a reset/closer follows)")
 
+    def _cache_write_health(self, app_id: Any, result: Any) -> None:
+        """Stash the health object a hub_set_rule write already returned (the SAME _rmCheckRuleHealth a
+        standalone hub_get_rule_health re-derives), keyed by app, so a following _assert_rule_healthy
+        skips the extra round-trip. Cleared on a relay-dropped/soft envelope (no health) -> live fetch."""
+        if isinstance(result, dict) and isinstance(result.get("health"), dict):
+            self._last_write_health = (str(app_id), result["health"])
+        else:
+            self._last_write_health = None
+
     def _assert_rule_healthy(self, app_id: Any) -> None:
+        # Prefer the health the immediately-preceding write already returned -- no extra round-trip.
+        # Keyed by app so a stale/other-app cache is never trusted; a soft write cleared it -> live fetch.
+        cached = self._last_write_health
+        if cached is not None and cached[0] == str(app_id):
+            assert cached[1].get("ok") is not False, \
+                f"rule health (from the write response) reports broken: {cached[1]}"
+            return
         h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
         assert h.get("ok") is not False, f"hub_get_rule_health reports the rule broken: {h}"
 
