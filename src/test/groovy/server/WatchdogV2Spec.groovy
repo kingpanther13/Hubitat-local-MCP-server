@@ -325,6 +325,45 @@ class WatchdogV2Spec extends Specification {
         r.error?.contains("did not confirm")
     }
 
+    def "adminPurgeE2eArtifacts force-deletes only BAT_E2E_ apps + removes only BAT_E2E_ vars (one local sweep)"() {
+        given:
+        // /hub2/appsList returns a mix; the purge must touch ONLY the BAT_E2E_-prefixed entries
+        // (incl. a nested child) and leave real apps alone -- the prefix is the only safety scope.
+        def appsJson = groovy.json.JsonOutput.toJson([apps: [
+            [data: [id: 100, name: "BAT_E2E_Rule1", type: "rule"], children: []],
+            [data: [id: 200, name: "Real Rule", type: "rule"], children: [
+                [data: [id: 201, name: "BAT_E2E_Child", type: "x"], children: []]]],
+        ]])
+        def forced = []
+        script.metaClass.hubGet = { String path, Map q -> path == "/hub2/appsList" ? appsJson : "" }
+        script.metaClass.hubGetStatus = { String path, Map q ->
+            if (path.startsWith("/installedapp/forcedelete/")) { forced << path; [status: 302, location: "/installedapp/list", data: null] }
+            else { [status: 404, location: null, data: null] }   // gone-check: absent
+        }
+        def removedVars = []
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_v1: [type: "string"], RealVar: [type: "string"], BAT_E2E_v2: [type: "integer"]] }
+        script.metaClass.removeGlobalVariable = { String n -> removedVars << n; true }
+
+        when:
+        def r = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        r.success == true
+        r.deletedCount == 2
+        (r.deleted*.id).collect { it as Integer }.sort() == [100, 201]
+        forced.sort() == ["/installedapp/forcedelete/100/quiet", "/installedapp/forcedelete/201/quiet"]
+        r.variablesDeletedCount == 2
+        removedVars.sort() == ["BAT_E2E_v1", "BAT_E2E_v2"]
+    }
+
+    def "adminPurgeE2eArtifacts requires confirm (never deletes without it)"() {
+        when:
+        script.adminPurgeE2eArtifacts([:])
+
+        then:
+        thrown(Exception)
+    }
+
     @Unroll
     def "adminSetAppDisabled posts the Vue wire format and trusts only the read-back (#scenario)"() {
         given:
@@ -626,6 +665,29 @@ class WatchdogV2Spec extends Specification {
         r.count == 1
         r.logs[0].message == 'boom'
         r.totalParsed == 3
+    }
+
+    def "adminGetJobs reads /logs/json and maps checkDeadman (the watchdog schedule check)"() {
+        given:
+        // hub_get_jobs reads the verified /logs/json shape (jobs / runningJobs / hubCommands, keyed by
+        // methodName) -- NOT the old non-existent /hub/scheduledJobs/json that 404'd and blinded the
+        // pre-arm checkDeadman schedule check in mcp_arm_watchdog.sh.
+        String requestedPath = null
+        script.metaClass.hubGet = { String p, Map q ->
+            requestedPath = p
+            '{"uptime":"1d","jobs":[{"name":"checkDeadman","methodName":"checkDeadman","recurring":true}],"runningJobs":[],"hubCommands":[]}'
+        }
+
+        when:
+        def r = script.adminGetJobs([:])
+
+        then: 'the schedule check reads /logs/json, never /hub/scheduledJobs/json'
+        requestedPath == '/logs/json'
+
+        and: 'checkDeadman is surfaced via job.methodName so the arm-time jq can confirm it is scheduled'
+        r.scheduledJobs.count == 1
+        r.scheduledJobs.jobs[0].method == 'checkDeadman'
+        r.hubActions.count == 0
     }
 
     def "adminListAppInstances flattens the /hub2/appsList tree with parentId"() {

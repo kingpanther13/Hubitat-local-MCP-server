@@ -3732,7 +3732,12 @@ private Map _appTypeRegistry() {
         // Rule. But its inputs are submitOnChange with no updateRule button, so
         // commitButton is null. Verified live: appName="Basic Rule-1.0",
         // parentType="Basic Rules", generic createchild -> 302 configure/<id>.
-        basic_rule: [namespace: "hubitat", appName: "Basic Rule-1.0", parentTypeName: "Basic Rules", commitButton: null]
+        basic_rule: [namespace: "hubitat", appName: "Basic Rule-1.0", parentTypeName: "Basic Rules", commitButton: null],
+        // Button Rule-5.1's page graph shifts one level (root page named
+        // selectActions, not mainPage) and it is submitOnChange with no
+        // updateRule button, so commitButton is null -- _resolveCommitButton
+        // then returns null (real verdict) instead of defaulting to "updateRule".
+        button_rule: [namespace: "hubitat", appName: "Button Rule-5.1", parentTypeName: "Button Controllers", commitButton: null]
         // button_controller, groups_scenes, notifier child appName values were
         // verified on the live hub. Room Lighting parent exists but has no
         // probed children yet -- add when needed.

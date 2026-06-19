@@ -689,6 +689,57 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/update/json" }
     }
 
+    def "_rmSubmitMainPageDone commits on the selectActions page for Button Rule-5.1 (NOT mainPage)"() {
+        given:
+        // Button Rule-5.1's root/commit page is named selectActions (playing
+        // mainPage's role). The trailing Done must GET + POST selectActions; a
+        // hardcoded mainPage logs "Cannot find page 'mainPage'" and the fetch
+        // returns done:false. Only /selectActions is registered here, so a
+        // mainPage fetch would miss and the assertions below would fail.
+        def fetched = []
+        hubGet.register('/installedapp/configure/json/710') { params ->
+            fetched << "root"
+            JsonOutput.toJson([app: [id: 710, installed: true, version: 3, appType: [name: "Button Rule-5.1", namespace: "hubitat"]],
+                               configPage: [name: "selectActions", sections: []], settings: [:]])
+        }
+        hubGet.register('/installedapp/configure/json/710/selectActions') { params ->
+            fetched << "selectActions"
+            JsonOutput.toJson([app: [id: 710, name: "Button Rule-5.1", label: "r", installed: true, version: 3,
+                                     appType: [name: "Button Rule-5.1", namespace: "hubitat"]],
+                               configPage: [name: "selectActions", install: true, error: null, sections: [
+                                   [title: "", input: [[name: "origLabel", type: "text"]]]
+                               ]],
+                               settings: [:], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/710') { statusJson(710) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def r = script._rmSubmitMainPageDone(710)
+
+        then: "the commit page (selectActions), not mainPage, is fetched and posted -- and the Done succeeds"
+        fetched.contains("selectActions")
+        def done = posts.find { it.path == "/installedapp/update/json" }
+        done != null
+        done.body.currentPage == "selectActions"
+        r.done == true
+    }
+
+    def "_appTypeRegistry registers button_rule with appName Button Rule-5.1 + commitButton null"() {
+        when:
+        def reg = script._appTypeRegistry()
+
+        then:
+        reg.button_rule == [namespace: "hubitat", appName: "Button Rule-5.1", parentTypeName: "Button Controllers", commitButton: null]
+
+        and: "_resolveCommitButton returns a real null verdict for it (submitOnChange, no updateRule button)"
+        script._resolveCommitButton("Button Rule-5.1") == null
+    }
+
     def "_rmInitSelectActionsPage falls back to the RM 5.1 page graph when the root config fetch throws"() {
         given:
         // The app-type probe (root config fetch) is wrapped in a try/catch: if it

@@ -16,7 +16,9 @@ import support.ToolSpecBase
  *  - Golden path RM rule: single-page result with note
  *  - Unknown app type: single-page result with uncurated note
  *  - Empty hub response: returns success=false
- *  - Unknown appId (hub returns {app:null}): fingerprint check fires, success=false
+ *  - Unknown appId (hub returns {app:null}): 'missing app' fingerprint, success=false
+ *  - Not-found 404/410 throw (deleted / mid-delete / install shell whose config page
+ *    can't render): clean 'app not found (404)' degrade at warn, not an opaque error
  *
  * Each direct-call feature has a parallel "via dispatch" feature that fires
  * the same tool through {@code mcpDriver.callTool} so the production
@@ -25,6 +27,18 @@ import support.ToolSpecBase
  * internals. Dispatch features are @Unroll'd across useGateways true/false.
  */
 class ToolListAppPagesSpec extends ToolSpecBase {
+
+    // An exception that carries an HTTP status the way HttpResponseException does
+    // (duck-typed via .response.status). hubInternalGet's mock responder can throw
+    // this to drive the catch-block status-detection path. Mirrors the shape used in
+    // HubInternalRetrySpec.FakeHttpException.
+    private static class FakeHttpException extends RuntimeException {
+        final def response
+        FakeHttpException(int status) {
+            super("HTTP ${status}")
+            this.response = [status: status]
+        }
+    }
 
     // Helper: build a minimal hub response for /installedapp/configure/json/<id>
     private static String makeAppJson(String appTypeName, String primaryPageName = 'mainPage', String pageTitle = 'Settings') {
@@ -404,6 +418,9 @@ class ToolListAppPagesSpec extends ToolSpecBase {
     def "returns success=false with fingerprint when hub returns app=null (unknown appId)"() {
         given:
         settingsMap.enableRead = true
+        // Hub returns a 200 body whose top-level object has app=null -- the configure page
+        // rendered but found no app (fingerprint 'missing app'), distinct from the 404/410-THROW
+        // not-found below (fingerprint 'app not found (404)') where the page never renders at all.
         hubGet.register('/installedapp/configure/json/9999') { params ->
             JsonOutput.toJson([
                 app       : null,
@@ -420,6 +437,55 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         result.success == false
         result.error != null
         result.fingerprint == 'missing app'
+    }
+
+    def "returns a clean not-found (warn, not error) when the configure page fetch throws a 404"() {
+        given:
+        settingsMap.enableRead = true
+        // A deleted / mid-delete / not-yet-committed install shell: the configure page
+        // can't render, so hubInternalGet raises an HttpResponseException-shaped 404.
+        // The tool must degrade gracefully -- structured not-found, not an opaque error.
+        hubGet.register('/installedapp/configure/json/9999') { params ->
+            throw new FakeHttpException(404)
+        }
+
+        when:
+        def result = script.toolListAppPages([appId: 9999])
+
+        then:
+        result.success == false
+        result.fingerprint == 'app not found (404)'
+        result.status == 404
+        result.appId == 9999
+        result.error.toLowerCase().contains('not found')
+        // Steers the agent to the cheap identity probe instead of dead-end retries
+        result.error.contains('summary')
+    }
+
+    @spock.lang.Unroll
+    def "hub_list_app_pages via dispatch returns a clean 404 not-found envelope (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/9999') { params ->
+            throw new FakeHttpException(404)
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_app_pages', [appId: 9999])
+
+        then: 'a graceful not-found is a normal tool result, not a transport error'
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.fingerprint == 'app not found (404)'
+        inner.status == 404
+        inner.error.toLowerCase().contains('not found')
+        inner.error.contains('summary')
+
+        where:
+        useGateways << [true, false]
     }
 
     @spock.lang.Unroll

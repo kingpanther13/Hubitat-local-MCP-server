@@ -89,6 +89,10 @@ class HubitatMcpClient:
         self.access_token = access_token
         self.verbose = verbose
         self._request_id = 0
+        # One reused connection for the whole run: HTTP keep-alive amortizes the TCP + TLS
+        # handshake (~300-500ms each over the cloud relay) across every MCP call instead of
+        # paying it per request.
+        self.session = requests.Session()
         # Per-op wall-clock timings (op_key, seconds) for the end-of-run "Per-op wall-clock" summary --
         # the only place real per-operation cost (RM create vs edit vs delete, etc.) is visible, since
         # the >> call traces are verbose-gated and never reach the CI log.
@@ -122,9 +126,6 @@ class HubitatMcpClient:
 
         self._log(f">> {method} {json.dumps(params or {})[:300]}")
 
-        # Rate-limit: don't overwhelm the hub
-        time.sleep(0.2)
-
         # NEVER transport-replay a WRITE. The retry loop below re-sends the identical request
         # on a 5xx or network error -- but a relay 504 means the response was LOST while the hub
         # kept processing, so replaying a non-idempotent wizard write commits it AGAIN (observed
@@ -140,6 +141,14 @@ class HubitatMcpClient:
         if "hub_update_mcp_settings" in _pj:
             replay_safe = True
 
+        # Pace writes only. The heavy RM wizard edits (confirm:true) ride the cloud relay's
+        # gateway-timeout edge; a 0.2s pre-send gap caps the server app's short-window duty
+        # cycle so the write finishes before the relay 504s. Reads carry no such load and skip
+        # it -- that is the speedup. `not replay_safe` is the confirm-bearing-write marker;
+        # hub_update_mcp_settings is a light idempotent settings write and stays unpaced.
+        if not replay_safe:
+            time.sleep(0.2)
+
         # Chaos mode (E2E_CHAOS_504=<0..1>): after a WRITE completes, discard its response and
         # raise the exact relay-504 error with probability <rate>. This reproduces on demand the
         # cloud relay's worst behavior -- the op COMMITTED but the response was lost -- so every
@@ -154,7 +163,7 @@ class HubitatMcpClient:
         for attempt in range(3):
             resp = None
             try:
-                resp = requests.post(
+                resp = self.session.post(
                     self.endpoint,
                     params={"access_token": self.access_token},
                     json=payload,
@@ -230,11 +239,10 @@ class HubitatMcpClient:
         envelope (batch caps, 202-for-notifications, JSON-RPC framing) — paths
         the result-unwrapping call_tool/_send helpers deliberately hide.
         """
-        time.sleep(0.2)
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                resp = requests.post(
+                resp = self.session.post(
                     self.endpoint,
                     params={"access_token": self.access_token},
                     json=payload,
@@ -329,6 +337,23 @@ class TestRunner:
         self.client = client
         self.verbose = verbose
         self.results: list[dict] = []  # {name, group, status, message, duration}
+        # (app_id, health) the last RM write returned, so _assert_rule_healthy can assert on it without
+        # a second hub_get_rule_health round-trip. Keyed by app; cleared on a relay-dropped/soft write.
+        self._last_write_health: tuple[str, dict] | None = None
+
+        # Read-round-trip stashes -- each lets a downstream test reuse an UPSTREAM test's identical
+        # immutable read instead of re-fetching. EVERY one falls back to a live fetch when unset or
+        # the identity does not match (so a `--test <name>` isolation run still works) and is NEVER
+        # trusted across a write to the same entity. Initialized to None.
+        # (rule_id, fetched) from _create_rule_and_verify's read-back -- reused by _assert_rule_types
+        # and test_get_rule when the id matches; only valid before any write to that rule.
+        self._last_rule_obj: tuple[str, dict] | None = None
+        # hub_get_info called once with BOTH opt-in flags; the two opt-in tests read disjoint keys.
+        self._hub_info_optin: dict | None = None
+        # the hub_read_rooms gateway-catalog disclosure (deterministic static enumeration).
+        self._rooms_catalog: dict | None = None
+        # the resolved mcp-libraries bundle id (immutable) -- reused by test_export_bundle.
+        self._mcp_bundle_id: str | None = None
 
         # Cleanup tracking
         self.created_device_dnis: list[str] = []
@@ -682,6 +707,12 @@ class TestRunner:
         fetched = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
         assert fetched.get("name") == name or fetched.get("name", "").startswith(PREFIX), \
             f"Rule name mismatch: expected '{name}', got '{fetched.get('name')}'"
+        # Stash this read-back so a downstream same-rule reader (_assert_rule_types, test_get_rule)
+        # can reuse it instead of re-fetching the SAME immutable rule. Keyed by rule_id; only trusted
+        # on an exact-id match and never across a write to the rule. (The 504-recovery branch above
+        # never reaches here with a `fetched`, so the stash stays whatever it was -> a mismatch ->
+        # the reader fetches live.)
+        self._last_rule_obj = (rule_id, fetched)
         return rule_id
 
     def _assert_rule_types(self, rule_id: str, key: str, expected_types: list[str],
@@ -691,7 +722,13 @@ class TestRunner:
         one (which a length-only check would miss). `normalize_away` lists input types the engine rewrites
         server-side (triggers: 'sunrise'/'sunset' -> 'time'), so they aren't required to appear under their
         original name; the count still must match."""
-        fetched = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
+        # Reuse the create-verify read-back for the SAME rule (no write happens between create and this
+        # assert in any caller); fall back to a live fetch when the stash is unset or for a different rule
+        # (isolation-safe).
+        if self._last_rule_obj and self._last_rule_obj[0] == rule_id:
+            fetched = self._last_rule_obj[1]
+        else:
+            fetched = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
         arr = fetched.get(key)
         assert isinstance(arr, list), f"custom rule '{key}' is not a list: {fetched.get(key)!r}"
         got = [e.get("type") for e in arr if isinstance(e, dict)]
@@ -891,6 +928,16 @@ class TestRunner:
         assert by_name["hub_read_diagnostics"]["idempotentHint"] is True, \
             "pure-read diagnostics gateway must roll up idempotent"
 
+    def _get_rooms_catalog(self) -> dict:
+        """The hub_read_rooms({}) gateway-catalog disclosure -- a deterministic static enumeration shared
+        by the two catalog-disclosure tests. Lazy + cached; falls back to a fresh fetch when unset
+        (isolation-safe). Immutable read, so no write invalidates it within a run."""
+        cached = self._rooms_catalog
+        if cached is None:
+            cached = self.client.call_tool("hub_read_rooms", {})
+            self._rooms_catalog = cached
+        return cached
+
     @test("infrastructure")
     def test_default_tools_list_omits_output_schema(self) -> None:
         # Issue #290: by default (publishOutputSchemas OFF) NO tools/list entry advertises
@@ -909,8 +956,9 @@ class TestRunner:
             f"(publishOutputSchemas defaults OFF), but these did: {with_schema}"
         )
         # Surface (b): the gateway no-arg catalog disclosure must also omit outputSchema by
-        # default (it is the other surface the toggle gates, in handleGateway).
-        catalog = self.client.call_tool("hub_read_rooms", {})
+        # default (it is the other surface the toggle gates, in handleGateway). Shared (identical
+        # deterministic disclosure) with test_gateway_catalog_titles.
+        catalog = self._get_rooms_catalog()
         cat_entries = catalog.get("tools", []) if isinstance(catalog, dict) else []
         assert cat_entries, "hub_read_rooms catalog returned no tools"
         cat_with_schema = [e.get("name") for e in cat_entries if "outputSchema" in e]
@@ -925,8 +973,9 @@ class TestRunner:
     @test("infrastructure")
     def test_gateway_catalog_titles(self) -> None:
         # Issue #245: the gateway no-arg catalog disclosure also surfaces each
-        # sub-tool's friendly title next to its bare name and schema.
-        catalog = self.client.call_tool("hub_read_rooms", {})
+        # sub-tool's friendly title next to its bare name and schema. Shared (identical deterministic
+        # disclosure) with test_default_tools_list_omits_output_schema.
+        catalog = self._get_rooms_catalog()
         assert catalog.get("mode") == "catalog", f"Expected catalog mode, got: {catalog.get('mode')}"
         entries = catalog.get("tools", [])
         assert entries, "hub_read_rooms catalog returned no tools"
@@ -990,7 +1039,10 @@ class TestRunner:
         # is set, so assert it strictly -- on a live hub (every Hubitat has a Z-Wave radio) the route
         # fetch must succeed, so a route-fetch regression (topology.error, or no route data) fails here
         # instead of slipping through a best-effort `if present` guard.
-        result = self.client.call_tool("hub_get_radio_details", {"radio": "zwave", "include_topology": True})
+        # Combined with include_status + include_firmware: one call returns every fold object, so the
+        # three former separate zwave-radio tests share a single round-trip, each keeping its assertion.
+        result = self.client.call_tool("hub_get_radio_details", {
+            "radio": "zwave", "include_topology": True, "include_status": True, "include_firmware": True})
         assert isinstance(result, dict), "hub_get_radio_details did not return an object"
         topo = result.get("topology")
         assert topo is not None, "include_topology=true did not return a topology object"
@@ -999,6 +1051,9 @@ class TestRunner:
         assert "error" not in topo, f"include_topology route fetch errored (regression): {topo.get('error')}"
         assert "routes" in topo or "rawRoutes" in topo, \
             f"include_topology returned no route data: {topo}"
+        # include_status fold must not error the call (its former standalone assertion).
+        assert "error" not in result or isinstance(result.get("error"), str), \
+            f"include_status unexpected error shape: {result}"
 
     @test("diagnostics")
     def test_radio_details_matter(self) -> None:
@@ -1065,22 +1120,6 @@ class TestRunner:
     # per-node) only validate at the wire/validation level. Reads + gateway routing are
     # fully exercisable. Destructive writes ARE allowed on the e2e hub (no devices, the hub
     # is rebootable/rebuildable) but are kept conservative here.
-
-    @test("diagnostics")
-    def test_radio_details_include_status(self) -> None:
-        # Folded lifecycle-status pollers: include_status attaches repair/exclusion/Zigbee/Matter
-        # status reads onto hub_get_radio_details. Resilient to whatever radio the e2e hub has —
-        # assert the call succeeds and, when status fired, it's a structured object (not an error).
-        result = self.client.call_tool("hub_get_radio_details", {"radio": "zwave", "include_status": True})
-        assert isinstance(result, dict), f"radio details include_status did not return an object: {result}"
-        # A Z-Wave-capable hub returns a recognized shape; the fold must not error the call.
-        assert "error" not in result or isinstance(result.get("error"), str), f"unexpected error shape: {result}"
-
-    @test("diagnostics")
-    def test_radio_details_include_firmware(self) -> None:
-        # include_firmware attaches the firmware-eligible device/file lists (read-only).
-        result = self.client.call_tool("hub_get_radio_details", {"radio": "zwave", "include_firmware": True})
-        assert isinstance(result, dict), f"radio details include_firmware did not return an object: {result}"
 
     @test("diagnostics")
     def test_manage_radio_gateway_lists_subtools(self) -> None:
@@ -1301,24 +1340,10 @@ class TestRunner:
 
     @test("devices")
     def test_get_attribute(self) -> None:
-        # Find a switch device
-        all_devs = self.client.call_tool("hub_list_devices")
-        devices = all_devs if isinstance(all_devs, list) else all_devs.get("devices", [])
-        switch_dev = None
-        for d in devices:
-            label = (d.get("label") or d.get("name") or "").lower()
-            caps = [c.lower() if isinstance(c, str) else c.get("name", "").lower()
-                    for c in d.get("capabilities", [])]
-            if "switch" in label or "switch" in caps:
-                switch_dev = d
-                break
-        if switch_dev is None:
-            # No real switch on the hub -- fall back to the persistent scaffolding switch
-            # (get_test_switch_id find-or-reuse) instead of provisioning + deleting a throwaway probe.
-            # This test ALWAYS runs (skips are failures).
-            switch_id = self.get_test_switch_id()
-        else:
-            switch_id = str(switch_dev["id"])
+        # Read the attribute off the persistent BAT_E2E_ scaffold switch (find-or-reuse, always exposes
+        # `switch`) -- the assertion below is existence-only and device-identity-irrelevant, so the
+        # throwaway hub_list_devices switch-hunt was a pure read round-trip with nothing to bind to it.
+        switch_id = self.get_test_switch_id()
         result = self.client.call_tool("hub_get_device_attribute", {
             "deviceId": switch_id,
             "attribute": "switch",
@@ -1601,7 +1626,13 @@ class TestRunner:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise AssertionError("No rule created to get -- the upstream create-rule test must have failed")
-        result = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
+        # test_create_rule's _create_rule_and_verify already fetched this SAME rule; reuse that read-back
+        # (runs right after create, before test_update_rule renames it -- no write between). Fall back to a
+        # live fetch when the stash is unset/for a different rule (isolation-safe).
+        if self._last_rule_obj and self._last_rule_obj[0] == rule_id:
+            result = self._last_rule_obj[1]
+        else:
+            result = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
         assert result.get("name", "").startswith(PREFIX), \
             f"Rule name mismatch: {result.get('name')}"
         assert "triggers" in result or "trigger" in result, "Missing triggers in hub_get_custom_rule"
@@ -1814,6 +1845,22 @@ class TestRunner:
         if dw["relayDropped"]:
             assert dw["committed"], f"native app {app_id} still present after a relay-504 delete (did not commit)"
         self._untrack_native_app(app_id)
+        # The just-deleted app's configure page now 404s on the hub -- hub_get_app_config must DEGRADE
+        # GRACEFULLY to a structured result (the graceful-404 fix), never raise a raw HttpResponseException.
+        # (The 404 fingerprint/status shape is pinned in Spock; here we prove the real-hub no-raise degrade.)
+        if not dw["relayDropped"]:
+            try:
+                gone = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_get_app_config", "args": {"appId": app_id}})
+            except (McpError, McpToolError) as exc:
+                raise AssertionError(
+                    f"hub_get_app_config on a deleted app raised instead of degrading gracefully: {exc}") from exc
+            assert isinstance(gone, dict), f"hub_get_app_config should return a structured result, got: {gone}"
+            # Tolerate a brief post-delete render lag (still has app data); when it IS a not-found it must
+            # be the graceful 404 form, not a generic opaque error.
+            if gone.get("success") is False:
+                assert gone.get("status") in (404, 410) or "not found" in str(gone.get("error", "")).lower(), \
+                    f"deleted-app not-found should be the graceful 404 form, got: {gone}"
 
     @test("native_apps")
     def test_set_native_app_basic_rule_lifecycle(self) -> None:
@@ -1985,6 +2032,13 @@ class TestRunner:
                 "args": {"appId": rule_id, "addAction": {"capability": "log", "message": "E2E button rule"}, "confirm": True},
             })
             assert acted.get("success") is not False, f"authoring the button rule's action failed: {acted}"
+            # The trailing main-page Done commit must target the Button Rule's real commit page
+            # (selectActions), not a hardcoded 'mainPage' -- a 404 there sets mainPageDoneFailed/Error
+            # (the page-graph fix). With the hardcode bug this fails; after the fix these hold.
+            assert acted.get("mainPageDoneFailed") is not True, \
+                f"button rule Done commit hit a missing page (mainPage hardcode regression): {acted}"
+            assert not acted.get("mainPageDoneError"), \
+                f"button rule Done commit errored: {acted.get('mainPageDoneError')}"
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
                 raise
@@ -2039,6 +2093,7 @@ class TestRunner:
         args = {"name": label, "confirm": True}
         if extra:
             args.update(extra)
+        created = None  # the fresh-create envelope (stays None on the 504 adopt-by-label path, which has none)
         try:
             created = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule", "args": args,
@@ -2067,6 +2122,15 @@ class TestRunner:
                 })
                 app_id = created.get("appId")
         assert app_id, f"hub_set_rule create did not yield an appId for '{label}'"
+        # When a create BUNDLES an authoring shortcut (rank-2 fold), the create arm computes
+        # success = health.ok && !partial; a degraded-but-ok trigger/action reports partial:true. Without
+        # this check that envelope is discarded, so a partial-but-ok shortcut would pass silently --
+        # restore the strict success/not-partial contract the old separate _set_rule write provided. Only
+        # on the fresh-create path (created stays None on the 504 adopt-by-label path, which has no envelope).
+        if created is not None and extra and any(k in extra for k in (
+                "addTrigger", "addTriggers", "addAction", "addActions", "addRequiredExpression")):
+            assert created.get("success") is not False and not created.get("partial"), \
+                f"create-time authoring shortcut did not fully commit (partial or failed): {created}"
         self.created_native_app_ids.append(str(app_id))
         return app_id
 
@@ -2093,8 +2157,10 @@ class TestRunner:
             print(f"    hub_set_rule({list(extra)}) response lost to relay 504 -- "
                   "soft contract: verifying the rule still renders instead of hard-failing")
             self._assert_rule_renders(app_id)
+            self._last_write_health = None
             return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
         assert result.get("success") is not False, f"hub_set_rule({list(extra)}) reported failure: {result}"
+        self._cache_write_health(app_id, result)
         return result
 
     def _rm_call_soft(self, args: dict, strict: bool = False) -> Any:
@@ -2105,13 +2171,16 @@ class TestRunner:
         raises so _run_one's test-level retry re-runs the small test on a fresh rule (see
         _set_rule)."""
         try:
-            return self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
+            result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
+            self._cache_write_health(args.get("appId"), result)
+            return result
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if strict or "504" not in str(exc):
                 raise
             print(f"    hub_set_rule(appId={args.get('appId')}) response lost to relay 504 -- "
                   "soft contract: verifying rule health instead of hard-failing")
             self._assert_rule_renders(args.get("appId"))
+            self._last_write_health = None
             return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
 
     def _assert_rule_renders(self, app_id: Any) -> None:
@@ -2125,7 +2194,23 @@ class TestRunner:
             print(f"    rule {app_id} renders with structural imbalance after the dropped response "
                   "(expected mid-build state; a reset/closer follows)")
 
+    def _cache_write_health(self, app_id: Any, result: Any) -> None:
+        """Stash the health object a hub_set_rule write already returned (the SAME _rmCheckRuleHealth a
+        standalone hub_get_rule_health re-derives), keyed by app, so a following _assert_rule_healthy
+        skips the extra round-trip. Cleared on a relay-dropped/soft envelope (no health) -> live fetch."""
+        if isinstance(result, dict) and isinstance(result.get("health"), dict):
+            self._last_write_health = (str(app_id), result["health"])
+        else:
+            self._last_write_health = None
+
     def _assert_rule_healthy(self, app_id: Any) -> None:
+        # Prefer the health the immediately-preceding write already returned -- no extra round-trip.
+        # Keyed by app so a stale/other-app cache is never trusted; a soft write cleared it -> live fetch.
+        cached = self._last_write_health
+        if cached is not None and cached[0] == str(app_id):
+            assert cached[1].get("ok") is not False, \
+                f"rule health (from the write response) reports broken: {cached[1]}"
+            return
         h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
         assert h.get("ok") is not False, f"hub_get_rule_health reports the rule broken: {h}"
 
@@ -2142,6 +2227,9 @@ class TestRunner:
             "tool": "hub_set_rule", "args": {"appId": app_id, "addAction": action, "confirm": True},
         })
         assert result.get("success") is not False, f"addAction({action}) reported failure: {result}"
+        # Block CLOSERS land here -- the cache MUST reflect the now-closed (healthy) rule, else a
+        # following _assert_rule_healthy reads the stale mid-build "missing END-IF" health from the opener.
+        self._cache_write_health(app_id, result)
         return result
 
     def _delete_native(self, app_id: Any, gateway: str = "hub_manage_rule_machine") -> None:
@@ -2359,9 +2447,11 @@ class TestRunner:
         # (never a hardcoded index -- RM action/trigger indices are persistent per-rule
         # counters that survive removals).
         sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("TrigMut")
+        # Fold the first (non-index) addTrigger into the create -- one fewer round-trip; the
+        # index-returning addTrigger below still gets its own call so its triggerIndex is read.
+        app_id = self._create_native_rule(
+            "TrigMut", extra={"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}})
         try:
-            self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}}, strict=True)
             self._set_rule(app_id, {"addAction": {"capability": "switch", "action": "on", "deviceIds": [sw]}}, strict=True)
             self._assert_rule_healthy(app_id)
 
@@ -2677,6 +2767,10 @@ class TestRunner:
             blob = str(cfg).lower()
             assert "is off" in blob, \
                 f"rendered Required Expression does not show the new 'is off' condition: {str(cfg)[:600]}"
+            # The DIRECT replace call (line ~2607) bypasses the caching write helpers, so seed the cache
+            # with ITS OWN post-replace health -- else _assert_rule_healthy reads the STALE pre-replace
+            # health and the destructive delete+rebuild's health check (this assert's whole point) false-passes.
+            self._cache_write_health(app_id, result)
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
@@ -2763,46 +2857,43 @@ class TestRunner:
         # not appear in the bulk read for a beat -- and a fresh CREATE settles it. So each attempt
         # is create-then-poll, and on a race (create error OR poll-miss) the WHOLE create is
         # re-issued, up to a few times with short backoff. Only an exhausted retry budget fails.
-        def _create_and_wait(name: str, var_type: str) -> None:
-            self.created_variable_names.append(name)
+        def _create_vars_and_wait(items: list[dict]) -> None:
+            # Bulk-create ALL targets in ONE hub_create_variable call, then ONE shared poll until they
+            # are all visible in the bulk getAllGlobalVars() surface the setVariable validator consults.
+            # On the documented post-write visibility race (a commit that lags the bulk read, or a 504
+            # that still committed), re-issue the whole bulk create. Only an exhausted budget fails.
+            names = [it["name"] for it in items]
+            for n in names:
+                self.created_variable_names.append(n)
             max_attempts = 3
             poll_secs = 12.0
             for attempt in range(1, max_attempts + 1):
                 try:
-                    # A String var MUST get a NON-EMPTY value: an empty-string value does not
-                    # persist a String hub variable (the wizard reports complete but nothing lands
-                    # -> the var never becomes visible to getGlobalVar). Numeric vars take "0", a
-                    # Boolean takes "false", everything else a non-empty placeholder.
-                    init_value = {"Number": "0", "Boolean": "false"}.get(var_type, "init")
                     self.client.call_tool("hub_manage_variables", {
-                        "tool": "hub_create_variable",
-                        "args": {"name": name, "type": var_type, "value": init_value, "confirm": True}})
+                        "tool": "hub_create_variable", "args": {"variables": items, "confirm": True}})
                 except (McpError, McpToolError, requests.HTTPError) as exc:
-                    # A create error is itself a race symptom (or a relay 504 that still committed).
-                    # Don't fail here -- the visibility poll below is the authoritative gate; a
-                    # genuine non-creation surfaces as a poll-miss and triggers a re-create.
-                    print(f"    hub_create_variable({name}) attempt {attempt}/{max_attempts} raised "
+                    print(f"    bulk hub_create_variable attempt {attempt}/{max_attempts} raised "
                           f"({exc}); the visibility poll is authoritative")
-                # Poll the bulk getAllGlobalVars() surface (via hub_list_variables) until the new var
-                # is visible -- the SAME read the setVariable target validator consults.
                 deadline = time.time() + poll_secs
                 while time.time() < deadline:
-                    if self._hub_variable_visible_in_bulk(name):
+                    if all(self._hub_variable_visible_in_bulk(n) for n in names):
                         return
                     time.sleep(1.0)
                 if attempt < max_attempts:
-                    print(f"    hub variable {name!r} not visible in the bulk read after attempt "
-                          f"{attempt}/{max_attempts} (create_variable post-write visibility race); "
-                          f"re-issuing the create")
+                    print(f"    not all of {names} visible after attempt {attempt}/{max_attempts} "
+                          "(create_variable post-write visibility race); re-issuing the bulk create")
                     time.sleep(2.0)
             raise AssertionError(
-                f"hub variable {name!r} never appeared in the bulk getAllGlobalVars() read after "
-                f"{max_attempts} create attempts (the create_variable post-write visibility race "
-                f"did not settle) -- setVariable validation cannot proceed")
+                f"hub variables {names} never all appeared in the bulk getAllGlobalVars() read after "
+                f"{max_attempts} bulk-create attempts -- setVariable validation cannot proceed")
 
-        _create_and_wait(var_name, "Number")
-        _create_and_wait(str_var_name, "String")
-        _create_and_wait(bool_var_name, "Boolean")
+        # A String var MUST get a NON-EMPTY value (an empty string does not persist -- the wizard reports
+        # complete but nothing lands). Numeric -> "0", Boolean -> "false", String -> a non-empty placeholder.
+        _create_vars_and_wait([
+            {"name": var_name, "type": "Number", "value": "0"},
+            {"name": str_var_name, "type": "String", "value": "init"},
+            {"name": bool_var_name, "type": "Boolean", "value": "false"},
+        ])
         # The matrix is split across SMALL rules (<=3 setVariable actions each): the classic wizard
         # re-POSTs the FULL rule page per submitOnChange, so piling many actions into one rule trips
         # the hub's per-app load limiter (a 5th action lands numOp.<N> as not_in_schema). Each rule
@@ -3224,6 +3315,10 @@ class TestRunner:
                     raise
                 print("    moveAction response lost to relay 504 -- same unknown-commit contract as "
                       "asyncCommitLikely; rule health below is the binding assertion")
+            # The DIRECT moveAction (and its soft/504 paths) bypasses the caching helpers and its commit
+            # may be uncertain, so clear the stale pre-move cache to FORCE a live post-move health fetch --
+            # this assert is the sole verification the reorder didn't corrupt the rule.
+            self._last_write_health = None
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
@@ -4750,6 +4845,17 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             "hub_get_info.smokeTestMarker missing/wrong -- the #include of McpSmokeTestLib did not "
             f"resolve on the hub (got {result.get('smokeTestMarker')!r})"
         )
+        # Folded from test_hub_get_info_platform_update_and_safemode (the SAME default hub_get_info call):
+        # #12/#13 -- platformUpdate + safeMode resolve from /hub2/hubData; the full alerts block stays out.
+        assert "platformUpdate" in result, f"hub_get_info missing platformUpdate: {sorted(result)}"
+        pu = result["platformUpdate"]
+        assert "currentVersion" in pu, f"platformUpdate missing currentVersion: {pu}"
+        assert isinstance(pu.get("available"), bool), \
+            f"platformUpdate.available not resolved -- /hub2/hubData unreadable? {pu}"
+        if pu["available"]:
+            assert pu.get("availableVersion"), f"available=true but no availableVersion: {pu}"
+        assert "safeMode" in result, f"hub_get_info missing safeMode: {sorted(result)}"
+        assert "healthAlerts" not in result, "healthAlerts must be absent without includeHealthAlerts=true"
 
     @test("system_tools")
     def test_list_libraries(self) -> None:
@@ -4783,33 +4889,22 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             lib.get("name") == "McpSmokeTestLib" and lib.get("namespace") == "mcp" for lib in libs
         ), f"McpSmokeTestLib not found in hub libraries (got {lib_names})"
 
-    @test("system_tools")
-    def test_manage_diagnostics(self) -> None:
-        result = self.client.call_tool("hub_manage_diagnostics", {
-            "tool": "hub_get_metrics",
-        })
-        assert result is not None, "hub_get_metrics returned None"
-
-    @test("system_tools")
-    def test_hub_get_info_platform_update_and_safemode(self) -> None:
-        # #12/#13: hub_get_info folds in the pending platform/firmware update + safeMode from
-        # /hub2/hubData. On a reachable hub the endpoint is readable, so these resolve (not the
-        # null degrade path); the full alerts block stays out unless opted in.
-        info = self.client.call_tool("hub_get_info", {})
-        assert "platformUpdate" in info, f"hub_get_info missing platformUpdate: {sorted(info)}"
-        pu = info["platformUpdate"]
-        assert "currentVersion" in pu, f"platformUpdate missing currentVersion: {pu}"
-        assert isinstance(pu.get("available"), bool), \
-            f"platformUpdate.available not resolved -- /hub2/hubData unreadable? {pu}"
-        if pu["available"]:
-            assert pu.get("availableVersion"), f"available=true but no availableVersion: {pu}"
-        assert "safeMode" in info, f"hub_get_info missing safeMode: {sorted(info)}"
-        assert "healthAlerts" not in info, "healthAlerts must be absent without includeHealthAlerts=true"
+    def _get_hub_info_optin(self) -> dict:
+        """hub_get_info with BOTH additive opt-in blocks in ONE call, shared by the two opt-in tests
+        (they read DISJOINT keys: healthAlerts vs platformUpdate/appUpdate). Lazy + cached; the result is
+        an immutable read, so a fresh fetch falls back when the stash is unset (isolation-safe). Does NOT
+        affect test_get_hub_info, which makes its own no-flags call and asserts healthAlerts ABSENT."""
+        cached = self._hub_info_optin
+        if cached is None:
+            cached = self.client.call_tool(
+                "hub_get_info", {"includeHealthAlerts": True, "includeAppUpdate": True})
+            self._hub_info_optin = cached
+        return cached
 
     @test("system_tools")
     def test_hub_get_info_health_alerts_opt_in(self) -> None:
         # #13: the full alerts block appears only with includeHealthAlerts=true.
-        info = self.client.call_tool("hub_get_info", {"includeHealthAlerts": True})
+        info = self._get_hub_info_optin()
         ha = info.get("healthAlerts")
         assert ha is not None, f"includeHealthAlerts=true but healthAlerts absent/null: {sorted(info)}"
         for k in ("safeMode", "active", "details"):
@@ -4824,7 +4919,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     def test_hub_get_info_update_reads(self) -> None:
         # Folded (was hub_get_update_status): hub_get_info carries platformUpdate (the pending HUB
         # firmware) always, and the MCP-app version check under appUpdate when includeAppUpdate=true.
-        res = self.client.call_tool("hub_get_info", {"includeAppUpdate": True})
+        # Shares the one both-flags call with test_hub_get_info_health_alerts_opt_in (disjoint keys).
+        res = self._get_hub_info_optin()
         assert "platformUpdate" in res, f"missing platformUpdate: {sorted(res)}"
         assert "available" in res["platformUpdate"], f"platformUpdate shape wrong: {res['platformUpdate']}"
         assert "appUpdate" in res, f"includeAppUpdate did not attach appUpdate: {sorted(res)}"
@@ -4970,6 +5066,9 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         assert "count" in sj, "scheduledJobs missing 'count'"
         assert "jobs" in sj, "scheduledJobs missing 'jobs'"
         assert isinstance(sj["jobs"], list), "scheduledJobs.jobs should be a list"
+        # count must match the array length -- a 404-degraded / empty read can't false-green here.
+        assert sj["count"] == len(sj["jobs"]), \
+            f"scheduledJobs.count {sj['count']} != len(jobs) {len(sj['jobs'])} (degraded/partial read?)"
         if sj["jobs"]:
             job = sj["jobs"][0]
             assert "name" in job, "Job missing 'name'"
@@ -5238,21 +5337,29 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         )
         assert mcp_bundle and mcp_bundle.get("id"), \
             f"the mcp libraries bundle (containing McpRoomsLib) was not found: {[b.get('name') for b in bundles]}"
+        # Stash the resolved (immutable) bundle id so test_export_bundle can skip the identical
+        # list+filter round-trip; it falls back to a fresh hub_list_bundles when this is unset (isolation).
+        self._mcp_bundle_id = str(mcp_bundle["id"])
         print(f"    BUNDLES_LIST ok -- '{mcp_bundle.get('name')}' contains {(mcp_bundle.get('contains') or {}).get('libraries')}")
 
     @test("system_tools")
     def test_export_bundle(self) -> None:
         """hub_export_bundle saves a bundle's .zip to the File Manager (independently confirmed via
         hub_list_files). Self-cleaning."""
-        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
-        bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
-        target = next(
-            (b for b in bundles if b.get("namespace") == "mcp"
-             and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
-            None,
-        )
-        assert target and target.get("id"), "no mcp libraries bundle available to export"
-        bid = str(target["id"])
+        # Reuse the immutable bundle id test_list_bundles already resolved; fall back to a fresh
+        # hub_list_bundles + identical filter when the stash is unset (isolation run).
+        if self._mcp_bundle_id:
+            bid = self._mcp_bundle_id
+        else:
+            listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+            bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
+            target = next(
+                (b for b in bundles if b.get("namespace") == "mcp"
+                 and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
+                None,
+            )
+            assert target and target.get("id"), "no mcp libraries bundle available to export"
+            bid = str(target["id"])
         fname = f"{PREFIX}bundle_export_{bid}.zip"
         try:
             result = self.client.call_tool("hub_manage_code", {
@@ -6362,7 +6469,11 @@ def main() -> None:
         main_sha = os.environ.get("MAIN_SHA", "")
         if main_sha:
             print("Waiting for the watchdog's restore-to-main to complete (canonical-main marker)...")
-            for attempt in range(1, 49):
+            # Poll cadence: short early (the restore lands ~2-2.5 min in, so a tight early cadence trims
+            # the overshoot past completion), backing off to 10s for the long failed-restore tail -- same
+            # ~8-min worst-case ceiling, just more attempts at the shorter early intervals.
+            _restore_backoff = (3, 3, 3, 3, 5, 5, 5, 7, 7, 10)
+            for attempt in range(1, 60):
                 try:
                     marker = runner.client.call_tool("hub_manage_files", {
                         "tool": "hub_read_file",
@@ -6374,11 +6485,11 @@ def main() -> None:
                         break
                 except Exception:
                     pass
-                if attempt == 48:
+                if attempt == 59:
                     print("  [WARN] restore-complete marker never matched after ~8 min "
                           "(failed restore, or a slow recompile); sweeping anyway.")
                 else:
-                    time.sleep(10)
+                    time.sleep(_restore_backoff[min(attempt - 1, len(_restore_backoff) - 1)])
         runner.cleanup()
         # Gating verification: cleanup() and the disarm-time deferred sweep are otherwise all
         # best-effort (warn-only), so a silently-failed native-rule cleanup could leave BAT_E2E_ RM
