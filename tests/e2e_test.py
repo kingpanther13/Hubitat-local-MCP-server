@@ -341,6 +341,20 @@ class TestRunner:
         # a second hub_get_rule_health round-trip. Keyed by app; cleared on a relay-dropped/soft write.
         self._last_write_health: tuple[str, dict] | None = None
 
+        # Read-round-trip stashes -- each lets a downstream test reuse an UPSTREAM test's identical
+        # immutable read instead of re-fetching. EVERY one falls back to a live fetch when unset or
+        # the identity does not match (so a `--test <name>` isolation run still works) and is NEVER
+        # trusted across a write to the same entity. Initialized to None.
+        # (rule_id, fetched) from _create_rule_and_verify's read-back -- reused by _assert_rule_types
+        # and test_get_rule when the id matches; only valid before any write to that rule.
+        self._last_rule_obj: tuple[str, dict] | None = None
+        # hub_get_info called once with BOTH opt-in flags; the two opt-in tests read disjoint keys.
+        self._hub_info_optin: dict | None = None
+        # the hub_read_rooms gateway-catalog disclosure (deterministic static enumeration).
+        self._rooms_catalog: dict | None = None
+        # the resolved mcp-libraries bundle id (immutable) -- reused by test_export_bundle.
+        self._mcp_bundle_id: str | None = None
+
         # Cleanup tracking
         self.created_device_dnis: list[str] = []
         self.created_rule_ids: list[str] = []
@@ -693,6 +707,12 @@ class TestRunner:
         fetched = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
         assert fetched.get("name") == name or fetched.get("name", "").startswith(PREFIX), \
             f"Rule name mismatch: expected '{name}', got '{fetched.get('name')}'"
+        # Stash this read-back so a downstream same-rule reader (_assert_rule_types, test_get_rule)
+        # can reuse it instead of re-fetching the SAME immutable rule. Keyed by rule_id; only trusted
+        # on an exact-id match and never across a write to the rule. (The 504-recovery branch above
+        # never reaches here with a `fetched`, so the stash stays whatever it was -> a mismatch ->
+        # the reader fetches live.)
+        self._last_rule_obj = (rule_id, fetched)
         return rule_id
 
     def _assert_rule_types(self, rule_id: str, key: str, expected_types: list[str],
@@ -702,7 +722,13 @@ class TestRunner:
         one (which a length-only check would miss). `normalize_away` lists input types the engine rewrites
         server-side (triggers: 'sunrise'/'sunset' -> 'time'), so they aren't required to appear under their
         original name; the count still must match."""
-        fetched = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
+        # Reuse the create-verify read-back for the SAME rule (no write happens between create and this
+        # assert in any caller); fall back to a live fetch when the stash is unset or for a different rule
+        # (isolation-safe).
+        if self._last_rule_obj and self._last_rule_obj[0] == rule_id:
+            fetched = self._last_rule_obj[1]
+        else:
+            fetched = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
         arr = fetched.get(key)
         assert isinstance(arr, list), f"custom rule '{key}' is not a list: {fetched.get(key)!r}"
         got = [e.get("type") for e in arr if isinstance(e, dict)]
@@ -902,6 +928,16 @@ class TestRunner:
         assert by_name["hub_read_diagnostics"]["idempotentHint"] is True, \
             "pure-read diagnostics gateway must roll up idempotent"
 
+    def _get_rooms_catalog(self) -> dict:
+        """The hub_read_rooms({}) gateway-catalog disclosure -- a deterministic static enumeration shared
+        by the two catalog-disclosure tests. Lazy + cached; falls back to a fresh fetch when unset
+        (isolation-safe). Immutable read, so no write invalidates it within a run."""
+        cached = self._rooms_catalog
+        if cached is None:
+            cached = self.client.call_tool("hub_read_rooms", {})
+            self._rooms_catalog = cached
+        return cached
+
     @test("infrastructure")
     def test_default_tools_list_omits_output_schema(self) -> None:
         # Issue #290: by default (publishOutputSchemas OFF) NO tools/list entry advertises
@@ -920,8 +956,9 @@ class TestRunner:
             f"(publishOutputSchemas defaults OFF), but these did: {with_schema}"
         )
         # Surface (b): the gateway no-arg catalog disclosure must also omit outputSchema by
-        # default (it is the other surface the toggle gates, in handleGateway).
-        catalog = self.client.call_tool("hub_read_rooms", {})
+        # default (it is the other surface the toggle gates, in handleGateway). Shared (identical
+        # deterministic disclosure) with test_gateway_catalog_titles.
+        catalog = self._get_rooms_catalog()
         cat_entries = catalog.get("tools", []) if isinstance(catalog, dict) else []
         assert cat_entries, "hub_read_rooms catalog returned no tools"
         cat_with_schema = [e.get("name") for e in cat_entries if "outputSchema" in e]
@@ -936,8 +973,9 @@ class TestRunner:
     @test("infrastructure")
     def test_gateway_catalog_titles(self) -> None:
         # Issue #245: the gateway no-arg catalog disclosure also surfaces each
-        # sub-tool's friendly title next to its bare name and schema.
-        catalog = self.client.call_tool("hub_read_rooms", {})
+        # sub-tool's friendly title next to its bare name and schema. Shared (identical deterministic
+        # disclosure) with test_default_tools_list_omits_output_schema.
+        catalog = self._get_rooms_catalog()
         assert catalog.get("mode") == "catalog", f"Expected catalog mode, got: {catalog.get('mode')}"
         entries = catalog.get("tools", [])
         assert entries, "hub_read_rooms catalog returned no tools"
@@ -1302,24 +1340,10 @@ class TestRunner:
 
     @test("devices")
     def test_get_attribute(self) -> None:
-        # Find a switch device
-        all_devs = self.client.call_tool("hub_list_devices")
-        devices = all_devs if isinstance(all_devs, list) else all_devs.get("devices", [])
-        switch_dev = None
-        for d in devices:
-            label = (d.get("label") or d.get("name") or "").lower()
-            caps = [c.lower() if isinstance(c, str) else c.get("name", "").lower()
-                    for c in d.get("capabilities", [])]
-            if "switch" in label or "switch" in caps:
-                switch_dev = d
-                break
-        if switch_dev is None:
-            # No real switch on the hub -- fall back to the persistent scaffolding switch
-            # (get_test_switch_id find-or-reuse) instead of provisioning + deleting a throwaway probe.
-            # This test ALWAYS runs (skips are failures).
-            switch_id = self.get_test_switch_id()
-        else:
-            switch_id = str(switch_dev["id"])
+        # Read the attribute off the persistent BAT_E2E_ scaffold switch (find-or-reuse, always exposes
+        # `switch`) -- the assertion below is existence-only and device-identity-irrelevant, so the
+        # throwaway hub_list_devices switch-hunt was a pure read round-trip with nothing to bind to it.
+        switch_id = self.get_test_switch_id()
         result = self.client.call_tool("hub_get_device_attribute", {
             "deviceId": switch_id,
             "attribute": "switch",
@@ -1602,7 +1626,13 @@ class TestRunner:
         rule_id = self._last_rule_id()
         if not rule_id:
             raise AssertionError("No rule created to get -- the upstream create-rule test must have failed")
-        result = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
+        # test_create_rule's _create_rule_and_verify already fetched this SAME rule; reuse that read-back
+        # (runs right after create, before test_update_rule renames it -- no write between). Fall back to a
+        # live fetch when the stash is unset/for a different rule (isolation-safe).
+        if self._last_rule_obj and self._last_rule_obj[0] == rule_id:
+            result = self._last_rule_obj[1]
+        else:
+            result = self.client.call_tool("hub_get_custom_rule", {"ruleId": rule_id})
         assert result.get("name", "").startswith(PREFIX), \
             f"Rule name mismatch: {result.get('name')}"
         assert "triggers" in result or "trigger" in result, "Missing triggers in hub_get_custom_rule"
@@ -4787,10 +4817,22 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             lib.get("name") == "McpSmokeTestLib" and lib.get("namespace") == "mcp" for lib in libs
         ), f"McpSmokeTestLib not found in hub libraries (got {lib_names})"
 
+    def _get_hub_info_optin(self) -> dict:
+        """hub_get_info with BOTH additive opt-in blocks in ONE call, shared by the two opt-in tests
+        (they read DISJOINT keys: healthAlerts vs platformUpdate/appUpdate). Lazy + cached; the result is
+        an immutable read, so a fresh fetch falls back when the stash is unset (isolation-safe). Does NOT
+        affect test_get_hub_info, which makes its own no-flags call and asserts healthAlerts ABSENT."""
+        cached = self._hub_info_optin
+        if cached is None:
+            cached = self.client.call_tool(
+                "hub_get_info", {"includeHealthAlerts": True, "includeAppUpdate": True})
+            self._hub_info_optin = cached
+        return cached
+
     @test("system_tools")
     def test_hub_get_info_health_alerts_opt_in(self) -> None:
         # #13: the full alerts block appears only with includeHealthAlerts=true.
-        info = self.client.call_tool("hub_get_info", {"includeHealthAlerts": True})
+        info = self._get_hub_info_optin()
         ha = info.get("healthAlerts")
         assert ha is not None, f"includeHealthAlerts=true but healthAlerts absent/null: {sorted(info)}"
         for k in ("safeMode", "active", "details"):
@@ -4805,7 +4847,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     def test_hub_get_info_update_reads(self) -> None:
         # Folded (was hub_get_update_status): hub_get_info carries platformUpdate (the pending HUB
         # firmware) always, and the MCP-app version check under appUpdate when includeAppUpdate=true.
-        res = self.client.call_tool("hub_get_info", {"includeAppUpdate": True})
+        # Shares the one both-flags call with test_hub_get_info_health_alerts_opt_in (disjoint keys).
+        res = self._get_hub_info_optin()
         assert "platformUpdate" in res, f"missing platformUpdate: {sorted(res)}"
         assert "available" in res["platformUpdate"], f"platformUpdate shape wrong: {res['platformUpdate']}"
         assert "appUpdate" in res, f"includeAppUpdate did not attach appUpdate: {sorted(res)}"
@@ -5222,21 +5265,29 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         )
         assert mcp_bundle and mcp_bundle.get("id"), \
             f"the mcp libraries bundle (containing McpRoomsLib) was not found: {[b.get('name') for b in bundles]}"
+        # Stash the resolved (immutable) bundle id so test_export_bundle can skip the identical
+        # list+filter round-trip; it falls back to a fresh hub_list_bundles when this is unset (isolation).
+        self._mcp_bundle_id = str(mcp_bundle["id"])
         print(f"    BUNDLES_LIST ok -- '{mcp_bundle.get('name')}' contains {(mcp_bundle.get('contains') or {}).get('libraries')}")
 
     @test("system_tools")
     def test_export_bundle(self) -> None:
         """hub_export_bundle saves a bundle's .zip to the File Manager (independently confirmed via
         hub_list_files). Self-cleaning."""
-        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
-        bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
-        target = next(
-            (b for b in bundles if b.get("namespace") == "mcp"
-             and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
-            None,
-        )
-        assert target and target.get("id"), "no mcp libraries bundle available to export"
-        bid = str(target["id"])
+        # Reuse the immutable bundle id test_list_bundles already resolved; fall back to a fresh
+        # hub_list_bundles + identical filter when the stash is unset (isolation run).
+        if self._mcp_bundle_id:
+            bid = self._mcp_bundle_id
+        else:
+            listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+            bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
+            target = next(
+                (b for b in bundles if b.get("namespace") == "mcp"
+                 and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
+                None,
+            )
+            assert target and target.get("id"), "no mcp libraries bundle available to export"
+            bid = str(target["id"])
         fname = f"{PREFIX}bundle_export_{bid}.zip"
         try:
             result = self.client.call_tool("hub_manage_code", {
