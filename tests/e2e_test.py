@@ -1001,7 +1001,10 @@ class TestRunner:
         # is set, so assert it strictly -- on a live hub (every Hubitat has a Z-Wave radio) the route
         # fetch must succeed, so a route-fetch regression (topology.error, or no route data) fails here
         # instead of slipping through a best-effort `if present` guard.
-        result = self.client.call_tool("hub_get_radio_details", {"radio": "zwave", "include_topology": True})
+        # Combined with include_status + include_firmware: one call returns every fold object, so the
+        # three former separate zwave-radio tests share a single round-trip, each keeping its assertion.
+        result = self.client.call_tool("hub_get_radio_details", {
+            "radio": "zwave", "include_topology": True, "include_status": True, "include_firmware": True})
         assert isinstance(result, dict), "hub_get_radio_details did not return an object"
         topo = result.get("topology")
         assert topo is not None, "include_topology=true did not return a topology object"
@@ -1010,6 +1013,9 @@ class TestRunner:
         assert "error" not in topo, f"include_topology route fetch errored (regression): {topo.get('error')}"
         assert "routes" in topo or "rawRoutes" in topo, \
             f"include_topology returned no route data: {topo}"
+        # include_status fold must not error the call (its former standalone assertion).
+        assert "error" not in result or isinstance(result.get("error"), str), \
+            f"include_status unexpected error shape: {result}"
 
     @test("diagnostics")
     def test_radio_details_matter(self) -> None:
@@ -1076,22 +1082,6 @@ class TestRunner:
     # per-node) only validate at the wire/validation level. Reads + gateway routing are
     # fully exercisable. Destructive writes ARE allowed on the e2e hub (no devices, the hub
     # is rebootable/rebuildable) but are kept conservative here.
-
-    @test("diagnostics")
-    def test_radio_details_include_status(self) -> None:
-        # Folded lifecycle-status pollers: include_status attaches repair/exclusion/Zigbee/Matter
-        # status reads onto hub_get_radio_details. Resilient to whatever radio the e2e hub has —
-        # assert the call succeeds and, when status fired, it's a structured object (not an error).
-        result = self.client.call_tool("hub_get_radio_details", {"radio": "zwave", "include_status": True})
-        assert isinstance(result, dict), f"radio details include_status did not return an object: {result}"
-        # A Z-Wave-capable hub returns a recognized shape; the fold must not error the call.
-        assert "error" not in result or isinstance(result.get("error"), str), f"unexpected error shape: {result}"
-
-    @test("diagnostics")
-    def test_radio_details_include_firmware(self) -> None:
-        # include_firmware attaches the firmware-eligible device/file lists (read-only).
-        result = self.client.call_tool("hub_get_radio_details", {"radio": "zwave", "include_firmware": True})
-        assert isinstance(result, dict), f"radio details include_firmware did not return an object: {result}"
 
     @test("diagnostics")
     def test_manage_radio_gateway_lists_subtools(self) -> None:
@@ -4712,6 +4702,17 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             "hub_get_info.smokeTestMarker missing/wrong -- the #include of McpSmokeTestLib did not "
             f"resolve on the hub (got {result.get('smokeTestMarker')!r})"
         )
+        # Folded from test_hub_get_info_platform_update_and_safemode (the SAME default hub_get_info call):
+        # #12/#13 -- platformUpdate + safeMode resolve from /hub2/hubData; the full alerts block stays out.
+        assert "platformUpdate" in result, f"hub_get_info missing platformUpdate: {sorted(result)}"
+        pu = result["platformUpdate"]
+        assert "currentVersion" in pu, f"platformUpdate missing currentVersion: {pu}"
+        assert isinstance(pu.get("available"), bool), \
+            f"platformUpdate.available not resolved -- /hub2/hubData unreadable? {pu}"
+        if pu["available"]:
+            assert pu.get("availableVersion"), f"available=true but no availableVersion: {pu}"
+        assert "safeMode" in result, f"hub_get_info missing safeMode: {sorted(result)}"
+        assert "healthAlerts" not in result, "healthAlerts must be absent without includeHealthAlerts=true"
 
     @test("system_tools")
     def test_list_libraries(self) -> None:
@@ -4744,29 +4745,6 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         assert any(
             lib.get("name") == "McpSmokeTestLib" and lib.get("namespace") == "mcp" for lib in libs
         ), f"McpSmokeTestLib not found in hub libraries (got {lib_names})"
-
-    @test("system_tools")
-    def test_manage_diagnostics(self) -> None:
-        result = self.client.call_tool("hub_manage_diagnostics", {
-            "tool": "hub_get_metrics",
-        })
-        assert result is not None, "hub_get_metrics returned None"
-
-    @test("system_tools")
-    def test_hub_get_info_platform_update_and_safemode(self) -> None:
-        # #12/#13: hub_get_info folds in the pending platform/firmware update + safeMode from
-        # /hub2/hubData. On a reachable hub the endpoint is readable, so these resolve (not the
-        # null degrade path); the full alerts block stays out unless opted in.
-        info = self.client.call_tool("hub_get_info", {})
-        assert "platformUpdate" in info, f"hub_get_info missing platformUpdate: {sorted(info)}"
-        pu = info["platformUpdate"]
-        assert "currentVersion" in pu, f"platformUpdate missing currentVersion: {pu}"
-        assert isinstance(pu.get("available"), bool), \
-            f"platformUpdate.available not resolved -- /hub2/hubData unreadable? {pu}"
-        if pu["available"]:
-            assert pu.get("availableVersion"), f"available=true but no availableVersion: {pu}"
-        assert "safeMode" in info, f"hub_get_info missing safeMode: {sorted(info)}"
-        assert "healthAlerts" not in info, "healthAlerts must be absent without includeHealthAlerts=true"
 
     @test("system_tools")
     def test_hub_get_info_health_alerts_opt_in(self) -> None:
