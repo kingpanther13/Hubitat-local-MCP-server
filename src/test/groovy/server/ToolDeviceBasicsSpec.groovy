@@ -282,12 +282,13 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         when:
         def result = script.toolSendCommand('10', 'on', [])
 
-        then: 'the command succeeds with an empty snapshot'
+        then: 'the command succeeds with an empty snapshot and NO stateError (legitimately empty, not a failed read)'
         result.success == true
         result.state == [:]
+        !result.containsKey('stateError')
     }
 
-    def "toolSendCommand snapshot read-back failure never breaks the command response"() {
+    def "toolSendCommand snapshot read-back failure never breaks the command response and surfaces stateError"() {
         given: 'a device whose state read throws after the command fires'
         def device = Spy(TestDevice) {
             getId() >> 10
@@ -301,10 +302,13 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         when:
         def result = script.toolSendCommand('10', 'on', [])
 
-        then: 'the command still succeeds and the snapshot degrades to an empty map'
+        then: 'the command still succeeds; state clears to empty but stateError signals the failed read (with class + message)'
         1 * device.on()
         result.success == true
         result.state == [:]
+        result.stateError?.contains('device-state read-back failed')
+        result.stateError?.contains('RuntimeException')
+        result.stateError?.contains('boom')
     }
 
     def "toolSendCommand snapshot discards the partial map when a later attribute throws mid-iteration"() {
@@ -327,10 +331,11 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         when:
         def result = script.toolSendCommand('10', 'on', [])
 
-        then: 'the partial snapshot (the switch entry built before the throw) is discarded, not leaked'
+        then: 'the partial snapshot (the switch entry built before the throw) is discarded, not leaked, and stateError marks the failed read'
         1 * device.on()
         result.success == true
         result.state == [:]
+        result.stateError?.contains('device-state read-back failed')
     }
 
     def "toolSendCommand snapshot keeps an attribute with timestamp null when only its date format throws (other attrs intact)"() {
@@ -383,7 +388,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getSupportedAttributes() >> [[name: 'switch']]
             currentValue('switch') >> { String a -> (++reads >= 2) ? 'on' : 'off' }
-            getCurrentStates() >> { -> [[name: 'switch', value: ((reads >= 2) ? 'on' : 'off'), date: stateDate]] }
+            getCurrentStates() >> { [[name: 'switch', value: ((reads >= 2) ? 'on' : 'off'), date: stateDate]] }
         }
         childDevicesList << device
 
@@ -420,11 +425,60 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         when: 'a short timeout keeps the test fast'
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 100, pollIntervalMs: 50])
 
-        then: 'the command still fired and waitFor reports non-convergence with the last value read'
+        then: 'the command still fired and waitFor reports non-convergence with the last value read, flagged timedOut'
         1 * device.on()
         result.success == true
         result.waitFor.converged == false
         result.waitFor.finalValue == 'off'
+        result.waitFor.timedOut == true
+    }
+
+    def "toolSendCommand with waitFor on an attribute that never reports flags neverReported"() {
+        given: 'a device whose attribute exists but always reads null (driver never emitted it)'
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+            currentValue('switch') >> null
+            getCurrentStates() >> null
+        }
+        childDevicesList << device
+
+        when: 'a short timeout keeps the test fast'
+        def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 100, pollIntervalMs: 50])
+
+        then: 'non-convergence is flagged neverReported (distinct from a wrong-value timeout)'
+        1 * device.on()
+        result.success == true
+        result.waitFor.converged == false
+        result.waitFor.neverReported == true
+    }
+
+    def "toolSendCommand with waitFor surfaces interrupted when the poll is interrupted (hub reload)"() {
+        given: 'a non-matching attribute so the poll reaches the sleep, where pauseExecution throws'
+        def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+            currentValue('switch') >> 'off'
+            getCurrentStates() >> [[name: 'switch', value: 'off', date: stateDate]]
+        }
+        childDevicesList << device
+        script.metaClass.pauseExecution = { long ms -> throw new InterruptedException('hub reloading') }
+
+        when:
+        def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 5000, pollIntervalMs: 250])
+
+        then: 'the command fired and the waitFor block carries the interrupt flag (not a plain timeout)'
+        1 * device.on()
+        result.success == true
+        result.waitFor.converged == false
+        result.waitFor.interrupted == true
     }
 
     def "toolSendCommand with waitFor expectedValues (list OR) converges on any member"() {
@@ -447,6 +501,28 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.waitFor.converged == true
         result.waitFor.expected == ['on', 'dim']
         result.waitFor.finalValue == 'on'
+    }
+
+    def "toolSendCommand with waitFor matches a numeric attribute against a string expectedValue"() {
+        given: 'a level attribute that reports the Number 50 while the spec awaits the string "50"'
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'setLevel'], [name: 'on']]
+            getSupportedAttributes() >> [[name: 'level']]
+            currentValue('level') >> 50
+            getCurrentStates() >> null
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommand('10', 'setLevel', [50], [attribute: 'level', expectedValue: '50'])
+
+        then: 'the engine Number-vs-String fallback matches; the converged finalValue is the numeric 50'
+        result.success == true
+        result.waitFor.converged == true
+        result.waitFor.finalValue == 50
     }
 
     def "toolSendCommand without waitFor omits the waitFor block (unchanged immediate snapshot)"() {
@@ -754,12 +830,39 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         when:
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on'])
 
-        then: 'the command succeeded, waitFor reports non-convergence with an error note, snapshot still taken'
+        then: 'the command succeeded, waitFor reports non-convergence with an error note carrying the class, snapshot still taken'
         1 * device.on()
         result.success == true
         result.waitFor.converged == false
         result.waitFor.finalValue == null
         result.waitFor.error?.contains('waitFor poll failed')
+        result.waitFor.error?.contains('RuntimeException')
+        result.state.switch.value == 'on'
+    }
+
+    def "toolSendCommand waitFor poll-loop NON-Exception throwable still returns success + snapshot (catch Throwable)"() {
+        given: 'the poll loop throws a bare Error (not an Exception) after the command fires'
+        def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+            currentValue('switch') >> { String a -> throw new StackOverflowError('deep') }
+            getCurrentStates() >> [[name: 'switch', value: 'on', date: stateDate]]
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on'])
+
+        then: 'a non-Exception Throwable does NOT escape: command still succeeds, state present, waitFor.error carries the class'
+        1 * device.on()
+        result.success == true
+        result.waitFor.converged == false
+        result.waitFor.error?.contains('waitFor poll failed')
+        result.waitFor.error?.contains('StackOverflowError')
         result.state.switch.value == 'on'
     }
 

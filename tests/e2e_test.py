@@ -1584,16 +1584,20 @@ class TestRunner:
         # AND the post-waitFor snapshot value == the target. Own throwaway device.
         dev_id = self._create_virtual_switch_device(f"{PREFIX}WaitForRT")
         assert dev_id, "Failed to create the waitFor throwaway switch"
+        # Resolve the DNI by device id and track it RIGHT AWAY as the teardown safety net,
+        # so a throw or a missed lookup below can never leave the device leaked (harmless if
+        # already deleted in the finally). Same pattern as the trigger-device tests.
         wf_dni = ""
         try:
             vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}WaitForRT"})
             for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
-                wf_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
-                if wf_dni:
-                    self.created_device_dnis.append(wf_dni)
+                if str(d.get("id")) == str(dev_id):
+                    wf_dni = str(d.get("deviceNetworkId") or d.get("dni") or "")
                     break
         except Exception:
             pass
+        if wf_dni:
+            self.created_device_dnis.append(wf_dni)
 
         try:
             # Start from a known opposite state so the command drives a real transition.

@@ -522,21 +522,37 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null) {
             if (poll.timedOut == true)      waitForBlock.timedOut = true
             if (poll.interrupted == true)   waitForBlock.interrupted = true
             if (poll.neverReported == true) waitForBlock.neverReported = true
-        } catch (Exception e) {
+        } catch (Throwable e) {
             // The command already fired; a poll-loop failure (e.g. a malformed numeric
-            // attribute) must not lose the response. Report non-convergence with an error
-            // note and still take the snapshot below.
-            mcpLog("warn", "send-command", "waitFor poll failed for ${deviceLabel}: ${e.message ?: '(no message)'}")
+            // attribute) must not lose the response. Catch Throwable -- not just Exception --
+            // for the same reason the snapshot does: a non-Exception Throwable after the
+            // device actuated must report non-convergence, not escape as a hard error that
+            // drops the state/waitFor blocks. Include the class so an NPE doesn't render as
+            // "(no message)" with no other clue. Snapshot is still taken below.
+            def cls = e.class.simpleName
+            mcpLog("warn", "send-command", "waitFor poll failed for ${deviceLabel}: ${cls}: ${e.message ?: '(no message)'}")
             waitForBlock.converged  = false
             waitForBlock.finalValue = null
-            waitForBlock.error      = "waitFor poll failed: ${e.message ?: '(no message)'}".toString()
+            waitForBlock.error      = "waitFor poll failed: ${cls}: ${e.message ?: '(no message)'}".toString()
         }
         result.waitFor = waitForBlock
     }
 
     // Snapshot AFTER any waitFor poll. Without waitFor this is the immediate (pre-effect)
-    // read; with waitFor it reflects the converged state.
-    result.state = _snapshotDeviceState(device, deviceLabel)
+    // read; with waitFor it reflects the converged state. A null return is the read-back
+    // FAILURE sentinel (distinct from a legitimately empty [:]); surface why so the agent
+    // can tell a failed confirmation read apart from a device with no readable attributes.
+    def stateErr = []
+    def snap = _snapshotDeviceState(device, deviceLabel, stateErr)
+    if (snap == null) {
+        // Genuine read-back failure: state is empty AND stateError says why, so the agent
+        // distinguishes this from a device that legitimately has no readable attributes
+        // (which returns an empty map and NO stateError).
+        result.state = [:]
+        result.stateError = "device-state read-back failed: ${stateErr ? stateErr[0] : '(no detail)'}".toString()
+    } else {
+        result.state = snap
+    }
     return result
 }
 
@@ -636,7 +652,7 @@ private String _describeValueForError(v) {
 // hub commits a command's effect AFTER that request returns, so without waitFor the value
 // here is the PRE-effect state even for virtual/local devices. The timestamp is the freshness
 // signal; waitFor (block-poll) is what makes this snapshot reflect the converged state.
-private Map _snapshotDeviceState(device, deviceLabel) {
+private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {
     def snapshot = [:]
     try {
         def states = device.currentStates
@@ -670,10 +686,15 @@ private Map _snapshotDeviceState(device, deviceLabel) {
         }
     } catch (Throwable t) {
         // Read-back must never break the command (which already fired). Discard any
-        // partial snapshot built before a mid-iteration throw so the contract holds:
-        // on failure the state map is empty, not partially populated. t.message can be null.
-        mcpLog("warn", "send-command", "Failed to snapshot device state for ${deviceLabel}: ${t.class.simpleName}: ${t.message ?: '(no message)'}")
-        return [:]
+        // partial snapshot built before a mid-iteration throw and return the null FAILURE
+        // sentinel so the caller can distinguish a failed read from a legitimately empty
+        // device. Log at error so it writes under the hub's default log level (a warn here
+        // is below default and would be invisible -- a silently-failed confirmation read).
+        // t.message can be null.
+        def detail = "${t.class.simpleName}: ${t.message ?: '(no message)'}".toString()
+        mcpLog("error", "send-command", "Failed to snapshot device state for ${deviceLabel}: ${detail}")
+        if (errOut != null) errOut << detail
+        return null
     }
     return snapshot
 }
@@ -2058,6 +2079,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         value: [type: ["string", "number", "boolean", "object", "null"], description: "Current attribute value (mixed-type across capabilities)"],
                         timestamp: [type: ["string", "null"], description: "Last-event timestamp for this attribute (yyyy-MM-dd HH:mm:ss), or null if the attribute has never reported"]
                     ]]],
+                    stateError: [type: "string", description: "Present only when the post-command state read-back threw; state is then {} (an empty state with NO stateError means the device legitimately has no readable attributes). Carries the error class and message."],
                     waitFor: [type: "object", description: "Present only when the waitFor arg was supplied: the result of block-polling the attribute to its expected value.", properties: [
                         attribute  : [type: "string", description: "Attribute that was polled"],
                         expected   : [type: ["string", "array"], description: "The expectedValue string or expectedValues list that was awaited"],
