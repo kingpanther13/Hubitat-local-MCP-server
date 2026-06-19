@@ -667,6 +667,29 @@ class WatchdogV2Spec extends Specification {
         r.totalParsed == 3
     }
 
+    def "adminGetJobs reads /logs/json and maps checkDeadman (the watchdog schedule check)"() {
+        given:
+        // hub_get_jobs reads the verified /logs/json shape (jobs / runningJobs / hubCommands, keyed by
+        // methodName) -- NOT the old non-existent /hub/scheduledJobs/json that 404'd and blinded the
+        // pre-arm checkDeadman schedule check in mcp_arm_watchdog.sh.
+        String requestedPath = null
+        script.metaClass.hubGet = { String p, Map q ->
+            requestedPath = p
+            '{"uptime":"1d","jobs":[{"name":"checkDeadman","methodName":"checkDeadman","recurring":true}],"runningJobs":[],"hubCommands":[]}'
+        }
+
+        when:
+        def r = script.adminGetJobs([:])
+
+        then: 'the schedule check reads /logs/json, never /hub/scheduledJobs/json'
+        requestedPath == '/logs/json'
+
+        and: 'checkDeadman is surfaced via job.methodName so the arm-time jq can confirm it is scheduled'
+        r.scheduledJobs.count == 1
+        r.scheduledJobs.jobs[0].method == 'checkDeadman'
+        r.hubActions.count == 0
+    }
+
     def "adminListAppInstances flattens the /hub2/appsList tree with parentId"() {
         given:
         script.metaClass.hubGet = { String p, Map q ->

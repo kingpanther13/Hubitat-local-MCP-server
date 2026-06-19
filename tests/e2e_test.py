@@ -1815,6 +1815,22 @@ class TestRunner:
         if dw["relayDropped"]:
             assert dw["committed"], f"native app {app_id} still present after a relay-504 delete (did not commit)"
         self._untrack_native_app(app_id)
+        # The just-deleted app's configure page now 404s on the hub -- hub_get_app_config must DEGRADE
+        # GRACEFULLY to a structured result (the graceful-404 fix), never raise a raw HttpResponseException.
+        # (The 404 fingerprint/status shape is pinned in Spock; here we prove the real-hub no-raise degrade.)
+        if not dw["relayDropped"]:
+            try:
+                gone = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_get_app_config", "args": {"appId": app_id}})
+            except (McpError, McpToolError) as exc:
+                raise AssertionError(
+                    f"hub_get_app_config on a deleted app raised instead of degrading gracefully: {exc}") from exc
+            assert isinstance(gone, dict), f"hub_get_app_config should return a structured result, got: {gone}"
+            # Tolerate a brief post-delete render lag (still has app data); when it IS a not-found it must
+            # be the graceful 404 form, not a generic opaque error.
+            if gone.get("success") is False:
+                assert gone.get("status") in (404, 410) or "not found" in str(gone.get("error", "")).lower(), \
+                    f"deleted-app not-found should be the graceful 404 form, got: {gone}"
 
     @test("native_apps")
     def test_set_native_app_basic_rule_lifecycle(self) -> None:
@@ -1986,6 +2002,13 @@ class TestRunner:
                 "args": {"appId": rule_id, "addAction": {"capability": "log", "message": "E2E button rule"}, "confirm": True},
             })
             assert acted.get("success") is not False, f"authoring the button rule's action failed: {acted}"
+            # The trailing main-page Done commit must target the Button Rule's real commit page
+            # (selectActions), not a hardcoded 'mainPage' -- a 404 there sets mainPageDoneFailed/Error
+            # (the page-graph fix). With the hardcode bug this fails; after the fix these hold.
+            assert acted.get("mainPageDoneFailed") is not True, \
+                f"button rule Done commit hit a missing page (mainPage hardcode regression): {acted}"
+            assert not acted.get("mainPageDoneError"), \
+                f"button rule Done commit errored: {acted.get('mainPageDoneError')}"
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
                 raise
@@ -4928,6 +4951,9 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         assert "count" in sj, "scheduledJobs missing 'count'"
         assert "jobs" in sj, "scheduledJobs missing 'jobs'"
         assert isinstance(sj["jobs"], list), "scheduledJobs.jobs should be a list"
+        # count must match the array length -- a 404-degraded / empty read can't false-green here.
+        assert sj["count"] == len(sj["jobs"]), \
+            f"scheduledJobs.count {sj['count']} != len(jobs) {len(sj['jobs'])} (degraded/partial read?)"
         if sj["jobs"]:
             job = sj["jobs"][0]
             assert "name" in job, "Job missing 'name'"

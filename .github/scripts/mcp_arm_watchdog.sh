@@ -156,11 +156,11 @@ echo "Asserting the watchdog's checkDeadman schedule is live (hub_get_jobs)..."
 if watchdog_schedule_alive; then
   echo "WATCHDOG_SCHEDULE_ALIVE checkDeadman=scheduled"
 else
-  # WARN, not HALT: hub_get_jobs is an unverified endpoint (the /hub/scheduledJobs/json shape may differ
-  # by firmware), and the disarm-restore poll later is the REAL proof the timer fires. The health check
-  # already proved the watchdog is serving, and it was freshly installed (initialize() ran its
-  # runEvery1Minute), so proceed to arm rather than block on a possibly-false-negative schedule read.
-  echo "::warning::Could not confirm a live 'checkDeadman' scheduled job via hub_get_jobs (the /hub/scheduledJobs/json shape may differ on this firmware). Proceeding to arm -- the disarm-restore poll will surface a genuinely-dead timer. If the dead-man never fires, re-check the watchdog's runEvery1Minute schedule."
+  # WARN, not HALT: hub_get_jobs reads the verified /logs/json endpoint, but the disarm-restore poll
+  # later is the REAL proof the timer fires. The health check already proved the watchdog is serving,
+  # and it was freshly installed (initialize() ran its runEvery1Minute), so a transient empty/slow jobs
+  # read shouldn't block the arm -- proceed rather than block on a possibly-false-negative schedule read.
+  echo "::warning::Could not confirm a live 'checkDeadman' scheduled job via hub_get_jobs (read from /logs/json). Proceeding to arm -- the disarm-restore poll will surface a genuinely-dead timer. If the dead-man never fires, re-check the watchdog's runEvery1Minute schedule."
 fi
 
 # --- 2c) Record canonical-main install URLs + identities into the restore manifest (no hub install) ---

@@ -26,6 +26,15 @@ class RadioGatewaySpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = 1234567890000L  // matches the harness's fixed now()
     }
 
+    /** Carries an HTTP status the way HttpResponseException does (duck-typed e.response.status). */
+    private static class FakeHttpException extends RuntimeException {
+        final def response
+        FakeHttpException(int status) {
+            super("HTTP ${status}")
+            this.response = [status: status]
+        }
+    }
+
     private Map gw() { script.getGatewayConfig() }
     private List allNames() { script.getAllToolDefinitions()*.name }
 
@@ -566,6 +575,44 @@ class RadioGatewaySpec extends ToolSpecBase {
         r.success == true
         r.rebuildNetworkOnReboot == true
         r.inactiveDevicePingEnabled == true   // preserved from current state
+    }
+
+    def "hub_set_zigbee settings 404 (no Zigbee radio) names an absent radio, not a credential problem"() {
+        given:
+        // Current state reads fine; the updateSettings write 404s -- on the e2e hub that means
+        // the Zigbee radio is absent/disabled, NOT a Hub Security credential failure.
+        hubGet.register('/hub/zigbeeDetails/json') { p -> JsonOutput.toJson([rebuildNetworkOnReboot: false, inactiveDevicePingEnabled: false]) }
+        hubGet.register('/hub/zigbee/updateSettings?rebuildNetworkOnReboot=true&inactiveDevicePingEnabled=false') { p ->
+            throw new FakeHttpException(404)
+        }
+
+        when:
+        def r = script.toolSetZigbee([rebuild_on_reboot: true])
+
+        then:
+        r.success == false
+        // (a) the requested path is EXACTLY the zigbee updateSettings path with both query flags
+        hubGet.calls*.path.contains('/hub/zigbee/updateSettings?rebuildNetworkOnReboot=true&inactiveDevicePingEnabled=false')
+        // (b) the note names an absent Zigbee radio and does NOT mislead toward credentials
+        r.note?.contains('Zigbee radio')
+        r.note?.toLowerCase()?.contains('absent')
+        !r.note?.toLowerCase()?.contains('credential')
+    }
+
+    def "hub_set_zigbee settings non-404 fault keeps the Hub Security credential hint"() {
+        given:
+        hubGet.register('/hub/zigbeeDetails/json') { p -> JsonOutput.toJson([rebuildNetworkOnReboot: false, inactiveDevicePingEnabled: false]) }
+        hubGet.register('/hub/zigbee/updateSettings?rebuildNetworkOnReboot=true&inactiveDevicePingEnabled=false') { p ->
+            throw new FakeHttpException(403)   // auth-class fault -> credential hint stays
+        }
+
+        when:
+        def r = script.toolSetZigbee([rebuild_on_reboot: true])
+
+        then:
+        r.success == false
+        r.note?.toLowerCase()?.contains('credential')
+        !r.note?.contains('Zigbee radio')
     }
 
     def "hub_set_zigbee ping_device toggles per-device keep-alive ping"() {

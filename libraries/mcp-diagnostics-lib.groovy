@@ -1489,7 +1489,17 @@ def toolSetZigbee(args) {
                     message: "Zigbee radio settings updated.", response: resp]
         } catch (Exception e) {
             mcpLogError("hub-admin", "Zigbee settings update failed", e)
-            return [success: false, error: "Zigbee settings update failed: ${e.message}", note: "Check Hub Security credentials."]
+            // Duck-type the HTTP status (e.response.status names HttpResponseException NCDFEs at
+            // parse time on the test classpath). A 404 on this path most often means the hub has
+            // no Zigbee radio at all, not a credential failure -- steer the note accordingly.
+            def resp = null
+            try { resp = e.response } catch (Exception ignore) { resp = null }
+            Integer st = null
+            try { st = resp?.status as Integer } catch (Exception ignore) { st = null }
+            def note = (st == 404)
+                ? "A 404 here usually means this hub has no active Zigbee radio (absent/disabled). Verify via hub_get_radio_details(radio='zigbee')."
+                : "Check Hub Security credentials."
+            return [success: false, error: "Zigbee settings update failed: ${e.message}", note: note]
         }
     }
 

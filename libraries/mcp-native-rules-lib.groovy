@@ -3889,11 +3889,32 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
 // commitButton:null app types (Basic Rule, Button Controller) the Done
 // is the session's ONLY lifecycle event, so a silent miss matters there.
 private Map _rmSubmitMainPageDone(Integer appId) {
+    // Most app types commit on mainPage -- fetch it directly so the common path stays a SINGLE config
+    // render (no per-edit regression). Button Rule-5.1's commit page is 'selectActions' instead, so a
+    // mainPage fetch fails there ("Cannot find page 'mainPage'"); ONLY on that miss do we probe the app
+    // type from the root config and retry on the resolved page (mirrors _rmInitSelectActionsPage).
+    def commitPage = "mainPage"
     def cfg
-    try { cfg = _rmFetchConfigJson(appId, "mainPage") }
-    catch (Exception fetchExc) {
-        mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: mainPage fetch failed for app ${appId} (${fetchExc.message}) -- skipping Done click; lingering state markers (state.editAct/state.editCond) may corrupt subsequent edits")
-        return [done: false, reason: "mainPage fetch failed: ${fetchExc.message}".toString()]
+    try {
+        cfg = _rmFetchConfigJson(appId, commitPage)
+    } catch (Exception mainExc) {
+        String resolved = null
+        try {
+            def rootCfg = _rmFetchConfigJson(appId)
+            if (rootCfg?.app?.appType?.name == "Button Rule-5.1") resolved = "selectActions"
+        } catch (Exception probeExc) {
+            mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: page-graph probe failed for app ${appId} after a mainPage miss (${probeExc.message})")
+        }
+        if (resolved == null) {
+            mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: mainPage fetch failed for app ${appId} (${mainExc.message}) -- skipping Done click; lingering state markers (state.editAct/state.editCond) may corrupt subsequent edits")
+            return [done: false, reason: "mainPage fetch failed: ${mainExc.message}".toString()]
+        }
+        commitPage = resolved
+        try { cfg = _rmFetchConfigJson(appId, commitPage) }
+        catch (Exception reExc) {
+            mcpLog("warn", "rm-native", "_rmSubmitMainPageDone: ${commitPage} fetch failed for app ${appId} (${reExc.message}) -- skipping Done click")
+            return [done: false, reason: "${commitPage} fetch failed: ${reExc.message}".toString()]
+        }
     }
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def status
@@ -3920,7 +3941,7 @@ private Map _rmSubmitMainPageDone(Integer appId) {
     }
     def body = _rmBuildSettingsBody(appId, settingsMap, schema)
     body.formAction = "update"
-    body.currentPage = "mainPage"
+    body.currentPage = commitPage
     body._action_update = "Done"
     body.pageBreadcrumbs = "[]"
     schema.each { name, meta ->
