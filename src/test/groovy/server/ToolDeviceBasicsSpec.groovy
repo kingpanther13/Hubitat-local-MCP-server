@@ -335,22 +335,28 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
 
     // ---- toolSendCommand waitFor (block-poll to the resulting state) --------
 
-    def "toolSendCommand with waitFor that converges reports converged + snapshot reflects the target"() {
-        given: 'a device whose switch already reads the target value so the poll matches on the first read'
+    def "toolSendCommand with waitFor that converges reports converged + snapshot reflects the target (taken AFTER the poll)"() {
+        given: 'a device whose switch is OFF until the poll runs, then converges to ON'
+        // Stateful: currentValue reads off on the first poll read, then on -- and
+        // currentStates DERIVES from the live currentValue. So a snapshot taken BEFORE the
+        // poll would read off; taken AFTER (the production order) it reads the converged on.
+        // This makes the "snapshot reflects the converged value" assertion non-vacuous: it
+        // would FAIL if the snapshot were moved ahead of the poll.
         def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
+        def reads = 0
         def device = Spy(TestDevice) {
             getId() >> 10
             getName() >> 'TestSwitch'
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getSupportedAttributes() >> [[name: 'switch']]
-            currentValue('switch') >> 'on'
-            getCurrentStates() >> [[name: 'switch', value: 'on', date: stateDate]]
+            currentValue('switch') >> { String a -> (++reads >= 2) ? 'on' : 'off' }
+            getCurrentStates() >> { -> [[name: 'switch', value: ((reads >= 2) ? 'on' : 'off'), date: stateDate]] }
         }
         childDevicesList << device
 
         when:
-        def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on'])
+        def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 5000, pollIntervalMs: 50])
 
         then: 'the command fired and the waitFor block reports convergence'
         1 * device.on()
@@ -362,7 +368,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.waitFor.elapsedMs instanceof Integer
         result.waitFor.elapsedMs >= 0
 
-        and: 'the snapshot (taken AFTER the poll) reflects the converged value'
+        and: 'the snapshot taken AFTER the poll reflects the converged value (not the pre-poll off)'
         result.state.switch.value == 'on'
     }
 
@@ -458,6 +464,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getName() >> 'TestSwitch'
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
 
@@ -477,6 +484,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getName() >> 'TestSwitch'
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
 
@@ -496,6 +504,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getName() >> 'TestSwitch'
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
 
@@ -515,6 +524,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getName() >> 'TestSwitch'
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
 
@@ -534,6 +544,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getName() >> 'TestSwitch'
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
         }
         childDevicesList << device
 
@@ -582,6 +593,115 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('unknown key')
         0 * device.on()
+    }
+
+    def "toolSendCommand waitFor with an unsupported attribute throws before firing the command"() {
+        given: 'the device does not support the requested waitFor attribute'
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+        }
+        childDevicesList << device
+
+        when:
+        script.toolSendCommand('10', 'on', [], [attribute: 'level', expectedValue: '50'])
+
+        then: 'rejected pre-fire so the device is never actuated'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("waitFor.attribute 'level' not found")
+        0 * device.on()
+    }
+
+    def "toolSendCommand waitFor with a blank attribute throws before firing the command"() {
+        given:
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+        }
+        childDevicesList << device
+
+        when:
+        script.toolSendCommand('10', 'on', [], [attribute: '   ', expectedValue: 'on'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('waitFor.attribute is required')
+        0 * device.on()
+    }
+
+    @spock.lang.Unroll
+    def "toolSendCommand waitFor with a non-string/empty expectedValue throws before firing the command (#badValue)"() {
+        given:
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+        }
+        childDevicesList << device
+
+        when:
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: badValue])
+
+        then: 'rejected pre-fire -- a non-String or empty scalar never reaches the device'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('waitFor.expectedValue')
+        0 * device.on()
+
+        where: 'integer, boolean, null, and empty-string all rejected'
+        badValue << [42, false, null, '']
+    }
+
+    def "toolSendCommand waitFor with a fractional timeoutMs throws (not silently truncated)"() {
+        given:
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+        }
+        childDevicesList << device
+
+        when: 'a fractional value that would truncate to an in-range 5000'
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 5000.9])
+
+        then: 'rejected as a non-integer rather than truncated'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('timeoutMs')
+        0 * device.on()
+    }
+
+    def "toolSendCommand waitFor poll-loop exception still returns success + snapshot (command already fired)"() {
+        given: 'the poll loop throws after the command fires (e.g. a malformed read)'
+        def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+            currentValue('switch') >> { String a -> throw new RuntimeException('read exploded') }
+            getCurrentStates() >> [[name: 'switch', value: 'on', date: stateDate]]
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on'])
+
+        then: 'the command succeeded, waitFor reports non-convergence with an error note, snapshot still taken'
+        1 * device.on()
+        result.success == true
+        result.waitFor.converged == false
+        result.waitFor.finalValue == null
+        result.waitFor.error?.contains('waitFor poll failed')
+        result.state.switch.value == 'on'
     }
 
     @spock.lang.Unroll

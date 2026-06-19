@@ -48,7 +48,7 @@ Use `hub_call_device_command` with the device ID and command name. Common comman
 
 Always check the device's `supportedCommands` (from `hub_get_device`) before sending commands.
 
-`hub_call_device_command` returns a `state` snapshot — a map keyed by attribute name, each entry `{value, timestamp}` — read AS OF the command. This snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value (even for virtual/local devices) because the hub commits the change after the request returns; the per-attribute `timestamp` is the freshness signal.
+`hub_call_device_command` returns a `state` snapshot — a map keyed by attribute name, each entry `{value, timestamp}` — read AS OF the command. This snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value (even for virtual/local devices) because the hub commits the change after the request returns; the per-attribute `timestamp` is the freshness signal (`null` if that attribute has never emitted an event). `state` is `{}` when the device exposes no readable attributes, or if the read-back fails — the command itself still succeeds in either case.
 
 To get the CONFIRMED resulting state in the same call, pass `waitFor`: `hub_call_device_command(deviceId, command="on", waitFor={attribute:"switch", expectedValue:"on", timeoutMs:5000})`. It block-polls the attribute until it converges (or times out), then the `state` snapshot reflects the converged value and a `waitFor` result block reports `{attribute, expected, converged, finalValue, elapsedMs}`. Provide exactly one of `expectedValue` or `expectedValues` (OR semantics for the list). `timeoutMs` is MILLISECONDS (default 5000, max 60000).
 

@@ -487,7 +487,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null) {
 
     // Validate waitFor BEFORE firing the command so a bad spec fails the call without
     // a side effect (the command would otherwise have already actuated the device).
-    def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, waitFor) : null
+    def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, device, deviceLabel, waitFor) : null
 
     if (parameters && parameters.size() > 0) {
         // Normalize parameters to a flat List of properly typed values
@@ -508,14 +508,30 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null) {
         // Block-poll until the attribute converges (or times out), then snapshot, so the
         // state reflects the RESULTING (converged) value -- the immediate snapshot alone
         // is pre-effect because the hub commits the change after this request returns.
-        def poll = toolPollUntilAttribute(pollArgs)
-        result.waitFor = [
-            attribute  : pollArgs.attribute,
-            expected   : (pollArgs.containsKey("expectedValues") ? pollArgs.expectedValues : pollArgs.expectedValue),
-            converged  : poll.success == true,
-            finalValue : poll.finalValue,
-            elapsedMs  : poll.elapsedMs
+        def waitForBlock = [
+            attribute: pollArgs.attribute,
+            expected : (pollArgs.containsKey("expectedValues") ? pollArgs.expectedValues : pollArgs.expectedValue)
         ]
+        try {
+            def poll = toolPollUntilAttribute(pollArgs)
+            waitForBlock.converged  = poll.success == true
+            waitForBlock.finalValue = poll.finalValue
+            waitForBlock.elapsedMs  = poll.elapsedMs
+            // Surface the engine's diagnostic flags when present so the caller can tell a
+            // plain timeout apart from a hub-reload interrupt or a never-reported attribute.
+            if (poll.timedOut == true)      waitForBlock.timedOut = true
+            if (poll.interrupted == true)   waitForBlock.interrupted = true
+            if (poll.neverReported == true) waitForBlock.neverReported = true
+        } catch (Exception e) {
+            // The command already fired; a poll-loop failure (e.g. a malformed numeric
+            // attribute) must not lose the response. Report non-convergence with an error
+            // note and still take the snapshot below.
+            mcpLog("warn", "send-command", "waitFor poll failed for ${deviceLabel}: ${e.message ?: '(no message)'}")
+            waitForBlock.converged  = false
+            waitForBlock.finalValue = null
+            waitForBlock.error      = "waitFor poll failed: ${e.message ?: '(no message)'}".toString()
+        }
+        result.waitFor = waitForBlock
     }
 
     // Snapshot AFTER any waitFor poll. Without waitFor this is the immediate (pre-effect)
@@ -525,20 +541,25 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null) {
 }
 
 // Validate a waitFor spec and translate it into a toolPollUntilAttribute args map, reusing
-// that tool's block-poll engine + numeric bounds rather than reinventing the loop. Throws
-// IllegalArgumentException on a bad spec (attribute required; exactly one of expectedValue /
-// expectedValues; the poll engine enforces the remaining type + numeric-range checks).
-private Map _buildWaitForPollArgs(deviceId, waitFor) {
+// that tool's block-poll engine for the runtime poll behavior. This validator fully covers
+// shape, type, numeric-range, and attribute-existence so a bad spec is rejected BEFORE the
+// command fires (the poll engine repeats these checks as defense-in-depth, but its run is
+// post-fire, so completing them here is what buys the no-side-effect-on-bad-spec guarantee).
+private Map _buildWaitForPollArgs(deviceId, device, deviceLabel, waitFor) {
     if (!(waitFor instanceof Map)) {
         throw new IllegalArgumentException("waitFor must be an object with at least attribute and expectedValue/expectedValues")
     }
     def validKeys = ["attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs"] as Set
     def unknownKeys = (waitFor.keySet() - validKeys).sort()
     if (unknownKeys) {
-        throw new IllegalArgumentException("waitFor has unknown key(s): ${unknownKeys}. Valid keys: ${validKeys.sort()}")
+        throw new IllegalArgumentException("waitFor has unknown key(s): ${unknownKeys.join(', ')}. Valid keys: ${validKeys.sort().join(', ')}")
     }
-    if (!(waitFor.attribute instanceof String) || !waitFor.attribute) {
+    if (!(waitFor.attribute instanceof String) || !waitFor.attribute.trim()) {
         throw new IllegalArgumentException("waitFor.attribute is required and must be a non-empty string")
+    }
+    def supportedAttrs = device.supportedAttributes?.collect { it.name } ?: []
+    if (!supportedAttrs.contains(waitFor.attribute)) {
+        throw new IllegalArgumentException("waitFor.attribute '${waitFor.attribute}' not found on device '${deviceLabel}'. Available: ${supportedAttrs.join(', ')}")
     }
     def hasExpectedValue  = waitFor.containsKey("expectedValue")
     def hasExpectedValues = waitFor.containsKey("expectedValues")
@@ -548,28 +569,33 @@ private Map _buildWaitForPollArgs(deviceId, waitFor) {
     if (!hasExpectedValue && !hasExpectedValues) {
         throw new IllegalArgumentException("waitFor: exactly one of expectedValue or expectedValues is required")
     }
-    // Validate every pre-checkable field HERE so a bad spec never fires the command. The
-    // numeric bounds and list-element checks below MIRROR toolPollUntilAttribute's own
-    // validation (kept there too as defense-in-depth) -- the intentional small duplication
-    // buys the pre-fire safety guarantee, since the engine's checks only run after the
-    // command has already actuated the device.
+    // Validate every pre-checkable field HERE so a bad spec never fires the command.
+    // The numeric bounds below MIRROR toolPollUntilAttribute's bounds -- keep in sync with
+    // toolPollUntilAttribute's range checks (intentional small duplication for the pre-fire guarantee).
+    if (hasExpectedValue) {
+        if (!(waitFor.expectedValue instanceof String) || !waitFor.expectedValue) {
+            throw new IllegalArgumentException("waitFor.expectedValue must be a non-empty string (got: ${_describeValueForError(waitFor.expectedValue)})")
+        }
+    }
     if (hasExpectedValues) {
         if (!(waitFor.expectedValues instanceof List) || waitFor.expectedValues.isEmpty()) {
             throw new IllegalArgumentException("waitFor.expectedValues must be a non-empty list of strings")
         }
         waitFor.expectedValues.eachWithIndex { v, i ->
             if (!(v instanceof String)) {
-                throw new IllegalArgumentException("waitFor.expectedValues[${i}] must be a string, got: ${v}")
+                throw new IllegalArgumentException("waitFor.expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
             }
         }
     }
+    // Require Integer (not any Number) so a fractional value is rejected with an honest
+    // message rather than silently truncated by `as Integer` (e.g. 99.9 -> 99).
     if (waitFor.containsKey("timeoutMs")) {
-        if (!(waitFor.timeoutMs instanceof Number) || (waitFor.timeoutMs as Integer) < 100 || (waitFor.timeoutMs as Integer) > 60000) {
+        if (!(waitFor.timeoutMs instanceof Integer) || waitFor.timeoutMs < 100 || waitFor.timeoutMs > 60000) {
             throw new IllegalArgumentException("waitFor.timeoutMs must be an integer between 100 and 60000 (got: ${waitFor.timeoutMs})")
         }
     }
     if (waitFor.containsKey("pollIntervalMs")) {
-        if (!(waitFor.pollIntervalMs instanceof Number) || (waitFor.pollIntervalMs as Integer) < 50 || (waitFor.pollIntervalMs as Integer) > 5000) {
+        if (!(waitFor.pollIntervalMs instanceof Integer) || waitFor.pollIntervalMs < 50 || waitFor.pollIntervalMs > 5000) {
             throw new IllegalArgumentException("waitFor.pollIntervalMs must be an integer between 50 and 5000 (got: ${waitFor.pollIntervalMs})")
         }
     }
@@ -582,6 +608,21 @@ private Map _buildWaitForPollArgs(deviceId, waitFor) {
     pollArgs.timeoutMs      = waitFor.containsKey("timeoutMs")      ? waitFor.timeoutMs      : 5000
     pollArgs.pollIntervalMs = waitFor.containsKey("pollIntervalMs") ? waitFor.pollIntervalMs : 250
     return pollArgs
+}
+
+// Render a value plus a coarse runtime-type label for a validation error message. Uses
+// instanceof rather than getClass() (reflection is blocked in the Hubitat sandbox), so the
+// label is a small fixed vocabulary -- enough to tell a caller "you passed a number/boolean
+// where a string was required" without naming the exact JVM class.
+private String _describeValueForError(v) {
+    def typeLabel = (v == null) ? "null"
+        : (v instanceof String)  ? "string"
+        : (v instanceof Boolean) ? "boolean"
+        : (v instanceof Number)  ? "number"
+        : (v instanceof List)    ? "list"
+        : (v instanceof Map)     ? "object"
+        : "value"
+    return (v == null) ? "null" : "${v} (${typeLabel})"
 }
 
 // Compact current-state snapshot for a command response: per attribute, its current
@@ -792,7 +833,8 @@ def toolPollUntilAttribute(args) {
         }
     }
 
-    // 4. Validate timeoutMs
+    // 4. Validate timeoutMs.
+    // Range [100,60000]: keep in sync with _buildWaitForPollArgs's pre-fire mirror of these bounds.
     if (args.containsKey("timeoutMs") && args.timeoutMs == null) {
         throw new IllegalArgumentException("timeoutMs must not be null (omit the arg to use default 5000ms)")
     }
@@ -805,7 +847,8 @@ def toolPollUntilAttribute(args) {
         throw new IllegalArgumentException("timeoutMs must be between 100 and 60000 (got: ${timeoutMs})")
     }
 
-    // 5. Validate pollIntervalMs, clamp to timeoutMs if larger
+    // 5. Validate pollIntervalMs, clamp to timeoutMs if larger.
+    // Range [50,5000]: keep in sync with _buildWaitForPollArgs's pre-fire mirror of these bounds.
     if (args.containsKey("pollIntervalMs") && args.pollIntervalMs == null) {
         throw new IllegalArgumentException("pollIntervalMs must not be null (omit the arg to use default 200ms)")
     }
@@ -1949,7 +1992,7 @@ Only query devices the user has mentioned or that are relevant to their request.
                     expectedValue: [type: "string", description: "If set, block-poll until currentValue equals this string. Enables poll mode.[[FLAT_TRIM]] At least one of expectedValue/expectedValues enables polling.[[/FLAT_TRIM]]"],
                     expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue is any of these strings (OR with expectedValue). Enables poll mode."],
                     timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
-                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.", default: 200, minimum: 50, maximum: 5000]
+                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
                 ],
                 required: ["deviceId", "attribute"]
             ],
@@ -1985,7 +2028,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         expectedValue: [type: "string", description: "Block-poll until currentValue equals this string. Provide exactly one of expectedValue or expectedValues."],
                         expectedValues: [type: "array", items: [type: "string"], description: "Block-poll until currentValue is any of these strings (OR semantics). Provide exactly one of expectedValue or expectedValues."],
                         timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 60000.", default: 5000, minimum: 100, maximum: 60000],
-                        pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250, min 50, max 5000. Clamped to timeoutMs if larger.", default: 250, minimum: 50, maximum: 5000]
+                        pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250 (higher than hub_get_device_attribute's 200 because a post-command poll follows a write -- wider spacing reduces read contention), min 50, max 5000. Clamped to timeoutMs if larger.", default: 250, minimum: 50, maximum: 5000]
                     ], required: ["attribute"]]
                 ],
                 required: ["deviceId", "command"]
@@ -2003,10 +2046,14 @@ If no exact device match: suggest similar devices and get user confirmation befo
                     ]]],
                     waitFor: [type: "object", description: "Present only when the waitFor arg was supplied: the result of block-polling the attribute to its expected value.", properties: [
                         attribute  : [type: "string", description: "Attribute that was polled"],
-                        expected   : [description: "The expectedValue string or expectedValues list that was awaited"],
-                        converged  : [type: "boolean", description: "True if the attribute reached an expected value before timeout"],
-                        finalValue : [description: "Last value read (the converged value when converged=true, else the last non-matching read)"],
-                        elapsedMs  : [type: "integer", description: "Time spent polling, in milliseconds"]
+                        expected   : [type: ["string", "array"], description: "The expectedValue string or expectedValues list that was awaited"],
+                        converged  : [type: "boolean", description: "True if the attribute reached an expected value; false on timeout OR a hub-reload interrupt OR a poll error (see timedOut/interrupted/error)"],
+                        finalValue : [type: ["string", "number", "boolean", "object", "null"], description: "Last value read (the converged value when converged=true, else the last non-matching read; null on a poll error)"],
+                        elapsedMs  : [type: "integer", description: "Time spent polling, in milliseconds (absent on a poll error)"],
+                        timedOut   : [type: "boolean", description: "Present and true if the poll timed out without a match"],
+                        interrupted: [type: "boolean", description: "Present and true if the poll was interrupted (hub reload)"],
+                        neverReported: [type: "boolean", description: "Present and true if the attribute never reported a value during the poll window"],
+                        error      : [type: "string", description: "Present only if the poll loop threw after the command fired; the command still succeeded"]
                     ]]
                 ],
                 required: ["success", "device", "command"]
