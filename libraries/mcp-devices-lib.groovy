@@ -471,7 +471,7 @@ def toolGetDevice(deviceId) {
     ]
 }
 
-def toolSendCommand(deviceId, command, parameters) {
+def toolSendCommand(deviceId, command, parameters, waitFor = null) {
     def device = findDevice(deviceId)
     if (!device) {
         throw new IllegalArgumentException("Device not found: ${deviceId}")
@@ -485,6 +485,10 @@ def toolSendCommand(deviceId, command, parameters) {
         throw new IllegalArgumentException("Device ${deviceLabel} does not support command: ${command}. Available: ${supportedCommands}")
     }
 
+    // Validate waitFor BEFORE firing the command so a bad spec fails the call without
+    // a side effect (the command would otherwise have already actuated the device).
+    def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, waitFor) : null
+
     if (parameters && parameters.size() > 0) {
         // Normalize parameters to a flat List of properly typed values
         parameters = normalizeCommandParams(parameters)
@@ -493,16 +497,65 @@ def toolSendCommand(deviceId, command, parameters) {
         device."${command}"()
     }
 
-    return [
+    def result = [
         success: true,
         device: deviceLabel,
         command: command,
-        parameters: parameters,
-        // Per-attribute timestamp is a freshness signal: a command is fire-and-forget
-        // and real radios report new state asynchronously, so an unchanged timestamp
-        // means the device has not reported the command's effect yet.
-        state: _snapshotDeviceState(device, deviceLabel)
+        parameters: parameters
     ]
+
+    if (pollArgs != null) {
+        // Block-poll until the attribute converges (or times out), then snapshot, so the
+        // state reflects the RESULTING (converged) value -- the immediate snapshot alone
+        // is pre-effect because the hub commits the change after this request returns.
+        def poll = toolPollUntilAttribute(pollArgs)
+        result.waitFor = [
+            attribute  : pollArgs.attribute,
+            expected   : (pollArgs.containsKey("expectedValues") ? pollArgs.expectedValues : pollArgs.expectedValue),
+            converged  : poll.success == true,
+            finalValue : poll.finalValue,
+            elapsedMs  : poll.elapsedMs
+        ]
+    }
+
+    // Snapshot AFTER any waitFor poll. Without waitFor this is the immediate (pre-effect)
+    // read; with waitFor it reflects the converged state.
+    result.state = _snapshotDeviceState(device, deviceLabel)
+    return result
+}
+
+// Validate a waitFor spec and translate it into a toolPollUntilAttribute args map, reusing
+// that tool's block-poll engine + numeric bounds rather than reinventing the loop. Throws
+// IllegalArgumentException on a bad spec (attribute required; exactly one of expectedValue /
+// expectedValues; the poll engine enforces the remaining type + numeric-range checks).
+private Map _buildWaitForPollArgs(deviceId, waitFor) {
+    if (!(waitFor instanceof Map)) {
+        throw new IllegalArgumentException("waitFor must be an object with at least attribute and expectedValue/expectedValues")
+    }
+    def validKeys = ["attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs"] as Set
+    def unknownKeys = (waitFor.keySet() - validKeys).sort()
+    if (unknownKeys) {
+        throw new IllegalArgumentException("waitFor has unknown key(s): ${unknownKeys}. Valid keys: ${validKeys.sort()}")
+    }
+    if (!(waitFor.attribute instanceof String) || !waitFor.attribute) {
+        throw new IllegalArgumentException("waitFor.attribute is required and must be a non-empty string")
+    }
+    def hasExpectedValue  = waitFor.containsKey("expectedValue")
+    def hasExpectedValues = waitFor.containsKey("expectedValues")
+    if (hasExpectedValue && hasExpectedValues) {
+        throw new IllegalArgumentException("waitFor: provide exactly one of expectedValue or expectedValues, not both")
+    }
+    if (!hasExpectedValue && !hasExpectedValues) {
+        throw new IllegalArgumentException("waitFor: exactly one of expectedValue or expectedValues is required")
+    }
+    // Default timeout/interval here so an omitted timeoutMs uses the command-flow default
+    // (5000ms) rather than relying on the poll tool's own default; pass through explicit values.
+    def pollArgs = [deviceId: deviceId.toString(), attribute: waitFor.attribute]
+    if (hasExpectedValue)  pollArgs.expectedValue  = waitFor.expectedValue
+    if (hasExpectedValues) pollArgs.expectedValues = waitFor.expectedValues
+    pollArgs.timeoutMs      = waitFor.containsKey("timeoutMs")      ? waitFor.timeoutMs      : 5000
+    pollArgs.pollIntervalMs = waitFor.containsKey("pollIntervalMs") ? waitFor.pollIntervalMs : 250
+    return pollArgs
 }
 
 // Compact current-state snapshot for a command response: per attribute, its current
@@ -510,6 +563,10 @@ def toolSendCommand(deviceId, command, parameters) {
 // State has name/value/date). Includes only attributes that have a current state; if the
 // device reports no states at all, falls back to supportedAttributes + currentValue (each
 // with a null timestamp). Never returns the full device object -- values and timestamps only.
+// NOTE: this is an IMMEDIATE read taken in the same request that fired the command -- the
+// hub commits a command's effect AFTER that request returns, so without waitFor the value
+// here is the PRE-effect state even for virtual/local devices. The timestamp is the freshness
+// signal; waitFor (block-poll) is what makes this snapshot reflect the converged state.
 private Map _snapshotDeviceState(device, deviceLabel) {
     def snapshot = [:]
     try {
@@ -1888,7 +1945,7 @@ Only query devices the user has mentioned or that are relevant to their request.
         ],
         [
             name: "hub_call_device_command",
-            description: """Send a command (e.g. on, off, setLevel) to a device. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead. Returns an immediate post-command device-state snapshot (per-attribute value + freshness timestamp) in the `state` field. Commands are fire-and-forget — Z-Wave/Zigbee devices report new state asynchronously, so the snapshot may still show the PRE-command value until the device reports back; the per-attribute timestamp is the freshness signal. To confirm an effect, re-read with hub_get_device_attribute.
+            description: """Send a command (e.g. on, off, setLevel) to a device. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead. Returns a `state` snapshot (per-attribute value + freshness timestamp) read AS OF the command. This snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value -- even for virtual/local devices -- because the hub commits the change after this request returns; the per-attribute timestamp is the freshness signal. To get the CONFIRMED resulting state, pass `waitFor` to block-poll until the attribute converges (then the `state` snapshot reflects the converged value and a `waitFor` result block reports convergence). Without `waitFor`, confirm separately via hub_get_device_attribute.
 
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
@@ -1896,7 +1953,14 @@ If no exact device match: suggest similar devices and get user confirmation befo
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match"],
                     command: [type: "string", description: "Command name, e.g. \"setLevel\". Must be one of the device's supported commands (see hub_get_device)."],
-                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor. Omit for no-arg commands like on/off.[[FLAT_TRIM]] Each element is a string; numbers and JSON-object values are passed as strings (e.g. [\"{\\\"hue\\\":0,\\\"saturation\\\":100,\\\"level\\\":50}\"]) and coerced hub-side.[[/FLAT_TRIM]]", items: [type: "string"]]
+                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor. Omit for no-arg commands like on/off.[[FLAT_TRIM]] Each element is a string; numbers and JSON-object values are passed as strings (e.g. [\"{\\\"hue\\\":0,\\\"saturation\\\":100,\\\"level\\\":50}\"]) and coerced hub-side.[[/FLAT_TRIM]]", items: [type: "string"]],
+                    waitFor: [type: "object", description: "Optional: after firing the command, block-poll the device until an attribute reaches an expected value, so the response confirms the RESULTING state (and the `state` snapshot reflects the converged value). Omit for a fire-and-forget command with only the immediate pre-effect snapshot.[[FLAT_TRIM]] BLOCKS the request up to timeoutMs and queues concurrent MCP calls; reuses the hub_get_device_attribute poll engine.[[/FLAT_TRIM]]", properties: [
+                        attribute: [type: "string", description: "Attribute to poll until it converges, e.g. \"switch\". Must be a supported attribute of the device."],
+                        expectedValue: [type: "string", description: "Block-poll until currentValue equals this string. Provide exactly one of expectedValue or expectedValues."],
+                        expectedValues: [type: "array", items: [type: "string"], description: "Block-poll until currentValue is any of these strings (OR semantics). Provide exactly one of expectedValue or expectedValues."],
+                        timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 60000.", default: 5000, minimum: 100, maximum: 60000],
+                        pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250, min 50, max 5000. Clamped to timeoutMs if larger.", default: 250, minimum: 50, maximum: 5000]
+                    ], required: ["attribute"]]
                 ],
                 required: ["deviceId", "command"]
             ],
@@ -1907,10 +1971,17 @@ If no exact device match: suggest similar devices and get user confirmation befo
                     device: [type: "string", description: "Device label"],
                     command: [type: "string", description: "Command sent"],
                     parameters: [type: "array", description: "Normalized parameters passed to the command"],
-                    state: [type: "object", description: "Immediate post-command attribute snapshot keyed by attribute name; each entry is {value, timestamp}. Includes the attributes that have a current state; timestamp is that attribute's last-event time (null if the attribute has never reported). Fire-and-forget: async devices may still show the pre-command value -- the timestamp is the freshness signal.", additionalProperties: [type: "object", properties: [
+                    state: [type: "object", description: "Attribute snapshot keyed by attribute name; each entry is {value, timestamp}. Read AS OF the command: without waitFor this is the immediate (PRE-effect) value because the hub commits the change after this request returns; with waitFor it reflects the converged value. Includes the attributes that have a current state; timestamp is that attribute's last-event time (null if the attribute has never reported).", additionalProperties: [type: "object", properties: [
                         value: [type: ["string", "number", "boolean", "object", "null"], description: "Current attribute value (mixed-type across capabilities)"],
                         timestamp: [type: ["string", "null"], description: "Last-event timestamp for this attribute (yyyy-MM-dd HH:mm:ss), or null if the attribute has never reported"]
-                    ]]]
+                    ]]],
+                    waitFor: [type: "object", description: "Present only when the waitFor arg was supplied: the result of block-polling the attribute to its expected value.", properties: [
+                        attribute  : [type: "string", description: "Attribute that was polled"],
+                        expected   : [description: "The expectedValue string or expectedValues list that was awaited"],
+                        converged  : [type: "boolean", description: "True if the attribute reached an expected value before timeout"],
+                        finalValue : [description: "Last value read (the converged value when converged=true, else the last non-matching read)"],
+                        elapsedMs  : [type: "integer", description: "Time spent polling, in milliseconds"]
+                    ]]
                 ],
                 required: ["success", "device", "command"]
             ]

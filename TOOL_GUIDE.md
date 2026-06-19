@@ -459,7 +459,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - Returns `success: false` with `interrupted: true` (plus `finalValue`, `elapsedMs`, `polledCount`) if the hub interrupted the sleep (e.g. app reload during poll)
 - `pollIntervalMs` is automatically clamped to `timeoutMs` if larger, ensuring at least one poll
 - For passive one-shot reads, omit `expectedValue`/`expectedValues` (plain read mode) -- poll mode is for waiting on state transitions
-- Common pattern after `hub_call_device_command`: that tool already returns an immediate `state` snapshot ({attr: {value, timestamp}}), but it may lag for async Z-Wave/Zigbee devices -- poll here for the resulting attribute state to confirm the transition rather than sleeping client-side
+- Common pattern after `hub_call_device_command`: that tool's `state` snapshot is an immediate read taken in the same request, so it is the PRE-effect value (the hub commits the change after the request returns). To confirm the RESULTING state, prefer `hub_call_device_command`'s own `waitFor` arg (block-polls then snapshots the converged value); use this tool standalone to poll an attribute some other actor is changing
 
 **hub_get_logs:**
 - Returns most recent entries first

@@ -151,7 +151,7 @@ Device control and property edits, plus the read tools (also surfaced under `hub
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
-| `hub_call_device_command` | Send a command to a device (on, off, setLevel, etc.). Returns an immediate `state` snapshot ({attr: {value, timestamp}}); may lag for async devices -- confirm with `hub_get_device_attribute`. | None |
+| `hub_call_device_command` | Send a command to a device (on, off, setLevel, etc.). Returns an immediate (PRE-effect) `state` snapshot ({attr: {value, timestamp}}); pass `waitFor` to block-poll an attribute to its expected value and get the CONFIRMED resulting state. | None |
 | `hub_call_device_swap` | Replace `from_device_id` with `to_device_id` across ALL apps/rules that reference it (the hub's built-in Swap Device tool). Only capability-compatible replacements are accepted; an incompatible target returns the compatible options. Preview the blast radius with `hub_list_device_dependents` first. | `confirm` + backup <24h |
 | `hub_update_device` | Update device properties (label, name, room, preferences, enabled). | Varies by property |
 | `hub_list_devices` | List accessible devices. Pagination, `labelFilter` (substring), `capabilityFilter` (exact), `format='ids'` (flat ID array), `fields=[...]` (projection), `filter='virtual'` (only MCP-managed virtual devices, with their states). Use `detailed=false` first, paginate `detailed=true` (limit 20-30). | None |

@@ -2136,7 +2136,7 @@ def executeTool(toolName, args) {
             if (args.filter == "virtual") return toolListVirtualDevices(args)
             return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope)
         case "hub_get_device": return toolGetDevice(args.deviceId)
-        case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
+        case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_list_device_events":
             // Recent-N for one device when no window/filter given; otherwise windowed

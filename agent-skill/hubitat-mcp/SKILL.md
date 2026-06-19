@@ -48,9 +48,11 @@ Use `hub_call_device_command` with the device ID and command name. Common comman
 
 Always check the device's `supportedCommands` (from `hub_get_device`) before sending commands.
 
-`hub_call_device_command` returns an immediate post-command `state` snapshot — a map keyed by attribute name, each entry `{value, timestamp}`. For virtual/local devices this often already shows the new value (they report synchronously); for async Z-Wave/Zigbee devices it may still show the PRE-command value until the device reports back, so the per-attribute `timestamp` is the freshness signal.
+`hub_call_device_command` returns a `state` snapshot — a map keyed by attribute name, each entry `{value, timestamp}` — read AS OF the command. This snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value (even for virtual/local devices) because the hub commits the change after the request returns; the per-attribute `timestamp` is the freshness signal.
 
-To CONFIRM an effect (not just read the snapshot), use `hub_get_device_attribute` with an `expectedValue` to block-poll until the state change takes effect rather than sleeping. Example: after `hub_call_device_command(on)` call `hub_get_device_attribute(attribute=switch, expectedValue="on", timeoutMs=5000)`. Note: `timeoutMs` is in MILLISECONDS (5000 = 5 seconds, max 60000ms). At least one of `expectedValue` or `expectedValues` is required to enable polling. Polling BLOCKS the MCP request for up to `timeoutMs`; use sparingly and prefer event-driven flows when available. Avoid running it in parallel with other MCP calls.
+To get the CONFIRMED resulting state in the same call, pass `waitFor`: `hub_call_device_command(deviceId, command="on", waitFor={attribute:"switch", expectedValue:"on", timeoutMs:5000})`. It block-polls the attribute until it converges (or times out), then the `state` snapshot reflects the converged value and a `waitFor` result block reports `{attribute, expected, converged, finalValue, elapsedMs}`. Provide exactly one of `expectedValue` or `expectedValues` (OR semantics for the list). `timeoutMs` is MILLISECONDS (default 5000, max 60000).
+
+Alternatively, confirm separately with `hub_get_device_attribute` and an `expectedValue` to block-poll. Either way, polling BLOCKS the MCP request for up to `timeoutMs`; use sparingly, prefer event-driven flows, and avoid running it in parallel with other MCP calls.
 
 ### Virtual Devices
 

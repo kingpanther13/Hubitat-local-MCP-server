@@ -129,7 +129,19 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` with `command=on`, then `hub_get_device_attribute` to confirm. The command response now includes a `state` map keyed by attribute name (each entry its current value + a freshness timestamp; the device's attributes, no per-attribute auth filter) -- the switch attribute appears there with value `on` and a recent timestamp (a virtual device reports synchronously; for async Z-Wave/Zigbee devices the snapshot may lag until the device reports back, so `hub_get_device_attribute` is the confirmation step).
+**Expected**: Calls `hub_call_device_command` with `command=on`, then `hub_get_device_attribute` to confirm. The command response includes a `state` map keyed by attribute name (each entry its current value + a freshness timestamp; the device's attributes, no per-attribute auth filter). This snapshot is an IMMEDIATE read taken in the same request that fired the command, so it shows the PRE-effect value even for a virtual switch (the hub commits the change after the request returns) -- which is why the separate `hub_get_device_attribute` read is what confirms `switch=on`. The per-attribute timestamp is the freshness signal.
+
+### T05b — hub_call_device_command with waitFor (confirmed resulting state)
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT WaitFor Test'.",
+  "test_prompt": "Turn on the virtual switch 'BAT WaitFor Test', waiting until its switch attribute reads on, in a single call.",
+  "teardown_prompt": "Turn off 'BAT WaitFor Test', then delete the virtual device."
+}
+```
+
+**Expected**: Calls `hub_call_device_command` with `command=on` and a `waitFor={attribute:"switch", expectedValue:"on"}`. The response carries a `waitFor` block with `converged: true` and `finalValue: "on"`, and -- because the snapshot is taken AFTER the waitFor poll -- the `state` map's switch entry now reads `on` (the converged/resulting value, not the pre-effect one). No separate `hub_get_device_attribute` read is needed to confirm.
 
 ### T06 — hub_call_device_command (setLevel)
 

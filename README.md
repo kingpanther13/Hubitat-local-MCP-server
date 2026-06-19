@@ -442,7 +442,7 @@ Monitoring tools are gated by the Read master (ON by default).
 
 | Tool | Description |
 |------|-------------|
-| `hub_call_device_command` | Send a command (on, off, setLevel, etc.); returns an immediate `state` snapshot ({attr: {value, timestamp}}, may lag for async devices) |
+| `hub_call_device_command` | Send a command (on, off, setLevel, etc.); returns an immediate (PRE-effect) `state` snapshot ({attr: {value, timestamp}}); pass `waitFor` to block-poll for the CONFIRMED resulting state |
 | `hub_call_device_swap` | Replace a device across ALL apps/rules that reference it (built-in Swap Device tool; compatible replacements only) |
 | `hub_update_device` | Update device properties (label, room, preferences, etc.) |
 | `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) (also in `hub_read_devices`) |
