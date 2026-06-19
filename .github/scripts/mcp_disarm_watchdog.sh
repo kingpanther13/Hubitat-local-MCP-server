@@ -269,63 +269,24 @@ if [ -z "$RB_CLASS" ] || [ "$RB_CLASS" = "null" ] || { [ -n "$EXPECT_CLASS" ] &&
   exit 1
 fi
 
-# --- 2.5) Reap DEFERRED native rules (E2E_DEFER_NATIVE_DELETES) over WATCHDOG_URL -------------------
-# If the test step deferred its per-test native-rule fixture deletes, it wrote the EXACT tracked instance
-# ids to 'e2e-deferred-native-rules.json'. Force-delete each (the INSTANCE, via the watchdog's
-# hub_force_delete_app) NOW -- the round-trips overlap the wall-clock the restore poll below spends
-# sleeping. Precise ids only (no /hub2/appsList shape-guessing -> no wrong-app risk). Best-effort +
-# SEQUENTIAL (RM concurrency rule): a hiccup NEVER fails the step (the post-restore --cleanup-only step
-# is the idempotent prefix backstop). Absent file / deferral-off -> clean no-op.
-DEFERRED_FILE="e2e-deferred-native-rules.json"
-if DEF_TEXT=$(mcp_tool_call_text "hub_read_file (deferred native rules)" \
-    "$(jq -nc --arg fn "$DEFERRED_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_read_file",arguments:{fileName:$fn}}}')" 2>/dev/null); then
-  # Split a parse failure from a valid (possibly empty) array. hub_read_file returns the file body
-  # under .content; jq '.[]' errors (exit != 0) on truncated/corrupt JSON but yields empty output on a
-  # valid []. A SWALLOWED parse error must NOT collapse to "nothing to reap" -- that would silently
-  # skip the exact-id sweep and leave the rules to only the non-gating prefix backstop.
-  DEF_CONTENT=$(printf '%s' "$DEF_TEXT" | jq -r '.content // ""' 2>/dev/null || true)
-  if [ -z "$DEF_CONTENT" ]; then
-    echo "Deferred-rule sweep: deferred-id file had no content (deferral off, or no native fixtures left behind)."
-  elif ! DEF_IDS=$(printf '%s' "$DEF_CONTENT" | jq -r '.[]' 2>/dev/null); then
-    echo "::error::Deferred-rule sweep: ${DEFERRED_FILE} is not a valid JSON array (truncated/corrupt write?) -- exact-id sweep SKIPPED; the post-restore --cleanup-only prefix sweep is now the ONLY backstop for these ids. Raw head: $(printf '%s' "$DEF_CONTENT" | head -c 200 | tr '\n' ' ')"
-  elif [ -z "$DEF_IDS" ]; then
-    echo "Deferred-rule sweep: deferred-id list is an empty array -- nothing to reap (no native fixtures left behind)."
-  else
-    def_n=0
-    def_fail=0
-    while IFS= read -r rid; do
-      [ -z "$rid" ] && continue
-      def_n=$((def_n + 1))
-      echo "Deferred-rule sweep: force-deleting native rule instance ${rid} (overlapping the restore)..."
-      # mcp_tool_call_text PARSES the JSON-RPC result so we can check tool-level success -- force-delete is
-      # idempotent (deleting a gone rule is a no-op), so its retry is safe. Raw mcp_call would discard a
-      # tool-level error (tool missing, auth fail, 4xx/5xx) and look fine, masking a real failure.
-      if FD_TEXT=$(mcp_tool_call_text "hub_force_delete_app ${rid}" \
-          "$(jq -nc --arg id "$rid" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_force_delete_app",arguments:{id:$id,confirm:true}}}')" 2>/dev/null); then
-        # mcp_tool_call_text already unwraps .result.content[0].text, which the watchdog builds by
-        # JSON-serializing the tool's return map directly -- so success is TOP-LEVEL here ('.success'),
-        # NOT under a '.content' key. (The '.content | fromjson' shape applies only to hub_read_file,
-        # whose payload IS a file body under .content -- see the DEF_IDS read above.)
-        if [ "$(printf '%s' "$FD_TEXT" | jq -r '.success' 2>/dev/null)" = "true" ]; then
-          continue
-        fi
-        echo "::warning::Deferred-rule sweep: hub_force_delete_app(${rid}) did not report success: $(printf '%s' "$FD_TEXT" | jq -c '{success,error}' 2>/dev/null | head -c 200)"
-      else
-        echo "::warning::Deferred-rule sweep: hub_force_delete_app(${rid}) returned no parseable result (tool missing on the watchdog / endpoint down?)."
-      fi
-      def_fail=$((def_fail + 1))
-    done <<< "$DEF_IDS"
-    if [ "$def_fail" -eq 0 ]; then
-      echo "Deferred-rule sweep: force-deleted ${def_n} native rule instance(s); clearing the deferred-id list."
-      mcp_tool_call_text "hub_write_file (clear deferred list)" \
-        "$(jq -nc --arg fn "$DEFERRED_FILE" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:"[]",confirm:true}}}')" >/dev/null 2>&1 \
-        || echo "::warning::Deferred-rule sweep: could not clear ${DEFERRED_FILE} (the arm step truncates it next run; re-deleting already-gone ids is a harmless no-op)."
-    else
-      echo "::warning::Deferred-rule sweep: ${def_fail}/${def_n} force-delete(s) did NOT confirm -- KEEPING ${DEFERRED_FILE} so the post-restore --cleanup-only prefix sweep (and the next run) can still reap them. Not failing the restore (best-effort)."
-    fi
+# --- 2.5) Purge BAT_E2E_ fixtures (rules + variables) LOCALLY over WATCHDOG_URL --------------------
+# ONE call to the watchdog's hub_purge_e2e_artifacts enumerates every BAT_E2E_ app instance + hub
+# variable and deletes them LOOPBACK-LOCAL on the hub -- no per-item cloud round-trips, so this
+# replaces the old per-id force-delete loop (and now also reaps vars). Prefix-scoped, which is safe on
+# the sacrificial test hub (BAT_E2E_ == test fixtures by convention). Best-effort + SEQUENTIAL: a
+# hiccup NEVER fails the restore -- the post-restore --cleanup-only step is the idempotent prefix
+# backstop (and is what reaps BAT_E2E_ DEVICES, which the watchdog can't delete). The test step still
+# defers rule deletes (E2E_DEFER_NATIVE_DELETES) so they stay off the test critical path; this one
+# call cleans the whole accumulation at once.
+if PURGE_TEXT=$(mcp_tool_call_text "hub_purge_e2e_artifacts" \
+    "$(jq -nc '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_purge_e2e_artifacts",arguments:{confirm:true}}}')" 2>/dev/null); then
+  echo "Local purge: $(printf '%s' "$PURGE_TEXT" | jq -c '{deletedCount,failedCount,variablesDeletedCount,variablesFailedCount}' 2>/dev/null | head -c 200)"
+  PURGE_FAILS=$(printf '%s' "$PURGE_TEXT" | jq -r '((.failedCount // 0) + (.variablesFailedCount // 0))' 2>/dev/null || echo "?")
+  if [ "$PURGE_FAILS" != "0" ]; then
+    echo "::warning::Local purge reported ${PURGE_FAILS} failure(s) -- the post-restore --cleanup-only prefix sweep is the backstop. Detail: $(printf '%s' "$PURGE_TEXT" | jq -c '{failed,variablesFailed}' 2>/dev/null | head -c 300)"
   fi
 else
-  echo "::warning::Deferred-rule sweep: could not READ ${DEFERRED_FILE} after retries (transient transport, NOT necessarily deferral-off) -- relying on the post-restore --cleanup-only prefix sweep to reap any BAT_E2E_ rules."
+  echo "::warning::Local purge (hub_purge_e2e_artifacts) returned no parseable result (tool missing on the watchdog / endpoint down?) -- relying on the post-restore --cleanup-only prefix sweep to reap BAT_E2E_ fixtures."
 fi
 
 # --- 3) Fire-and-forget: the watchdog restores main asynchronously --------------------------------
