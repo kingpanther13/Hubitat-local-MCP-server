@@ -35,6 +35,12 @@ import requests
 # ---------------------------------------------------------------------------
 
 PREFIX = "BAT_E2E_"
+# Persistent scaffold devices (the shared switch + temp sensors that rule fixtures reference and the
+# poll tests read) carry this marker so the cleanup sweeps SKIP them by name -- created once and
+# reused across runs, never deleted. Under-test fixtures use the bare PREFIX and are still reaped.
+# (The watchdog purges apps/vars only, never devices, so this is purely the test-side device sweep;
+# no watchdog change is needed -- the devices are simply named to dodge the sweep.)
+SCAFFOLD_PREFIX = f"{PREFIX}KEEP_"  # "BAT_E2E_KEEP_"
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -508,7 +514,7 @@ class TestRunner:
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
-                if f"{PREFIX}Action_Switch" in lbl:
+                if f"{SCAFFOLD_PREFIX}Action_Switch" in lbl:
                     self._test_switch_id = str(d["id"])
                     return self._test_switch_id
         except Exception:
@@ -518,7 +524,7 @@ class TestRunner:
         # deliberately NOT tracked in created_device_dnis, so teardown leaves it on
         # the hub for the next run to find-and-reuse -- skipping a create+delete
         # every run. Devices that ARE under test still track + delete themselves.
-        self._test_switch_id = self._create_virtual_switch_device(f"{PREFIX}Action_Switch")
+        self._test_switch_id = self._create_virtual_switch_device(f"{SCAFFOLD_PREFIX}Action_Switch")
         assert self._test_switch_id, "Failed to create test switch"
         return self._test_switch_id
 
@@ -566,7 +572,7 @@ class TestRunner:
         if getattr(self, "_test_temp_ids", None):
             return self._test_temp_ids
 
-        labels = [f"{PREFIX}Temp_A", f"{PREFIX}Temp_B"]
+        labels = [f"{SCAFFOLD_PREFIX}Temp_A", f"{SCAFFOLD_PREFIX}Temp_B"]
         found: dict[str, str] = {}
         try:
             vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
@@ -5958,10 +5964,12 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
-                # Keep the persistent scaffolding switch (get_test_switch_id find-and-reuse): sweeping it
-                # would defeat the reuse and pay a create every run. Narrow suffix match, NOT a blanket
-                # prefix skip, so genuine under-test device leftovers are still reclaimed.
-                if lbl.endswith("Action_Switch"):
+                # Keep the persistent scaffold devices (shared switch + temp sensors that
+                # get_test_switch_id / get_test_temperature_ids find-and-reuse): sweeping them would
+                # defeat the reuse and pay a create every run. They carry the SCAFFOLD_PREFIX marker,
+                # so this skips ONLY them -- genuine under-test device leftovers (bare PREFIX) are
+                # still reclaimed.
+                if SCAFFOLD_PREFIX in lbl:
                     continue
                 if PREFIX in lbl:
                     dni = str(d.get("deviceNetworkId", d.get("dni", "")))
