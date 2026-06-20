@@ -22,10 +22,12 @@ class TestDevice {
     List supportedAttributes = []
     List supportedCommands = []
     Map attributeValues = [:]
-    // Some tools iterate device.currentStates (e.g. toolGetRoom). Default
-    // null so the ?.each in the tool is a no-op; tests that care can set
-    // a list of maps like [[name: 'switch', value: 'on']].
-    List currentStates = null
+    // Explicit override for currentStates. When a spec sets this (constructor
+    // `currentStates: [...]` or `dev.currentStates = [...]`), getCurrentStates()
+    // returns it verbatim. When left null, getCurrentStates() DERIVES a State-like
+    // list from attributeValues so a device seeded with [switch: 'on'] reads back
+    // through currentStates (the source the poll engine and the snapshot both read).
+    private List _currentStatesOverride = null
 
     // Hub property read by toolListVirtualDevices (device.typeName ?: device.name).
     // Default null so callers that don't set it fall through to the device.name fallback.
@@ -52,14 +54,34 @@ class TestDevice {
         attributeValues[attr]
     }
 
-    // The poll engine (toolPollUntilAttribute) reads currentState(attr)?.value -- the
-    // live event store -- NOT currentValue(), which the hub caches at request start and
-    // never refreshes within a request. On a real async device that distinction is the
-    // difference between converging and timing out. Default derives a State-like map from
-    // attributeValues so a device seeded with [switch: 'on'] reads back through both
-    // surfaces; poll specs Spy this method to drive the poll independently of currentValue.
+    // currentState(attr) and currentValue(attr) are BOTH cached by the hub at request
+    // start and never refresh within a request -- on a real async device (Matter/Zigbee/
+    // Z-Wave/cloud) they return the PRE-command value for the whole poll. Only the full
+    // currentStates list re-reads the live event store. So the poll engine reads
+    // currentStates (not currentState(attr) or currentValue(attr)); these per-attribute
+    // accessors derive from the same attributeValues seed for the one-shot read paths,
+    // but poll specs drive convergence via getCurrentStates(), not these.
     Object currentState(String attr) {
         attributeValues.containsKey(attr) && attributeValues[attr] != null ? [value: attributeValues[attr]?.toString()] : null
+    }
+
+    void setCurrentStates(List states) {
+        _currentStatesOverride = states
+    }
+
+    // When a spec set currentStates explicitly, return that. Otherwise derive a State-like
+    // list ([name, value, date]) from attributeValues so a plain new TestDevice(attributeValues:
+    // [...]) drives the poll engine (which reads currentStates) and the command snapshot.
+    // An attribute absent from attributeValues is absent from the list -- find(...) returns
+    // null, which is the poll's neverReported signal.
+    List getCurrentStates() {
+        if (_currentStatesOverride != null) return _currentStatesOverride
+        if (attributeValues == null) return null
+        def states = []
+        attributeValues.each { k, v ->
+            if (v != null) states << [name: k, value: v.toString(), date: null]
+        }
+        return states
     }
 
     /**

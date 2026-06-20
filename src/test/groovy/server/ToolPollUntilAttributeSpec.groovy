@@ -25,7 +25,7 @@ import support.ToolSpecBase
  *  - pollIntervalMs exact boundaries (49 throws, 5001 throws, 50 accepts, 5000 accepts) (W2)
  *  - pollIntervalMs > timeoutMs -> auto-clamped (at least one poll still fires)
  *  - Device not found -> throws
- *  - Attribute with null currentState (neverReported=true path) (I5)
+ *  - Attribute absent from currentStates (neverReported=true path) (I5)
  *  - Attribute value transitions from null to wrong -> neverReported absent or false (I5)
  *  - Attribute name typo (not in supportedAttributes) -> throws with helpful message listing available attributes
  *  - Unknown arg (timeoutSeconds) -> throws with message naming the bad key and suggesting timeoutMs
@@ -80,7 +80,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
 
     // ---------------------------------------------------------------------------
     // 2. Match on Nth poll (value changes mid-sequence)
-    //    Use a Spy on TestDevice to intercept currentState() and flip after k reads.
+    //    Use a Spy on TestDevice to intercept getCurrentStates() and flip after k reads.
     // ---------------------------------------------------------------------------
 
     def "returns success when value changes to expected after several polls"() {
@@ -90,11 +90,11 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.id = 20
         device.label = 'Flip Switch'
         device.supportedAttributes = [[name: 'switch']]
-        // The poll engine reads currentState(attr)?.value (the live event store), so the
-        // stateful stub drives currentState: returns 'off' for reads 1-2, 'on' from read 3 onward.
-        device.currentState(_) >> { String attr ->
+        // The poll engine reads currentStates (the live event store list), so the stateful
+        // stub drives getCurrentStates: returns 'off' for reads 1-2, 'on' from read 3 onward.
+        device.getCurrentStates() >> {
             readCount++
-            return readCount >= 3 ? [value: 'on'] : [value: 'off']
+            return [[name: 'switch', value: readCount >= 3 ? 'on' : 'off']]
         }
         childDevicesList << device
 
@@ -633,8 +633,8 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.id = 170
         device.label = 'Numeric Level'
         device.supportedAttributes = [[name: 'level']]
-        // currentState(attr).value is a String in Hubitat; an integer-equivalent level reads as "50.0".
-        device.currentState(_) >> { String attr -> [value: '50.0'] }
+        // A State's value is a String in Hubitat; an integer-equivalent level reads as "50.0".
+        device.getCurrentStates() >> [[name: 'level', value: '50.0']]
         childDevicesList << device
 
         when:
@@ -663,7 +663,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.id = 171
         device.label = 'Fractional Level'
         device.supportedAttributes = [[name: 'level']]
-        device.currentState(_) >> { String attr -> [value: '50.5'] }
+        device.getCurrentStates() >> [[name: 'level', value: '50.5']]
         childDevicesList << device
 
         when:
@@ -691,7 +691,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.id = 172
         device.label = 'Numeric vs Non-Numeric'
         device.supportedAttributes = [[name: 'level']]
-        device.currentState(_) >> { String attr -> [value: '50.0'] }
+        device.getCurrentStates() >> [[name: 'level', value: '50.0']]
         childDevicesList << device
 
         when:
@@ -1029,10 +1029,11 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.id = 251
         device.label = 'Null Then Wrong'
         device.supportedAttributes = [[name: 'switch']]
-        // First read: currentState null (never reported yet); subsequent reads: 'off' (wrong value).
-        device.currentState(_) >> { String attr ->
+        // First read: attribute absent from currentStates (never reported yet -> find returns
+        // null); subsequent reads: present with 'off' (wrong value, but it did report).
+        device.getCurrentStates() >> {
             readCount++
-            return readCount == 1 ? null : [value: 'off']
+            return readCount == 1 ? [] : [[name: 'switch', value: 'off']]
         }
         childDevicesList << device
 
@@ -1099,7 +1100,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.label = 'String Numeric Attr'
         device.supportedAttributes = [[name: 'level']]
         // Driver reports the level as the String "50.0" in the event store.
-        device.currentState(_) >> { String attr -> [value: '50.0'] }
+        device.getCurrentStates() >> [[name: 'level', value: '50.0']]
         childDevicesList << device
 
         when:
@@ -1128,7 +1129,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.label = 'Integer vs Decimal EV'
         device.supportedAttributes = [[name: 'level']]
         // An integer-valued level reads from the event store as the String "50".
-        device.currentState(_) >> { String attr -> [value: '50'] }
+        device.getCurrentStates() >> [[name: 'level', value: '50']]
         childDevicesList << device
 
         when:
@@ -1152,7 +1153,7 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
         device.label = 'Double vs String EV'
         device.supportedAttributes = [[name: 'level']]
         // A decimal-valued level reads from the event store as the String "50.0".
-        device.currentState(_) >> { String attr -> [value: '50.0'] }
+        device.getCurrentStates() >> [[name: 'level', value: '50.0']]
         childDevicesList << device
 
         when:

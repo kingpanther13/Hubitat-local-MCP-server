@@ -924,14 +924,15 @@ def toolPollUntilAttribute(args) {
     def everNonNull = false
 
     while (true) {
-        // Read the FRESH event store, not currentValue(). currentValue() is cached at
-        // request start and never refreshes within a request, so on a real async device
-        // (Matter/Zigbee/Z-Wave/cloud) it returns the PRE-command value for the whole poll
-        // and never converges. currentState(attr) reads the live event store -- the same
-        // source _snapshotDeviceState reads -- so the value here matches the snapshot's and
-        // tracks the device's actual reports. currentState(attr) is null until the attribute
-        // has reported; ?.value is the reported value (a String in Hubitat).
-        finalValue = device.currentState(args.attribute)?.value
+        // Read the FRESH event store via currentStates (the LIST), not currentValue() OR
+        // currentState(attr). currentValue() AND currentState(attr) are BOTH cached at request
+        // start and never refresh within a request, so on a real async device (Matter/Zigbee/
+        // Z-Wave/cloud) they return the PRE-command value for the whole poll and never converge
+        // (confirmed on real hardware). Only device.currentStates (the full list) re-reads live --
+        // the same source _snapshotDeviceState reads -- so the value here matches the snapshot's
+        // and tracks the device's actual reports. find(...) is null until the attribute has
+        // reported; a State's .value is the reported value (a String in Hubitat).
+        finalValue = device.currentStates?.find { it.name == args.attribute }?.value
         polledCount++
         if (finalValue != null) everNonNull = true
         def elapsedMs = (now() - startMs) as Integer
