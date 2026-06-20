@@ -3114,9 +3114,13 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             result = bodyText
         }
     }
+    long _hubRtT0 = now()
     try {
         if (method == 'GET') httpGet(params, reader)
         else httpPost(params, reader)
+        // [hubrt] per-call diagnostic: every internal hub round-trip funnels through here, so one
+        // debug line profiles a heavy RM wizard build (count + latency of each GET/POST). Debug-gated.
+        logDebug("[hubrt] ${method} ${path} (${now() - _hubRtT0}ms)")
     } catch (Exception e) {
         // hubInternalGetRaw path: a 3xx with followRedirects=false is the success case (read the
         // Location header), not an error.
