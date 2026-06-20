@@ -141,7 +141,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` with `command=on` and a `waitFor={attribute:"switch", expectedValue:"on"}`. The response carries a `waitFor` block with `converged: true` and `finalValue: "on"`, and -- because the snapshot is taken AFTER the waitFor poll -- the `state` map's switch entry now reads `on` (the converged/resulting value, not the pre-effect one). No separate `hub_get_device_attribute` read is needed to confirm.
+**Expected**: Calls `hub_call_device_command` with `command=on` and a `waitFor={attribute:"switch", expectedValue:"on"}`. The response carries a `waitFor` block with `converged: true` and `finalValue: "on"` (a String, read from the device's live current-state list), and -- because the snapshot is taken AFTER the waitFor poll -- the `state` map's switch entry now reads `on` (the converged/resulting value, not the pre-effect one). On a clean run there is NO `partial` flag and NO `stateError`; a non-convergence would instead surface a diagnostic flag (`timedOut` / `interrupted` / `neverReported` / `error`), and a degraded confirmation step (failed snapshot or a poll-loop `error`) would add `partial: true`. The `waitFor` `timeoutMs` caps at 30000 (vs 60000 on the standalone `hub_get_device_attribute` poll) and `pollIntervalMs` defaults to 250. No separate `hub_get_device_attribute` read is needed to confirm.
 
 ### T06 — hub_call_device_command (setLevel)
 

@@ -506,17 +506,17 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     }
 
     // ---------------------------------------------------------------------------
-    // 13. Attribute with null currentValue (attribute not present on device) ->
+    // 13. Attribute absent from currentStates (never reported) ->
     //     polls until timeout, returns cleanly with finalValue=null
     // ---------------------------------------------------------------------------
 
-    def "polls until timeout when currentValue returns null and returns finalValue=null cleanly"() {
+    def "polls until timeout when the attribute is absent from currentStates and returns finalValue=null cleanly"() {
         given:
         def device = new TestDevice(
             id: 120,
             label: 'No Value',
             supportedAttributes: [[name: 'switch']],
-            attributeValues: [:]  // no value for 'switch' -> currentValue returns null
+            attributeValues: [:]  // no value for 'switch' -> absent from currentStates -> find returns null
         )
         childDevicesList << device
 

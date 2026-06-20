@@ -267,6 +267,30 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         emptyStates << [null, []]
     }
 
+    def "toolSendCommand snapshot fallback degrades only the throwing attribute, keeping the others"() {
+        given: 'a no-currentStates device whose currentValue throws for one attribute but returns for the other'
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getCurrentStates() >> []
+            getSupportedAttributes() >> [[name: 'switch'], [name: 'level']]
+            currentValue('switch') >> { String a -> throw new RuntimeException('read exploded') }
+            currentValue('level') >> '50'
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommand('10', 'on', [])
+
+        then: 'the throwing attribute degrades to value:null but the other attribute survives -- NOT a whole-snapshot discard'
+        result.success == true
+        result.state.switch.value == null
+        result.state.level.value == '50'
+        !result.containsKey('stateError')
+    }
+
     def "toolSendCommand snapshot is an empty map when the device exposes no states and no attributes"() {
         given: 'a device that reports neither currentStates nor supportedAttributes'
         def device = Spy(TestDevice) {
@@ -309,6 +333,9 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.stateError?.contains('device-state read-back failed')
         result.stateError?.contains('RuntimeException')
         result.stateError?.contains('boom')
+
+        and: 'a degraded confirmation step flags partial=true'
+        result.partial == true
     }
 
     def "toolSendCommand snapshot discards the partial map when a later attribute throws mid-iteration"() {
@@ -406,6 +433,9 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
 
         and: 'the snapshot taken AFTER the poll reflects the converged value (not the pre-poll off)'
         result.state.switch.value == 'on'
+
+        and: 'a fully clean result carries NO partial flag'
+        !result.containsKey('partial')
     }
 
     def "toolSendCommand with waitFor converges off the live event store even when currentValue AND currentState stay stale (real async device)"() {
@@ -636,7 +666,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
 
         then: 'the NEITHER-provided path is distinguished by its own substring'
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('is required')
+        ex.message.contains('exactly one of expectedValue or expectedValues is required')
         0 * device.on()
     }
 
@@ -698,6 +728,48 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('expectedValues')
+        0 * device.on()
+    }
+
+    def "toolSendCommand waitFor with a non-string expectedValues element throws before firing the command"() {
+        given:
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+        }
+        childDevicesList << device
+
+        when: 'a numeric element 42 in the list -- rejected before the command fires'
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValues: [42]])
+
+        then: 'the bad element is named with its typed render, and the command never fired'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('expectedValues')
+        ex.message.contains('42 (number)')
+        0 * device.on()
+    }
+
+    def "toolSendCommand waitFor with a whitespace-only expectedValue throws before firing the command"() {
+        given:
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+        }
+        childDevicesList << device
+
+        when: 'a whitespace-only expectedValue -- .trim() rejects it for parity with attribute'
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: '   '])
+
+        then: 'rejected non-empty before fire; the empty render is quoted, not a bare gap'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('waitFor.expectedValue')
+        ex.message.contains('"   "')
         0 * device.on()
     }
 
@@ -878,6 +950,9 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.waitFor.error?.contains('waitFor poll failed')
         result.waitFor.error?.contains('RuntimeException')
         result.state.switch.value == 'on'
+
+        and: 'the snapshot itself succeeded (read 2 valid), so partial comes purely from waitFor.error'
+        result.partial == true
     }
 
     def "toolSendCommand waitFor poll-loop NON-Exception throwable still returns success + snapshot (catch Throwable)"() {
