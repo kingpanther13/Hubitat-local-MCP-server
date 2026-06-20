@@ -12613,13 +12613,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // The attr write's own _rmWriteSubPageField does a leading fetch (pre-write) and a
-            // trailing verify (1st post-write fetch). The revealStep re-fetch that exposes the
-            // picker is the 2nd post-write fetch -- fail exactly that one so the throw lands on
-            // the reveal (force-write path), not the verify.
+            // Page-schema cache: the attr write's own _rmWriteSubPageField CONSUMES its POST
+            // response; the test stubs POSTs to return data:'' so the consume falls back to a
+            // verify-GET that, on success, STORES the STPage so the following revealStep probe
+            // HITS the cache and issues no GET of its own -- the verify-GET IS the exposure probe
+            // now. To still drive the walker's force-write-on-probe-failure path we fail the FIRST
+            // TWO post-attr STPage fetches: fetch 1 is the rCustomAttr verify-GET (swallowed by
+            // _rmWriteSubPageField, which invalidates the cache), so fetch 2 -- the revealStep
+            // postCfg -- becomes a real GET that also throws and propagates into the walker's
+            // force-write catch. Fetch 3+ (the hasAll click's version fetch) must succeed, hence
+            // the <=2 bound. '*changed*' carries no explicit value, so the catch skips the state_1
+            // write and the picker's *changed* option is never routed (the force-write distinction).
             if (rCustomAttrWritten) {
                 postAttrStFetches++
-                if (postAttrStFetches == 2) return ''
+                if (postAttrStFetches <= 2) return ''
             }
             def inputs = [
                 [name: "cond",          type: "enum",              options: ["a": "New condition"]],
@@ -13442,12 +13449,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // The attr write's own _rmWriteSubPageField does a leading fetch (pre-write) and
-            // a trailing verify (1st post-write fetch). The revealStep exposure probe is the
-            // 2nd post-write fetch -- fail exactly that one so the throw lands on the probe.
+            // Page-schema cache: the attr write's own _rmWriteSubPageField now CONSUMES its POST
+            // response; the test stubs POSTs to return data:'' so the consume falls back to a
+            // verify-GET that, on success, STORES the STPage so the following revealStep probe
+            // (preCfg/postCfg) HITS the cache and issues no GET of its own. The verify-GET IS the
+            // exposure probe now. To still drive the walker's force-write-on-probe-failure
+            // contract we fail the FIRST TWO post-attr STPage fetches: fetch 1 is the rCustomAttr
+            // write's verify-GET (swallowed by _rmWriteSubPageField, which invalidates the cache),
+            // so fetch 2 -- the revealStep postCfg -- becomes a real GET that also throws and
+            // propagates out of _rmRevealStep into the walker's force-write catch. Fetch 3+ (the
+            // post-force-write state_1 write + hasAll click) must succeed so the degraded path
+            // completes, hence the <=2 bound rather than an open-ended throw.
             if (rCustomAttrWritten) {
                 postAttrStFetches++
-                if (postAttrStFetches == 2) return ''
+                if (postAttrStFetches <= 2) return ''
             }
             def inputs = [
                 [name: "cond",          type: "enum",              options: ["a": "New condition"]],
@@ -13557,13 +13572,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // Site B default path: rCapab_1=Temperature (a standard capability), NOT
-            // Custom Attribute. The attr write's own _rmWriteSubPageField does a leading
-            // fetch + a trailing verify; discoverField's first fetch is the 2nd post-write
-            // fetch -- fail exactly that one so the throw lands on the exposure probe.
+            // Site B default path: rCapab_1=Temperature (a standard capability), NOT Custom
+            // Attribute. Page-schema cache: the attr write's own _rmWriteSubPageField CONSUMES
+            // its POST response; the test stubs POSTs to return data:'' so the consume falls back
+            // to a verify-GET that, on success, STORES the STPage so the following exposure-probe
+            // re-fetch HITS the cache -- the verify-GET IS the exposure probe now. To still drive
+            // Site B's force-write-on-probe-failure path we fail the FIRST TWO post-attr STPage
+            // fetches: fetch 1 is the rCustomAttr verify-GET (swallowed, invalidates the cache),
+            // so fetch 2 -- the exposure-probe re-fetch at the default-block try/catch -- becomes a
+            // real GET that throws and lands in Site B's force-write catch. Fetch 3+ (the
+            // post-force-write state_1 write) must succeed, hence the <=2 bound.
             if (rCustomAttrWritten) {
                 postAttrStFetches++
-                if (postAttrStFetches == 2) return ''
+                if (postAttrStFetches <= 2) return ''
             }
             def inputs = [
                 [name: "cond",          type: "enum",                   options: ["a": "New condition"]],
@@ -13972,11 +13993,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // The attr write's own fetch + verify succeed; the revealStep exposure probe is
-            // the 2nd post-write fetch -- fail exactly that one to trigger the force-write.
+            // Page-schema cache: the attr write's own _rmWriteSubPageField CONSUMES its POST
+            // response; with POSTs stubbed to data:'' the consume falls back to a verify-GET that,
+            // on success, STORES the STPage so the revealStep exposure probe HITS the cache -- the
+            // verify-GET IS the probe now, so the clean-rCustomAttr + thrown-separate-probe shape
+            // the old `==2` relied on no longer exists. We fail the FIRST TWO post-attr fetches:
+            // fetch 1 (the rCustomAttr verify-GET) throws -> rCustomAttr records a
+            // verification_fetch_failed skip (a genuinely-lost entry) and the cache is invalidated;
+            // fetch 2 (the revealStep postCfg) becomes a real GET that throws into the force-write
+            // catch -> RelrDev_1 force-written. Fetch 3+ (the state_1 write) succeeds. So this run
+            // now carries TWO degraded reasons and exercises BOTH arms of the repairHints split:
+            // the verify-don't-rewrite hint for the force-written comparator AND the generic
+            // degraded-path hint for the lost rCustomAttr field. Asserted below.
             if (rCustomAttrWritten) {
                 postAttrStFetches++
-                if (postAttrStFetches == 2) return ''
+                if (postAttrStFetches <= 2) return ''
             }
             def inputs = [
                 [name: "cond",          type: "enum",              options: ["a": "New condition"]],
@@ -14045,11 +14076,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         verifyHint.toString().contains("value IS in settingsApplied")
         verifyHint.toString().contains("Do NOT re-write")
 
-        and: "it does NOT fold the force-written comparator into the generic fill-missing-fields hint"
-        // The generic lost-field hint exists only when there are genuinely-lost degraded
-        // entries; this run has none (only the force-written skip), so the generic hint must
-        // be absent entirely -- the force-written key is NOT treated as a lost field.
-        !hints.any { it?.toString()?.contains("re-run with rawSettings to fill missing fields") }
+        and: "the force-written comparator is NOT folded into the generic degraded-path hint"
+        // Under the page-schema cache this run carries TWO degraded reasons: RelrDev_1's
+        // comparator_force_written_unverified AND rCustomAttr_1's verification_fetch_failed (the
+        // failed verify-GET that doubles as the exposure probe -- see the STPage stub comment).
+        // The split guard is unchanged and is exactly what matters: the FORCE-WRITTEN comparator
+        // must stay in its verify-don't-rewrite hint and must NEVER be named by the generic
+        // degraded-path hint (which would wrongly tell the caller to re-write a value that DID
+        // land). The generic hint counts lost conditions without naming keys, so RelrDev_1 must
+        // not appear in it; rCustomAttr_1 is the only genuinely-lost field driving it.
+        def genericHint = hints.find { it?.toString()?.contains("used a degraded write path") }
+        genericHint != null
+        !genericHint.toString().contains("RelrDev_1")
+        ((result.settingsSkipped as List) ?: []).any { it instanceof Map && it.key == "rCustomAttr_1" && it.reason == "verification_fetch_failed" }
     }
 
     def "addAction ifThen walker Site B free-path: a non-enum attribute reveals RelrDev_1 and the comparator IS written on doActPage (negative pin)"() {
@@ -31770,14 +31809,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
         }
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // Throw on the SECOND post-rCapab fetch -- the revealStep post-trigger fetch
-            // (the first post-rCapab fetch is _rmWriteSettingOnPage's verify-fetch,
-            // which is wrapped in its own try/catch and would swallow the exception).
-            // Mirrors F4's doActPage throw pattern.
+            // Page-schema cache: the rCapab write's own _rmWriteSubPageField CONSUMES its POST
+            // response; the test stubs POSTs to return data:'' so the consume falls back to a
+            // verify-GET that, on success, STORES the STPage so the revealStep post-trigger fetch
+            // HITS the cache. The verify-GET IS the post-trigger probe now. To still propagate a
+            // mid-walk fetch error out of _rmRevealStep we throw on the FIRST TWO post-rCapab
+            // fetches: fetch 1 is the rCapab verify-GET (swallowed by _rmWriteSubPageField, which
+            // invalidates the cache), so fetch 2 -- the revealStep postCfg -- becomes a real GET
+            // that throws and propagates into the walkConds per-condition catch. Fetch 3 (the
+            // outer-catch cancelCapab's version fetch) must succeed so the single cancel click
+            // lands, hence the <=2 bound. stThrowArmed is set on the propagating throw (fetch 2).
             if (rCapabWritten) {
                 stFetchesAfterRCapab++
-                if (stFetchesAfterRCapab == 2 && !stThrowArmed) {
-                    stThrowArmed = true
+                if (stFetchesAfterRCapab <= 2) {
+                    if (stFetchesAfterRCapab == 2) stThrowArmed = true
                     throw new RuntimeException("simulated mid-walk fetch error on STPage (revealStep post-trigger fetch)")
                 }
             }

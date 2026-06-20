@@ -643,7 +643,10 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         def restored = [false]
         registerHelperPages(phase, null, restored)
         def restoreFileRead = installRestoreDownload(restored)
-        script.metaClass._rmClickAppButton = { Integer aId, String name, String stateAttr = null, String pageName = null ->
+        // _rmClickAppButton now takes a trailing cache param (the page-schema cache threaded by
+        // the RM condition builders); the stub must accept it or the 5-arg production call won't
+        // match this override and the REAL click runs (no cancelCapab throw -> no wizardStuck).
+        script.metaClass._rmClickAppButton = { Integer aId, String name, String stateAttr = null, String pageName = null, Map cache = null ->
             if (name == "cancelST") { phase[0] = 1; return [status: 200, location: null, data: ''] }
             if (name == "cancelCapab") throw new RuntimeException("cancelCapab POST refused (status=400)")
             [status: 200, location: null, data: '']
