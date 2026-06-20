@@ -586,8 +586,9 @@ private Map _buildWaitForPollArgs(deviceId, device, deviceLabel, waitFor) {
         throw new IllegalArgumentException("waitFor: exactly one of expectedValue or expectedValues is required")
     }
     // Validate every pre-checkable field HERE so a bad spec never fires the command.
-    // The numeric bounds below MIRROR toolPollUntilAttribute's bounds -- keep in sync with
-    // toolPollUntilAttribute's range checks (intentional small duplication for the pre-fire guarantee).
+    // The pollIntervalMs bound MIRRORS toolPollUntilAttribute's [50,5000]. timeoutMs is
+    // STRICTER on this command-flow path: a waitFor poll pins a hub thread for the full
+    // timeout, so the pre-fire cap is 30000ms (vs the engine's standalone [100,60000]).
     if (hasExpectedValue) {
         if (!(waitFor.expectedValue instanceof String) || !waitFor.expectedValue) {
             throw new IllegalArgumentException("waitFor.expectedValue must be a non-empty string (got: ${_describeValueForError(waitFor.expectedValue)})")
@@ -608,8 +609,8 @@ private Map _buildWaitForPollArgs(deviceId, device, deviceLabel, waitFor) {
     // same fields with `instanceof Number`. The comparison is direct (no `as Integer`
     // cast), so an in-range fractional passes the bounds check exactly as the engine does.
     if (waitFor.containsKey("timeoutMs")) {
-        if (!(waitFor.timeoutMs instanceof Number) || waitFor.timeoutMs < 100 || waitFor.timeoutMs > 60000) {
-            throw new IllegalArgumentException("waitFor.timeoutMs must be a number between 100 and 60000 (got: ${waitFor.timeoutMs})")
+        if (!(waitFor.timeoutMs instanceof Number) || waitFor.timeoutMs < 100 || waitFor.timeoutMs > 30000) {
+            throw new IllegalArgumentException("waitFor.timeoutMs must be a number between 100 and 30000 (got: ${waitFor.timeoutMs})")
         }
     }
     if (waitFor.containsKey("pollIntervalMs")) {
@@ -923,7 +924,14 @@ def toolPollUntilAttribute(args) {
     def everNonNull = false
 
     while (true) {
-        finalValue = device.currentValue(args.attribute)
+        // Read the FRESH event store, not currentValue(). currentValue() is cached at
+        // request start and never refreshes within a request, so on a real async device
+        // (Matter/Zigbee/Z-Wave/cloud) it returns the PRE-command value for the whole poll
+        // and never converges. currentState(attr) reads the live event store -- the same
+        // source _snapshotDeviceState reads -- so the value here matches the snapshot's and
+        // tracks the device's actual reports. currentState(attr) is null until the attribute
+        // has reported; ?.value is the reported value (a String in Hubitat).
+        finalValue = device.currentState(args.attribute)?.value
         polledCount++
         if (finalValue != null) everNonNull = true
         def elapsedMs = (now() - startMs) as Integer
@@ -2062,7 +2070,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         attribute: [type: "string", description: "Attribute to poll until it converges, e.g. \"switch\". Must be a supported attribute of the device."],
                         expectedValue: [type: "string", description: "Block-poll until currentValue equals this string. Provide exactly one of expectedValue or expectedValues."],
                         expectedValues: [type: "array", items: [type: "string"], description: "Block-poll until currentValue is any of these strings (OR semantics). Provide exactly one of expectedValue or expectedValues."],
-                        timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 60000.", default: 5000, minimum: 100, maximum: 60000],
+                        timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 30000. Capped lower than hub_get_device_attribute's poll because this BLOCKS a hub thread for the full timeout.", default: 5000, minimum: 100, maximum: 30000],
                         pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250 (higher than hub_get_device_attribute's 200 because a post-command poll follows a write -- wider spacing reduces read contention), min 50, max 5000. Clamped to timeoutMs if larger.", default: 250, minimum: 50, maximum: 5000]
                     ], required: ["attribute"]]
                 ],

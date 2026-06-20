@@ -52,6 +52,16 @@ class TestDevice {
         attributeValues[attr]
     }
 
+    // The poll engine (toolPollUntilAttribute) reads currentState(attr)?.value -- the
+    // live event store -- NOT currentValue(), which the hub caches at request start and
+    // never refreshes within a request. On a real async device that distinction is the
+    // difference between converging and timing out. Default derives a State-like map from
+    // attributeValues so a device seeded with [switch: 'on'] reads back through both
+    // surfaces; poll specs Spy this method to drive the poll independently of currentValue.
+    Object currentState(String attr) {
+        attributeValues.containsKey(attr) && attributeValues[attr] != null ? [value: attributeValues[attr]?.toString()] : null
+    }
+
     /**
      * Stubbed device event history — rule engine's device_was condition
      * filters by attribute and looks for recent value changes. Tests seed

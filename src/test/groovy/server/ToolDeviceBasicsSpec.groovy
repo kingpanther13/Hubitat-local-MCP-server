@@ -374,11 +374,12 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
 
     def "toolSendCommand with waitFor that converges reports converged + snapshot reflects the target (taken AFTER the poll)"() {
         given: 'a device whose switch is OFF until the poll runs, then converges to ON'
-        // Stateful: currentValue reads off on the first poll read, then on -- and
-        // currentStates DERIVES from the live currentValue. So a snapshot taken BEFORE the
+        // Stateful: currentState reads off on the first poll read, then on -- and
+        // currentStates DERIVES from the same read counter. So a snapshot taken BEFORE the
         // poll would read off; taken AFTER (the production order) it reads the converged on.
         // This makes the "snapshot reflects the converged value" assertion non-vacuous: it
-        // would FAIL if the snapshot were moved ahead of the poll.
+        // would FAIL if the snapshot were moved ahead of the poll. The poll engine reads
+        // currentState(attr)?.value, so the stateful stub drives currentState (not currentValue).
         def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
         def reads = 0
         def device = Spy(TestDevice) {
@@ -387,7 +388,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getSupportedAttributes() >> [[name: 'switch']]
-            currentValue('switch') >> { String a -> (++reads >= 2) ? 'on' : 'off' }
+            currentState('switch') >> { String a -> (++reads >= 2) ? [value: 'on'] : [value: 'off'] }
             getCurrentStates() >> { [[name: 'switch', value: ((reads >= 2) ? 'on' : 'off'), date: stateDate]] }
         }
         childDevicesList << device
@@ -409,6 +410,40 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.state.switch.value == 'on'
     }
 
+    def "toolSendCommand with waitFor converges off the live event store even when currentValue stays stale (real async device)"() {
+        given: 'a device whose currentValue is frozen at the PRE-command value while currentState reports the FRESH value'
+        // Real-device failure mode: on Matter/Zigbee/Z-Wave/cloud devices the hub caches
+        // currentValue() at request start and never refreshes it within the request, so the
+        // poll would read the pre-command value for the whole loop and ALWAYS time out --
+        // even though the device already reported the new value. The poll engine must read
+        // currentState(attr)?.value (the live event store) instead. This guard FAILS (times
+        // out, converged=false) if the poll source reverts to currentValue().
+        def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+            // currentValue is FROZEN stale (pre-command), as the hub returns within a request.
+            currentValue('switch') >> 'off'
+            // currentState reports the FRESH post-command value -- the source the poll must read.
+            currentState('switch') >> [value: 'on']
+            getCurrentStates() >> [[name: 'switch', value: 'on', date: stateDate]]
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 1000, pollIntervalMs: 50])
+
+        then: 'the poll converges on the fresh event-store value (would time out if it read the stale currentValue)'
+        1 * device.on()
+        result.success == true
+        result.waitFor.converged == true
+        result.waitFor.finalValue == 'on'
+        result.waitFor.timedOut == null
+    }
+
     def "toolSendCommand with waitFor that never matches reports converged=false + finalValue"() {
         given: 'a device whose switch stays off so the poll times out'
         def device = Spy(TestDevice) {
@@ -417,7 +452,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getSupportedAttributes() >> [[name: 'switch']]
-            currentValue('switch') >> 'off'
+            currentState('switch') >> [value: 'off']
             getCurrentStates() >> null
         }
         childDevicesList << device
@@ -435,13 +470,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
 
     def "toolSendCommand with waitFor on an attribute that never reports flags neverReported"() {
         given: 'a device whose attribute exists but always reads null (driver never emitted it)'
+        // currentState(attr) is null until the attribute has reported -- the neverReported signal.
         def device = Spy(TestDevice) {
             getId() >> 10
             getName() >> 'TestSwitch'
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getSupportedAttributes() >> [[name: 'switch']]
-            currentValue('switch') >> null
+            currentState('switch') >> null
             getCurrentStates() >> null
         }
         childDevicesList << device
@@ -465,7 +501,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getSupportedAttributes() >> [[name: 'switch']]
-            currentValue('switch') >> 'off'
+            currentState('switch') >> [value: 'off']
             getCurrentStates() >> [[name: 'switch', value: 'off', date: stateDate]]
         }
         childDevicesList << device
@@ -489,7 +525,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getSupportedAttributes() >> [[name: 'switch']]
-            currentValue('switch') >> 'on'
+            currentState('switch') >> [value: 'on']
             getCurrentStates() >> null
         }
         childDevicesList << device
@@ -503,15 +539,18 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.waitFor.finalValue == 'on'
     }
 
-    def "toolSendCommand with waitFor matches a numeric attribute against a string expectedValue"() {
-        given: 'a level attribute that reports the Number 50 while the spec awaits the string "50"'
+    def "toolSendCommand with waitFor matches a level attribute reported as a numeric string against a string expectedValue"() {
+        given: 'a level attribute whose event store reports "50.0" while the spec awaits the string "50"'
+        // currentState(attr).value is a String in Hubitat -- a driver that stores a numeric
+        // attribute may report it as "50.0". The engine's numeric-string fallback matches that
+        // against expectedValue "50", and finalValue is the String form (same source as the snapshot).
         def device = Spy(TestDevice) {
             getId() >> 10
             getName() >> 'TestSwitch'
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'setLevel'], [name: 'on']]
             getSupportedAttributes() >> [[name: 'level']]
-            currentValue('level') >> 50
+            currentState('level') >> [value: '50.0']
             getCurrentStates() >> null
         }
         childDevicesList << device
@@ -519,10 +558,10 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         when:
         def result = script.toolSendCommand('10', 'setLevel', [50], [attribute: 'level', expectedValue: '50'])
 
-        then: 'the engine Number-vs-String fallback matches; the converged finalValue is the numeric 50'
+        then: 'the engine numeric-string fallback matches; the converged finalValue is the String "50.0"'
         result.success == true
         result.waitFor.converged == true
-        result.waitFor.finalValue == 50
+        result.waitFor.finalValue == '50.0'
     }
 
     def "toolSendCommand without waitFor omits the waitFor block (unchanged immediate snapshot)"() {
@@ -616,12 +655,13 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         }
         childDevicesList << device
 
-        when: 'timeoutMs below the engine floor (100)'
-        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 99])
+        when: 'timeoutMs above the command-flow cap (30000) -- stricter than the standalone engine because a waitFor poll pins a hub thread for the full timeout'
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 30001])
 
         then: 'rejected pre-fire so the device is never actuated'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('timeoutMs')
+        ex.message.contains('30000')
         0 * device.on()
     }
 
@@ -777,8 +817,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         }
         childDevicesList << device
 
-        when: 'a fractional value above the engine ceiling (60000)'
-        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 60000.5])
+        when: 'a fractional value above the command-flow cap (30000)'
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 30000.5])
 
         then: 'rejected out-of-range before the device is actuated'
         def ex = thrown(IllegalArgumentException)
@@ -794,7 +834,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getSupportedAttributes() >> [[name: 'switch']]
-            currentValue('switch') >> 'on'
+            currentState('switch') >> [value: 'on']
             getCurrentStates() >> null
         }
         childDevicesList << device
@@ -822,7 +862,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getSupportedAttributes() >> [[name: 'switch']]
-            currentValue('switch') >> { String a -> throw new RuntimeException('read exploded') }
+            currentState('switch') >> { String a -> throw new RuntimeException('read exploded') }
             getCurrentStates() >> [[name: 'switch', value: 'on', date: stateDate]]
         }
         childDevicesList << device
@@ -849,7 +889,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getSupportedAttributes() >> [[name: 'switch']]
-            currentValue('switch') >> { String a -> throw new StackOverflowError('deep') }
+            currentState('switch') >> { String a -> throw new StackOverflowError('deep') }
             getCurrentStates() >> [[name: 'switch', value: 'on', date: stateDate]]
         }
         childDevicesList << device
@@ -908,7 +948,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
             getLabel() >> 'Test Switch'
             getSupportedCommands() >> [[name: 'on'], [name: 'off']]
             getSupportedAttributes() >> [[name: 'switch']]
-            currentValue('switch') >> 'on'
+            currentState('switch') >> [value: 'on']
             getCurrentStates() >> null
         }
         childDevicesList << device
