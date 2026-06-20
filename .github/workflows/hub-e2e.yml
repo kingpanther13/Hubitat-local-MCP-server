@@ -293,7 +293,10 @@ jobs:
           if [ "$relevant" = "true" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
             # LANE: full if a release:*/e2e:full label is on the PR, else focused (see TWO-LANE FLOW at top).
-            labels="$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" --jq '.labels[].name' 2>/dev/null | tr '\n' ' ')"
+            # `|| true`: the step runs under `-eo pipefail`, so a transient gh-api failure here would abort
+            # the whole gate; an empty label list just means "no full-run label" -> focused (the safe lane,
+            # which only HOLDS the merge pending -- it can't green-wash).
+            labels="$( { gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" --jq '.labels[].name' 2>/dev/null || true; } | tr '\n' ' ')"
             lane=focused
             for L in release:patch release:minor release:major e2e:full; do
               case " $labels " in *" $L "*) lane=full ;; esac
@@ -311,7 +314,10 @@ jobs:
               # Map changed files to affected @test groups, AND pull in the group of any test ADDED to
               # tests/e2e_test.py (so a tests-only change / a boy-scout test runs its group, not just
               # smoke). Greps the file's patch for added `def test_...` lines.
-              test_funcs="$(gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[] | select(.filename=="tests/e2e_test.py") | .patch // empty' 2>/dev/null | grep -oE '^\+[[:space:]]*def test_[A-Za-z0-9_]+' | sed -E 's/^\+[[:space:]]*def //' | sort -u | tr '\n' ' ')"
+              # The `{ ... || true; }` around grep is REQUIRED: under `-eo pipefail`, a PR that adds NO new
+              # test function (the COMMON focused case) makes grep exit 1 and aborts the whole gate. The
+              # guard turns "no match" into an empty list (file-group + smoke still run).
+              test_funcs="$( { gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[] | select(.filename=="tests/e2e_test.py") | .patch // empty' 2>/dev/null || true; } | { grep -oE '^\+[[:space:]]*def test_[A-Za-z0-9_]+' || true; } | sed -E 's/^\+[[:space:]]*def //' | sort -u | tr '\n' ' ')"
               CHANGED_FILES="$files" CHANGED_TEST_FUNCS="$test_funcs" python .github/scripts/e2e_scope.py
             fi
           else
@@ -541,8 +547,12 @@ jobs:
           E2E_GROUPS: ${{ steps.gate.outputs.groups }}
         run: |
           if [ "$E2E_LANE" = "focused" ]; then
-            echo "Running the FOCUSED lane -- groups: ${E2E_GROUPS:-<smoke only>}"
-            python tests/e2e_test.py --groups "$E2E_GROUPS"
+            # The runner treats an EMPTY --groups as "no filter" = the FULL suite, so NEVER pass empty in
+            # focused mode (that would silently run everything). e2e_scope.py always emits >=smoke, so this
+            # only fires if the gate misbehaved -- fall back to the smoke core, not the whole suite.
+            groups="${E2E_GROUPS:-infrastructure,protocol}"
+            echo "Running the FOCUSED lane -- groups: $groups"
+            python tests/e2e_test.py --groups "$groups"
           else
             echo "Running the FULL lane -- whole suite"
             python tests/e2e_test.py
