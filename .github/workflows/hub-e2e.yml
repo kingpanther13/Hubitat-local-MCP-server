@@ -18,10 +18,35 @@ name: Hub E2E (test hub)
 # forked the whole project without a donated test hub) the e2e job skips cleanly
 # rather than failing -- see the secret gate inside it. A confirmed infra/flake
 # failure is triaged by the maintainer, not auto-ignored.
+#
+# ============================ TWO-LANE FLOW (issue #237) ============================
+# This job runs in one of two LANES, chosen by whether a full-run label is on the PR
+# (release:patch | release:minor | release:major | e2e:full):
+#
+#   FOCUSED lane (no label)  -> runs ONLY the e2e groups affected by the changed files
+#                               (the file->group map in .github/scripts/e2e_scope.py) + a
+#                               smoke core. Fast iteration signal. NOT the merge gate.
+#   FULL lane    (label on)  -> runs the WHOLE suite. This is what the required gate needs.
+#
+# The REQUIRED merge gate is a POSTED COMMIT STATUS named "Full e2e (runs with label)" -- NOT this job's
+# own check ("e2e (run)") -- on purpose, so the focused lane can HOLD the merge without green-washing it:
+#   - Iterating (focused lane): the gate is posted PENDING -> YELLOW, holds the merge. NOT skipped (a
+#     skipped required check counts as PASS and would let a focused-only PR merge) and NOT red (nothing
+#     failed) -- just pending until the full lane runs.
+#   - Add a release:*/e2e:full label -> the FULL lane runs -> the gate is posted success/failure.
+#     ONLY a green FULL run makes the PR mergeable.
+#   - Docs-only / no-secret PRs: the gate is posted success without running (the gate skip path).
+#
+# >>> A PENDING "Full e2e (runs with label)" on a PR is NORMAL and intended -- it's the gate waiting for
+# >>> the full-run label, NOT a stuck/missing run. Add release:*/e2e:full to run the full suite.
+# ===================================================================================
 
 on:
   pull_request_target:
     branches: [main]
+    # `labeled`/`unlabeled` are included so toggling the full-run label (release:patch|minor|major
+    # or e2e:full) re-evaluates the lane immediately. See the "TWO-LANE FLOW" block below.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     # Deliberately NO `paths:` filter. `e2e` is a REQUIRED status check, and a paths-filtered
     # required check never reports on a PR that doesn't touch those paths -- it sits at
     # "Expected -- waiting for status to be reported" forever, so a docs-only PR can never
@@ -155,6 +180,11 @@ jobs:
             echo "::error::hub_set_app_disabled did not verify the flip -- see result above."; exit 1; }
 
   e2e:
+    # This job's OWN check is "e2e (run)" -- it shows the lane that actually ran (focused green/red while
+    # iterating, full when labeled; the run summary prints which lane). The REQUIRED merge gate is the
+    # SEPARATE posted commit status named "Full e2e (runs with label)" (see TWO-LANE FLOW at top + the
+    # "Post e2e gate status" step). Branch protection requires "Full e2e (runs with label)", NOT "e2e (run)".
+    name: e2e (run)
     needs: [approve]
     if: inputs.probe_only != 'true'
     runs-on: ubuntu-latest
@@ -231,6 +261,7 @@ jobs:
           fi
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"   # manual dispatch always runs the real suite
+            echo "lane=full" >> "$GITHUB_OUTPUT"        # dispatch = the FULL lane
             exit 0
           fi
           # Fetch the PR's changed-file list. Fail SAFE: if it can't be read, run the full suite
@@ -252,6 +283,28 @@ jobs:
           done <<< "$files"
           if [ "$relevant" = "true" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
+            # LANE: full if a release:*/e2e:full label is on the PR, else focused (see TWO-LANE FLOW at top).
+            labels="$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" --jq '.labels[].name' 2>/dev/null | tr '\n' ' ')"
+            lane=focused
+            for L in release:patch release:minor release:major e2e:full; do
+              case " $labels " in *" $L "*) lane=full ;; esac
+            done
+            # Old PR that predates this flow: e2e_scope.py + the runner's --groups support live in the PR's
+            # checked-out HEAD, not here, so the focused lane can't run. Fall back to the FULL lane (the old
+            # runner handles `python tests/e2e_test.py`) until the PR merges main. (See AGENTS.md "Two-lane e2e".)
+            if [ "$lane" = "focused" ] && [ ! -f .github/scripts/e2e_scope.py ]; then
+              echo "::notice::e2e_scope.py not in the PR head — focused lane unavailable; running FULL. Merge main into the PR to enable the focused lane."
+              lane=full
+            fi
+            echo "lane=$lane" >> "$GITHUB_OUTPUT"
+            echo "E2E LANE: $lane" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$lane" = "focused" ]; then
+              # Map changed files to affected @test groups, AND pull in the group of any test ADDED to
+              # tests/e2e_test.py (so a tests-only change / a boy-scout test runs its group, not just
+              # smoke). Greps the file's patch for added `def test_...` lines.
+              test_funcs="$(gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[] | select(.filename=="tests/e2e_test.py") | .patch // empty' 2>/dev/null | grep -oE '^\+[[:space:]]*def test_[A-Za-z0-9_]+' | sed -E 's/^\+[[:space:]]*def //' | sort -u | tr '\n' ' ')"
+              CHANGED_FILES="$files" CHANGED_TEST_FUNCS="$test_funcs" python .github/scripts/e2e_scope.py
+            fi
           else
             echo "::notice::No hub-relevant files changed — reporting E2E green WITHOUT running the suite (docs-only / non-hub PR)."
             echo "E2E NOT RUN — no hub-relevant files changed (docs-only / non-hub PR). Skipped on purpose; this green does NOT mean the e2e suite executed." >> "$GITHUB_STEP_SUMMARY"
@@ -475,7 +528,16 @@ jobs:
           # WATCHDOG_URL, overlapping the restore-poll wait) instead of the test critical path.
           # NOT set on the post-restore --cleanup-only step below, which stays the idempotent backstop.
           E2E_DEFER_NATIVE_DELETES: '1'
-        run: python tests/e2e_test.py
+          E2E_LANE: ${{ steps.gate.outputs.lane }}
+          E2E_GROUPS: ${{ steps.gate.outputs.groups }}
+        run: |
+          if [ "$E2E_LANE" = "focused" ]; then
+            echo "Running the FOCUSED lane -- groups: ${E2E_GROUPS:-<smoke only>}"
+            python tests/e2e_test.py --groups "$E2E_GROUPS"
+          else
+            echo "Running the FULL lane -- whole suite"
+            python tests/e2e_test.py
+          fi
 
       # The install above landed THIS PR's app on the hub, so hub_update_package now
       # exists there. Exercise its discovery path live (dryRun: fetch PR source ->
@@ -487,11 +549,42 @@ jobs:
       # watchdog PR-install step above plus the smokeTestMarker / hub_list_libraries
       # assertions in tests/e2e_test.py.
       - name: Validate hub_update_package dev tool (dryRun)
+        id: pkg_validate
         if: steps.gate.outputs.available == 'true'
         env:
           PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
         run: bash .github/scripts/mcp_validate_package_tool.sh
+
+      # Post the REQUIRED gate "Full e2e (runs with label)" as a COMMIT STATUS (NOT this job's own check)
+      # so the focused lane can hold the merge PENDING without green-washing it (a skipped/green required
+      # check would let a focused-only PR merge -- see TWO-LANE FLOW at top). The job's check is "e2e (run)".
+      #   focused lane          -> pending (yellow): holds the merge until the full lane runs.
+      #   full lane passed       -> success;   full lane failed -> failure.
+      #   docs-only / no secret  -> success (the gate skip path; e2e not required to run).
+      - name: Post e2e gate status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA="${{ github.event.pull_request.head.sha }}"
+          [ -z "$SHA" ] && SHA="${{ github.sha }}"
+          AVAIL="${{ steps.gate.outputs.available }}"
+          LANE="${{ steps.gate.outputs.lane }}"
+          if [ "$AVAIL" != "true" ]; then
+            STATE=success; DESC="e2e skipped (no hub-relevant change / no test-hub secret); not required to run"
+          elif [ "$LANE" = "full" ]; then
+            if [ "${{ steps.run_e2e.outcome }}" = "success" ] && [ "${{ steps.pkg_validate.outcome }}" = "success" ]; then
+              STATE=success; DESC="full e2e passed"
+            else
+              STATE=failure; DESC="full e2e failed"
+            fi
+          else
+            STATE=pending; DESC="e2e pending; no label -- add release:* or e2e:full to run the full suite"
+          fi
+          echo "Posting gate status 'Full e2e (runs with label)': $STATE -- $DESC"
+          gh api -X POST "repos/${{ github.repository }}/statuses/$SHA" \
+            -f state="$STATE" -f context="Full e2e (runs with label)" -f description="$DESC" >/dev/null
 
       # Disarm the v2 dead-man watchdog -- this is also what RESTORES main: it pushes the pre-deploy
       # known-good snapshot back through the watchdog's own restore plumbing ($WATCHDOG_URL) (replacing

@@ -6245,15 +6245,28 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     # -----------------------------------------------------------------------
 
     def run(self, filter_group: str | None = None,
-            filter_test: str | None = None) -> bool:
-        """Run tests. Returns True if all passed."""
+            filter_test: str | None = None,
+            filter_groups: list[str] | None = None,
+            filter_tests: list[str] | None = None) -> bool:
+        """Run tests. Returns True if all passed.
+
+        Selection is a UNION: a test runs if its group is in the requested groups
+        (--group / --groups) OR its display name contains any requested substring
+        (--test / --tests). With no selector, every test runs (the full suite)."""
         self._test_start_time = datetime.now(UTC).isoformat()
+
+        groups_set = set(filter_groups or [])
+        if filter_group:
+            groups_set.add(filter_group)
+        name_subs = list(filter_tests or [])
+        if filter_test:
+            name_subs.append(filter_test)
+        selective = bool(groups_set or name_subs)
 
         tests_to_run = []
         for group, display_name, method_name in TEST_REGISTRY:
-            if filter_group and group != filter_group:
-                continue
-            if filter_test and filter_test not in display_name:
+            if selective and not (group in groups_set
+                                  or any(sub in display_name for sub in name_subs)):
                 continue
             tests_to_run.append((group, display_name, method_name))
 
@@ -6428,6 +6441,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Hubitat MCP Server E2E Tests")
     parser.add_argument("--test", help="Run tests matching this substring")
     parser.add_argument("--group", help="Run only this test group")
+    parser.add_argument("--groups", help="Run only these test groups (comma-separated); unions with --tests")
+    parser.add_argument("--tests", help="Run tests whose name contains any of these substrings (comma-separated); unions with --groups")
     parser.add_argument("--cleanup-only", action="store_true",
                         help="Just clean up BAT_E2E_ test artifacts")
     parser.add_argument("--verbose", "-v", action="store_true",
@@ -6565,7 +6580,10 @@ def main() -> None:
                 print(f"  [WARN] Backup failed: {exc}")
                 print("  Tests requiring backup may fail.\n")
 
-    all_passed = runner.run(filter_group=args.group, filter_test=args.test)
+    _grps = [s.strip() for s in args.groups.split(",") if s.strip()] if args.groups else None
+    _tsts = [s.strip() for s in args.tests.split(",") if s.strip()] if args.tests else None
+    all_passed = runner.run(filter_group=args.group, filter_test=args.test,
+                            filter_groups=_grps, filter_tests=_tsts)
     sys.exit(0 if all_passed else 1)
 
 
