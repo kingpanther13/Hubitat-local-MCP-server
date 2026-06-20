@@ -3751,7 +3751,7 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
 // The body is intentionally minimal — the server only needs the
 // navigation marker to perform the transition. We don't need to mirror
 // every hidden button input on the source page.
-private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0, String hrefName = "name", Map hrefParams = null) {
+private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage, Integer hrefIndex = 0, String hrefName = "name", Map hrefParams = null, Map cache = null) {
     // For plain page navigation use hrefName="name" + hrefIndex=0. The
     // server treats the marker `_action_href_name|<page>|0` as a generic
     // navigation request.
@@ -3787,7 +3787,7 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
         body[paramsMarker] = groovy.json.JsonOutput.toJson(hrefParams)
     }
     try {
-        def cfg = _rmFetchConfigJson(appId, fromPage)
+        def cfg = _rmFetchConfigJson(appId, fromPage, cache)
         def v = cfg?.app?.version
         if (v != null) body.version = v.toString()
     } catch (Exception versionExc) {
@@ -3795,6 +3795,10 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
     }
     try {
         def resp = hubInternalPostForm("/installedapp/update/json", body)
+        // This nav POST re-renders the target page + bumps app.version -> drop cached pages for
+        // this app. We do NOT store the returned render: the caller consumes navResp.configPage
+        // directly, and it carries state.<paramKey> context a later plain GET would not.
+        _rmCacheInvalidate(cache, appId)
         if (resp?.data) {
             try {
                 return new groovy.json.JsonSlurper().parseText(resp.data) as Map
@@ -3848,15 +3852,15 @@ private Map _rmLiveSettingsFromStatus(Map status) {
 // for sub-page-driven capabilities (Periodic Schedule, Cron String,
 // etc.). Caller passes the current page name + parent page + the href
 // params (so paramsForPage routes correctly).
-private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage, String hrefName, Map hrefParams) {
+private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage, String hrefName, Map hrefParams, Map cache = null) {
     // Sub-pages with route params (periodic.n, etc.) lose state.<paramKey>
     // on a plain GET — `_rmFetchConfigJson(appId, page)` returns the page
     // rendered with state=null, which means the schema is empty/wrong and
     // the version field is unreadable. Round-trip via _rmNavigateToPage to
     // get a fresh response that has the param state in scope.
     def hrefIndex = hrefParams?.n != null ? (hrefParams.n as Integer) : 0
-    def navResp = _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName ?: "name", hrefParams)
-    def cfg = navResp ? [configPage: navResp.configPage, app: navResp.app] : _rmFetchConfigJson(appId, page)
+    def navResp = _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName ?: "name", hrefParams, cache)
+    def cfg = navResp ? [configPage: navResp.configPage, app: navResp.app] : _rmFetchConfigJson(appId, page, cache)
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def status = _rmFetchStatusJson(appId)
     def liveSettings = _rmLiveSettingsFromStatus(status)
@@ -3908,6 +3912,8 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
     //     (log-only) -- best-effort cleanup, the following updateRule handles the commit.
     // Catching inside the helper would erase all three distinctions, so it does not.
     hubInternalPostForm("/installedapp/update/json", body)
+    // The Done POST commits the sub-page + bumps app.version -> drop cached pages for this app.
+    _rmCacheInvalidate(cache, appId)
 }
 
 // Submit mainPage with `_action_update: Done` — mirrors clicking the
@@ -4020,7 +4026,7 @@ private Map _rmSubmitMainPageDone(Integer appId) {
     return [done: true]
 }
 
-private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value) {
+private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, String hrefName, Integer hrefIndex, Map hrefParams, String key, Object value, Map cache = null) {
     // For pages with meaningful state.<paramKey> (e.g. periodic schedule's
     // state.n), schema requires the navigate response to set state in scope.
     // For pages with placeholder hrefParams (STPage uses [unUsed: null]),
@@ -4031,10 +4037,10 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     def hasRealParams = (hrefParams != null) && hrefParams.values().any { it != null }
     def cfg
     if (hasRealParams) {
-        def navResp = _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName, hrefParams)
-        cfg = navResp ? [configPage: navResp.configPage, app: navResp.app] : _rmFetchConfigJson(appId, page)
+        def navResp = _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName, hrefParams, cache)
+        cfg = navResp ? [configPage: navResp.configPage, app: navResp.app] : _rmFetchConfigJson(appId, page, cache)
     } else {
-        cfg = _rmFetchConfigJson(appId, page)
+        cfg = _rmFetchConfigJson(appId, page, cache)
     }
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def beforeKeys = (schema?.keySet() ?: []) as Set
@@ -4054,21 +4060,29 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     // not via re-firing the action_href on every write.
     body.pageBreadcrumbs = '[]'
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
-    hubInternalPostForm("/installedapp/update/json", body)
-    // Post-write verification — re-fetch the page and detect whether the
-    // write either (a) shifted the schema (wizard advanced; key disappeared
-    // or new keys appeared), or (b) landed the new value verbatim. Returns
-    // a Map so callers can route into applied vs skipped lists rather than
-    // optimistically appending to applied regardless of outcome (RM 5.1
-    // returns 200 for many writes that never land; the previous optimistic
-    // bookkeeping hid these silent rejections).
+    def postResp = hubInternalPostForm("/installedapp/update/json", body)
+    // Post-write verification. The classic dynamicPage submit RETURNS the re-rendered page model
+    // inline (appUI.js jsonSubmit consumes data.configPage with NO follow-up GET), so on the
+    // plain-params path (STPage/doActPage condition writes — the hot path) we consume that
+    // response as afterCfg, eliminating the separate verify-GET. The hasRealParams path keeps its
+    // re-navigate so the state.<paramKey> render context (periodic schedule's state.n) is
+    // preserved exactly. Either way afterCfg drives the same schema/value/render diff below
+    // (applied vs silently-rejected). RM 5.1 returns 200 for many writes that never land, so the
+    // diff — not the POST status — is what routes applied vs skipped.
     def afterCfg = null
     def verifyFetchErr = null
-    try {
-        afterCfg = hasRealParams ? _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName, hrefParams) : _rmFetchConfigJson(appId, page)
-    } catch (Exception fetchExc) {
-        verifyFetchErr = fetchExc.message
-        mcpLog("warn", "rm-native", "_rmWriteSubPageField: post-write fetch on ${page} failed for app ${appId} key=${key} (${fetchExc.message}) -- write status is unverified")
+    def parsedPost = hasRealParams ? null : _rmPagePostResponse(postResp)
+    if (parsedPost != null) {
+        _rmCacheStore(cache, appId, page, parsedPost)
+        afterCfg = parsedPost
+    } else {
+        _rmCacheInvalidate(cache, appId)
+        try {
+            afterCfg = hasRealParams ? _rmNavigateToPage(appId, parentPage ?: page, page, hrefIndex, hrefName, hrefParams, cache) : _rmFetchConfigJson(appId, page, cache)
+        } catch (Exception fetchExc) {
+            verifyFetchErr = fetchExc.message
+            mcpLog("warn", "rm-native", "_rmWriteSubPageField: post-write fetch on ${page} failed for app ${appId} key=${key} (${fetchExc.message}) -- write status is unverified")
+        }
     }
     if (afterCfg == null) {
         // Verification fetch failed OR returned null. We CANNOT confirm
@@ -8601,13 +8615,13 @@ private void _rmWriteMathOperand(Integer appId, int idx, Object operandValue, St
     }
 }
 
-private Map _rmRevealStep(Integer appId, String page, String pattern, Closure trigger) {
-    def preCfg = _rmFetchConfigJson(appId, page)
+private Map _rmRevealStep(Integer appId, String page, String pattern, Closure trigger, Map cache = null) {
+    def preCfg = _rmFetchConfigJson(appId, page, cache)
     def preNames = (preCfg?.configPage?.sections ?: []).collectMany { sec ->
         (sec?.input ?: []).collect { it?.name?.toString() }
     }.findAll { it } as Set
     trigger.call()
-    def postCfg = _rmFetchConfigJson(appId, page)
+    def postCfg = _rmFetchConfigJson(appId, page, cache)
     def postInputs = (postCfg?.configPage?.sections ?: []).collectMany { sec ->
         (sec?.input ?: [])
     }
@@ -8715,6 +8729,10 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         throw new IllegalArgumentException("_rmWalkConditionReveal requires ctx.skipped (the caller's settingsSkipped List) -- the walker records degradation skips into it. Pass skipped: <list>.")
     }
     def page                  = ctx.page?.toString() ?: "STPage"
+    // Request-scoped page-schema cache threaded from the builder (null when absent). Passed into
+    // every reveal/fetch/click below: reveal pre-fetches HIT the prior write's cached POST
+    // response, and every click invalidates the app's cached pages.
+    def cache                 = ctx.cache as Map
     // _rmRevealStep returns fallbackToExisting=true when only revealedAny matched (a
     // matching field was already visible BEFORE the trigger closure ran). On static-schema
     // firmware this is normal; on progressive-disclosure firmware it can mask a silent
@@ -8731,7 +8749,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // Empty-trigger callers use the discoverField() helper below which routes through
     // _rmRevealStep directly without the sentinel push.
     def revealStep = { Integer aId, String pg, String pattern, Closure trigger ->
-        def step = _rmRevealStep(aId, pg, pattern, trigger)
+        def step = _rmRevealStep(aId, pg, pattern, trigger, cache)
         // skippedAccum is non-null (guarded at entry).
         if (step?.fallbackToExisting == true) {
             skippedAccum << [key: pattern, reason: "reveal_fallback_to_existing_field", condIdx: condIdx]
@@ -8742,7 +8760,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // Same return shape as revealStep but does NOT push the reveal-fallback sentinel
     // (these calls are by design discovery-only and would emit false positives).
     def discoverField = { Integer aId, String pg, String pattern ->
-        return _rmRevealStep(aId, pg, pattern, {})
+        return _rmRevealStep(aId, pg, pattern, {}, cache)
     }
 
     // ---- Pre-walker guard: discrete-event sensor capabilities ----
@@ -8844,7 +8862,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (cond.rawSettings instanceof Map) {
             (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
         }
-        _rmClickAppButton(appId, "hasAll", null, page)
+        _rmClickAppButton(appId, "hasAll", null, page, cache)
         return
     }
 
@@ -8989,7 +9007,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (cond.rawSettings instanceof Map) {
             (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
         }
-        _rmClickAppButton(appId, "hasAll", null, page)
+        _rmClickAppButton(appId, "hasAll", null, page, cache)
         return
     }
 
@@ -9113,7 +9131,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             if (cond.rawSettings instanceof Map) {
                 (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
             }
-            _rmClickAppButton(appId, "hasAll", null, page)
+            _rmClickAppButton(appId, "hasAll", null, page, cache)
             return
         }
 
@@ -9151,7 +9169,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (cond.rawSettings instanceof Map) {
             (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
         }
-        _rmClickAppButton(appId, "hasAll", null, page)
+        _rmClickAppButton(appId, "hasAll", null, page, cache)
         return
     }
 
@@ -9235,7 +9253,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                 if (cond.rawSettings instanceof Map) {
                     (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
                 }
-                _rmClickAppButton(appId, "hasAll", null, page)
+                _rmClickAppButton(appId, "hasAll", null, page, cache)
                 return
             }
             if (relrReveal.input) {
@@ -9318,7 +9336,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (cond.rawSettings instanceof Map) {
             (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
         }
-        _rmClickAppButton(appId, "hasAll", null, page)
+        _rmClickAppButton(appId, "hasAll", null, page, cache)
         return
     }
 
@@ -9406,7 +9424,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         // lingering sibling slot would let a loose-find write land in another condition's
         // RelrDev_<other> (writeST verifies the wrong-but-valid field as applied, so the
         // mistake is silent). The exact-key write mirrors the offset state_<cIdx> anchor.
-        def afterBaseFields = _rmFetchConfigJson(appId, page)
+        def afterBaseFields = _rmFetchConfigJson(appId, page, cache)
         def afterBaseInputs = (afterBaseFields?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
         def relrKey = "RelrDev_${cIdx}".toString()
         def relrInput = afterBaseInputs.find { it?.name?.toString() ==~ /RelrDev_\d+/ }
@@ -9501,7 +9519,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (cond.rawSettings instanceof Map) {
             (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
         }
-        _rmClickAppButton(appId, "hasAll", null, page)
+        _rmClickAppButton(appId, "hasAll", null, page, cache)
         return
     }
 
@@ -9555,7 +9573,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             // second probe re-fetch (which would be both redundant and a fresh abort risk).
             def afterAttrInputs = null
             try {
-                def afterCfg = _rmFetchConfigJson(appId, page)
+                def afterCfg = _rmFetchConfigJson(appId, page, cache)
                 afterAttrInputs = (afterCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
             } catch (Exception revealEx) {
                 mcpLog("warn", "rm-native", "conditions[${condIdx}]: Custom Attribute (default block): exposure-probe re-fetch after rCustomAttr_${cIdx} failed for app ${appId} on page ${page} (${revealEx.message ?: revealEx}); force-writing comparator RelrDev_${cIdx} as fallback (partial)")
@@ -9635,7 +9653,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // threshold) is the alias for Custom Attribute and numeric comparator paths.
     def condStateOrValue = cond.state != null ? cond.state : cond.value
     if (condStateOrValue != null) {
-        def stateNavResp = _rmFetchConfigJson(appId, page)
+        def stateNavResp = _rmFetchConfigJson(appId, page, cache)
         def stateInputs = (stateNavResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
         def stateInput = stateInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
         if (stateInput?.options) {
@@ -9657,7 +9675,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             writeST(hrefParams, rk.toString(), rv)
         }
     }
-    _rmClickAppButton(appId, "hasAll", null, page)
+    _rmClickAppButton(appId, "hasAll", null, page, cache)
 }
 
 // Validate a Required Expression spec's pure INPUT SHAPE -- the checks that
@@ -9829,8 +9847,13 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
     // based on the helper's persistence verification (Map return). Use this
     // for every STPage wizard field write so silent rejections are caught
     // and surfaced rather than optimistically claimed as applied.
+    // Request-scoped page-schema cache: each field write's POST response populates it (see
+    // _rmWriteSubPageField / _rmCacheStore), so reveal pre-fetches HIT it instead of re-GETting an
+    // unchanged STPage, and every write helper invalidates it on its POST. Threaded through writeST,
+    // the walker (ctx.cache), and every fetch/click/navigate below. Lives only for this build.
+    def rmCache = [:]
     def writeST = { Map params, String fieldKey, Object fieldValue, String label = null ->
-        def wr = _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, params, fieldKey, fieldValue)
+        def wr = _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, params, fieldKey, fieldValue, rmCache)
         if (wr?.persisted) {
             applied << (label ?: fieldKey)
         } else if (wr?.verifyFetchFailed) {
@@ -9852,7 +9875,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
     // so it does not flip partial on an otherwise-clean expression (e.g. a clean
     // enum Custom Attribute condition). Other useST failures keep their reason.
     int skippedBeforeUseST = skipped.size()
-    _rmWriteSettingOnPage(appId, "mainPage", "useST", true, applied, "bool", skipped)
+    _rmWriteSettingOnPage(appId, "mainPage", "useST", true, applied, "bool", skipped, rmCache)
     if (skipped.size() > skippedBeforeUseST) {
         def useStSkip = skipped[skippedBeforeUseST]
         if (useStSkip instanceof Map && useStSkip.key == "useST" && useStSkip.reason == "silent_rejection") {
@@ -9921,7 +9944,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
     def currentCondIdx = -1
     def cancelInFlightCondition = {
         cancelledByWalker = true
-        try { _rmClickAppButton(appId, "cancelCapab", null, "STPage") }
+        try { _rmClickAppButton(appId, "cancelCapab", null, "STPage", rmCache) }
         catch (Exception cancelExc) {
             wizardCleanupFailed = true
             wizardCleanupErr = cancelExc.message
@@ -10004,7 +10027,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
                     // slot index (cIdx). The cond=a write above causes RM to allocate
                     // a new rCapab_<N>/rDev_<N>/... slot; N is firmware-assigned and
                     // must be read from the schema rather than assumed.
-                    def navResp = _rmFetchConfigJson(appId, "STPage")
+                    def navResp = _rmFetchConfigJson(appId, "STPage", rmCache)
                     def stInputs = (navResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
                     def rCapabInput = stInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
                     if (!rCapabInput) {
@@ -10040,7 +10063,8 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
                         capCanonical: capCanonical,
                         hrefParams: hrefParams,
                         applied: applied,
-                        skipped: skipped
+                        skipped: skipped,
+                        cache: rmCache
                     ], cond, cIdx)
                     for (int sIdx = skippedBefore; sIdx < skipped.size(); sIdx++) {
                         def sEntry = skipped[sIdx]
@@ -10148,7 +10172,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
     //   Wire format: POST /installedapp/btn with settings[doneST]=clicked,
     //   stateAttribute=doneST, doneST.type=button, pageBreadcrumbs=["mainPage"].
     try {
-        _rmClickAppButton(appId, "doneST", "doneST", "STPage")
+        _rmClickAppButton(appId, "doneST", "doneST", "STPage", rmCache)
     } catch (Exception doneStExc) {
         // doneST click failure is non-fatal for the formula itself -- the RE
         // is fully committed. It only means the browser may show the
@@ -10163,7 +10187,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
     // After Step 3b, STPage is in Done mode (cond not required); the schema
     // sent by _rmSubmitSubPageDone now reflects editST/cancelST/stopOnST/
     // evalOnBoot fields, which is correct for the Done-mode back-nav.
-    _rmSubmitSubPageDone(appId, "STPage", "mainPage", "name", hrefParams)
+    _rmSubmitSubPageDone(appId, "STPage", "mainPage", "name", hrefParams, rmCache)
 
     // Step 4b. Clear RM's residual condition-builder atomicState after
     // the expression-builder hasRule click.
@@ -10202,7 +10226,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
     // Set verificationFetchFailed=true and return success=false instead.
     def mainCfg = null
     def verificationFetchFailed = false
-    try { mainCfg = _rmFetchConfigJson(appId, "mainPage") }
+    try { mainCfg = _rmFetchConfigJson(appId, "mainPage", rmCache) }
     catch (Exception verifyExc) {
         verificationFetchFailed = true
         mcpLog("warn", "rm-native", "addRequiredExpression: post-commit mainPage fetch failed for app ${appId} (${verifyExc.message}) -- cannot verify expression baked; returning verificationFetchFailed=true")
