@@ -68,9 +68,11 @@ def _test_group_map() -> dict:
                 if dec:
                     cur = dec.group(1)
                     continue
-                d = re.match(r'\s*def (test_\w+)\(', line)
+                d = re.match(r'\s*def (\w+)\(', line)
                 if d:
-                    if cur:
+                    # Reset on ANY def so a @test decorator can't leak across a non-test helper
+                    # sitting between it and the next test function.
+                    if cur and d.group(1).startswith("test_"):
                         out[d.group(1)] = cur
                     cur = None
     except OSError:

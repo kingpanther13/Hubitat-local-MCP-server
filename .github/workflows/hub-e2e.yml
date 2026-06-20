@@ -75,6 +75,10 @@ on:
 
 permissions:
   contents: read
+  # statuses: write lets the "Post e2e gate status" step POST the required commit status
+  # "Full e2e (runs with label)" (pending while focused, success/failure when full). Without it
+  # the POST 403s ("Resource not accessible by integration") and the gate can never report.
+  statuses: write
 
 jobs:
   # The hub-less self-deploy recovery guard (issue #237) is NOT here: running untrusted
@@ -199,17 +203,22 @@ jobs:
     # several PRs can sit queued for the single shared hub and run back-to-back.
     # It also covers a manual hub session GitHub's `concurrency` can't see.
     #
-    # The GitHub group is PER-PR (per-ref for dispatches) and exists only to cancel
-    # SUPERSEDED runs: a new commit pushed while the previous run is still lease-waiting
-    # (or mid-test on the now-outdated commit) cancels it -- its results are stale either
-    # way. Cancellation is safe: the cleanup/restore/lease-release steps are
-    # `if: always()` (GitHub still runs those on cancellation), and a hard kill is
-    # backstopped by the dead-man watchdog's deadline restore plus the lease TTL
-    # (an unreleased lease is reclaimable after at most 30 min).
-    # Scoped at the JOB level (not workflow level) so the `approve` gate -- which may
-    # sit waiting on a human reviewer -- never holds the group.
+    # The GitHub group is PER-BRANCH and exists to cancel SUPERSEDED runs AND to stop two runs
+    # for the SAME branch from starting at once. Both the focused (push) and full (label) lanes
+    # are pull_request_target on the same PR, and a maintainer workflow_dispatch validates the
+    # same branch -- ALL THREE must collapse into ONE group, else two runs start together and
+    # both hammer the cloud relay during lease acquisition (the 504 storm that fails a run even
+    # though the lease itself would serialize hub access). Keying on `head_ref` (set for
+    # pull_request_target = the PR's source branch) || `ref_name` (set for workflow_dispatch/push)
+    # yields the SAME group for every event on a given branch, so a new push / a label add / a
+    # dispatch cancels the older run instead of racing it. (Same-repo branch<->PR is 1:1; two
+    # forks reusing one branch name is the only overlap, and the lease still serializes that.)
+    # Cancellation is safe: the cleanup/restore/lease-release steps are `if: always()`, and a hard
+    # kill is backstopped by the dead-man watchdog's deadline restore plus the lease TTL.
+    # Scoped at the JOB level (not workflow level) so the `approve` gate -- which may sit waiting
+    # on a human reviewer -- never holds the group.
     concurrency:
-      group: hub-e2e-${{ github.event.pull_request.number || github.ref }}
+      group: hub-e2e-${{ github.head_ref || github.ref_name }}
       cancel-in-progress: true
 
     env:
