@@ -6393,6 +6393,13 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             tests_to_run.append((group, display_name, method_name))
 
         if not tests_to_run:
+            if selective:
+                # An explicit --groups/--tests selector that resolves to ZERO tests is an error, not a
+                # pass: a typo'd or renamed name would otherwise exit 0 (green) having run nothing -- a
+                # false green on exactly the one-off lane a maintainer reaches for to confirm a fix.
+                print(f"ERROR: no registered test matched the selector (groups={sorted(groups_set)}, "
+                      f"tests={name_subs}). Nothing ran -- likely a typo or a renamed test.")
+                return False
             print("No tests matched the filter criteria.")
             return True
 

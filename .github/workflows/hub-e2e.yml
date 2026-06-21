@@ -219,14 +219,16 @@ jobs:
     # though the lease itself would serialize hub access). Keying on `head_ref` (set for
     # pull_request_target = the PR's source branch) || `ref_name` (set for workflow_dispatch/push)
     # yields the SAME group for every event on a given branch, so a new push / a label add / a
-    # dispatch cancels the older run instead of racing it. (Same-repo branch<->PR is 1:1; two
-    # forks reusing one branch name is the only overlap, and the lease still serializes that.)
+    # dispatch cancels the older run instead of racing it. Keying on head-repo + branch keeps two
+    # FORKS that reuse a branch name (main/fix) in SEPARATE groups so they don't cancel each other
+    # (head.repo.full_name is empty for dispatch/push -> github.repository, so same-repo events on a
+    # branch still collapse to one group).
     # Cancellation is safe: the cleanup/restore/lease-release steps are `if: always()`, and a hard
     # kill is backstopped by the dead-man watchdog's deadline restore plus the lease TTL.
     # Scoped at the JOB level (not workflow level) so the `approve` gate -- which may sit waiting
     # on a human reviewer -- never holds the group.
     concurrency:
-      group: hub-e2e-${{ github.head_ref || github.ref_name }}
+      group: hub-e2e-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
       cancel-in-progress: true
 
     env:
@@ -299,6 +301,7 @@ jobs:
           files="$(gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[].filename')" || {
             echo "::warning::Could not list changed files — running the full E2E suite to be safe."
             echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "lane=full" >> "$GITHUB_OUTPUT"   # full suite runs here -> gate must post success/failure, not pending
             exit 0
           }
           # Hub-relevant allowlist — the source of truth for "what must exercise e2e".
@@ -622,7 +625,9 @@ jobs:
           if [ "$AVAIL" != "true" ]; then
             STATE=success; DESC="e2e skipped (no hub-relevant change / no test-hub secret); not required to run"
           elif [ "$LANE" = "full" ]; then
-            if [ "${{ steps.run_e2e.outcome }}" = "success" ] && [ "${{ steps.pkg_validate.outcome }}" = "success" ]; then
+            # pkg_validate is SKIPPED (not failed) under a skip_install one-off dispatch; only an actual
+            # failure should fail the gate, so a skipped validate counts as a pass.
+            if [ "${{ steps.run_e2e.outcome }}" = "success" ] && [ "${{ steps.pkg_validate.outcome }}" != "failure" ]; then
               STATE=success; DESC="full e2e passed"
             else
               STATE=failure; DESC="full e2e failed"
