@@ -8501,11 +8501,21 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
 // the rule, so the clean predCapabs persists. Verified live via probe diag variants Y
 // and Z (2026-05-01/02). DO NOT remove or simplify without re-running full probe matrix.
 private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
+    // Thread a request-scoped page cache so the repeated doActPage reads inside this fixed
+    // sequence reuse the page a prior step already fetched/echoed instead of re-GETting it.
+    // This does NOT change the wire POST sequence (same steps, same order, same bodies -- the
+    // probe-matrix-verified shape above is untouched); it only drops redundant verify-GETs.
+    // Clicks/navs invalidate the cache (they genuinely re-render + bump app.version), so the
+    // only HITs are provably-current reads: the actType write reusing the slot page step 2
+    // just fetched, the actionCancel version read reusing the actSubType echo, and the
+    // mainPage nav's version read reusing the selectActions render the prior nav returned.
+    Map cache = [:]
+
     // Open a new action slot on selectActions.
-    _rmClickAppButton(appId, "N", "doActN", "selectActions")
+    _rmClickAppButton(appId, "N", "doActN", "selectActions", cache)
 
     // Discover the index RM allocated (same pattern as _rmAddAction).
-    def ghostCfg = _rmFetchConfigJson(appId, "doActPage")
+    def ghostCfg = _rmFetchConfigJson(appId, "doActPage", cache)
     def ghostSchema = _rmCollectInputSchema(ghostCfg?.configPage)
     def ghostActTypeField = ghostSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
     def ghostIdx = 1
@@ -8520,14 +8530,24 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
     // alone does not trigger the clear (Variant Z: condActs alone still broken).
     def ghostApplied = []
     def ghostSkipped = []
-    _rmWriteSettingOnPage(appId, "doActPage", "actType.${ghostIdx}", "condActs", ghostApplied, null, ghostSkipped)
-    _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${ghostIdx}", "getIfThen", ghostApplied, null, ghostSkipped)
+    _rmWriteSettingOnPage(appId, "doActPage", "actType.${ghostIdx}", "condActs", ghostApplied, null, ghostSkipped, cache)
+    // actType=condActs reveals actSubType via submitOnChange, and that picker's POST echo can
+    // lag one render (no actSubType in the returned schema yet -- same class as the STPage
+    // cond/oper picker bug). A cache HIT is trusted as "provably current", so caching that
+    // lagged echo would make the next write skip as not_in_schema (_rmWriteSettingOnPage:4091)
+    // and silently leave predCapabs uncleared. Drop the cache so the actSubType write reads the
+    // settled page fresh.
+    _rmCacheInvalidate(cache, appId)
+    _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${ghostIdx}", "getIfThen", ghostApplied, null, ghostSkipped, cache)
+    if (ghostSkipped.any { it?.key?.toString()?.startsWith("actSubType") && it?.reason == "not_in_schema" }) {
+        mcpLog("warn", "rm-native", "${caller}: ghost ifThen actSubType=getIfThen write was SKIPPED not_in_schema (${ghostSkipped}) for app ${appId} -- the actType->actSubType reveal echo lagged past the fresh re-read; predCapabs may NOT be cleared, so a later non-expression action could render under IF(Broken Condition).")
+    }
 
     // Cancel WITHOUT clicking actionDone. This discards the slot before
     // commit so no action is added to the rule, but the re-initialized
     // predCapabs state (from the getIfThen init) persists.
     // DO NOT replace with actionDone -- that bakes an empty IF() block.
-    _rmClickAppButton(appId, "actionCancel", null, "doActPage")
+    _rmClickAppButton(appId, "actionCancel", null, "doActPage", cache)
 
     // Return to selectActions to finalize the cancel, then navigate
     // back to mainPage. Without the mainPage nav, the app's server-side
@@ -8537,8 +8557,12 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
     // missing or not passing validation" on STPage. Without this nav,
     // STPage shows a validation error after addRequiredExpression completes;
     // with it, STPage opens cleanly.
-    _rmNavigateToPage(appId, "doActPage", "selectActions")
-    _rmNavigateToPage(appId, "selectActions", "mainPage")
+    def navBack = _rmNavigateToPage(appId, "doActPage", "selectActions", 0, "name", null, cache)
+    // A plain name-nav render carries no param-state, so it equals a live selectActions GET;
+    // _rmNavigateToPage deliberately doesn't self-store its render, so cache it here for the
+    // mainPage nav's version read (drops one more re-GET).
+    if (navBack?.configPage != null) _rmCacheStore(cache, appId, "selectActions", navBack)
+    _rmNavigateToPage(appId, "selectActions", "mainPage", 0, "name", null, cache)
 
     mcpLog("info", "rm-native", "${caller}: ghost ifThen clear fired for app ${appId} (clears atomicState.predCapabs without adding an action)")
 }
