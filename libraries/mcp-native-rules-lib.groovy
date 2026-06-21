@@ -4073,16 +4073,18 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     def verifyFetchErr = null
     def parsedPost = hasRealParams ? null : _rmPagePostResponse(postResp)
     if (parsedPost != null) {
-        // Consume the inline echo for routing (no extra GET), but only CACHE it when it
-        // DEMONSTRABLY advanced the schema. The dynamicPage echo lags one render behind for
-        // wizard-consumed enum pickers (STPage `oper`): it returns the pre-transition
-        // [oper,doneST] while the settled page is already [cond,doneST]. Caching that stale page
-        // makes the next write read a schema missing its key, drop the `<key>.type` sidecar, and
-        // silently no-op (the multi-condition RE cond=a failure). A non-advancing echo
-        // invalidates instead, so the next read re-fetches the settled page.
+        // Consume the inline echo for routing (no extra GET), but only CACHE it when it adds a
+        // NEW schema key -- a genuine forward advance. The echo for a wizard-consumed enum picker
+        // (STPage `oper`) lags one render behind: the gap `oper=AND` between conditions echoes
+        // [oper,doneST] (still the picker) while the settled page is the [cond,doneST] selector.
+        // Before the 3rd+ condition that lagged echo even DROPS keys (the expression-management
+        // buttons), so "schema differs" is too weak -- a key must be ADDED. Caching a
+        // non-advancing echo feeds the next write a schema missing its key, dropping the
+        // `<key>.type` sidecar so RM silently no-ops it (the multi-condition RE cond=a failure).
+        // A non-advancing echo invalidates so the next read re-fetches the settled page.
         afterCfg = parsedPost
         def parsedPostKeys = (_rmCollectInputSchema(parsedPost?.configPage)?.keySet() ?: []) as Set
-        if (parsedPostKeys != beforeKeys) {
+        if (!(parsedPostKeys - beforeKeys).isEmpty()) {
             _rmCacheStore(cache, appId, page, parsedPost)
         } else {
             _rmCacheInvalidate(cache, appId)
