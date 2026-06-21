@@ -1646,11 +1646,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // Step 4b. Both an STPage Done POST (currentPage=STPage, _action_previous=Done)
     // and the ghost ifThen N click (currentPage=selectActions) must appear.
 
-    def "addRequiredExpression Step 4b fires ghost ifThen: N on selectActions, condActs+getIfThen, actionCancel, nav"() {
-        // Regression gate: ghost IF/THEN wrap after Required Expression commit.
-        // Verifies the exact wire sequence of the ghost ifThen clear:
-        // N click (selectActions) -> actType=condActs -> actSubType=getIfThen
-        // -> actionCancel (doActPage) -> nav doActPage->selectActions.
+    def "addRequiredExpression Step 4b DEFERS the ghost ifThen: flags predClearPending, no ghost POSTs"() {
+        // Regression gate for the ghost-ifThen DEFERRAL. addRequiredExpression no longer runs the
+        // ~9-round-trip ghost ifThen up front (it made the relay-504-prone RE build heavier for nothing
+        // when no action follows). Instead it flags the rule (atomicState.predClearPending); the next
+        // addAction runs the SAME _rmClearPredCapabsViaGhostIfThen just-in-time (see the deferred-clear
+        // specs below). So the RE build emits NO ghost-ifThen POSTs (no N-on-selectActions, no
+        // condActs/getIfThen on doActPage, no actionCancel/Done), and the flag IS set.
         given:
         enableWrite()
         def fetchSeq = 0
@@ -1702,46 +1704,28 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "RE committed successfully (bake-check passed with baked paragraph)"
         result.success == true
 
-        and: "(a) N button clicked on selectActions with stateAttribute=doActN"
-        def nClick = posts.find { it.path == "/installedapp/btn" &&
-                                   it.body?.name == "N" &&
-                                   it.body?.currentPage == "selectActions" }
-        nClick != null
-        nClick.body?.stateAttribute == "doActN"
+        and: "(deferral) NO ghost-ifThen N click on selectActions during the RE build"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "N" &&
+                     it.body?.currentPage == "selectActions" }
 
-        and: "(b) actType.{idx}=condActs written on doActPage"
-        posts.any { it.path == "/installedapp/update/json" &&
-                    it.body?.currentPage == "doActPage" &&
-                    it.body?.any { k, v -> k?.toString()?.startsWith("settings[actType.") && v == "condActs" } }
+        and: "(deferral) NO condActs / getIfThen writes on doActPage during the RE build"
+        !posts.any { it.path == "/installedapp/update/json" && it.body?.currentPage == "doActPage" &&
+                     it.body?.any { k, v -> k?.toString()?.startsWith("settings[actType.") && v == "condActs" } }
+        !posts.any { it.path == "/installedapp/update/json" && it.body?.currentPage == "doActPage" &&
+                     it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
 
-        and: "(b) actSubType.{idx}=getIfThen written on doActPage"
-        posts.any { it.path == "/installedapp/update/json" &&
-                    it.body?.currentPage == "doActPage" &&
-                    it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        and: "(deferral) the rule is flagged predClearPending so the next addAction runs the clear just-in-time"
+        atomicStateMap.predClearPending?.get("100") == true
 
-        and: "(c) actionCancel clicked on doActPage -- NOT actionDone"
-        def cancelClick = posts.find { it.path == "/installedapp/btn" &&
-                                        it.body?.name == "actionCancel" &&
-                                        it.body?.currentPage == "doActPage" }
-        cancelClick != null
-        !posts.any { it.path == "/installedapp/btn" &&
-                     it.body?.name == "actionDone" &&
-                     it.body?.currentPage == "doActPage" }
-
-        and: "(d) doActPage->selectActions nav fires after the cancel"
-        posts.any { it.path == "/installedapp/update/json" &&
-                    it.body?.currentPage == "doActPage" &&
-                    it.body?.any { k, v -> k?.toString()?.contains("_action_href_name|selectActions|") } }
-
-        and: "(e) no actionDone fired on doActPage anywhere in the sequence"
-        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionDone" }
+        and: "no actionCancel / actionDone here -- the ghost slot is never opened during the RE build"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name in ["actionCancel", "actionDone"] }
     }
 
-    def "addRequiredExpression Step 4b ghost clear fires AFTER STPage Done (not before)"() {
-        // The ghost ifThen clear must occur AFTER _rmSubmitSubPageDone exits STPage.
-        // Ordering invariant: the STPage Done back-nav (currentPage=STPage,
-        // _action_previous=Done) appears in the POST log BEFORE the selectActions
-        // N click.
+    def "deferred predCapabs clear: _rmRunPendingPredCapabsClear fires the ghost ifThen when flagged, then drops the flag"() {
+        // The deferral's other half. addAction calls _rmRunPendingPredCapabsClear at its entry; when a
+        // preceding addRequiredExpression flagged the rule (atomicState.predClearPending), the SAME
+        // ghost ifThen wire sequence fires (N on selectActions -> condActs+getIfThen on doActPage ->
+        // actionCancel -> nav back) and the flag is dropped. Proves the clear is MOVED, not lost.
         given:
         enableWrite()
         def fetchSeq = 0
@@ -1781,32 +1765,33 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             seenPosts << [path: path, body: body]
             [status: 200, location: null, data: '']
         }
+        // A preceding addRequiredExpression flagged the rule (Step 4b defers the clear to here).
+        atomicStateMap.predClearPending = ["100": true]
 
-        when:
-        script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
-            confirm: true
-        ])
+        when: "the just-in-time clear runs for the flagged rule (as _rmAddAction does at its entry)"
+        script._rmRunPendingPredCapabsClear(100)
 
-        then: "STPage Done back-nav POST fires before the selectActions N click"
-        // STPage Done: _action_previous=Done is in the POST body (set by _rmSubmitSubPageDone)
-        def stPageDoneIdx = seenPosts.findIndexOf { it.path == "/installedapp/update/json" &&
-                                                     it.body?.currentPage == "STPage" &&
-                                                     it.body?._action_previous == "Done" }
-        // Ghost clear N click
-        def nClickIdx = seenPosts.findIndexOf { it.path == "/installedapp/btn" &&
-                                                 it.body?.name == "N" &&
-                                                 it.body?.currentPage == "selectActions" }
-        stPageDoneIdx != -1
-        nClickIdx != -1
-        stPageDoneIdx < nClickIdx
+        then: "the ghost ifThen N click fires on selectActions with stateAttribute=doActN"
+        def nClick = seenPosts.find { it.path == "/installedapp/btn" && it.body?.name == "N" &&
+                                      it.body?.currentPage == "selectActions" }
+        nClick != null
+        nClick.body?.stateAttribute == "doActN"
+
+        and: "actSubType.{idx}=getIfThen written on doActPage, actionCancel clicked (NOT actionDone)"
+        seenPosts.any { it.path == "/installedapp/update/json" && it.body?.currentPage == "doActPage" &&
+                        it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        seenPosts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+        !seenPosts.any { it.path == "/installedapp/btn" && it.body?.name == "actionDone" }
+
+        and: "the predClearPending flag is dropped -- the clear fires at most once"
+        !atomicStateMap.predClearPending?.get("100")
     }
 
-    def "addRequiredExpression Step 4b ghost clear failure warns and still returns success"() {
-        // If the ghost ifThen sequence throws (e.g. N click fails), addRequiredExpression
-        // must still return success=true (the RE itself committed successfully).
-        // A warn mcpLog must fire so the operator can diagnose ghost IF/THEN wrap risk.
+    def "deferred predCapabs clear failure warns and still drops the flag (best-effort)"() {
+        // If the deferred ghost ifThen throws (e.g. N click fails) inside _rmRunPendingPredCapabsClear,
+        // it must NOT propagate out of addAction -- the clear is best-effort. A warn mcpLog fires so the
+        // operator can diagnose the IF(Broken Condition) wrap risk, and the flag is dropped so a failed
+        // clear doesn't retry on every subsequent addAction.
         given:
         enableWrite()
         def fetchSeq = 0
@@ -1844,26 +1829,23 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            // N button click on selectActions throws -- simulates ghost clear failure
+            // N button click throws -- simulates the deferred ghost clear failing
             if (path == "/installedapp/btn" && body?.name == "N") {
                 throw new RuntimeException("hub returned 500 on N click (simulated ghost clear failure)")
             }
             [status: 200, location: null, data: '']
         }
+        // A preceding addRequiredExpression flagged the rule; the deferred clear runs here.
+        atomicStateMap.predClearPending = ["100": true]
 
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
-            confirm: true
-        ])
+        when: "the deferred just-in-time clear runs but the ghost ifThen N click throws"
+        script._rmRunPendingPredCapabsClear(100)
 
-        then: "addRequiredExpression still returns a result -- ghost clear is best-effort, not fatal"
-        result != null
-        result.success == true
+        then: "a warn log fires naming the deferred-clear failure and the IF(Broken Condition) risk"
+        warnLogs.any { it.msg?.contains("deferred predCapabs clear") && it.msg?.contains("Broken Condition") }
 
-        and: "a warn log fires naming the failure and noting the IF Broken Condition risk"
-        warnLogs.any { it.msg?.contains("ghost ifThen clear failed") && it.msg?.contains("Broken Condition") }
+        and: "the flag is still dropped -- best-effort, never retries forever"
+        !atomicStateMap.predClearPending?.get("100")
     }
 
     def "addTrigger writes isCondTrig.<N>=false finalize for non-conditional triggers"() {
@@ -16373,10 +16355,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // This mirrors addTrigger's pattern (selectTriggers->mainPage nav at end)
     // and leaves the app in mainPage context for the browser's next visit.
 
-    def "addRequiredExpression Step 4b ends with selectActions->mainPage nav"() {
-        // Verifies the RE nav fix: after the doActPage->selectActions nav, a
-        // second selectActions->mainPage nav fires, leaving the app in mainPage
-        // context so browser STPage visits don't see a conflicting editAct context.
+    def "deferred predCapabs clear ends with selectActions->mainPage nav"() {
+        // The ghost ifThen's nav sequence, now run by _rmRunPendingPredCapabsClear in the DEFERRED
+        // path (not addRequiredExpression): after the doActPage->selectActions nav, a second
+        // selectActions->mainPage nav fires, leaving the app in mainPage context so browser STPage
+        // visits don't see a conflicting editAct context.
         given:
         enableWrite()
         def fetchSeq = 0
@@ -16416,15 +16399,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             posts << [path: path, body: body]
             [status: 200, location: null, data: '']
         }
+        // A preceding addRequiredExpression flagged the rule (Step 4b defers the clear to here).
+        atomicStateMap.predClearPending = ["100": true]
 
-        when:
-        script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
-            confirm: true
-        ])
+        when: "the deferred just-in-time clear runs (as _rmAddAction does at its entry)"
+        script._rmRunPendingPredCapabsClear(100)
 
-        then: "doActPage->selectActions nav fires (existing invariant d)"
+        then: "doActPage->selectActions nav fires (the ghost ifThen nav, now in the deferred clear)"
         def doActToSelectActionsIdx = posts.findIndexOf { it.path == "/installedapp/update/json" &&
                                                            it.body?.currentPage == "doActPage" &&
                                                            it.body?.any { k, v ->
@@ -35747,12 +35728,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
-        // The RE walk's ghost-ifThen clear ends with a doActPage->selectActions
-        // nav; once that lands, the next updateRule btn click is the RE-block
-        // trailing one -- fail exactly it.
+        // The RE walk ends with the STPage Done back-nav (Step 4, _action_previous=Done); once that
+        // lands, the next updateRule btn click is the RE-block trailing one -- fail exactly it. (The
+        // ghost-ifThen clear is now DEFERRED to addAction, so its doActPage->selectActions nav no longer
+        // runs here to mark the boundary; the Done back-nav is the new last-nav-before-trailing-updateRule.)
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            if (path == "/installedapp/update/json" && body?.currentPage == "doActPage" &&
-                body?.any { k, v -> k?.toString()?.contains("_action_href_name|selectActions|") }) {
+            if (path == "/installedapp/update/json" && body?.currentPage == "STPage" &&
+                body?._action_previous == "Done") {
                 reWalkDone = true
             }
             if (reWalkDone && path == "/installedapp/btn" && body?.name == "updateRule") {
