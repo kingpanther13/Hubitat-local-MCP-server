@@ -2370,6 +2370,118 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_set_rule_walkstep_action_after_required_expression(self) -> None:
+        # P2c regression: an action authored ENTIRELY via SINGLE-STEP walkStep (not
+        # _rmAddAction, not operation='drive') AFTER a Required Expression must land
+        # TOP-LEVEL, never wrapped under IF(Broken Condition). RM leaves
+        # atomicState.predCapabs dirty after an RE commit; the deferred predClear runs on
+        # the FIRST action-page op (the navigate into doActPage), so the slot is created
+        # with predCapabs already cleared. test_set_rule_action_after_required_expression
+        # proves the same guard for _rmAddAction; this one proves the single-step walker
+        # path -- _rmWalkStep's own deferred-clear hook -- which _rmAddAction's flow never
+        # exercises. strict=True so a relay 504 re-runs this small rule once.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("WalkActRE")
+        try:
+            # RE first: sets predClearPending and dirties predCapabs.
+            re_res = self._rm_call_soft({
+                "appId": app_id,
+                "addRequiredExpression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
+                "confirm": True,
+            }, strict=True)
+            assert re_res.get("success") is not False, \
+                f"addRequiredExpression reported failure: {re_res}"
+            # Single-step navigate into the action editor -- this is the op that fires the
+            # deferred predCapabs clear, BEFORE the new action slot is created.
+            nav = self._set_rule(app_id, {"walkStep": {"page": "selectActions", "operation": "navigate",
+                                                       "navigate": {"targetPage": "doActPage"}}}, strict=True)
+            assert nav.get("page") == "doActPage", f"navigate should land on doActPage: {nav}"
+            # The new action's index is the n in the revealed actType.<n> picker -- DERIVE it.
+            act_field = next((i.get("name") for i in ((nav.get("after") or {}).get("inputs") or [])
+                              if str(i.get("name")).startswith("actType.")), None)
+            assert act_field, f"doActPage should reveal an actType.<n> picker: {nav}"
+            n = act_field.split(".", 1)[1]
+            # Author a log action via single-step writes (each reveals the next field) + a Done.
+            self._set_rule(app_id, {"walkStep": {"page": "doActPage", "operation": "write",
+                                                 "write": {f"actType.{n}": "messageActs"}}}, strict=True)
+            self._set_rule(app_id, {"walkStep": {"page": "doActPage", "operation": "write",
+                                                 "write": {f"actSubType.{n}": "getLogMsg"}}}, strict=True)
+            wr = self._set_rule(app_id, {"walkStep": {"page": "doActPage", "operation": "write",
+                                                      "write": {f"logmsg.{n}": "walkstep-after-RE"}}}, strict=True)
+            assert (wr.get("valueEcho") or {}).get("match") is True, \
+                f"single-step logmsg write should round-trip live (valueEcho.match): {wr}"
+            self._set_rule(app_id, {"walkStep": {"page": "doActPage", "operation": "click",
+                                                 "click": {"name": "actionDone"}}}, strict=True)
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id}})
+            assert "Broken Condition" not in str(cfg), \
+                f"predCapabs leaked -- the walkStep-authored post-RE action is wrapped under IF(Broken Condition): {str(cfg)[:800]}"
+            assert "walkstep-after-RE" in str(cfg), \
+                f"the walkStep-authored log action did not commit top-level: {str(cfg)[:800]}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_native_app_walkstep_button_controller(self) -> None:
+        # The single-step walkStep walker (introspect + write) is a GENERIC
+        # classic-dynamicPage walker, not RM-specific. The other walkStep tests only drive
+        # an RM rule's appId; this one proves it works on a real NON-RM classic app -- a
+        # Button Controller -- routed through hub_set_native_app. Assign a virtual button
+        # device via a single-step write, and prove both the live round-trip (valueEcho)
+        # and the submitOnChange reveal (origLabel appears once a device is bound).
+        controller_id = None
+        button_dni = None
+        try:
+            # Virtual button device for the controller to bind to (tracked for cleanup).
+            dev = self.client.call_tool("hub_manage_virtual_device", {
+                "action": "create", "deviceType": "Virtual Button",
+                "deviceLabel": f"{PREFIX}WalkBtnDev", "confirm": True,
+            })
+            device_id = str((dev.get("device") or {}).get("id") or "")
+            assert device_id, f"virtual button create did not return a device id: {dev}"
+            button_dni = str((dev.get("device") or {}).get("deviceNetworkId") or "")
+            if button_dni:
+                self.created_device_dnis.append(button_dni)
+
+            # Button Controller instance (tracked for cleanup).
+            ctrl = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appType": "button_controller", "name": f"{PREFIX}WalkBtnCtrl", "confirm": True},
+            })
+            controller_id = ctrl.get("appId")
+            assert controller_id, f"button controller create did not return an appId: {ctrl}"
+            self.created_native_app_ids.append(str(controller_id))
+
+            # Single-step walkStep INTROSPECT on the non-RM app.
+            intro = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": controller_id, "walkStep": {"page": "mainPage", "operation": "introspect"}, "confirm": True},
+            })
+            assert intro.get("page") == "mainPage", \
+                f"walkStep introspect should land on mainPage of the button controller: {intro}"
+            intro_names = [i.get("name") for i in ((intro.get("before") or {}).get("inputs") or [])]
+            assert "buttonDev" in intro_names, \
+                f"mainPage should expose the buttonDev (capability.pushableButton) picker: {intro_names}"
+
+            # Single-step walkStep WRITE on the non-RM app -- assign the device.
+            wr = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": controller_id, "walkStep": {"page": "mainPage", "operation": "write",
+                                                              "write": {"buttonDev": [device_id]}}, "confirm": True},
+            })
+            assert (wr.get("valueEcho") or {}).get("match") is True, \
+                f"single-step buttonDev write should round-trip live (valueEcho.match): {wr}"
+            after_names = [i.get("name") for i in ((wr.get("after") or {}).get("inputs") or [])]
+            assert "origLabel" in after_names, \
+                f"submitOnChange reveal: origLabel should appear once a button device is assigned: {after_names}"
+        finally:
+            # The controller delete is the only inline teardown; the device is swept by
+            # created_device_dnis. _delete_native handles the deferred-delete mode.
+            if controller_id:
+                self._delete_native(controller_id, gateway="hub_manage_native_rules_and_apps")
+
+    @test("native_apps")
     def test_rule_health_prefers_rulebuilderjson(self) -> None:
         # issue #254: hub_get_rule_health now reads the rule's compiled atomicState
         # (GET /app/ruleBuilderJson) for an authoritative `broken` boolean, with the
