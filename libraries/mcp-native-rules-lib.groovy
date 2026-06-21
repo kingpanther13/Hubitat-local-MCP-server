@@ -4073,18 +4073,24 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     def verifyFetchErr = null
     def parsedPost = hasRealParams ? null : _rmPagePostResponse(postResp)
     if (parsedPost != null) {
-        // Consume the inline echo for routing (no extra GET), but only CACHE it when it adds a
-        // NEW schema key -- a genuine forward advance. The echo for a wizard-consumed enum picker
-        // (STPage `oper`) lags one render behind: the gap `oper=AND` between conditions echoes
-        // [oper,doneST] (still the picker) while the settled page is the [cond,doneST] selector.
-        // Before the 3rd+ condition that lagged echo even DROPS keys (the expression-management
-        // buttons), so "schema differs" is too weak -- a key must be ADDED. Caching a
-        // non-advancing echo feeds the next write a schema missing its key, dropping the
-        // `<key>.type` sidecar so RM silently no-ops it (the multi-condition RE cond=a failure).
-        // A non-advancing echo invalidates so the next read re-fetches the settled page.
+        // Consume the inline echo for routing (no extra GET). Whether to CACHE it for the NEXT
+        // write has two traps, both from the condition-builder's submitOnChange pickers lagging
+        // one render behind their settled state:
+        //  (1) `oper` (the gap-operator between conditions AND the close-sub-expression operator)
+        //      NEVER has a trustworthy echo -- it can add the expression-management buttons while
+        //      still omitting the `oper`/`cond` field the next write needs. Never cache an `oper`
+        //      write; always re-fetch the settled page.
+        //  (2) For every other write, a lagged echo can DIFFER by only DROPPING keys (a subset),
+        //      which is not a forward advance -- so require a NEW key, not merely "schema differs".
+        // Caching a stale schema feeds the next write a page missing its key, so
+        // _rmBuildSettingsBody omits the `<key>.type` sidecar and RM silently no-ops the write --
+        // the multi-condition / sub-expression RE "rCapab_<N> not in STPage schema after cond=a"
+        // failures. A non-cacheable echo invalidates so the next read re-fetches the settled page.
+        // The hot path (single condition: no `oper` writes; field reveals all add a key) is
+        // unaffected, so the round-trip win stands.
         afterCfg = parsedPost
         def parsedPostKeys = (_rmCollectInputSchema(parsedPost?.configPage)?.keySet() ?: []) as Set
-        if (!(parsedPostKeys - beforeKeys).isEmpty()) {
+        if (key != "oper" && !(parsedPostKeys - beforeKeys).isEmpty()) {
             _rmCacheStore(cache, appId, page, parsedPost)
         } else {
             _rmCacheInvalidate(cache, appId)

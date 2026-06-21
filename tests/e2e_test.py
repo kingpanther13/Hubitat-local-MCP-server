@@ -3273,6 +3273,37 @@ class TestRunner:
         finally:
             self._delete_native(app_id)
 
+        # Sub-expression shape: (A > 70 OR B < 80) AND A >= 65. This exercises the close-sub-
+        # expression operator (oper="end-sub-expression )") followed by the outer gap-operator --
+        # an `oper` echo that ADDS the expression-management buttons while still lagging, which a
+        # "cache on new key" heuristic mis-caches. The outer condition's cond=a then no-op'd before
+        # the fix (oper writes are never cached). Proves the paren/sub-expression path builds live.
+        sub_app_id = self._create_native_rule("SubExprRE")
+        try:
+            sub = self._rm_call_soft({
+                "appId": sub_app_id,
+                "addRequiredExpression": {
+                    "operator": "AND",
+                    "conditions": [
+                        {"subExpression": {"operator": "OR", "conditions": [
+                            {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">", "state": 70},
+                            {"capability": "Temperature", "deviceIds": [int(dev_b)], "comparator": "<", "state": 80},
+                        ]}},
+                        {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">=", "state": 65},
+                    ],
+                },
+                "confirm": True,
+            }, strict=True)
+            assert sub.get("success") is not False, \
+                f"sub-expression addRequiredExpression reported failure (close-paren/outer-oper cache regression): {sub}"
+            # Two inner + one outer condition slot must all allocate.
+            scidx = sub.get("conditionIndices") or []
+            assert len(scidx) == 3, \
+                f"sub-expression RE did not allocate all three condition slots (2 inner + 1 outer): {sub}"
+            self._assert_rule_healthy(sub_app_id)
+        finally:
+            self._delete_native(sub_app_id)
+
     @test("native_apps")
     def test_set_rule_action_mutations(self) -> None:
         # hub_set_rule edit -> addActions (bulk) + removeAction + clearActions +
