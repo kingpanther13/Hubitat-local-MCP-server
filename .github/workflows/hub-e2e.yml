@@ -60,6 +60,10 @@ on:
       pr_number:
         description: 'PR number to test (blank = current ref)'
         required: false
+      tests:
+        description: 'ONE-OFF: comma-separated test name(s) to run instead of the full suite (e.g. test_set_rule_required_expression_multi_condition). Blank = full suite. Installs the PR head first, same as a normal run.'
+        required: false
+        default: ''
       probe_only:
         description: 'true = read-only hub inventory probe instead of the e2e suite (diagnose hub state)'
         required: false
@@ -255,6 +259,7 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
+          TESTS_INPUT: ${{ inputs.tests }}
         run: |
           if [ -z "$MCP_URL" ]; then
             echo "::notice::LEVEL99_TEST_HUB_MCP_URL secret not available — skipping E2E (expected on repos without the test hub configured)"
@@ -270,7 +275,19 @@ jobs:
           fi
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"   # manual dispatch always runs the real suite
-            echo "lane=full" >> "$GITHUB_OUTPUT"        # dispatch = the FULL lane
+            if [ -n "$TESTS_INPUT" ]; then
+              # ONE-OFF lane: run only the named test(s) (still installs the PR head + holds the lease).
+              # Validate to test-name characters so the value can't inject into the runner command line.
+              if ! printf '%s' "$TESTS_INPUT" | grep -qE '^[A-Za-z0-9_,]+$'; then
+                echo "::error::tests input must be comma-separated test names ([A-Za-z0-9_,] only); got: $TESTS_INPUT"
+                exit 1
+              fi
+              echo "lane=oneoff" >> "$GITHUB_OUTPUT"
+              echo "tests=$TESTS_INPUT" >> "$GITHUB_OUTPUT"
+              echo "E2E LANE: one-off (--tests $TESTS_INPUT)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "lane=full" >> "$GITHUB_OUTPUT"      # dispatch with no tests = the FULL lane
+            fi
             exit 0
           fi
           # Fetch the PR's changed-file list. Fail SAFE: if it can't be read, run the full suite
@@ -545,8 +562,14 @@ jobs:
           E2E_DEFER_NATIVE_DELETES: '1'
           E2E_LANE: ${{ steps.gate.outputs.lane }}
           E2E_GROUPS: ${{ steps.gate.outputs.groups }}
+          E2E_TESTS: ${{ steps.gate.outputs.tests }}
         run: |
-          if [ "$E2E_LANE" = "focused" ]; then
+          if [ "$E2E_LANE" = "oneoff" ]; then
+            # Maintainer one-off (workflow_dispatch tests=...): run only the named test(s). Gate already
+            # validated E2E_TESTS to [A-Za-z0-9_,]. The runner unions --tests into the selection.
+            echo "Running a ONE-OFF -- tests: $E2E_TESTS"
+            python tests/e2e_test.py --tests "$E2E_TESTS"
+          elif [ "$E2E_LANE" = "focused" ]; then
             # The runner treats an EMPTY --groups as "no filter" = the FULL suite, so NEVER pass empty in
             # focused mode (that would silently run everything). e2e_scope.py always emits >=smoke, so this
             # only fires if the gate misbehaved -- fall back to the smoke core, not the whole suite.
