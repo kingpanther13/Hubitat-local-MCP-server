@@ -495,6 +495,35 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.waitFor.converged == false
         result.waitFor.finalValue == 'off'
         result.waitFor.timedOut == true
+
+        and: 'a stable non-target value copies transitioning=false through the waitFor block'
+        result.waitFor.transitioning == false
+    }
+
+    def "toolSendCommand with waitFor copies transitioning=true through when the value was still changing on timeout"() {
+        given: 'a level that keeps moving across polls but never reaches the target'
+        def readCount = 0
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'setLevel'], [name: 'on']]
+            getSupportedAttributes() >> [[name: 'level']]
+            getCurrentStates() >> {
+                readCount++
+                return [[name: 'level', value: (readCount * 10).toString()]]
+            }
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommand('10', 'setLevel', [99], [attribute: 'level', expectedValue: '99', timeoutMs: 200, pollIntervalMs: 50])
+
+        then: 'the timeout block carries transitioning=true (copied from the poll result)'
+        result.success == true
+        result.waitFor.converged == false
+        result.waitFor.timedOut == true
+        result.waitFor.transitioning == true
     }
 
     def "toolSendCommand with waitFor on an attribute that never reports flags neverReported"() {
@@ -706,6 +735,67 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', pollIntervalMs: 5001])
 
         then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('pollIntervalMs')
+        0 * device.on()
+    }
+
+    def "toolSendCommand waitFor accepts timeoutMs at the exact command-flow cap (30000) and fires the command"() {
+        given: 'a device already at the target so the poll converges immediately'
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+            getCurrentStates() >> [[name: 'switch', value: 'on']]
+        }
+        childDevicesList << device
+
+        when: 'timeoutMs exactly at the accepting edge -- locks the boundary against a > -> >= drift'
+        def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 30000])
+
+        then: 'not rejected pre-fire; the command fired and the poll converged'
+        notThrown(IllegalArgumentException)
+        1 * device.on()
+        result.waitFor.converged == true
+    }
+
+    def "toolSendCommand waitFor with timeoutMs one below the floor (99) throws before firing the command"() {
+        given:
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+        }
+        childDevicesList << device
+
+        when: 'timeoutMs just below the 100 floor -- locks the lower bound against a < -> <= drift'
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', timeoutMs: 99])
+
+        then: 'rejected pre-fire so the device is never actuated'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('timeoutMs')
+        0 * device.on()
+    }
+
+    def "toolSendCommand waitFor with pollIntervalMs one below the floor (49) throws before firing the command"() {
+        given:
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+        }
+        childDevicesList << device
+
+        when: 'pollIntervalMs just below the 50 floor -- locks the lower bound against a < -> <= drift'
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', pollIntervalMs: 49])
+
+        then: 'rejected pre-fire so the device is never actuated'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('pollIntervalMs')
         0 * device.on()

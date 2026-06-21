@@ -1053,6 +1053,65 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     }
 
     // ---------------------------------------------------------------------------
+    // 26c. transitioning flag on the TIMEOUT path: distinguishes a still-moving value
+    //      (>=2 distinct non-null reads) from a stable non-target mismatch.
+    // ---------------------------------------------------------------------------
+
+    def "sets transitioning=true on timeout when the non-target value changed across polls"() {
+        given: 'a level that keeps moving (10 -> 20 -> 30 ...) but never reaches the target'
+        def readCount = 0
+        def device = Spy(TestDevice)
+        device.id = 260
+        device.label = 'Still Moving'
+        device.supportedAttributes = [[name: 'level']]
+        // Each read returns a DIFFERENT non-null value -- the device is still settling.
+        device.getCurrentStates() >> {
+            readCount++
+            return [[name: 'level', value: (readCount * 10).toString()]]
+        }
+        childDevicesList << device
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId      : '260',
+            attribute     : 'level',
+            expectedValue : '99',
+            timeoutMs     : 200,
+            pollIntervalMs: 50
+        ])
+
+        then: 'timed out, and transitioning is true because >=2 distinct non-null values were seen'
+        result.success      == false
+        result.timedOut     == true
+        result.transitioning == true
+    }
+
+    def "sets transitioning=false on timeout when the non-target value was stable across polls"() {
+        given: 'a switch stuck at off the whole window -- a stable non-target, not still settling'
+        def device = new TestDevice(
+            id: 261,
+            label: 'Stable Wrong',
+            supportedAttributes: [[name: 'switch']],
+            attributeValues: [switch: 'off']
+        )
+        childDevicesList << device
+
+        when:
+        def result = script.toolPollUntilAttribute([
+            deviceId      : '261',
+            attribute     : 'switch',
+            expectedValue : 'on',
+            timeoutMs     : 200,
+            pollIntervalMs: 50
+        ])
+
+        then: 'timed out, and transitioning is false because every read was the same value'
+        result.success      == false
+        result.timedOut     == true
+        result.transitioning == false
+    }
+
+    // ---------------------------------------------------------------------------
     // 27. I6: pauseExecution throws -> returns interrupted=true with context fields
     // ---------------------------------------------------------------------------
 

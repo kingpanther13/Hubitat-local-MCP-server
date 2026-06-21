@@ -525,6 +525,9 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null) {
             if (poll.timedOut == true)      waitForBlock.timedOut = true
             if (poll.interrupted == true)   waitForBlock.interrupted = true
             if (poll.neverReported == true) waitForBlock.neverReported = true
+            // transitioning is present on the timeout path as true OR false (both meaningful),
+            // so copy it whenever the engine emitted the key -- not only when true.
+            if (poll.containsKey("transitioning")) waitForBlock.transitioning = poll.transitioning
         } catch (Throwable e) {
             // The command already fired; a poll-loop failure (e.g. a malformed numeric
             // attribute) must not lose the response. Catch Throwable -- not just Exception --
@@ -533,7 +536,9 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null) {
             // drops the state/waitFor blocks. Include the class so an NPE doesn't render as
             // "(no message)" with no other clue. Snapshot is still taken below.
             def cls = e.class.simpleName
-            mcpLog("warn", "send-command", "waitFor poll failed for ${deviceLabel}: ${cls}: ${e.message ?: '(no message)'}")
+            // Log at error: a warn is below Hubitat's default log level and returns before
+            // writing, so this degraded-path failure would land in neither buffer nor hub log.
+            mcpLog("error", "send-command", "waitFor poll failed for ${deviceLabel}: ${cls}: ${e.message ?: '(no message)'}")
             waitForBlock.converged  = false
             waitForBlock.finalValue = null
             waitForBlock.error      = "waitFor poll failed: ${cls}: ${e.message ?: '(no message)'}".toString()
@@ -684,10 +689,12 @@ private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {
                         try {
                             ts = st.date.format("yyyy-MM-dd HH:mm:ss")
                         } catch (Throwable dt) {
-                            // Log so an operator can tell a date-format failure (value kept,
-                            // timestamp null) apart from an attribute that simply never reported.
+                            // Log at error so an operator can tell a date-format failure (value
+                            // kept, timestamp null) apart from an attribute that never reported.
+                            // Error -- not warn -- because warn is below Hubitat's default level
+                            // and returns before writing, so this degradation would be invisible.
                             ts = null
-                            mcpLog("warn", "send-command", "date format failed for attribute '${st.name}' on ${deviceLabel}: ${dt.class.simpleName}")
+                            mcpLog("error", "send-command", "date format failed for attribute '${st.name}' on ${deviceLabel}: ${dt.class.simpleName}")
                         }
                     }
                     snapshot[st.name] = [value: st.value, timestamp: ts]
@@ -709,7 +716,10 @@ private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {
                     try {
                         val = device.currentValue(name)
                     } catch (Throwable cv) {
-                        mcpLog("warn", "send-command", "currentValue read failed for attribute '${name}' on ${deviceLabel}: ${cv.class.simpleName}")
+                        // Error -- not warn -- because this guard degrades to value:null with no
+                        // stateError/partial, so a warn (below the default level, returns before
+                        // writing) would leave a systemic read failure fully invisible.
+                        mcpLog("error", "send-command", "currentValue read failed for attribute '${name}' on ${deviceLabel}: ${cv.class.simpleName}")
                     }
                     snapshot[name] = [value: val, timestamp: null]
                 }
@@ -955,6 +965,13 @@ def toolPollUntilAttribute(args) {
     // Null throughout the window means the driver has never reported the attribute,
     // which is a different condition from "reported a wrong value the whole time."
     def everNonNull = false
+    // Track whether the attribute's non-null value CHANGED across polls. On a timeout, this
+    // distinguishes "value was still moving between reads (likely still settling)" from "value
+    // was stable at a non-target (a real mismatch)". Best-effort: only reliable when the timeout
+    // spans at least one of the device's reporting jumps -- at a short timeout a stable-but-wrong
+    // intermediate reads transitioning:false even though the device is physically still settling.
+    def sawChange      = false
+    def lastNonNull    = null
 
     while (true) {
         // Read the FRESH event store via currentStates (the LIST), not currentValue() OR
@@ -962,12 +979,19 @@ def toolPollUntilAttribute(args) {
         // start and never refresh within a request, so on a real async device (Matter/Zigbee/
         // Z-Wave/cloud) they return the PRE-command value for the whole poll and never converge
         // (confirmed on real hardware). Only device.currentStates (the full list) re-reads live --
-        // the same source _snapshotDeviceState reads -- so the value here matches the snapshot's
-        // and tracks the device's actual reports. find(...) is null until the attribute has
-        // reported; a State's .value is the reported value (a String in Hubitat).
+        // the same source the snapshot's PRIMARY (currentStates-present) branch reads, so the
+        // value here matches that snapshot path (the snapshot's currentValue FALLBACK branch only
+        // runs when currentStates is empty). find(...) is null until the attribute has reported;
+        // a State's .value is the reported value (a String in Hubitat).
         finalValue = device.currentStates?.find { it.name == args.attribute }?.value
         polledCount++
-        if (finalValue != null) everNonNull = true
+        if (finalValue != null) {
+            everNonNull = true
+            // Compare on the String form (a State's value is a String) to detect movement.
+            def cur = finalValue.toString()
+            if (lastNonNull != null && cur != lastNonNull) sawChange = true
+            lastNonNull = cur
+        }
         def elapsedMs = (now() - startMs) as Integer
 
         // String match first.
@@ -994,7 +1018,12 @@ def toolPollUntilAttribute(args) {
                 finalValue  : finalValue,
                 elapsedMs   : elapsedMs,
                 polledCount : polledCount,
-                timedOut    : true
+                timedOut    : true,
+                // TIMEOUT-only honest signal: true if the value was still moving across polls
+                // (>=2 distinct non-null values seen), so the caller can tell a slow-reporting
+                // device that is likely still settling from a stable real mismatch. Best-effort
+                // (see sawChange declaration). Deliberately omitted from the success path.
+                transitioning : sawChange
             ]
             // Attribute exists in supportedAttributes but never reported a value during
             // the entire poll window -- driver has not yet emitted a reading.
@@ -2085,7 +2114,8 @@ Only query devices the user has mentioned or that are relevant to their request.
                     polledCount: [type: "integer", description: "Poll mode: number of reads performed"],
                     timedOut: [type: "boolean", description: "Poll mode: true if the timeout elapsed without a match"],
                     neverReported: [type: "boolean", description: "Poll mode: present and true if the attribute never reported a value in the window"],
-                    interrupted: [type: "boolean", description: "Poll mode: present and true if the poll was interrupted (hub reload)"]
+                    interrupted: [type: "boolean", description: "Poll mode: present and true if the poll was interrupted (hub reload)"],
+                    transitioning: [type: "boolean", description: "Poll mode, TIMEOUT only: true if the value was still changing across polls (>=2 distinct non-null values seen) -- the device is likely still settling -- vs false for a stable non-target (a real mismatch). Best-effort: only reliable when the timeout spans a reporting jump."]
                 ]
             ]
         ],
@@ -2132,6 +2162,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         timedOut   : [type: "boolean", description: "Present and true if the poll timed out without a match"],
                         interrupted: [type: "boolean", description: "Present and true if the poll was interrupted (hub reload)"],
                         neverReported: [type: "boolean", description: "Present and true if the attribute never reported a value during the poll window"],
+                        transitioning: [type: "boolean", description: "Present only on a TIMEOUT: true if the value was still changing across polls (>=2 distinct non-null values seen) so the device is likely still settling, vs false for a stable non-target (a real mismatch). Best-effort: only reliable when the timeout spans a reporting jump."],
                         error      : [type: "string", description: "Present only if the poll loop threw after the command fired; the command still succeeded"]
                     ]]
                 ],
