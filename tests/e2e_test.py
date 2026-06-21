@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import random
+import re
 import sys
 import time
 from datetime import UTC, datetime
@@ -1494,6 +1495,22 @@ class TestRunner:
             cmd = self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": value})
             assert not (isinstance(cmd, dict) and cmd.get("success") is False), \
                 f"'{value}' command reported failure: {cmd}"
+            # The response always carries an immediate state snapshot ({attr: {value,
+            # timestamp}}). Assert SHAPE + timestamp FORMAT here -- NOT the value: the
+            # snapshot is read in the same request that fires the command, and the hub
+            # commits the change only after that request returns, so the snapshot is the
+            # PRE-effect value even for a virtual switch (the converged-value assertion
+            # lives in the waitFor test below, which is what actually confirms the result).
+            assert isinstance(cmd, dict) and isinstance(cmd.get("state"), dict), \
+                f"'{value}' command response missing post-command state snapshot: {cmd}"
+            snap = cmd["state"].get("switch")
+            assert isinstance(snap, dict) and "value" in snap and "timestamp" in snap, \
+                f"'{value}' snapshot missing switch value/timestamp: {cmd['state']}"
+            # The timestamp must be a properly-formatted "yyyy-MM-dd HH:mm:ss" string, not
+            # a JVM Date.toString() (which a formatTimestamp-on-Date regression would emit).
+            ts = snap.get("timestamp")
+            assert isinstance(ts, str) and re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", ts), \
+                f"'{value}' snapshot switch timestamp not formatted yyyy-MM-dd HH:mm:ss: {snap!r}"
             return _poll_switch(value)
 
         try:
@@ -1558,6 +1575,64 @@ class TestRunner:
                     })
                 except Exception as exc:
                     print(f"  [WARN] could not delete the command round-trip switch ({cmd_dni}): {exc}")
+
+    @test("virtual_device_lifecycle")
+    def test_command_waitfor_converges(self) -> None:
+        # waitFor is what actually confirms the RESULTING state: the immediate snapshot is
+        # pre-effect (the hub commits the change after the request returns), but waitFor
+        # block-polls the attribute until it converges, then snapshots -- so converged=true
+        # AND the post-waitFor snapshot value == the target. Own throwaway device.
+        dev_id = self._create_virtual_switch_device(f"{PREFIX}WaitForRT")
+        assert dev_id, "Failed to create the waitFor throwaway switch"
+        # Resolve the DNI by device id and track it RIGHT AWAY as the teardown safety net,
+        # so a throw or a missed lookup below can never leave the device leaked (harmless if
+        # already deleted in the finally). Same pattern as the trigger-device tests.
+        wf_dni = ""
+        try:
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}WaitForRT"})
+            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                if str(d.get("id")) == str(dev_id):
+                    wf_dni = str(d.get("deviceNetworkId") or d.get("dni") or "")
+                    break
+        except Exception:
+            pass
+        if wf_dni:
+            self.created_device_dnis.append(wf_dni)
+
+        try:
+            # Start from a known opposite state so the command drives a real transition.
+            cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": dev_id, "attribute": "switch"})
+            start = cur.get("value") if isinstance(cur, dict) else None
+            target = "off" if start == "on" else "on"
+
+            cmd = self.client.call_tool("hub_call_device_command", {
+                "deviceId": dev_id,
+                "command": target,
+                "waitFor": {"attribute": "switch", "expectedValue": target, "timeoutMs": 5000},
+            })
+            assert isinstance(cmd, dict), f"unexpected response: {cmd!r}"
+            wf = cmd.get("waitFor")
+            assert isinstance(wf, dict), f"waitFor result block missing: {cmd}"
+            # The discriminator: converged True + finalValue == target.
+            if wf.get("converged") is not True and self._limiter_logged(dev_id, method=target):
+                self._soft_passes.append(
+                    "virtual_device_lifecycle/test_command_waitfor_converges: limiter-proven "
+                    "(command dispatched; platform throttled event delivery so waitFor could not converge)")
+                return
+            assert wf.get("converged") is True, f"waitFor did not converge: {wf}"
+            assert str(wf.get("finalValue")) == target, f"waitFor finalValue != target: {wf}"
+            # Snapshot is taken AFTER the waitFor poll, so it now reflects the converged value.
+            snap = (cmd.get("state") or {}).get("switch")
+            assert isinstance(snap, dict) and snap.get("value") == target, \
+                f"post-waitFor snapshot should reflect the converged value {target!r}: {cmd.get('state')}"
+        finally:
+            if wf_dni:
+                try:
+                    self.client.call_tool("hub_manage_virtual_device", {
+                        "action": "delete", "deviceNetworkId": wf_dni, "confirm": True,
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] could not delete the waitFor switch ({wf_dni}): {exc}")
 
     @test("virtual_device_lifecycle")
     def test_list_virtual_devices(self) -> None:

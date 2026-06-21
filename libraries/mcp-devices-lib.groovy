@@ -471,7 +471,7 @@ def toolGetDevice(deviceId) {
     ]
 }
 
-def toolSendCommand(deviceId, command, parameters) {
+def toolSendCommand(deviceId, command, parameters, waitFor = null) {
     def device = findDevice(deviceId)
     if (!device) {
         throw new IllegalArgumentException("Device not found: ${deviceId}")
@@ -485,6 +485,10 @@ def toolSendCommand(deviceId, command, parameters) {
         throw new IllegalArgumentException("Device ${deviceLabel} does not support command: ${command}. Available: ${supportedCommands}")
     }
 
+    // Validate waitFor BEFORE firing the command so a bad spec fails the call without
+    // a side effect (the command would otherwise have already actuated the device).
+    def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, device, deviceLabel, waitFor) : null
+
     if (parameters && parameters.size() > 0) {
         // Normalize parameters to a flat List of properly typed values
         parameters = normalizeCommandParams(parameters)
@@ -493,12 +497,247 @@ def toolSendCommand(deviceId, command, parameters) {
         device."${command}"()
     }
 
-    return [
+    def result = [
         success: true,
         device: deviceLabel,
         command: command,
         parameters: parameters
     ]
+
+    if (pollArgs != null) {
+        // Block-poll until the attribute converges (or times out), then snapshot, so the
+        // state reflects the RESULTING (converged) value -- the immediate snapshot alone
+        // is pre-effect because the hub commits the change after this request returns.
+        def waitForBlock = [
+            attribute: pollArgs.attribute,
+            expected : (pollArgs.containsKey("expectedValues") ? pollArgs.expectedValues : pollArgs.expectedValue)
+        ]
+        try {
+            def poll = toolPollUntilAttribute(pollArgs)
+            waitForBlock.converged  = poll.success == true
+            waitForBlock.finalValue = poll.finalValue
+            // poll.polledCount is intentionally NOT surfaced into the waitFor block: elapsedMs
+            // is the caller-relevant diagnostic (how long the command-confirm blocked); the
+            // raw poll count is an engine-internal detail.
+            waitForBlock.elapsedMs  = poll.elapsedMs
+            // Surface the engine's diagnostic flags when present so the caller can tell a
+            // plain timeout apart from a hub-reload interrupt or a never-reported attribute.
+            if (poll.timedOut == true)      waitForBlock.timedOut = true
+            if (poll.interrupted == true)   waitForBlock.interrupted = true
+            if (poll.neverReported == true) waitForBlock.neverReported = true
+            // transitioning is present on the timeout path as true OR false (both meaningful),
+            // so copy it whenever the engine emitted the key -- not only when true.
+            if (poll.containsKey("transitioning")) waitForBlock.transitioning = poll.transitioning
+        } catch (Throwable e) {
+            // The command already fired; a poll-loop failure (e.g. a malformed numeric
+            // attribute) must not lose the response. Catch Throwable -- not just Exception --
+            // for the same reason the snapshot does: a non-Exception Throwable after the
+            // device actuated must report non-convergence, not escape as a hard error that
+            // drops the state/waitFor blocks. Include the class so an NPE doesn't render as
+            // "(no message)" with no other clue. Snapshot is still taken below.
+            def cls = e.class.simpleName
+            // Log at error: a warn is below Hubitat's default log level and returns before
+            // writing, so this degraded-path failure would land in neither buffer nor hub log.
+            mcpLog("error", "send-command", "waitFor poll failed for ${deviceLabel}: ${cls}: ${e.message ?: '(no message)'}")
+            waitForBlock.converged  = false
+            waitForBlock.finalValue = null
+            waitForBlock.error      = "waitFor poll failed: ${cls}: ${e.message ?: '(no message)'}".toString()
+            // The command fired but the confirmation poll degraded -- flag the partial result.
+            result.partial = true
+        }
+        result.waitFor = waitForBlock
+    }
+
+    // Snapshot AFTER any waitFor poll. Without waitFor this is the immediate (pre-effect)
+    // read; with waitFor it reflects the converged state. A null return is the read-back
+    // FAILURE sentinel (distinct from a legitimately empty [:]); surface why so the agent
+    // can tell a failed confirmation read apart from a device with no readable attributes.
+    def stateErr = []
+    def snap = _snapshotDeviceState(device, deviceLabel, stateErr)
+    if (snap == null) {
+        // Genuine read-back failure: state is empty AND stateError says why, so the agent
+        // distinguishes this from a device that legitimately has no readable attributes
+        // (which returns an empty map and NO stateError).
+        result.state = [:]
+        result.stateError = "device-state read-back failed: ${stateErr ? stateErr[0] : '(no detail)'}".toString()
+        // The command fired but the confirmation snapshot failed -- flag the partial result.
+        result.partial = true
+    } else {
+        result.state = snap
+    }
+    return result
+}
+
+// Validate a waitFor spec and translate it into a toolPollUntilAttribute args map, reusing
+// that tool's block-poll engine for the runtime poll behavior. This validator fully covers
+// shape, type, numeric-range, and attribute-existence so a bad spec is rejected BEFORE the
+// command fires (the poll engine repeats these checks as defense-in-depth, but its run is
+// post-fire, so completing them here is what buys the no-side-effect-on-bad-spec guarantee).
+private Map _buildWaitForPollArgs(deviceId, device, deviceLabel, waitFor) {
+    if (!(waitFor instanceof Map)) {
+        throw new IllegalArgumentException("waitFor must be an object with at least attribute and expectedValue/expectedValues")
+    }
+    def validKeys = ["attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs"] as Set
+    def unknownKeys = (waitFor.keySet() - validKeys).sort()
+    if (unknownKeys) {
+        def label = unknownKeys.size() == 1 ? 'an unknown key' : 'unknown keys'
+        throw new IllegalArgumentException("waitFor has ${label}: ${unknownKeys.join(', ')}. Valid keys: ${validKeys.sort().join(', ')}")
+    }
+    if (!(waitFor.attribute instanceof String) || !waitFor.attribute.trim()) {
+        throw new IllegalArgumentException("waitFor.attribute is required and must be a non-empty string")
+    }
+    def supportedAttrs = device.supportedAttributes?.collect { it.name } ?: []
+    if (!supportedAttrs.contains(waitFor.attribute)) {
+        throw new IllegalArgumentException("waitFor.attribute '${waitFor.attribute}' not found on device '${deviceLabel}'. Available: ${supportedAttrs.join(', ')}")
+    }
+    def hasExpectedValue  = waitFor.containsKey("expectedValue")
+    def hasExpectedValues = waitFor.containsKey("expectedValues")
+    if (hasExpectedValue && hasExpectedValues) {
+        throw new IllegalArgumentException("waitFor: provide exactly one of expectedValue or expectedValues, not both")
+    }
+    if (!hasExpectedValue && !hasExpectedValues) {
+        throw new IllegalArgumentException("waitFor: exactly one of expectedValue or expectedValues is required")
+    }
+    // Validate every pre-checkable field HERE so a bad spec never fires the command.
+    // The pollIntervalMs bound MIRRORS toolPollUntilAttribute's [50,5000]. timeoutMs is
+    // STRICTER on this command-flow path: a waitFor poll pins a hub thread for the full
+    // timeout, so the pre-fire cap is 30000ms (vs the engine's standalone [100,60000]).
+    if (hasExpectedValue) {
+        // .trim() for parity with attribute -- reject a whitespace-only value, not just "".
+        if (!(waitFor.expectedValue instanceof String) || !waitFor.expectedValue.trim()) {
+            throw new IllegalArgumentException("waitFor.expectedValue must be a non-empty string (got: ${_describeValueForError(waitFor.expectedValue)})")
+        }
+    }
+    if (hasExpectedValues) {
+        if (!(waitFor.expectedValues instanceof List) || waitFor.expectedValues.isEmpty()) {
+            throw new IllegalArgumentException("waitFor.expectedValues must be a non-empty list of strings")
+        }
+        waitFor.expectedValues.eachWithIndex { v, i ->
+            if (!(v instanceof String)) {
+                throw new IllegalArgumentException("waitFor.expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
+            }
+        }
+    }
+    // Accept any Number (not just Integer) so a Long/BigDecimal that the engine would
+    // accept is not wrongly rejected pre-fire -- toolPollUntilAttribute validates these
+    // same fields with `instanceof Number`. The comparison is direct (no `as Integer`
+    // cast), so an in-range fractional passes the bounds check exactly as the engine does.
+    if (waitFor.containsKey("timeoutMs")) {
+        if (!(waitFor.timeoutMs instanceof Number) || waitFor.timeoutMs < 100 || waitFor.timeoutMs > 30000) {
+            throw new IllegalArgumentException("waitFor.timeoutMs must be a number between 100 and 30000 (got: ${waitFor.timeoutMs})")
+        }
+    }
+    if (waitFor.containsKey("pollIntervalMs")) {
+        if (!(waitFor.pollIntervalMs instanceof Number) || waitFor.pollIntervalMs < 50 || waitFor.pollIntervalMs > 5000) {
+            throw new IllegalArgumentException("waitFor.pollIntervalMs must be a number between 50 and 5000 (got: ${waitFor.pollIntervalMs})")
+        }
+    }
+    def pollArgs = [deviceId: deviceId.toString(), attribute: waitFor.attribute]
+    if (hasExpectedValue)  pollArgs.expectedValue  = waitFor.expectedValue
+    if (hasExpectedValues) pollArgs.expectedValues = waitFor.expectedValues
+    // Default the timeout/interval here so an omitted value uses the command-flow default
+    // (5000ms) and pollIntervalMs 250ms -- the 250ms default is the post-command-flow
+    // default by intent (the engine's standalone default is 200ms); explicit values pass through.
+    pollArgs.timeoutMs      = waitFor.containsKey("timeoutMs")      ? waitFor.timeoutMs      : 5000
+    pollArgs.pollIntervalMs = waitFor.containsKey("pollIntervalMs") ? waitFor.pollIntervalMs : 250
+    return pollArgs
+}
+
+// Render a value plus a coarse runtime-type label for a validation error message. Uses
+// instanceof rather than getClass() (reflection is blocked in the Hubitat sandbox), so the
+// label is a small fixed vocabulary -- enough to tell a caller "you passed a number/boolean
+// where a string was required" without naming the exact JVM class.
+private String _describeValueForError(v) {
+    def typeLabel = (v == null) ? "null"
+        : (v instanceof String)  ? "string"
+        : (v instanceof Boolean) ? "boolean"
+        : (v instanceof Number)  ? "number"
+        : (v instanceof List)    ? "list"
+        : (v instanceof Map)     ? "object"
+        : "value"
+    if (v == null) return "null"
+    // Quote strings so an empty or whitespace-only value renders as "" / "   " rather than a
+    // bare gap in the message; non-string values render unquoted (e.g. 42 (number)).
+    def rendered = (v instanceof String) ? "\"${v}\"" : "${v}"
+    return "${rendered} (${typeLabel})"
+}
+
+// Compact current-state snapshot for a command response: per attribute, its current
+// value plus the event timestamp (freshness signal). Reads device.currentStates (each
+// State has name/value/date). Includes only attributes that have a current state; if the
+// device reports no states at all, falls back to supportedAttributes + currentValue (each
+// with a null timestamp). Never returns the full device object -- values and timestamps only.
+// NOTE: this is an IMMEDIATE read taken in the same request that fired the command -- the
+// hub commits a command's effect AFTER that request returns, so without waitFor the value
+// here is the PRE-effect state even for virtual/local devices. The timestamp is the freshness
+// signal; waitFor (block-poll) is what makes this snapshot reflect the converged state.
+private Map _snapshotDeviceState(device, deviceLabel, errOut = null) {
+    def snapshot = [:]
+    try {
+        def states = device.currentStates
+        if (states) {
+            states.each { st ->
+                if (st?.name != null) {
+                    // st.date is a java.util.Date on a live hub -- format it directly
+                    // (formatTimestamp has no Date branch and would mangle it via toString).
+                    // Guard ONLY the date format locally: a single date that fails to format
+                    // yields timestamp:null for THAT attribute (keeping its value) instead of
+                    // discarding the whole snapshot. A structural read throw (currentStates /
+                    // name / value) still falls to the outer catch and clears to [:].
+                    def ts = null
+                    if (st.date) {
+                        try {
+                            ts = st.date.format("yyyy-MM-dd HH:mm:ss")
+                        } catch (Throwable dt) {
+                            // Log at error so an operator can tell a date-format failure (value
+                            // kept, timestamp null) apart from an attribute that never reported.
+                            // Error -- not warn -- because warn is below Hubitat's default level
+                            // and returns before writing, so this degradation would be invisible.
+                            ts = null
+                            mcpLog("error", "send-command", "date format failed for attribute '${st.name}' on ${deviceLabel}: ${dt.class.simpleName}")
+                        }
+                    }
+                    snapshot[st.name] = [value: st.value, timestamp: ts]
+                }
+            }
+        } else {
+            // Fallback to currentValue only because currentStates is empty -- the device has
+            // emitted no state event at all, so there is no prior event for currentValue to be
+            // stale against; staleness (the reason the poll engine avoids currentValue) is moot
+            // here. Each entry carries a null timestamp since there is no event to date it.
+            device.supportedAttributes?.each { attr ->
+                def name = attr?.name
+                if (name != null) {
+                    // Per-attribute guard for parity with the currentStates branch's date guard:
+                    // one attribute whose currentValue read throws degrades to value:null for
+                    // THAT attribute, keeping the rest, instead of the outer catch discarding the
+                    // whole snapshot. name is non-null here, so the entry is always present.
+                    def val = null
+                    try {
+                        val = device.currentValue(name)
+                    } catch (Throwable cv) {
+                        // Error -- not warn -- because this guard degrades to value:null with no
+                        // stateError/partial, so a warn (below the default level, returns before
+                        // writing) would leave a systemic read failure fully invisible.
+                        mcpLog("error", "send-command", "currentValue read failed for attribute '${name}' on ${deviceLabel}: ${cv.class.simpleName}")
+                    }
+                    snapshot[name] = [value: val, timestamp: null]
+                }
+            }
+        }
+    } catch (Throwable t) {
+        // Read-back must never break the command (which already fired). Discard any
+        // partial snapshot built before a mid-iteration throw and return the null FAILURE
+        // sentinel so the caller can distinguish a failed read from a legitimately empty
+        // device. Log at error so it writes under the hub's default log level (a warn here
+        // is below default and would be invisible -- a silently-failed confirmation read).
+        // t.message can be null.
+        def detail = "${t.class.simpleName}: ${t.message ?: '(no message)'}".toString()
+        mcpLog("error", "send-command", "Failed to snapshot device state for ${deviceLabel}: ${detail}")
+        if (errOut != null) errOut << detail
+        return null
+    }
+    return snapshot
 }
 
 def normalizeCommandParams(params) {
@@ -665,12 +904,15 @@ def toolPollUntilAttribute(args) {
         }
         args.expectedValues.eachWithIndex { v, i ->
             if (!(v instanceof String)) {
-                throw new IllegalArgumentException("expectedValues[${i}] must be a string, got: ${v}")
+                throw new IllegalArgumentException("expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
             }
         }
     }
 
-    // 4. Validate timeoutMs
+    // 4. Validate timeoutMs.
+    // Range [100,60000] for this standalone engine path. _buildWaitForPollArgs uses a STRICTER
+    // [100,30000] on the command-flow waitFor path -- this divergence is INTENTIONAL, not a
+    // drift: a waitFor poll pins a hub thread for the full timeout, so its pre-fire cap is lower.
     if (args.containsKey("timeoutMs") && args.timeoutMs == null) {
         throw new IllegalArgumentException("timeoutMs must not be null (omit the arg to use default 5000ms)")
     }
@@ -683,7 +925,9 @@ def toolPollUntilAttribute(args) {
         throw new IllegalArgumentException("timeoutMs must be between 100 and 60000 (got: ${timeoutMs})")
     }
 
-    // 5. Validate pollIntervalMs, clamp to timeoutMs if larger
+    // 5. Validate pollIntervalMs, clamp to timeoutMs if larger.
+    // Range [50,5000]: _buildWaitForPollArgs uses the SAME bounds on its pre-fire path
+    // (unlike timeoutMs, the pollIntervalMs range is intentionally identical) -- keep aligned.
     if (args.containsKey("pollIntervalMs") && args.pollIntervalMs == null) {
         throw new IllegalArgumentException("pollIntervalMs must not be null (omit the arg to use default 200ms)")
     }
@@ -721,11 +965,33 @@ def toolPollUntilAttribute(args) {
     // Null throughout the window means the driver has never reported the attribute,
     // which is a different condition from "reported a wrong value the whole time."
     def everNonNull = false
+    // Track whether the attribute's non-null value CHANGED across polls. On a timeout, this
+    // distinguishes "value was still moving between reads (likely still settling)" from "value
+    // was stable at a non-target (a real mismatch)". Best-effort: only reliable when the timeout
+    // spans at least one of the device's reporting jumps -- at a short timeout a stable-but-wrong
+    // intermediate reads transitioning:false even though the device is physically still settling.
+    def sawChange      = false
+    def lastNonNull    = null
 
     while (true) {
-        finalValue = device.currentValue(args.attribute)
+        // Read the FRESH event store via currentStates (the LIST), not currentValue() OR
+        // currentState(attr). currentValue() AND currentState(attr) are BOTH cached at request
+        // start and never refresh within a request, so on a real async device (Matter/Zigbee/
+        // Z-Wave/cloud) they return the PRE-command value for the whole poll and never converge
+        // (confirmed on real hardware). Only device.currentStates (the full list) re-reads live --
+        // the same source the snapshot's PRIMARY (currentStates-present) branch reads, so the
+        // value here matches that snapshot path (the snapshot's currentValue FALLBACK branch only
+        // runs when currentStates is empty). find(...) is null until the attribute has reported;
+        // a State's .value is the reported value (a String in Hubitat).
+        finalValue = device.currentStates?.find { it.name == args.attribute }?.value
         polledCount++
-        if (finalValue != null) everNonNull = true
+        if (finalValue != null) {
+            everNonNull = true
+            // Compare on the String form (a State's value is a String) to detect movement.
+            def cur = finalValue.toString()
+            if (lastNonNull != null && cur != lastNonNull) sawChange = true
+            lastNonNull = cur
+        }
         def elapsedMs = (now() - startMs) as Integer
 
         // String match first.
@@ -752,7 +1018,12 @@ def toolPollUntilAttribute(args) {
                 finalValue  : finalValue,
                 elapsedMs   : elapsedMs,
                 polledCount : polledCount,
-                timedOut    : true
+                timedOut    : true,
+                // TIMEOUT-only honest signal: true if the value was still moving across polls
+                // (>=2 distinct non-null values seen), so the caller can tell a slow-reporting
+                // device that is likely still settling from a stable real mismatch. Best-effort
+                // (see sawChange declaration). Deliberately omitted from the success path.
+                transitioning : sawChange
             ]
             // Attribute exists in supportedAttributes but never reported a value during
             // the entire poll window -- driver has not yet emitted a reading.
@@ -1827,7 +2098,7 @@ Only query devices the user has mentioned or that are relevant to their request.
                     expectedValue: [type: "string", description: "If set, block-poll until currentValue equals this string. Enables poll mode.[[FLAT_TRIM]] At least one of expectedValue/expectedValues enables polling.[[/FLAT_TRIM]]"],
                     expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue is any of these strings (OR with expectedValue). Enables poll mode."],
                     timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
-                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.", default: 200, minimum: 50, maximum: 5000]
+                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
                 ],
                 required: ["deviceId", "attribute"]
             ],
@@ -1838,18 +2109,19 @@ Only query devices the user has mentioned or that are relevant to their request.
                     attribute: [type: "string", description: "One-shot mode: attribute name"],
                     value: [description: "One-shot mode: current attribute value"],
                     success: [type: "boolean", description: "Poll mode: true if a matching value was observed"],
-                    finalValue: [description: "Poll mode: last value read"],
+                    finalValue: [description: "Poll mode: last value read -- the live event-store value (a String, since it comes from the device's current state list)"],
                     elapsedMs: [type: "integer", description: "Poll mode: elapsed time in milliseconds"],
                     polledCount: [type: "integer", description: "Poll mode: number of reads performed"],
                     timedOut: [type: "boolean", description: "Poll mode: true if the timeout elapsed without a match"],
                     neverReported: [type: "boolean", description: "Poll mode: present and true if the attribute never reported a value in the window"],
-                    interrupted: [type: "boolean", description: "Poll mode: present and true if the poll was interrupted (hub reload)"]
+                    interrupted: [type: "boolean", description: "Poll mode: present and true if the poll was interrupted (hub reload)"],
+                    transitioning: [type: "boolean", description: "Poll mode, TIMEOUT only: true if the value was still changing across polls (>=2 distinct non-null values seen) -- the device is likely still settling -- vs false for a stable non-target (a real mismatch). Best-effort: only reliable when the timeout spans a reporting jump."]
                 ]
             ]
         ],
         [
             name: "hub_call_device_command",
-            description: """Send a command (e.g. on, off, setLevel) to a device. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead. Always verify the state changed after sending (commands are fire-and-forget — the hub returns acceptance, not effect).
+            description: """Send a command (e.g. on, off, setLevel) to a device. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead. Returns a `state` snapshot (per-attribute value + freshness timestamp) read AS OF the command. This snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value -- even for virtual/local devices -- because the hub commits the change after this request returns; the per-attribute timestamp is the freshness signal. To get the CONFIRMED resulting state, pass `waitFor` to block-poll until the attribute converges (then the `state` snapshot reflects the converged value and a `waitFor` result block reports convergence). Without `waitFor`, confirm separately via hub_get_device_attribute.
 
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
@@ -1857,7 +2129,14 @@ If no exact device match: suggest similar devices and get user confirmation befo
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match"],
                     command: [type: "string", description: "Command name, e.g. \"setLevel\". Must be one of the device's supported commands (see hub_get_device)."],
-                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor. Omit for no-arg commands like on/off.[[FLAT_TRIM]] Each element is a string; numbers and JSON-object values are passed as strings (e.g. [\"{\\\"hue\\\":0,\\\"saturation\\\":100,\\\"level\\\":50}\"]) and coerced hub-side.[[/FLAT_TRIM]]", items: [type: "string"]]
+                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor. Omit for no-arg commands like on/off.[[FLAT_TRIM]] Each element is a string; numbers and JSON-object values are passed as strings (e.g. [\"{\\\"hue\\\":0,\\\"saturation\\\":100,\\\"level\\\":50}\"]) and coerced hub-side.[[/FLAT_TRIM]]", items: [type: "string"]],
+                    waitFor: [type: "object", description: "Optional: after firing the command, block-poll the device until an attribute reaches an expected value, so the response confirms the RESULTING state (and the `state` snapshot reflects the converged value). Omit for a fire-and-forget command with only the immediate pre-effect snapshot.[[FLAT_TRIM]] BLOCKS the request up to timeoutMs and queues concurrent MCP calls; reuses the hub_get_device_attribute poll engine.[[/FLAT_TRIM]]", properties: [
+                        attribute: [type: "string", description: "Attribute to poll until it converges, e.g. \"switch\". Must be a supported attribute of the device."],
+                        expectedValue: [type: "string", description: "Block-poll until the attribute's current value equals this string. Provide exactly one of expectedValue or expectedValues."],
+                        expectedValues: [type: "array", items: [type: "string"], description: "Block-poll until the attribute's current value is any of these strings (OR semantics). Provide exactly one of expectedValue or expectedValues."],
+                        timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 30000. Capped lower than hub_get_device_attribute's poll because this BLOCKS a hub thread for the full timeout.", default: 5000, minimum: 100, maximum: 30000],
+                        pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250 (higher than hub_get_device_attribute's 200 because a post-command poll follows a write -- wider spacing reduces read contention), min 50, max 5000. Clamped to timeoutMs if larger.", default: 250, minimum: 50, maximum: 5000]
+                    ], required: ["attribute"]]
                 ],
                 required: ["deviceId", "command"]
             ],
@@ -1867,9 +2146,27 @@ If no exact device match: suggest similar devices and get user confirmation befo
                     success: [type: "boolean", description: "Whether the command was sent"],
                     device: [type: "string", description: "Device label"],
                     command: [type: "string", description: "Command sent"],
-                    parameters: [type: "array", description: "Normalized parameters passed to the command"]
+                    parameters: [type: "array", description: "Normalized parameters passed to the command"],
+                    state: [type: "object", description: "Attribute snapshot keyed by attribute name; each entry is {value, timestamp}. Read AS OF the command: without waitFor this is the immediate (PRE-effect) value because the hub commits the change after this request returns; with waitFor it reflects the converged value. Includes the attributes that have a current state; timestamp is that attribute's last-event time (null if the attribute has never reported).", additionalProperties: [type: "object", properties: [
+                        value: [type: ["string", "number", "boolean", "object", "null"], description: "Current attribute value (mixed-type across capabilities)"],
+                        timestamp: [type: ["string", "null"], description: "Last-event timestamp for this attribute (yyyy-MM-dd HH:mm:ss), or null if the attribute has never reported"]
+                    ]]],
+                    stateError: [type: "string", description: "Present only when the post-command state read-back threw; state is then {} (an empty state with NO stateError means the device legitimately has no readable attributes). Carries the error class and message."],
+                    partial: [type: "boolean", description: "Present and true when the command fired but a confirmation step degraded: the state read-back failed (see stateError) and/or the waitFor poll threw (see waitFor.error). Absent on a fully clean result."],
+                    waitFor: [type: "object", description: "Present only when the waitFor arg was supplied: the result of block-polling the attribute to its expected value.", properties: [
+                        attribute  : [type: "string", description: "Attribute that was polled"],
+                        expected   : [type: ["string", "array"], description: "The expectedValue string or expectedValues list that was awaited"],
+                        converged  : [type: "boolean", description: "True if the attribute reached an expected value; false on timeout OR a hub-reload interrupt OR a poll error (see timedOut/interrupted/error)"],
+                        finalValue : [type: ["string", "number", "boolean", "object", "null"], description: "Last value read (the converged value when converged=true, else the last non-matching read; null on a poll error)"],
+                        elapsedMs  : [type: "integer", description: "Time spent polling, in milliseconds (absent on a poll error)"],
+                        timedOut   : [type: "boolean", description: "Present and true if the poll timed out without a match"],
+                        interrupted: [type: "boolean", description: "Present and true if the poll was interrupted (hub reload)"],
+                        neverReported: [type: "boolean", description: "Present and true if the attribute never reported a value during the poll window"],
+                        transitioning: [type: "boolean", description: "Present only on a TIMEOUT: true if the value was still changing across polls (>=2 distinct non-null values seen) so the device is likely still settling, vs false for a stable non-target (a real mismatch). Best-effort: only reliable when the timeout spans a reporting jump."],
+                        error      : [type: "string", description: "Present only if the poll loop threw after the command fired; the command still succeeded"]
+                    ]]
                 ],
-                required: ["success", "device", "command"]
+                required: ["success", "device", "command", "state"]
             ]
         ],
         [

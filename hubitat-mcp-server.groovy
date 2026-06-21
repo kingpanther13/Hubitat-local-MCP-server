@@ -1375,7 +1375,7 @@ def getGatewayConfig() {
             description: "Control and inspect devices: send commands, update a device, and swap/replace a device across all referencing apps, plus read-only inspection (list/get/attribute/events). Device reads are also in hub_read_devices.",
             tools: ["hub_call_device_command", "hub_call_device_swap", "hub_update_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
             summaries: [
-                hub_call_device_command: "Send a command to a device (verify state after). Args: deviceId, command, parameters?",
+                hub_call_device_command: "Send a command to a device (verify state after). Args: deviceId, command, parameters?, waitFor?",
                 hub_call_device_swap: "Replace a device across ALL apps/rules that reference it (built-in Swap Device tool). Args: from_device_id, to_device_id, confirm",
                 hub_update_device: "Update a device's properties: label, name, room, deviceNetworkId, enabled (enable/disable), dataValues, preferences. Args: deviceId, label?, name?, room?, deviceNetworkId?, enabled?, dataValues?, preferences?",
                 hub_list_devices: "List devices with current states. Args: detailed?, filter, labelFilter?, capabilityFilter?, format, fields?, limit?, cursor?",
@@ -2136,7 +2136,7 @@ def executeTool(toolName, args) {
             if (args.filter == "virtual") return toolListVirtualDevices(args)
             return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope)
         case "hub_get_device": return toolGetDevice(args.deviceId)
-        case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters)
+        case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_list_device_events":
             // Recent-N for one device when no window/filter given; otherwise windowed
