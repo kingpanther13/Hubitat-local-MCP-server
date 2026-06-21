@@ -64,6 +64,10 @@ on:
         description: 'ONE-OFF: comma-separated test name(s) to run instead of the full suite (e.g. test_set_rule_required_expression_multi_condition). Blank = full suite. Installs the PR head first, same as a normal run.'
         required: false
         default: ''
+      skip_install:
+        description: 'ONE-OFF: skip installing the PR head — run against whatever is already deployed (usually main). For tests-only changes where the server code is unchanged. Keeps the lease; skips the watchdog arm/install/restore.'
+        required: false
+        default: 'false'
       probe_only:
         description: 'true = read-only hub inventory probe instead of the e2e suite (diagnose hub state)'
         required: false
@@ -453,7 +457,7 @@ jobs:
             >/dev/null || echo "::notice::stale-flag clear call failed/absent (watchdog/flag may not exist yet) -- continuing"
 
       - name: Compute PR source URL for importUrl deploy
-        if: steps.gate.outputs.available == 'true'
+        if: steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
         # The hub fetches the PR branch's raw source itself (importUrl mode), so the
         # ~1.5MB blob never crosses the cloud gateway. Resolve head repo + SHA for the
         # three trigger shapes (PR, dispatch-with-pr_number, plain dispatch).
@@ -529,7 +533,7 @@ jobs:
       # "Disarm dead-man watchdog (final)" step below clears it and restores main before the lease is
       # released. Placed BEFORE the PR install so the rollback target exists before the hub is mutated.
       - name: Backup + arm dead-man watchdog
-        if: steps.gate.outputs.available == 'true'
+        if: steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
         env:
           PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
@@ -546,7 +550,7 @@ jobs:
       # source last (HPM's bundle -> app order) in one step. Blocking:
       # a failed PR install means the tests would run against stale/broken hub code.
       - name: Watchdog - install PR
-        if: steps.gate.outputs.available == 'true'
+        if: steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
         env:
           PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
@@ -592,7 +596,9 @@ jobs:
       # assertions in tests/e2e_test.py.
       - name: Validate hub_update_package dev tool (dryRun)
         id: pkg_validate
-        if: steps.gate.outputs.available == 'true'
+        # Validates the PR's package tool against its installed source -- meaningless (and PR_RAW_BASE
+        # is unset) when skip_install ran the test against the already-deployed code.
+        if: steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
         env:
           PR_RAW_BASE: ${{ env.PR_RAW_BASE }}
           PR_HEAD_SHA_RESOLVED: ${{ env.PR_HEAD_SHA_RESOLVED }}
@@ -640,7 +646,7 @@ jobs:
       # restore or assert restoreResult/source-length here. A clean disarm also prevents handing the
       # next run an armed flag.
       - name: Disarm dead-man watchdog (restore main)
-        if: always() && steps.gate.outputs.available == 'true'
+        if: always() && steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
         run: bash .github/scripts/mcp_disarm_watchdog.sh
 
       - name: Cleanup BAT_E2E_ artifacts
