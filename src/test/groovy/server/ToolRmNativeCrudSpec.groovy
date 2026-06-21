@@ -1570,52 +1570,53 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.body["settings[cond]"]?.toString()?.contains("sub-expression") }
     }
 
-    def "STPage oper write is never cached (its echo lags), so the next cond=a still carries cond.type (multi-condition + sub-expression RE regression)"() {
+    def "STPage cond/oper picker writes always emit their enum type sidecar, so a lagged cached echo can't no-op them (multi-condition + sub-expression RE regression)"() {
         // Regression gate for the multi-condition / sub-expression Required Expression failures
-        // (live-root-caused 2026-06-21 via the native RM wizard + claude-in-chrome). Every `oper`
-        // write -- the gap-operator between conditions AND the close-sub-expression operator --
-        // returns a POST echo that LAGS one render behind the hub's settled state, and the lag is
-        // not uniform: it can DROP keys (the 3rd-condition gap-op echoes a subset) OR ADD keys
-        // (the close-paren echo adds the expression-management buttons editToken/eraseRule/hasRule)
-        // while STILL omitting the field the next write needs. So no key-delta heuristic is safe
-        // for an `oper` echo -- it must NEVER be cached. This stub models the harder ADD-keys case:
-        // the oper echo gains the expression buttons (a NEW key that would fool a "cache on new
-        // key" test) yet the settled page is the [cond, doneST] selector. Caching the lagged echo
-        // makes the next `cond=a` read a schema MISSING `cond`, _rmBuildSettingsBody drops the
-        // `cond.type=enum` sidecar, RM silently no-op's the write, and the walker throws
-        // "rCapab_<N> not in STPage schema after cond=a". (Static-schema stubs can't catch this.)
+        // (live-root-caused 2026-06-21 via the native RM wizard + claude-in-chrome). The request-
+        // scoped page cache consumes each write's inline POST echo with NO verify-GET -- that is the
+        // round-trip win that keeps a multi-condition build under the relay budget. But a
+        // submitOnChange echo for the `cond`/`oper` pickers LAGS one render behind: a gap-operator
+        // (and the close-sub-expression operator) echoes a page that OMITS the very field the NEXT
+        // picker write needs. Reading that cached schema, _rmBuildSettingsBody would find no
+        // `cond`/`oper` entry and DROP the `<key>.type=enum` sidecar, which RM silently no-ops -- the
+        // walker then throws "rCapab_<N> not in STPage schema after cond=a". The fix emits the
+        // picker's KNOWN enum type explicitly, so the write lands against the hub's real page
+        // regardless of the cached schema -- no invalidation, no extra re-fetch (the alternative,
+        // re-fetching the settled page after every operator, is exactly the round-trip cost this PR
+        // exists to remove). This stub primes the cache with a lagged oper echo that omits `cond`.
         given:
-        def operPicker = [[name: "oper", type: "enum", options: ["": "Click to set", "AND": "AND"]], [name: "doneST", type: "button"]]
-        // Lagged oper echo that ADDS the expression-management buttons (a new key) but is still NOT
-        // the settled [cond, doneST] selector -- the close-sub-expression shape.
-        def operEchoWithButtons = [[name: "oper", type: "enum", options: ["": "Click to set", "AND": "AND"]],
-                                   [name: "doneST", type: "button"], [name: "editToken", type: "button"],
-                                   [name: "eraseRule", type: "button"], [name: "hasRule", type: "button"]]
-        def condSelector = [[name: "cond", type: "enum", options: ["": "Click to set", "a": "--> New Condition"]], [name: "doneST", type: "button"]]
-        // GET is stateful: oper picker before the oper write commits, settled cond selector after.
-        def settled = false
+        // The page the oper write caches LACKS `cond` (its echo lags -- still the oper page).
+        def operPage = [[name: "oper", type: "enum", options: ["": "Click to set", "AND": "AND"]], [name: "doneST", type: "button"]]
+        int getCount = 0
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            ruleConfigJson(100, "r", settled ? condSelector : operPicker)
+            getCount++
+            ruleConfigJson(100, "r", operPage)
         }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
-            // Lagged echo: ADDS the expression buttons (new key) but is still the oper page, not the
-            // settled cond selector -- while the hub's settled state has advanced for the next GET.
-            def echo = ruleConfigJson(100, "r", operEchoWithButtons)
-            settled = true
-            [status: 200, location: null, data: echo]
+            // Lagged echo: still the oper page (omits `cond`) -- this is what the cache stores.
+            [status: 200, location: null, data: ruleConfigJson(100, "r", operPage)]
         }
 
-        when: "the oper write commits, then the next condition's cond=a write builds its body"
+        when: "an oper write caches its lagged echo, then a cond=a write builds its body from that cache"
         def cache = [:]
         script._rmWriteSubPageField(100, "STPage", "mainPage", "name", 0, [unUsed: null], "oper", "AND", cache)
+        int getsAfterOper = getCount
         script._rmWriteSubPageField(100, "STPage", "mainPage", "name", 0, [unUsed: null], "cond", "a", cache)
 
-        then: "the cond=a body carries cond.type=enum (schema read from the settled page, not the lagged oper echo)"
+        then: "the cond=a body carries cond.type=enum despite the cached schema lacking `cond` (forced, not schema-derived)"
         def condWrite = posts.reverse().find { it.body["settings[cond]"] == "a" }
         condWrite != null
         condWrite.body["cond.type"] == "enum"
+        condWrite.body["cond.multiple"] == "false"
+
+        and: "the oper write likewise forces its enum type"
+        def operWrite = posts.find { it.body["settings[oper]"] == "AND" }
+        operWrite.body["oper.type"] == "enum"
+
+        and: "no extra re-fetch: the cond=a write read the cached page (no STPage GET beyond the oper write's own)"
+        getCount == getsAfterOper
     }
 
     // ---------- ghost ifThen predCapabs clear (Step 4b) ----------

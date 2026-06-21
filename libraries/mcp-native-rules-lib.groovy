@@ -4047,6 +4047,20 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     def beforeValueStr = schema?."${key}"?.value?.toString()
     def beforeRenderHash = _rmSanitizeRenderForHash(cfg?.configPage?.sections).hashCode()
     def body = _rmBuildSettingsBody(appId, [(key): value], schema)
+    // `cond` and `oper` are the condition-builder's enum pickers, and their type is known a priori.
+    // The request-scoped page cache consumes each write's inline echo, but a submitOnChange echo for
+    // these pickers lags one render behind -- a gap-operator (and the close-sub-expression operator)
+    // echoes a page that omits the very field the NEXT write needs. If the next write reads that
+    // cached schema, _rmBuildSettingsBody finds no `cond`/`oper` entry and DROPS the `<key>.type`
+    // sidecar, which RM silently no-ops -- the multi-condition / sub-expression RE failure
+    // ("rCapab_<N> not in STPage schema after cond=a"). Emit the picker's enum type explicitly so the
+    // write lands against the hub's real (settled) page regardless of the cached schema -- no
+    // invalidation, no extra re-fetch (keeps the round-trip win). Live-root-caused 2026-06-21 via the
+    // native RM wizard + claude-in-chrome.
+    if (key == "cond" || key == "oper") {
+        body["${key}.type".toString()] = "enum"
+        body["${key}.multiple".toString()] = "false"
+    }
     body.formAction = "update"
     body.currentPage = page
     // Live-UI capture (Chrome 2026-04-26, rule 1380 STPage cond=b probe):
@@ -4073,28 +4087,13 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     def verifyFetchErr = null
     def parsedPost = hasRealParams ? null : _rmPagePostResponse(postResp)
     if (parsedPost != null) {
-        // Consume the inline echo for routing (no extra GET). Whether to CACHE it for the NEXT
-        // write has two traps, both from the condition-builder's submitOnChange pickers lagging
-        // one render behind their settled state:
-        //  (1) `oper` (the gap-operator between conditions AND the close-sub-expression operator)
-        //      NEVER has a trustworthy echo -- it can add the expression-management buttons while
-        //      still omitting the `oper`/`cond` field the next write needs. Never cache an `oper`
-        //      write; always re-fetch the settled page.
-        //  (2) For every other write, a lagged echo can DIFFER by only DROPPING keys (a subset),
-        //      which is not a forward advance -- so require a NEW key, not merely "schema differs".
-        // Caching a stale schema feeds the next write a page missing its key, so
-        // _rmBuildSettingsBody omits the `<key>.type` sidecar and RM silently no-ops the write --
-        // the multi-condition / sub-expression RE "rCapab_<N> not in STPage schema after cond=a"
-        // failures. A non-cacheable echo invalidates so the next read re-fetches the settled page.
-        // The hot path (single condition: no `oper` writes; field reveals all add a key) is
-        // unaffected, so the round-trip win stands.
+        // Consume the inline echo as both the post-write state (routing below) AND the cached page
+        // for the next write -- no verify-GET, no invalidation. The condition-builder's `cond`/`oper`
+        // picker echoes can lag a render behind (omitting the next field), but the explicit
+        // `<key>.type` sidecar above makes the next picker write land against the hub's real page
+        // regardless, so caching the lagged echo is safe and keeps the round-trip count minimal.
+        _rmCacheStore(cache, appId, page, parsedPost)
         afterCfg = parsedPost
-        def parsedPostKeys = (_rmCollectInputSchema(parsedPost?.configPage)?.keySet() ?: []) as Set
-        if (key != "oper" && !(parsedPostKeys - beforeKeys).isEmpty()) {
-            _rmCacheStore(cache, appId, page, parsedPost)
-        } else {
-            _rmCacheInvalidate(cache, appId)
-        }
     } else {
         _rmCacheInvalidate(cache, appId)
         try {
