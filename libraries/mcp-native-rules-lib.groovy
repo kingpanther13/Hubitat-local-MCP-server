@@ -4046,12 +4046,6 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     def beforeKeys = (schema?.keySet() ?: []) as Set
     def beforeValueStr = schema?."${key}"?.value?.toString()
     def beforeRenderHash = _rmSanitizeRenderForHash(cfg?.configPage?.sections).hashCode()
-    // [batchprobe] TEMP empirical test (remove after): is state_<N> ALREADY co-revealed with the
-    // comparator RelrDev_<N> for numeric caps? If yes, RelrDev+state can batch into ONE POST.
-    if (key?.startsWith("RelrDev_")) {
-        def probeN = key.substring("RelrDev_".length())
-        logDebug("[batchprobe] at ${key} write: state_${probeN} co-present? ${schema?.containsKey("state_${probeN}".toString())}; tier-keys=${schema?.keySet()?.findAll { it?.toString()?.endsWith("_${probeN}") }?.sort()}")
-    }
     def body = _rmBuildSettingsBody(appId, [(key): value], schema)
     // `cond` and `oper` are the condition-builder's enum pickers, and their type is known a priori.
     // The request-scoped page cache consumes each write's inline echo, but a submitOnChange echo for
@@ -9575,9 +9569,12 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // ---- Default path: enum / numeric device capabilities ----
     // Covers Switch, Motion, Contact, Lock, Temperature, Humidity, etc.
     // Write order: rCapab -> rDev_<N> -> rCustomAttr_<N> (if attribute set) ->
-    //              RelrDev_<N> (if comparator set; NO re-fetch needed here for non-CustomAttr
-    //              because state_<N> is already in the schema for numeric caps) ->
-    //              state_<N> -> hasAll.
+    //              RelrDev_<N> (if comparator set; for non-CustomAttr numeric caps RelrDev_<N> is
+    //              already exposed after rDev_<N>, so no re-fetch is needed before writing it -- but
+    //              state_<N> is NOT present yet: it is progressive-disclosure-gated behind RelrDev_<N>
+    //              and appears only after the comparator commits, so RelrDev+state cannot share a POST.
+    //              Live-probed 2026-06-21: at the RelrDev_<N> write the schema holds [rDev_<N>,
+    //              RelrDev_<N>], state_<N> absent) -> state_<N> -> hasAll.
     writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
     if (cond.deviceIds != null) {
         writeST(hrefParams, "rDev_${cIdx}".toString(), cond.deviceIds)
@@ -9949,7 +9946,10 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
     // size-sensitive STPage read per replace. Standalone add callers leave it false.
     if (!skipExistingRECheck) {
         try {
-            def preNames = _rmCollectPageInputNames(appId, "STPage")
+            // Thread rmCache so this precheck's STPage GET warms the cache: nothing writes STPage
+            // between here and the walk's first writeST(cond,"a"), so that write's pre-fetch is a HIT
+            // instead of a second back-to-back GET of the same page (F2).
+            def preNames = _rmCollectPageInputNames(appId, "STPage", rmCache)
             // Add path uses the stricter three-field tell (cancelST+editST+stopOnST,
             // no inline new-condition selector) via _rmIsCommittedRETell(requireStopOnST=true).
             if (_rmIsCommittedRETell(preNames, true)) {
@@ -10393,8 +10393,8 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
 // existing-RE edit-mode detection and the replace-RE delete-verification so
 // both read the page through the identical lens (a committed RE renders the
 // cancelST/editST controls, a deleted one no longer shows them).
-private Set _rmCollectPageInputNames(Integer appId, String pageName) {
-    def cfg = _rmFetchConfigJson(appId, pageName)
+private Set _rmCollectPageInputNames(Integer appId, String pageName, Map cache = null) {
+    def cfg = _rmFetchConfigJson(appId, pageName, cache)
     return (cfg?.configPage?.sections ?: []).collectMany { sec ->
         (sec?.input ?: []).collect { it?.name?.toString() }
     }.findAll { it } as Set
