@@ -4288,6 +4288,11 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
     if (actionSpec.discover == true) {
         return _rmActionSchemaForDiscover()
     }
+    // If a preceding addRequiredExpression deferred its predCapabs clear (Step 4b), run it now -- before
+    // this action lands -- so the action isn't wrapped in IF(**Broken Condition**). Flag-gated + best-
+    // effort; a no-op when nothing is pending. Bulk addActions are safe: the first add clears the flag,
+    // so the rest short-circuit.
+    _rmRunPendingPredCapabsClear(appId)
     def cap = actionSpec.capability?.toString()?.trim()
     def action = actionSpec.action?.toString()?.trim()
     if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.")
@@ -8567,6 +8572,26 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
     mcpLog("info", "rm-native", "${caller}: ghost ifThen clear fired for app ${appId} (clears atomicState.predCapabs without adding an action)")
 }
 
+// Just-in-time predCapabs clear. addRequiredExpression Step 4b no longer pays the ~9-round-trip ghost
+// ifThen up front (it would make the relay-504-prone RE build heavier for nothing when no action
+// follows); instead it flags the rule in atomicState.predClearPending. _rmAddAction calls this at its
+// entry: if the rule is flagged, fire the SAME ghost ifThen now -- before the action lands -- so the
+// action isn't wrapped in IF(**Broken Condition**), then drop the flag so it runs at most once.
+// Best-effort + idempotent: a clean predCapabs re-clears harmlessly, and a failed clear degrades to
+// the pre-deferral worst case (a possible IF(Broken Condition) wrap, surfaced as a warn).
+private void _rmRunPendingPredCapabsClear(Integer appId) {
+    def pending = atomicState.predClearPending ?: [:]
+    if (!pending[appId.toString()]) return
+    try {
+        _rmClearPredCapabsViaGhostIfThen(appId, "addAction (deferred from addRequiredExpression)")
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "addAction: deferred predCapabs clear (ghost ifThen) failed for app ${appId} (${e.message ?: e.toString()}) -- this action may render under IF(**Broken Condition**); verify rule render or restore backup if needed")
+    }
+    def m = atomicState.predClearPending ?: [:]
+    m.remove(appId.toString())
+    atomicState.predClearPending = m
+}
+
 // Low-level reveal-step primitive for RM 5.1 progressive-disclosure wizard pages.
 //
 // Snapshot field names on a page, execute a trigger closure (button click or
@@ -10239,28 +10264,26 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
     // evalOnBoot fields, which is correct for the Done-mode back-nav.
     _rmSubmitSubPageDone(appId, "STPage", "mainPage", "name", hrefParams, rmCache)
 
-    // Step 4b. Clear RM's residual condition-builder atomicState after
-    // the expression-builder hasRule click.
+    // Step 4b. DEFER the predCapabs clear to the next addAction (just-in-time).
     //
     // BACKGROUND:
-    //   The walkConds writes + hasRule seal leave atomicState.predCapabs in a
-    //   stale state that wraps subsequent addAction calls in
-    //   IF(**Broken Condition**).  _rmClearPredCapabsViaGhostIfThen fires the
-    //   ghost ifThen workaround (open condActs/getIfThen slot + actionCancel)
-    //   that resets predCapabs without leaving a visible action in the rule.
+    //   The walkConds writes + hasRule seal leave atomicState.predCapabs in a stale state that would
+    //   wrap a SUBSEQUENT addAction in IF(**Broken Condition**). The fix is the ghost ifThen workaround
+    //   (open condActs/getIfThen slot + actionCancel) -- but running it HERE costs ~9 hub round-trips on
+    //   every RE build even when no action follows, and the multi-condition RE build is already heavy
+    //   enough to time out the cloud relay. So we DEFER it: flag the rule, and _rmAddAction runs the
+    //   EXACT same _rmClearPredCapabsViaGhostIfThen just-in-time, before the next action lands.
+    //   predCapabs is STILL cleared (the probe-matrix contract -- groups A / A-seal / A-extended --
+    //   holds; only the timing moves), so this is NOT a removal of the clear.
     //
-    //   See _rmClearPredCapabsViaGhostIfThen Groovydoc for the full mechanistic
-    //   rationale.  DO NOT remove this call without re-running the full probe
-    //   matrix (probes in groups A, A-seal, and A-extended are the regression
-    //   gates).
-    try {
-        _rmClearPredCapabsViaGhostIfThen(appId, "addRequiredExpression")
-    } catch (Exception ghostExc) {
-        // Best-effort: if the ghost ifThen sequence fails, subsequent addAction
-        // calls MAY produce IF(**Broken Condition**) wrapping. The RE itself
-        // is fully committed -- this only affects the next addAction.
-        mcpLog("warn", "rm-native", "addRequiredExpression: ghost ifThen clear failed for app ${appId} (${ghostExc.message ?: ghostExc.toString()}) -- subsequent addAction may produce IF(**Broken Condition**) wrapper (ghost IF/THEN wrap detected after Required Expression commit); verify rule render or restore backup if needed")
-    }
+    //   Routing is safe to leave here: Step 3b's doneST already put STPage in Done mode (cond no longer
+    //   required=true), and the "Required Fields missing / not passing validation" popup is a
+    //   required-FIELDS check (appUI.js:559-563 empty required device buttons / 700-701 errorCount),
+    //   NOT a routing/editAct check -- so STPage opens cleanly without the ghost ifThen. (The helper's
+    //   old "routing reset" comment only undid the ghost ifThen's OWN nav to doActPage.)
+    def _predPending = atomicState.predClearPending ?: [:]
+    _predPending[appId.toString()] = true
+    atomicState.predClearPending = _predPending
 
     // Step 5. Post-commit validation. RM 5.1's STPage silently accepts
     // many invalid inputs at the field-write level (e.g. unknown device
