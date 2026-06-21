@@ -125,6 +125,17 @@ abstract class HarnessSpec extends Specification {
     // counter and assert on it; lifecycle specs reset it in given: with .set(0).
     protected static final java.util.concurrent.atomic.AtomicInteger UNSUBSCRIBE_CALL_COUNT = new java.util.concurrent.atomic.AtomicInteger(0)
 
+    // Overridable virtual clock for time-sensitive poll/debounce specs. The base
+    // appExecutor.now() interaction reads this: null (default, reset every setup) yields
+    // the fixed 1234567890000L; a spec that needs now() to advance assigns a closure
+    // returning the current virtual time. A `_ * now() >>` interaction declared at Mock
+    // creation cannot be overridden by a stubbing in a feature method's given: block, so
+    // an indirection through this holder is how a spec advances the clock without a brittle
+    // metaClass/interaction-scope dance. Holds a Closure<Long> or null.
+    // A single static holder is safe under the current single-fork test config
+    // (maxParallelForks=1); if specs ever run in parallel this would need to be a ThreadLocal.
+    protected static final java.util.concurrent.atomic.AtomicReference NOW_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
+
     @Shared protected AppExecutor appExecutor
     @Shared protected script
     @Shared protected final Map stateMap = SHARED_STATE_MAP
@@ -196,7 +207,7 @@ abstract class HarnessSpec extends Specification {
             _ * getState() >> SHARED_STATE_MAP
             _ * getAtomicState() >> SHARED_ATOMIC_STATE_MAP
             _ * getChildDevices() >> SHARED_CHILD_DEVICES_LIST
-            _ * now() >> 1234567890000L
+            _ * now() >> { def ov = NOW_OVERRIDE.get(); ov != null ? (ov.call() as Long) : 1234567890000L }
             _ * getLog() >> SHARED_LOG
             // Script delegates `settings` reads to api.getSettings(). When we
             // rebind api per spec, we have to stub this explicitly — the
@@ -277,6 +288,9 @@ abstract class HarnessSpec extends Specification {
         childAppsList.clear()
         hubGet.reset()
         mcpDriver.reset()
+        // Drop any per-test virtual-clock override so now() returns the fixed default
+        // for every spec that doesn't opt in (prevents clock leakage across features).
+        NOW_OVERRIDE.set(null)
         // Drop any per-test metaClass writes installed on the shared
         // script by previous features (e.g. individual specs' given:
         // blocks that do `script.metaClass.getRooms = { ... }`).

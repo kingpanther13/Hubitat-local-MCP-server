@@ -577,7 +577,7 @@ private Map _buildWaitForPollArgs(deviceId, device, deviceLabel, waitFor) {
     if (!(waitFor instanceof Map)) {
         throw new IllegalArgumentException("waitFor must be an object with at least attribute and expectedValue/expectedValues")
     }
-    def validKeys = ["attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs"] as Set
+    def validKeys = ["attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs", "comparator", "stableForMs"] as Set
     def unknownKeys = (waitFor.keySet() - validKeys).sort()
     if (unknownKeys) {
         def label = unknownKeys.size() == 1 ? 'an unknown key' : 'unknown keys'
@@ -632,9 +632,61 @@ private Map _buildWaitForPollArgs(deviceId, device, deviceLabel, waitFor) {
             throw new IllegalArgumentException("waitFor.pollIntervalMs must be a number between 50 and 5000 (got: ${waitFor.pollIntervalMs})")
         }
     }
+    // Comparator + stableForMs pre-fire validation: mirror the engine's comparator constraints
+    // HERE so a bad spec never fires the command (the engine repeats these post-fire as
+    // defense-in-depth). The effective timeout for the stableForMs upper bound is the same
+    // default applied below.
+    def effectiveTimeoutMs = waitFor.containsKey("timeoutMs") ? (waitFor.timeoutMs as Integer) : 5000
+    def validComparators = ["eq", "ne", "gt", "gte", "lt", "lte", "between"]
+    if (waitFor.containsKey("comparator") && waitFor.comparator == null) {
+        throw new IllegalArgumentException("waitFor.comparator must not be null (omit the arg to use the default \"eq\")")
+    }
+    def comparator = waitFor.containsKey("comparator") ? waitFor.comparator : "eq"
+    if (!(comparator instanceof String) || !validComparators.contains(comparator)) {
+        throw new IllegalArgumentException("waitFor.comparator must be one of ${validComparators} (got: ${_describeValueForError(waitFor.comparator)})")
+    }
+    if (["gt", "gte", "lt", "lte"].contains(comparator)) {
+        if (hasExpectedValues) {
+            throw new IllegalArgumentException("waitFor.comparator '${comparator}' takes a single numeric threshold via expectedValue, not expectedValues")
+        }
+        if (_parseBigDecimalOrNull(waitFor.expectedValue) == null) {
+            throw new IllegalArgumentException("waitFor.comparator '${comparator}' requires expectedValue to be a numeric-parseable string (got: ${_describeValueForError(waitFor.expectedValue)})")
+        }
+    } else if (comparator == "between") {
+        if (hasExpectedValue) {
+            throw new IllegalArgumentException("waitFor.comparator 'between' takes two numeric bounds via expectedValues, not expectedValue")
+        }
+        if (waitFor.expectedValues.size() != 2) {
+            throw new IllegalArgumentException("waitFor.comparator 'between' requires expectedValues to have exactly 2 numeric bounds [low, high] (got ${waitFor.expectedValues.size()})")
+        }
+        def lo = _parseBigDecimalOrNull(waitFor.expectedValues[0])
+        def hi = _parseBigDecimalOrNull(waitFor.expectedValues[1])
+        if (lo == null || hi == null) {
+            throw new IllegalArgumentException("waitFor.comparator 'between' requires both expectedValues bounds to be numeric-parseable strings (got: ${waitFor.expectedValues})")
+        }
+        if (lo > hi) {
+            throw new IllegalArgumentException("waitFor.comparator 'between' requires low <= high (got low=${waitFor.expectedValues[0]}, high=${waitFor.expectedValues[1]})")
+        }
+    }
+    if (waitFor.containsKey("stableForMs") && waitFor.stableForMs == null) {
+        throw new IllegalArgumentException("waitFor.stableForMs must not be null (omit the arg to use default 0)")
+    }
+    if (waitFor.containsKey("stableForMs")) {
+        if (!(waitFor.stableForMs instanceof Number)) {
+            throw new IllegalArgumentException("waitFor.stableForMs must be an integer (got: ${_describeValueForError(waitFor.stableForMs)})")
+        }
+        if (waitFor.stableForMs < 0) {
+            throw new IllegalArgumentException("waitFor.stableForMs must be >= 0 (got: ${waitFor.stableForMs})")
+        }
+        if ((waitFor.stableForMs as Integer) >= effectiveTimeoutMs) {
+            throw new IllegalArgumentException("waitFor.stableForMs (${waitFor.stableForMs}) must be less than timeoutMs (${effectiveTimeoutMs}) -- the condition could never hold long enough to converge")
+        }
+    }
     def pollArgs = [deviceId: deviceId.toString(), attribute: waitFor.attribute]
     if (hasExpectedValue)  pollArgs.expectedValue  = waitFor.expectedValue
     if (hasExpectedValues) pollArgs.expectedValues = waitFor.expectedValues
+    if (waitFor.containsKey("comparator"))  pollArgs.comparator  = waitFor.comparator
+    if (waitFor.containsKey("stableForMs")) pollArgs.stableForMs = waitFor.stableForMs
     // Default the timeout/interval here so an omitted value uses the command-flow default
     // (5000ms) and pollIntervalMs 250ms -- the 250ms default is the post-command-flow
     // default by intent (the engine's standalone default is 200ms); explicit values pass through.
@@ -660,6 +712,18 @@ private String _describeValueForError(v) {
     // bare gap in the message; non-string values render unquoted (e.g. 42 (number)).
     def rendered = (v instanceof String) ? "\"${v}\"" : "${v}"
     return "${rendered} (${typeLabel})"
+}
+
+// Parse a value as BigDecimal for numeric comparator math, or null if it is not numeric.
+// Accepts a Number directly and a numeric-parseable String (the form device states report);
+// anything else (null, non-numeric string, list, map) yields null so the caller treats it as
+// "no match" rather than throwing. NumberFormatException is the only expected failure.
+private BigDecimal _parseBigDecimalOrNull(v) {
+    if (v instanceof Number) return v as BigDecimal
+    if (v instanceof String && v.isNumber()) {
+        try { return new BigDecimal(v) } catch (NumberFormatException ignored) { return null }
+    }
+    return null
 }
 
 // Compact current-state snapshot for a command response: per attribute, its current
@@ -844,7 +908,7 @@ def toolGetAttribute(deviceId, attribute) {
 
 def toolPollUntilAttribute(args) {
     // 0. Reject unknown args early to surface caller mistakes (e.g., timeoutSeconds vs timeoutMs).
-    def validArgKeys = ["deviceId", "attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs"] as Set
+    def validArgKeys = ["deviceId", "attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs", "comparator", "stableForMs"] as Set
     if (args instanceof Map) {
         def unknownKeys = (args.keySet() - validArgKeys).sort()
         if (unknownKeys) {
@@ -944,7 +1008,67 @@ def toolPollUntilAttribute(args) {
         pollIntervalMs = timeoutMs
     }
 
-    // 6. Build the expected-value set for match checking (OR semantics)
+    // 5b. Validate comparator (default "eq") and its expectedValue/expectedValues shape.
+    //   - eq/ne: string-set semantics (existing expectedValue/expectedValues validation above).
+    //   - gt/gte/lt/lte: numeric, single threshold from expectedValue; expectedValues is rejected.
+    //   - between: numeric inclusive, two bounds from expectedValues (exactly 2); expectedValue rejected.
+    if (args.containsKey("comparator") && args.comparator == null) {
+        throw new IllegalArgumentException("comparator must not be null (omit the arg to use the default \"eq\")")
+    }
+    def validComparators = ["eq", "ne", "gt", "gte", "lt", "lte", "between"]
+    def comparator = (args.comparator != null) ? args.comparator : "eq"
+    if (!(comparator instanceof String) || !validComparators.contains(comparator)) {
+        throw new IllegalArgumentException("comparator must be one of ${validComparators} (got: ${_describeValueForError(args.comparator)})")
+    }
+    def numericComparators = ["gt", "gte", "lt", "lte"] as Set
+    def numericThreshold = null
+    def betweenLow = null
+    def betweenHigh = null
+    if (numericComparators.contains(comparator)) {
+        if (hasExpectedValues) {
+            throw new IllegalArgumentException("comparator '${comparator}' takes a single numeric threshold via expectedValue, not expectedValues")
+        }
+        numericThreshold = _parseBigDecimalOrNull(args.expectedValue)
+        if (numericThreshold == null) {
+            throw new IllegalArgumentException("comparator '${comparator}' requires expectedValue to be a numeric-parseable string (got: ${_describeValueForError(args.expectedValue)})")
+        }
+    } else if (comparator == "between") {
+        if (hasExpectedValue) {
+            throw new IllegalArgumentException("comparator 'between' takes two numeric bounds via expectedValues, not expectedValue")
+        }
+        if (args.expectedValues.size() != 2) {
+            throw new IllegalArgumentException("comparator 'between' requires expectedValues to have exactly 2 numeric bounds [low, high] (got ${args.expectedValues.size()})")
+        }
+        betweenLow  = _parseBigDecimalOrNull(args.expectedValues[0])
+        betweenHigh = _parseBigDecimalOrNull(args.expectedValues[1])
+        if (betweenLow == null || betweenHigh == null) {
+            throw new IllegalArgumentException("comparator 'between' requires both expectedValues bounds to be numeric-parseable strings (got: ${args.expectedValues})")
+        }
+        if (betweenLow > betweenHigh) {
+            throw new IllegalArgumentException("comparator 'between' requires low <= high (got low=${args.expectedValues[0]}, high=${args.expectedValues[1]})")
+        }
+    }
+
+    // 5c. Validate stableForMs (debounce, default 0): the matched condition must hold
+    //   continuously for this many ms before converging. Bounded [0, timeoutMs): a value
+    //   >= timeoutMs could never converge, so it is rejected pre-poll rather than silently
+    //   guaranteeing a timeout.
+    if (args.containsKey("stableForMs") && args.stableForMs == null) {
+        throw new IllegalArgumentException("stableForMs must not be null (omit the arg to use default 0)")
+    }
+    def stableForMs = (args.stableForMs != null) ? args.stableForMs : 0
+    if (!(stableForMs instanceof Number)) {
+        throw new IllegalArgumentException("stableForMs must be an integer (got: ${_describeValueForError(args.stableForMs)})")
+    }
+    stableForMs = stableForMs as Integer
+    if (stableForMs < 0) {
+        throw new IllegalArgumentException("stableForMs must be >= 0 (got: ${stableForMs})")
+    }
+    if (stableForMs >= timeoutMs) {
+        throw new IllegalArgumentException("stableForMs (${stableForMs}) must be less than timeoutMs (${timeoutMs}) -- the condition could never hold long enough to converge")
+    }
+
+    // 6. Build the expected-value set for match checking (OR semantics, eq/ne comparators only)
     def matchSet = [] as Set
     if (hasExpectedValue)  matchSet << args.expectedValue
     if (hasExpectedValues) matchSet.addAll(args.expectedValues)
@@ -972,6 +1096,11 @@ def toolPollUntilAttribute(args) {
     // intermediate reads transitioning:false even though the device is physically still settling.
     def sawChange      = false
     def lastNonNull    = null
+    // Debounce tracking: the poll-clock time the match condition first became true in the
+    // current contiguous run. Reset to null on any poll where the condition is false, so a
+    // value that flaps out of range restarts the stability window. null when stableForMs==0
+    // (no debounce) or when the condition is not currently held.
+    def conditionTrueSince = null
 
     while (true) {
         // Read the FRESH event store via currentStates (the LIST), not currentValue() OR
@@ -994,22 +1123,51 @@ def toolPollUntilAttribute(args) {
         }
         def elapsedMs = (now() - startMs) as Integer
 
-        // String match first.
-        // Numeric fallback handles BigDecimal/Double "50.0" vs "50" quirk in both directions:
-        //   - Number attribute (e.g. BigDecimal 50.0) matched by String expectedValue "50"
-        //   - String attribute "50.0" (some drivers return numeric-typed attributes as String)
-        //     matched by String expectedValue "50"
-        def matched = matchSet.contains(finalValue?.toString()) ||
-            (finalValue instanceof Number && matchSet.any { it instanceof String && it.isNumber() && (it as BigDecimal) == (finalValue as BigDecimal) }) ||
-            (finalValue instanceof String && finalValue.isNumber() && matchSet.any { it instanceof String && it.isNumber() && (it as BigDecimal) == (finalValue as BigDecimal) })
-        if (matched) {
-            return [
-                success     : true,
-                finalValue  : finalValue,
-                elapsedMs   : elapsedMs,
-                polledCount : polledCount,
-                timedOut    : false
-            ]
+        // Evaluate the match condition for this poll under the active comparator.
+        //   - eq/ne: string-set membership (with the numeric-string equality fallback for eq).
+        //     ne is the negation of in-set, but a null/never-reported value is treated as
+        //     NOT-matched (it never satisfies ne) -- consistent with the numeric comparators,
+        //     which also never match null. So a never-reported attribute will not falsely
+        //     satisfy ne, and a value that reverts to null (device removed / driver reset)
+        //     stops satisfying ne rather than converging on finalValue:null.
+        //   - gt/gte/lt/lte/between: numeric; a null/non-numeric finalValue never matches.
+        def condition
+        if (comparator == "eq" || comparator == "ne") {
+            // String match first; numeric fallback handles BigDecimal/Double "50.0" vs "50"
+            // in both directions (Number attribute vs String expectedValue, and String "50.0"
+            // attribute that some drivers report for a numeric-typed value).
+            def inSet = matchSet.contains(finalValue?.toString()) ||
+                (finalValue instanceof Number && matchSet.any { it instanceof String && it.isNumber() && (it as BigDecimal) == (finalValue as BigDecimal) }) ||
+                (finalValue instanceof String && finalValue.isNumber() && matchSet.any { it instanceof String && it.isNumber() && (it as BigDecimal) == (finalValue as BigDecimal) })
+            condition = (comparator == "eq") ? inSet : (finalValue != null && !inSet)
+        } else {
+            def num = _parseBigDecimalOrNull(finalValue)
+            if (num == null) {
+                condition = false   // null/non-numeric never satisfies a numeric comparator
+            } else if (comparator == "gt")      condition = num >  numericThreshold
+            else if (comparator == "gte")       condition = num >= numericThreshold
+            else if (comparator == "lt")        condition = num <  numericThreshold
+            else if (comparator == "lte")       condition = num <= numericThreshold
+            else /* between */                  condition = (num >= betweenLow && num <= betweenHigh)
+        }
+
+        // Debounce: converge only once the condition has held continuously for stableForMs.
+        // With stableForMs==0 this returns on the first poll the condition holds (today's
+        // behavior). conditionTrueSince anchors the start of the current contiguous run; any
+        // poll where the condition is false clears it so a flapping value restarts the window.
+        if (condition) {
+            if (conditionTrueSince == null) conditionTrueSince = now()
+            if ((now() - conditionTrueSince) >= stableForMs) {
+                return [
+                    success     : true,
+                    finalValue  : finalValue,
+                    elapsedMs   : elapsedMs,
+                    polledCount : polledCount,
+                    timedOut    : false
+                ]
+            }
+        } else {
+            conditionTrueSince = null
         }
 
         if (elapsedMs >= timeoutMs || polledCount >= maxPolls) {
@@ -2087,7 +2245,7 @@ Only query devices the user has mentioned or that are relevant to their request.
             name: "hub_get_device_attribute",
             description: """Get a device attribute's current value, or block-poll until it reaches an expected value.
 
-One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches (OR semantics), returning immediately on match or when timeoutMs elapses — a single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished).[[FLAT_TRIM]] Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.[[/FLAT_TRIM]]
+One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses — a single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished).[[FLAT_TRIM]] comparator controls the match: eq (default, in-set), ne (not in-set), gt/gte/lt/lte (numeric threshold via expectedValue), between (numeric inclusive range via expectedValues [low, high]). stableForMs requires the condition to hold continuously for that many ms before converging (debounce). Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.[[/FLAT_TRIM]]
 
 Only query devices the user has mentioned or that are relevant to their request.""",
             inputSchema: [
@@ -2095,8 +2253,10 @@ Only query devices the user has mentioned or that are relevant to their request.
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices"],
                     attribute: [type: "string", description: "Attribute name"],
-                    expectedValue: [type: "string", description: "If set, block-poll until currentValue equals this string. Enables poll mode.[[FLAT_TRIM]] At least one of expectedValue/expectedValues enables polling.[[/FLAT_TRIM]]"],
-                    expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue is any of these strings (OR with expectedValue). Enables poll mode."],
+                    expectedValue: [type: "string", description: "If set, block-poll until currentValue matches per comparator. Enables poll mode.[[FLAT_TRIM]] For eq/ne it is one of the in-set values; for gt/gte/lt/lte it is the single numeric threshold (e.g. \"72\"). At least one of expectedValue/expectedValues enables polling.[[/FLAT_TRIM]]"],
+                    expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue matches per comparator. Enables poll mode.[[FLAT_TRIM]] For eq/ne it is the value set (OR semantics, combined with expectedValue); for between it is exactly two numeric bounds [low, high].[[/FLAT_TRIM]]"],
+                    comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator. Default eq (value in the expected set).[[FLAT_TRIM]] ne = NOT in the set. gt/gte/lt/lte = numeric compare against expectedValue. between = numeric inclusive low<=value<=high from expectedValues (exactly 2). Numeric comparators never match a null/non-numeric value (keep polling).[[/FLAT_TRIM]]", default: "eq"],
+                    stableForMs: [type: "integer", description: "Debounce: the match must hold continuously for this many MILLISECONDS before converging. Default 0 (first match).[[FLAT_TRIM]] Must be < timeoutMs. A value that flaps out of the condition restarts the window.[[/FLAT_TRIM]]", default: 0, minimum: 0],
                     timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
                     pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
                 ],
@@ -2130,10 +2290,12 @@ If no exact device match: suggest similar devices and get user confirmation befo
                     deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match"],
                     command: [type: "string", description: "Command name, e.g. \"setLevel\". Must be one of the device's supported commands (see hub_get_device)."],
                     parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor. Omit for no-arg commands like on/off.[[FLAT_TRIM]] Each element is a string; numbers and JSON-object values are passed as strings (e.g. [\"{\\\"hue\\\":0,\\\"saturation\\\":100,\\\"level\\\":50}\"]) and coerced hub-side.[[/FLAT_TRIM]]", items: [type: "string"]],
-                    waitFor: [type: "object", description: "Optional: after firing the command, block-poll the device until an attribute reaches an expected value, so the response confirms the RESULTING state (and the `state` snapshot reflects the converged value). Omit for a fire-and-forget command with only the immediate pre-effect snapshot.[[FLAT_TRIM]] BLOCKS the request up to timeoutMs and queues concurrent MCP calls; reuses the hub_get_device_attribute poll engine.[[/FLAT_TRIM]]", properties: [
+                    waitFor: [type: "object", description: "Optional: after firing the command, block-poll the device until an attribute reaches an expected value, so the response confirms the RESULTING state (and the `state` snapshot reflects the converged value). Omit for a fire-and-forget command with only the immediate pre-effect snapshot.[[FLAT_TRIM]] comparator (eq/ne/gt/gte/lt/lte/between) and stableForMs (debounce) work as on hub_get_device_attribute. BLOCKS the request up to timeoutMs and queues concurrent MCP calls; reuses the hub_get_device_attribute poll engine.[[/FLAT_TRIM]]", properties: [
                         attribute: [type: "string", description: "Attribute to poll until it converges, e.g. \"switch\". Must be a supported attribute of the device."],
-                        expectedValue: [type: "string", description: "Block-poll until the attribute's current value equals this string. Provide exactly one of expectedValue or expectedValues."],
-                        expectedValues: [type: "array", items: [type: "string"], description: "Block-poll until the attribute's current value is any of these strings (OR semantics). Provide exactly one of expectedValue or expectedValues."],
+                        expectedValue: [type: "string", description: "Awaited value: eq/ne in-set, or gt/gte/lt/lte numeric threshold."],
+                        expectedValues: [type: "array", items: [type: "string"], description: "Awaited set: eq/ne value list (OR), or between's two bounds [low, high]."],
+                        comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator, as on hub_get_device_attribute. Default eq.", default: "eq"],
+                        stableForMs: [type: "integer", description: "Debounce ms; match must hold this long before converging. Default 0, < timeoutMs.", default: 0, minimum: 0],
                         timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 30000. Capped lower than hub_get_device_attribute's poll because this BLOCKS a hub thread for the full timeout.", default: 5000, minimum: 100, maximum: 30000],
                         pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250 (higher than hub_get_device_attribute's 200 because a post-command poll follows a write -- wider spacing reduces read contention), min 50, max 5000. Clamped to timeoutMs if larger.", default: 250, minimum: 50, maximum: 5000]
                     ], required: ["attribute"]]

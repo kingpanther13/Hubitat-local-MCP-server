@@ -203,6 +203,30 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_get_device_attribute` (poll mode) with `expectedValues=["on","off"], timeoutMs=2000`. Device is in one of those states by default, so returns `success: true, timedOut: false` on the first poll.
 
+### T07e — hub_get_device_attribute poll mode (numeric comparator)
+
+```json
+{
+  "setup_prompt": "Create a virtual temperature sensor called 'BAT Cmp Test' and set its temperature attribute to 73.",
+  "test_prompt": "Poll the temperature attribute of 'BAT Cmp Test' and wait until it is GREATER THAN 72 degrees, with a 3-second timeout. Report whether it succeeded and the final value.",
+  "teardown_prompt": "Delete the virtual device 'BAT Cmp Test'."
+}
+```
+
+**Expected**: Calls `hub_get_device_attribute` (poll mode) with `attribute=temperature, comparator="gt", expectedValue="72", timeoutMs=3000`. The sensor reads 73 (> 72), so returns `success: true, timedOut: false` with `finalValue` of 73. (Using `comparator="between"` would instead require `expectedValues=[low, high]`; mixing a numeric comparator with `expectedValues` is rejected with an invalid-params error.)
+
+### T07f — hub_call_device_command waitFor with debounce (stableForMs)
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT Debounce Test' and turn it off.",
+  "test_prompt": "Turn on 'BAT Debounce Test', and wait for the switch attribute to read 'on' and stay 'on' continuously for at least 500 milliseconds before confirming (use waitFor with stableForMs=500 and a 5-second timeout). Report whether it converged.",
+  "teardown_prompt": "Delete the virtual device 'BAT Debounce Test'."
+}
+```
+
+**Expected**: Calls `hub_call_device_command` with `command=on` and `waitFor={attribute:"switch", expectedValue:"on", stableForMs:500, timeoutMs:5000}`. A virtual switch holds `on` steadily, so the `waitFor` block reports `converged: true` after the 500ms stability window elapses (it does NOT converge on the very first matching poll). `stableForMs` must be less than `timeoutMs`; a `stableForMs >= timeoutMs` spec is rejected before the command fires.
+
 ### T08 — hub_get_custom_rule (list mode)
 
 ```json
@@ -2391,7 +2415,7 @@ All 105 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 251 test scenarios** (122 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace) plus 13 excluded destructive operations documented for manual testing
+**Total: 253 test scenarios** (122 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 2 read-side convergence) plus 13 excluded destructive operations documented for manual testing
 
 ---
 

@@ -1364,7 +1364,7 @@ class TestRunner:
             pass  # expected — server may return JSON-RPC error or tool error
 
     # -----------------------------------------------------------------------
-    # GROUP 3: virtual_device_lifecycle (4 tests)
+    # GROUP 3: virtual_device_lifecycle (5 tests)
     # -----------------------------------------------------------------------
 
     def _find_device_dni_by_label(self, label_substr: str) -> str | None:
@@ -1633,6 +1633,112 @@ class TestRunner:
                     })
                 except Exception as exc:
                     print(f"  [WARN] could not delete the waitFor switch ({wf_dni}): {exc}")
+
+    @test("virtual_device_lifecycle")
+    def test_poll_comparator_and_stable(self) -> None:
+        # Exercises the read-side convergence extensions on a real hub:
+        #   - numeric comparator (gt) on a dimmer's level via hub_get_device_attribute poll mode
+        #   - stableForMs (debounce) on a switch via the hub_call_device_command waitFor path
+        # Own throwaway Virtual Dimmer + reuse a throwaway switch; both cleaned up in finally.
+        dim_dni = ""
+        sw_dni = ""
+        sw_id = ""
+        try:
+            # --- numeric comparator on a dimmer ---
+            dr = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_virtual_device", {
+                    "action": "create", "deviceType": "Virtual Dimmer",
+                    "deviceLabel": f"{PREFIX}CmpDimmer", "confirm": True}),
+                lambda: self._find_device_dni_by_label(f"{PREFIX}CmpDimmer"),
+                "create comparator dimmer",
+            )
+            dim_id = ""
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}CmpDimmer"})
+            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                if f"{PREFIX}CmpDimmer" in (d.get("label") or d.get("name") or ""):
+                    dim_id = str(d.get("id"))
+                    dim_dni = str(d.get("deviceNetworkId") or d.get("dni") or "")
+                    break
+            if dim_dni:
+                self.created_device_dnis.append(dim_dni)
+            assert dim_id, "Failed to create the comparator dimmer"
+
+            # Drive level to 60 then poll for level > 50 (numeric gt). Use the waitFor on the
+            # command itself so the level has converged before we assert the comparator poll.
+            self.client.call_tool("hub_call_device_command", {
+                "deviceId": dim_id, "command": "setLevel", "parameters": ["60"],
+                "waitFor": {"attribute": "level", "comparator": "gte", "expectedValue": "60", "timeoutMs": 5000},
+            })
+            poll = self.client.call_tool("hub_get_device_attribute", {
+                "deviceId": dim_id, "attribute": "level",
+                "comparator": "gt", "expectedValue": "50", "timeoutMs": 5000,
+            })
+            assert isinstance(poll, dict), f"comparator poll unexpected response: {poll!r}"
+            if poll.get("success") is not True and self._limiter_logged(dim_id, method="setLevel"):
+                self._soft_passes.append(
+                    "virtual_device_lifecycle/test_poll_comparator_and_stable: limiter-proven "
+                    "(setLevel dispatched; platform throttled event delivery so the gt poll could not converge)")
+            else:
+                assert poll.get("success") is True, f"gt comparator should converge (level 60 > 50): {poll}"
+                assert poll.get("timedOut") is False, f"gt comparator should not time out: {poll}"
+
+            # A numeric comparator paired with expectedValues is rejected (invalid params).
+            try:
+                self.client.call_tool("hub_get_device_attribute", {
+                    "deviceId": dim_id, "attribute": "level",
+                    "comparator": "gt", "expectedValues": ["50"], "timeoutMs": 1000,
+                })
+                raise AssertionError("numeric comparator with expectedValues should have errored")
+            except (McpToolError, McpError):
+                pass
+
+            # --- stableForMs debounce on a switch ---
+            sw_id = self._create_virtual_switch_device(f"{PREFIX}StableSw")
+            assert sw_id, "Failed to create the stableForMs switch"
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}StableSw"})
+            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                if str(d.get("id")) == str(sw_id):
+                    sw_dni = str(d.get("deviceNetworkId") or d.get("dni") or "")
+                    break
+            if sw_dni:
+                self.created_device_dnis.append(sw_dni)
+
+            cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": sw_id, "attribute": "switch"})
+            start = cur.get("value") if isinstance(cur, dict) else None
+            target = "off" if start == "on" else "on"
+            cmd = self.client.call_tool("hub_call_device_command", {
+                "deviceId": sw_id, "command": target,
+                "waitFor": {"attribute": "switch", "expectedValue": target, "stableForMs": 300, "timeoutMs": 5000},
+            })
+            assert isinstance(cmd, dict), f"stableForMs command unexpected response: {cmd!r}"
+            wf = cmd.get("waitFor")
+            assert isinstance(wf, dict), f"waitFor result block missing: {cmd}"
+            if wf.get("converged") is not True and self._limiter_logged(sw_id, method=target):
+                self._soft_passes.append(
+                    "virtual_device_lifecycle/test_poll_comparator_and_stable: limiter-proven "
+                    "(command dispatched; platform throttled event delivery so the stableForMs waitFor could not converge)")
+            else:
+                assert wf.get("converged") is True, f"stableForMs waitFor should converge on a steady value: {wf}"
+                # The window must have elapsed: elapsedMs >= stableForMs on a clean convergence.
+                assert int(wf.get("elapsedMs", 0)) >= 300, f"stableForMs waitFor converged before the 300ms window: {wf}"
+
+            # stableForMs >= timeoutMs is rejected before the command fires.
+            try:
+                self.client.call_tool("hub_call_device_command", {
+                    "deviceId": sw_id, "command": target,
+                    "waitFor": {"attribute": "switch", "expectedValue": target, "stableForMs": 5000, "timeoutMs": 5000},
+                })
+                raise AssertionError("stableForMs >= timeoutMs should have errored")
+            except (McpToolError, McpError):
+                pass
+        finally:
+            for dni in (dim_dni, sw_dni):
+                if dni:
+                    try:
+                        self.client.call_tool("hub_manage_virtual_device", {
+                            "action": "delete", "deviceNetworkId": dni, "confirm": True})
+                    except Exception as exc:
+                        print(f"  [WARN] could not delete convergence test device ({dni}): {exc}")
 
     @test("virtual_device_lifecycle")
     def test_list_virtual_devices(self) -> None:
