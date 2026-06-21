@@ -10026,7 +10026,12 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
                     // Step 1: re-fetch STPage to discover the RM-assigned condition
                     // slot index (cIdx). The cond=a write above causes RM to allocate
                     // a new rCapab_<N>/rDev_<N>/... slot; N is firmware-assigned and
-                    // must be read from the schema rather than assumed.
+                    // must be read from the schema rather than assumed. The cond=a POST
+                    // echo does NOT reliably show the new slot for a 2nd+ condition (it
+                    // renders the committed-view "cond,doneST"); a FRESH GET does. Invalidate
+                    // so this discovery read bypasses the cached write-echo and re-fetches the
+                    // settled schema live -- this is a genuine re-fetch, not a redundant read.
+                    _rmCacheInvalidate(rmCache, appId)
                     def navResp = _rmFetchConfigJson(appId, "STPage", rmCache)
                     def stInputs = (navResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
                     def rCapabInput = stInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
