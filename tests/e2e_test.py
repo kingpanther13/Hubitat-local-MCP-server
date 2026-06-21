@@ -3224,6 +3224,53 @@ class TestRunner:
             self._delete_native(reject_app_id)
 
     @test("native_apps")
+    def test_set_rule_required_expression_multi_condition(self) -> None:
+        # hub_set_rule edit -> addRequiredExpression with TWO conditions joined by AND.
+        # Regression guard for the multi-condition gap-operator bug (root-caused 2026-06-21
+        # via the native RM wizard + claude-in-chrome): the `oper=AND` written BETWEEN the two
+        # conditions returns a POST echo that lags one render behind ([oper, doneST] instead of
+        # the settled [cond, doneST]); the request-scoped page cache stored that stale echo, so
+        # the 2nd condition's `cond=a` built its body from a schema missing `cond`, dropped the
+        # `cond.type=enum` sidecar, RM silently no-op'd the write, and the walker failed with
+        # "rCapab_<N> not in STPage schema after cond=a; got cond, doneST". Single-condition REs
+        # never hit this (no gap-oper), which is why the existing RE tests stayed green. This
+        # proves a 2-condition RE builds end-to-end on a live hub: BOTH condition slots allocate
+        # and the rule renders both conditions joined by AND.
+        dev_a, dev_b = self.get_test_temperature_ids()
+        app_id = self._create_native_rule("MultiCondRE")
+        try:
+            result = self._rm_call_soft({
+                "appId": app_id,
+                "addRequiredExpression": {
+                    "operator": "AND",
+                    "conditions": [
+                        {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">", "state": 70},
+                        {"capability": "Temperature", "deviceIds": [int(dev_b)], "comparator": "<", "state": 80},
+                    ],
+                },
+                "confirm": True,
+            }, strict=True)
+            assert result.get("success") is not False, \
+                f"multi-condition addRequiredExpression reported failure (the gap-oper cache regression): {result}"
+            # BOTH condition slots must have allocated -- before the fix the 2nd `cond=a` no-op'd,
+            # so the walker threw and only the first (or no) slot landed.
+            cidx = result.get("conditionIndices") or []
+            assert len(cidx) == 2, \
+                f"multi-condition RE did not allocate both condition slots (expected 2 conditionIndices): {result}"
+            self._assert_rule_healthy(app_id)
+            # The rule renders BOTH Temperature conditions joined by AND.
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id},
+            })
+            blob = str(cfg)
+            assert blob.lower().count("temperature of") >= 2, \
+                f"rule does not render both Temperature conditions: {blob[:600]}"
+            assert "AND" in blob, \
+                f"rule does not render the AND joining operator: {blob[:600]}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_action_mutations(self) -> None:
         # hub_set_rule edit -> addActions (bulk) + removeAction + clearActions +
         # replaceActions -- the index-bearing action-list mutations on one small rule.

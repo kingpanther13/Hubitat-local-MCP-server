@@ -1570,6 +1570,47 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.body["settings[cond]"]?.toString()?.contains("sub-expression") }
     }
 
+    def "STPage gap-oper write does not cache a stale POST echo, so the next cond=a still carries cond.type (multi-condition RE regression)"() {
+        // Regression gate for the multi-condition Required Expression failure (live-root-caused
+        // 2026-06-21 via the native RM wizard + claude-in-chrome). The gap `oper=AND` written
+        // between two RE conditions returns a POST echo that LAGS one render behind: it still
+        // shows the [oper, doneST] picker while the hub's SETTLED state has advanced to the
+        // [cond, doneST] new-element selector. The consume-POST cache cached that stale echo, so
+        // the next `cond=a` write read its schema from a page MISSING `cond`, _rmBuildSettingsBody
+        // omitted the `cond.type=enum` sidecar, and RM silently no-op'd the write -> the walker's
+        // discovery read threw "rCapab_<N> not in STPage schema after cond=a; got cond, doneST".
+        // Fix: _rmWriteSubPageField caches a POST echo ONLY when it advanced the page schema;
+        // a non-advancing echo invalidates the cache so the next read re-fetches the settled page.
+        // (Static-schema stubs like the cond=b test above can't catch this -- they return the same
+        // schema for every GET, so a stale-vs-settled divergence never arises.)
+        given:
+        def operPicker = [[name: "oper", type: "enum", options: ["": "Click to set", "AND": "AND"]], [name: "doneST", type: "button"]]
+        def condSelector = [[name: "cond", type: "enum", options: ["": "Click to set", "a": "--> New Condition"]], [name: "doneST", type: "button"]]
+        // GET is stateful: oper picker before the gap-oper write commits, settled cond selector after.
+        def settled = false
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            ruleConfigJson(100, "r", settled ? condSelector : operPicker)
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            // STALE echo: the oper write's response still shows the pre-transition [oper, doneST]...
+            def echo = ruleConfigJson(100, "r", operPicker)
+            settled = true  // ...while the hub's settled state has advanced for the next GET
+            [status: 200, location: null, data: echo]
+        }
+
+        when: "the gap oper=AND write commits, then the 2nd condition's cond=a write builds its body"
+        def cache = [:]
+        script._rmWriteSubPageField(100, "STPage", "mainPage", "name", 0, [unUsed: null], "oper", "AND", cache)
+        script._rmWriteSubPageField(100, "STPage", "mainPage", "name", 0, [unUsed: null], "cond", "a", cache)
+
+        then: "the cond=a body carries cond.type=enum (schema read from the settled page, not the stale echo)"
+        def condWrite = posts.reverse().find { it.body["settings[cond]"] == "a" }
+        condWrite != null
+        condWrite.body["cond.type"] == "enum"
+    }
+
     // ---------- ghost ifThen predCapabs clear (Step 4b) ----------
     //
     // After addRequiredExpression completes, RM's atomicState.predCapabs retains
