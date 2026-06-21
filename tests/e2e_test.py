@@ -3306,6 +3306,38 @@ class TestRunner:
             self._delete_native(sub_app_id)
 
     @test("native_apps")
+    def test_set_rule_action_after_required_expression(self) -> None:
+        # predCapabs-clearing guard for the ghost-ifThen (Step 4b of addRequiredExpression).
+        # RM leaves atomicState.predCapabs dirty after an RE commit; without the ghost-ifThen
+        # clear the NEXT non-expression action opens doActPage with that stale predCapabs and RM
+        # wraps the action under "IF (Broken Condition)". NO other e2e adds an action AFTER an RE,
+        # so the ghost-ifThen -- and the page-cache threading that optimizes it -- had no live
+        # guard: a silent predCapabs leak passes every other RE test (none add a trailing action).
+        # Build an RE, add a plain log action, and assert it lands as a top-level action, NOT a
+        # Broken-Condition wrap. strict=True so a relay 504 re-runs this small rule once.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("ActAfterRE")
+        try:
+            re_res = self._rm_call_soft({
+                "appId": app_id,
+                "addRequiredExpression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
+                "confirm": True,
+            }, strict=True)
+            assert re_res.get("success") is not False, \
+                f"addRequiredExpression reported failure: {re_res}"
+            # The action added AFTER the RE must NOT be wrapped under a Broken Condition IF --
+            # that wrap is exactly the stale-predCapabs symptom the ghost-ifThen clears.
+            self._add_action_or_raise_504(app_id, {"capability": "log", "message": "after-RE"})
+            self._assert_rule_healthy(app_id)
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id}})
+            assert "Broken Condition" not in str(cfg), \
+                f"ghost-ifThen failed to clear predCapabs -- the post-RE action is wrapped under IF(Broken Condition): {str(cfg)[:800]}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_action_mutations(self) -> None:
         # hub_set_rule edit -> addActions (bulk) + removeAction + clearActions +
         # replaceActions -- the index-bearing action-list mutations on one small rule.
