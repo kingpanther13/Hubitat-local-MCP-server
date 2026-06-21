@@ -4046,6 +4046,12 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     def beforeKeys = (schema?.keySet() ?: []) as Set
     def beforeValueStr = schema?."${key}"?.value?.toString()
     def beforeRenderHash = _rmSanitizeRenderForHash(cfg?.configPage?.sections).hashCode()
+    // [batchprobe] TEMP empirical test (remove after): is state_<N> ALREADY co-revealed with the
+    // comparator RelrDev_<N> for numeric caps? If yes, RelrDev+state can batch into ONE POST.
+    if (key?.startsWith("RelrDev_")) {
+        def probeN = key.substring("RelrDev_".length())
+        logDebug("[batchprobe] at ${key} write: state_${probeN} co-present? ${schema?.containsKey("state_${probeN}".toString())}; tier-keys=${schema?.keySet()?.findAll { it?.toString()?.endsWith("_${probeN}") }?.sort()}")
+    }
     def body = _rmBuildSettingsBody(appId, [(key): value], schema)
     // `cond` and `oper` are the condition-builder's enum pickers, and their type is known a priori.
     // The request-scoped page cache consumes each write's inline echo, but a submitOnChange echo for

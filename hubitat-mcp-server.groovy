@@ -4028,9 +4028,21 @@ def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = 
         }
     }
     def resp = hubInternalPostForm("/installedapp/btn", body)
-    // A button click (hasAll / updateRule / doneST / cancelCapab / editCond ...) re-renders the
-    // page and bumps app.version, so every cached page for this app is now stale.
-    _rmCacheInvalidate(cache, appId)
+    // A button click (hasAll / updateRule / doneST / cancelCapab / editCond ...) re-renders the page
+    // and bumps app.version. The classic submit returns that re-rendered {app, configPage} model inline
+    // (same shape _rmWriteSubPageField consumes from /installedapp/update/json), so SALVAGE it as the
+    // fresh cached page instead of blind-invalidating -- the next pre-fetch is then a HIT, not a forced
+    // re-GET. Key it by the page the echo ACTUALLY represents (configPage.name): a click can navigate
+    // (e.g. N -> doActPage), so the passed pageName isn't always the resulting page. _rmCacheStore clears
+    // every other (now-stale) page first, so this is as safe as the old blind invalidate; fall back to a
+    // full invalidate when the body isn't a parseable page model.
+    def parsedBtn = _rmPagePostResponse(resp)
+    def echoPage = parsedBtn?.configPage?.name?.toString()
+    if (parsedBtn != null && echoPage) {
+        _rmCacheStore(cache, appId, echoPage, parsedBtn)
+    } else {
+        _rmCacheInvalidate(cache, appId)
+    }
     if (resp?.status != null && resp.status >= 400) {
         throw new IllegalArgumentException("Button click '${buttonName}' on app ${appId} failed: status=${resp.status}")
     }
