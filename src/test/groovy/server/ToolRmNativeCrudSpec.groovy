@@ -1848,6 +1848,349 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !atomicStateMap.predClearPending?.get("100")
     }
 
+    // doActPage schema that serves BOTH the deferred ghost-ifThen clear AND a real log
+    // action's own writes off the same stub: the ghost needs actType.N=condActs +
+    // actSubType.N=getIfThen + actionCancel; the log action needs actType.N=messageActs +
+    // actSubType.N=getLogMsg + logmsg.N + actionDone. Incrementing paragraphs make every
+    // _rmWriteSettingOnPage observe a render shift so writes route applied (not skipped),
+    // but the seam test only asserts POST ORDER, so applied-vs-skipped is immaterial here.
+    private String doActPageGhostAndLogSchemaJson(int ruleId, int seqNum) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "doActPage", title: "T", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "actType.1", type: "enum",
+                              options: ["condActs": "Conditional Actions", "messageActs": "Messaging and Logging"]],
+                             [name: "actSubType.1", type: "enum",
+                              options: ["getIfThen": "IF Expression THEN", "getLogMsg": "Log a message"]],
+                             [name: "logmsg.1", type: "textarea"],
+                             [name: "actionCancel", type: "button"],
+                             [name: "actionDone", type: "button"]
+                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:],
+            childApps: []
+        ])
+    }
+
+    def "seam: _rmAddAction fires the deferred predCapabs clear at its entry (ghost POSTs precede the action's own writes; flag dropped)"() {
+        // TEST A. Pins the _rmAddAction entry seam (lib ~4295): a real (non-discover) addAction
+        // calls _rmRunPendingPredCapabsClear FIRST, so the deferred ghost ifThen sequence
+        // (condActs/getIfThen + actionCancel) lands on the wire BEFORE the action bakes its own
+        // doActPage writes (messageActs/getLogMsg), and the predClearPending flag is consumed.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageGhostAndLogSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        // A preceding addRequiredExpression flagged the rule (Step 4b deferral).
+        atomicStateMap.predClearPending = ["100": true]
+
+        when: "a real (non-discover) addAction runs while the rule is flagged"
+        script._rmAddAction(100, [capability: "log", message: "seam"])
+
+        then: "(a) the ghost clear's condActs/getIfThen + actionCancel land BEFORE the action's own messageActs write"
+        // Index of the ghost's distinctive getIfThen write (unique to _rmClearPredCapabsViaGhostIfThen).
+        def ghostGetIfThenIdx = posts.findIndexOf { it.path == "/installedapp/update/json" &&
+            it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        // Index of the ghost's actionCancel (NOT actionDone) -- the slot is discarded, never baked.
+        def ghostCancelIdx = posts.findIndexOf { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+        // Index of the ACTION's own actType write (messageActs is unique to the log action, not the ghost).
+        def actionTypeIdx = posts.findIndexOf { it.path == "/installedapp/update/json" &&
+            it.body?.any { k, v -> k?.toString()?.startsWith("settings[actType.") && v == "messageActs" } }
+
+        ghostGetIfThenIdx >= 0
+        ghostCancelIdx >= 0
+        actionTypeIdx >= 0
+        ghostGetIfThenIdx < actionTypeIdx
+        ghostCancelIdx < actionTypeIdx
+
+        and: "the ghost never bakes a slot of its own (no actionDone before the action's own writes)"
+        // The first actionDone in the stream, if any, belongs to the ACTION (its bake), never the ghost clear.
+        def firstActionDoneIdx = posts.findIndexOf { it.path == "/installedapp/btn" && it.body?.name == "actionDone" }
+        firstActionDoneIdx < 0 || firstActionDoneIdx > ghostCancelIdx
+
+        and: "(b) the predClearPending flag was consumed -- the deferred clear fires at most once"
+        !atomicStateMap.predClearPending?.get("100")
+    }
+
+    def "seam: _rmAddAction discover mode never touches the hub and leaves the deferred flag intact"() {
+        // TEST A, second case. The discover early-return (lib ~4288) sits ABOVE the
+        // _rmRunPendingPredCapabsClear call (~4295): a {discover:true} probe returns the static
+        // schema with ZERO hub POSTs and MUST NOT consume the pending flag -- a schema probe is
+        // not an action, so it can't be allowed to fire (or eat) the just-in-time clear.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        atomicStateMap.predClearPending = ["100": true]
+
+        when: "a discover-mode probe runs while the rule is flagged"
+        def schema = script._rmAddAction(100, [discover: true])
+
+        then: "discover returned a schema without issuing any hub POST"
+        schema != null
+        posts.isEmpty()
+
+        and: "the pending flag is untouched -- discover neither fires nor consumes the deferred clear"
+        atomicStateMap.predClearPending?.get("100") == true
+    }
+
+    def "seam: bulk addActions fires the deferred ghost clear exactly once (first add drops the flag, the rest short-circuit)"() {
+        // TEST A, third case. Two sequential _rmAddAction calls under one pending flag: the first
+        // add runs the ghost clear and consumes the flag; the second add's entry-call to
+        // _rmRunPendingPredCapabsClear sees no flag and short-circuits, so the ~9-round-trip ghost
+        // ifThen sequence fires EXACTLY ONCE across the whole bulk add (the lib ~4293 invariant).
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageGhostAndLogSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        atomicStateMap.predClearPending = ["100": true]
+
+        when: "two actions are added back-to-back (the bulk addActions shape: sequential _rmAddAction)"
+        script._rmAddAction(100, [capability: "log", message: "first"], true)
+        script._rmAddAction(100, [capability: "log", message: "second"], true)
+
+        then: "the ghost ifThen getIfThen write fired EXACTLY ONCE across both adds"
+        def ghostGetIfThenWrites = posts.count { it.path == "/installedapp/update/json" &&
+            it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        ghostGetIfThenWrites == 1
+
+        and: "the ghost actionCancel likewise fired exactly once (the clear is not re-run per action)"
+        posts.count { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" } == 1
+
+        and: "the flag is consumed after the first add"
+        !atomicStateMap.predClearPending?.get("100")
+    }
+
+    // ---------- cached cond=a echo: discovery read hits the request cache (no extra STPage GET) ----------
+
+    def "cached cond=a echo: the rCapab discovery read HITs the request cache, no extra STPage GET"() {
+        // TEST E (fuller walker variant). Guards lib ~10105: after the walker writes cond=a via
+        // _rmWriteSubPageField (plain-params path), the POST's inline page echo -- which carries the
+        // freshly-allocated rCapab_<N> slot -- is stored in the request cache via _rmCacheStore. The
+        // very next _rmFetchConfigJson(appId, "STPage", rmCache) that discovers the condition slot
+        // index (cIdx) MUST resolve off that cached echo, issuing NO additional live STPage GET. This
+        // is the round-trip win the PR depends on; a regression that invalidated the cond=a echo would
+        // re-fetch here and re-introduce a round-trip per condition.
+        //
+        // This is the FULLER walker variant requested: it drives the real cond=a write primitive
+        // (_rmWriteSubPageField, exactly as the STPage walker's writeST closure does) plus the real
+        // discovery read (_rmFetchConfigJson), so the cache contract is exercised end-to-end through
+        // production code rather than asserted directly on _rmCacheStore.
+        given:
+        enableWrite()
+        int getCount = 0
+        // The live STPage GET (cache MISS path). If the discovery read ever issues a live GET, this
+        // increments -- the negative assertion below catches it. rCapab_7 to prove cIdx parses off the echo.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            getCount++
+            ruleConfigJson(100, "r", [
+                [name: "cond", type: "enum", options: ["a": "New condition", "b": "( sub-expression"]],
+                [name: "rCapab_7", type: "enum", options: ["Switch", "Contact", "Motion"]],
+                [name: "doneST", type: "button"]
+            ])
+        }
+        // The cond=a write's inline POST echo: the SETTLED new-condition page carrying the allocated
+        // rCapab_7 slot. _rmWriteSubPageField stores this in the cache via _rmCacheStore, so the
+        // discovery read that follows is a HIT. (Same echo-construction idiom as the ~1573 sidecar test.)
+        def condAEchoPage = [
+            [name: "cond", type: "enum", options: ["a": "New condition", "b": "( sub-expression"]],
+            [name: "rCapab_7", type: "enum", options: ["Switch", "Contact", "Motion"]],
+            [name: "rDev_7", type: "capability.sensor", multiple: true],
+            [name: "doneST", type: "button"]
+        ]
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            // Inline page echo = the post-write re-rendered STPage carrying rCapab_7.
+            [status: 200, location: null, data: ruleConfigJson(100, "r", condAEchoPage)]
+        }
+
+        when: "the walker writes cond=a (plain-params STPage write, exactly as writeST does), then discovers cIdx"
+        def rmCache = [:]
+        // _rmWriteSubPageField with all-null hrefParams takes the plain-GET path and consumes the
+        // inline echo into the cache -- this is the production cond=a write primitive.
+        script._rmWriteSubPageField(100, "STPage", "mainPage", "name", 0, [unUsed: null], "cond", "a", rmCache)
+        int getsAfterCondWrite = getCount
+        // The discovery read (lib ~10105): resolves the rCapab_<N> slot off the cached cond=a echo.
+        def navResp = script._rmFetchConfigJson(100, "STPage", rmCache)
+        def stInputs = (navResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        def rCapabInput = stInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
+        def m = rCapabInput?.name?.toString() =~ /rCapab_(\d+)/
+        def cIdx = m ? ((m[0] as List)[1] as Integer) : null
+
+        then: "the discovery read did NOT issue an additional STPage GET (it HIT the cached cond=a echo)"
+        getCount == getsAfterCondWrite
+
+        and: "the cond=a write itself emitted its enum-type sidecar (forced, regardless of cached schema)"
+        def condWrite = posts.find { it.body["settings[cond]"] == "a" }
+        condWrite != null
+        condWrite.body["cond.type"] == "enum"
+
+        and: "the slot index resolved correctly off the cached echo (rCapab_7 -> cIdx 7)"
+        cIdx == 7
+    }
+
+    // ---------- deferred predCapabs clear: other firing seams (walkStep) + flag drops (restore, delete) ----------
+
+    def "walkStep mutating op on an action page fires the deferred predCapabs clear; reads + non-action pages do not"() {
+        // P2c. _rmWalkStep is a RAW action-authoring path that bypasses _rmAddAction (lib ~6843), so it
+        // carries its own copy of the just-in-time clear: a mutating op (write/click/navigate) on
+        // selectActions or doActPage (or a navigate whose targetPage is one of those) must fire the
+        // deferred ghost ifThen before the raw step lands, else an action authored here after an RE is
+        // wrapped in IF(**Broken Condition**). A read (introspect) lands no action -> no clear; a
+        // mutating op on a non-action page (e.g. selectTriggers) lands no ACTION -> no clear.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageGhostAndLogSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Switch"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "POSITIVE: a write on doActPage (an action page) runs while the rule is flagged"
+        atomicStateMap.predClearPending = ["100": true]
+        // The walkStep tail (raw doActPage write against a minimal schema) may no-op or throw after the
+        // entry-clear has already fired; we only assert the clear ran + flag dropped, so swallow the tail.
+        try {
+            script._rmWalkStep(100, [page: "doActPage", operation: "write", write: ["actType.1": "x"]])
+        } catch (Exception ignored) { /* tail write is immaterial; the entry-clear is what's under test */ }
+
+        then: "the deferred ghost ifThen clear fired (its getIfThen write + actionCancel are observable)"
+        posts.any { it.path == "/installedapp/update/json" &&
+                    it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+
+        and: "the predClearPending flag is dropped -- the clear fires at most once"
+        !atomicStateMap.predClearPending?.get("100")
+
+        when: "NEGATIVE (read): an introspect on doActPage runs while the rule is flagged"
+        posts.clear()
+        atomicStateMap.predClearPending = ["100": true]
+        try {
+            script._rmWalkStep(100, [page: "doActPage", operation: "introspect"])
+        } catch (Exception ignored) { }
+
+        then: "no ghost clear fired (a read lands no action) -- no getIfThen write, no actionCancel"
+        !posts.any { it.path == "/installedapp/update/json" &&
+                     it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+
+        and: "the flag is left intact -- a read must not consume the deferred clear"
+        atomicStateMap.predClearPending?.get("100") == true
+
+        when: "NEGATIVE (non-action page): a write on selectTriggers runs while the rule is flagged"
+        posts.clear()
+        atomicStateMap.predClearPending = ["100": true]
+        try {
+            script._rmWalkStep(100, [page: "selectTriggers", operation: "write", write: ["tCapab1": "Switch"]])
+        } catch (Exception ignored) { }
+
+        then: "no ghost clear fired (no action lands on a trigger page) -- no getIfThen write, no actionCancel"
+        !posts.any { it.path == "/installedapp/update/json" &&
+                     it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+
+        and: "the flag is left intact -- a non-action-page edit must not consume the deferred clear"
+        atomicStateMap.predClearPending?.get("100") == true
+    }
+
+    def "replaceRequiredExpression restore drops the deferred predCapabs-clear flag (null-backup early return)"() {
+        // D. _rmRestoreCommittedREFromBackup rolls back a failed new-RE build, so it drops any
+        // predClearPending the failed build flagged (lib ~10641, at the top before the fileName check):
+        // the restored rule's predCapabs comes from a clean backup, and a leftover flag would fire a
+        // wasted ghost clear on the rule's next addAction. The null-backup early-return path
+        // (fileName == null) reaches the drop and needs no hub stubs.
+        given:
+        enableWrite()
+        atomicStateMap.predClearPending = ["100": true]
+
+        when: "the restore runs with no usable backup handle (null fileName -> early return)"
+        def result = script._rmRestoreCommittedREFromBackup(100, [fileName: null], "boom")
+
+        then: "the restore reports the RE was NOT restored (no backup to restore from)"
+        result.requiredExpressionRestored == false
+
+        and: "the deferred predCapabs-clear flag is dropped -- the rolled-back build's flag is cleared"
+        !atomicStateMap.predClearPending?.get("100")
+    }
+
+    def "toolDeleteNativeApp force-delete drops the deferred predCapabs-clear flag"() {
+        // F. A deleted rule can't carry a deferred clear, so toolDeleteNativeApp drops the flag on a
+        // successful delete (both force and soft paths; lib ~12528/~12551) -- otherwise a later rule
+        // reusing the same appId would inherit a stale flag and fire a wasted ghost clear. Force path
+        // here (copies the existing force-delete spec's hubInternalGetRaw 302 stubbing).
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "to-delete") }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapps", data: ""]
+        }
+        atomicStateMap.predClearPending = ["100": true]
+
+        when: "the rule is force-deleted while flagged"
+        def result = script.toolDeleteNativeApp([appId: 100, confirm: true, force: true])
+
+        then: "the delete succeeded"
+        result.success == true
+
+        and: "the deferred predCapabs-clear flag is dropped -- the rule is gone, no stale flag survives"
+        !atomicStateMap.predClearPending?.get("100")
+    }
+
     def "addTrigger writes isCondTrig.<N>=false finalize for non-conditional triggers"() {
         given:
         enableWrite()
