@@ -6835,6 +6835,18 @@ private Map _rmWalkStep(Integer appId, Map spec) {
     def operation = spec?.operation?.toString()?.trim() ?: "introspect"
     def validateEnum = spec?.validateEnum == true
 
+    // walkStep is a RAW action-authoring path that bypasses _rmAddAction. If a preceding
+    // addRequiredExpression deferred its predCapabs clear (Step 4b), run it now -- before any
+    // action lands on selectActions/doActPage -- so an action authored here after an RE isn't
+    // wrapped in IF(**Broken Condition**). Mutating ops only (a read lands no action); the helper
+    // fires the ghost clear at most once, then drops the flag.
+    if (operation in ["write", "click", "navigate"]) {
+        def navTarget = (operation == "navigate" && spec?.navigate instanceof Map) ? ((Map) spec.navigate).targetPage?.toString() : null
+        if (page == "selectActions" || page == "doActPage" || navTarget == "selectActions" || navTarget == "doActPage") {
+            _rmRunPendingPredCapabsClear(appId)
+        }
+    }
+
     // hrefContext lets the LLM keep state alive across multiple walkStep
     // calls on a sub-page that needs `state.<paramKey>` set every request.
     // Verified live: periodic schedule's `state.n` only exists
@@ -8587,9 +8599,16 @@ private void _rmRunPendingPredCapabsClear(Integer appId) {
     } catch (Exception e) {
         mcpLog("warn", "rm-native", "addAction: deferred predCapabs clear (ghost ifThen) failed for app ${appId} (${e.message ?: e.toString()}) -- this action may render under IF(**Broken Condition**); verify rule render or restore backup if needed")
     }
+    _rmDropPredClearPending(appId)
+}
+
+// Drop a rule's deferred predCapabs-clear flag WITHOUT firing the clear -- used when the rule's
+// predCapabs goes clean by other means (a rolled-back RE build restored from a clean backup, or the
+// rule deleted), so a stale flag can't trigger a wasted ghost clear on a later addAction or linger
+// in atomicState after the rule is gone.
+private void _rmDropPredClearPending(Integer appId) {
     def m = atomicState.predClearPending ?: [:]
-    m.remove(appId.toString())
-    atomicState.predClearPending = m
+    if (m.remove(appId.toString()) != null) atomicState.predClearPending = m
 }
 
 // Low-level reveal-step primitive for RM 5.1 progressive-disclosure wizard pages.
@@ -10616,6 +10635,10 @@ private Map _rmFinalizeRequiredExpressionWrite(Integer appId, Map innerResult, M
 // - replay + read-back both confirm -> restored:true.
 // - restore threw -> restored:false, "DELETED ... auto-restore ALSO failed".
 private Map _rmRestoreCommittedREFromBackup(Integer appId, Map backup, String errMsg, Map carry = [:]) {
+    // A rollback discards the failed new-RE build, so drop any predClearPending it flagged: the
+    // restored rule's predCapabs comes from a clean backup, and a leftover flag would fire a wasted
+    // ghost clear on the rule's next addAction.
+    _rmDropPredClearPending(appId)
     if (backup?.fileName == null) {
         // No usable backup handle -- cannot auto-restore. Say so loudly; the old RE
         // is gone and the caller must recover by hand.
@@ -12502,6 +12525,7 @@ def toolDeleteNativeApp(args) {
     try {
         if (force) {
             _rmForceDeleteApp(appId)
+            _rmDropPredClearPending(appId)   // rule gone -> drop any deferred predCapabs-clear flag
             return [
                 success: true,
                 appId: appId,
@@ -12524,6 +12548,7 @@ def toolDeleteNativeApp(args) {
                     note: "Soft delete refused by hub. Pass force=true to override (app's children will also be removed)."
                 ]
             }
+            _rmDropPredClearPending(appId)   // rule gone -> drop any deferred predCapabs-clear flag
             return [
                 success: true,
                 appId: appId,
