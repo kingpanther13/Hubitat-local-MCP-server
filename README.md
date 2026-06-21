@@ -1608,6 +1608,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.7.4** - feat: hub_call_device_command: confirm the resulting device state (state snapshot + waitFor). PRs: [#300](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/300)
 - **v2.7.3** - fix: e2e-surfaced tool fixes (404 degrade, button-rule page, zigbee, watchdog jobs) + e2e runner/suite refactor. PRs: [#298](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/298)
 - **v2.7.2** - feat: rule-local variable write, list, and remove. PRs: [#294](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/294)
 - **v2.7.1** - feat: add hub_update_firmware to install pending hub firmware. PRs: [#297](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/297)
