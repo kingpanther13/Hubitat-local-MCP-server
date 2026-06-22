@@ -706,4 +706,4 @@ jobs:
 
       - name: Release test hub lease
         if: always() && steps.gate.outputs.available == 'true'
-        run: bash .github/scripts/lease_release.sh
+        run: bash .github/scripts/lease_release.sh "ci-run-${{ github.run_id }}"

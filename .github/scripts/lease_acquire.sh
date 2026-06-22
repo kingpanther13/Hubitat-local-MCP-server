@@ -66,9 +66,18 @@ mcp_call() {
 }
 
 get_lease_value() {
-  mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"tool":"hub_get_variable","args":{"name":"_TEST_HUB_LEASED_BY"}}}}' \
-    | jq -r '.result.content[0].text' \
-    | jq -r '.value // ""'
+  # Returns 0 + the lease value (which may legitimately be "" when released) ONLY for a
+  # well-formed tools/call result. A JSON-RPC ERROR envelope -- -32602 (the variable failed
+  # to resolve) or -32603 (internal error, which the main app emits while its class is being
+  # recompiled by ANOTHER run's deploy) -- carries `.error` and NO `.result.content`. The
+  # `jq -e` makes that case exit non-zero so the caller routes it to the read-fail/poll path
+  # and never claims. Without `-e`, a missing `.result.content[0].text` printed literal
+  # `null`, which `.value // ""` then collapsed to empty -> read as "released" -> a run
+  # claimed over a still-valid lease and double-booked the single hub. That is the bug.
+  local resp text
+  resp="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"tool":"hub_get_variable","args":{"name":"_TEST_HUB_LEASED_BY"}}}}')" || return 1
+  text="$(printf '%s' "$resp" | jq -e -r '.result.content[0].text')" || return 1
+  printf '%s' "$text" | jq -e -r '.value // ""' || return 1
 }
 
 set_lease_value() {
@@ -107,7 +116,20 @@ while :; do
   read_fail_since=""  # a successful read clears the unreachable streak
 
   if [ -z "$CURRENT" ]; then
-    break  # released
+    # One empty read must NEVER claim on its own. Even with the strict parse in
+    # get_lease_value, confirm "released" with a SECOND read before treating the hub as
+    # free -- mirroring the defensiveness the BUSY path already has for a malformed
+    # non-empty value (a single degraded read must not be enough to claim).
+    sleep "$VERIFY_SLEEP_S"
+    if ! CONFIRM="$(get_lease_value)"; then
+      echo "::notice::Lease read empty once but the confirm read failed; polling instead of claiming."
+      sleep "$LEASE_POLL_INTERVAL_S"
+      continue
+    fi
+    if [ -z "$CONFIRM" ]; then
+      break  # released (confirmed empty by two consecutive reads)
+    fi
+    CURRENT="$CONFIRM"  # a lease appeared between the two reads -- fall through to the BUSY parse below
   fi
 
   NOW_MS="$(now_ms)"
