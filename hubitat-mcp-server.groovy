@@ -1373,10 +1373,11 @@ def getGatewayConfig() {
         ],
         hub_manage_devices: [
             description: "Control and inspect devices: send commands, update a device, and swap/replace a device across all referencing apps, plus read-only inspection (list/get/attribute/events). Device reads are also in hub_read_devices.",
-            tools: ["hub_call_device_command", "hub_call_device_swap", "hub_update_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
+            tools: ["hub_call_device_command", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
             summaries: [
                 hub_call_device_command: "Send a command to a device (verify state after). Args: deviceId, command, parameters?, waitFor?",
                 hub_call_device_swap: "Replace a device across ALL apps/rules that reference it (built-in Swap Device tool). Args: from_device_id, to_device_id, confirm",
+                hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to new_device_id; list_options=true reads compatible candidates). Args: old_device_id, new_device_id?, list_options?, confirm",
                 hub_update_device: "Update a device's properties: label, name, room, deviceNetworkId, enabled (enable/disable), dataValues, preferences. Args: deviceId, label?, name?, room?, deviceNetworkId?, enabled?, dataValues?, preferences?",
                 hub_list_devices: "List devices with current states. Args: detailed?, filter, labelFilter?, capabilityFilter?, format, fields?, limit?, cursor?",
                 hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
@@ -1386,6 +1387,7 @@ def getGatewayConfig() {
             searchHints: [
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run",
                 hub_call_device_swap: "swap replace device migrate references substitute rewire apps rules everywhere retire failing hardware",
+                hub_call_device_replace: "replace device hardware failed dead broken re-point preserve keep id references rules dashboard compatible replacement candidates getReplacementOptions",
                 hub_update_device: "rename relabel move room device edit",
                 hub_list_devices: "show all devices switches lights sensors locks state inventory",
                 hub_get_device: "device detail capabilities attributes commands info inspect one",
@@ -2138,6 +2140,7 @@ def executeTool(toolName, args) {
         case "hub_get_device": return toolGetDevice(args.deviceId)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
+        case "hub_call_device_replace": return toolCallDeviceReplace(args)
         case "hub_list_device_events":
             // Recent-N for one device when no window/filter given; otherwise windowed
             // device history, per-app events (appId), or location-level events when

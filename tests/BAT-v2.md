@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split (11 flat core + 20 gateways = 31 on tools/list, 105 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split (11 flat core + 20 gateways = 31 on tools/list, 106 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2436,7 +2436,7 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 11 |
 | Gateways on `tools/list` | 20 |
 | Total visible on `tools/list` | 31 |
-| Total distinct tools in codebase | 105 |
+| Total distinct tools in codebase | 106 |
 
 **7 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
 
@@ -2446,7 +2446,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 ### Tool Coverage (non-destructive tools only)
 
-All 105 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 106 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -4029,6 +4029,22 @@ Tools in this section require **the Read master** and HPM itself must be install
 **Expected**: AI calls `hub_manage_devices(tool=hub_call_device_swap)` with `from_device_id`/`to_device_id`/`confirm=true` after previewing the blast radius with `hub_list_device_dependents`. The response is `success=true` with `swapped={from, to}`, `appsRewired>=1` (the rule referenced the source device before the swap), and `remainingDependents=0`. The dependents move: source device lists no apps afterwards, target device lists 'BAT Swap Rule', and the rule's `tDev` trigger setting now carries the target device ID. No orphaned "Swap Device" instance remains in the hub's Apps list (the transient instance closes itself or is closed by the tool).
 
 **Failure modes**: the tool refuses without `confirm` or a recent backup (expected gate — but the AI must then create the backup, not bypass). The eligibility error `"The hub's Swap Device tool does not offer device <id> as swappable."` (with `oldDevOptionCount`) — expected and correct if a fixture was created via `hub_manage_virtual_device` (child device, always ineligible; this is exactly how `tests/e2e_test.py` pins the error path) but a setup failure for THIS scenario, which requires free-standing devices. An incompatible-target error even though both devices are free-standing virtual switches of the same driver (the hub should offer the target as compatible). `success=true` but `hub_list_device_dependents` still lists the rule under the source device (the click did not commit). A leftover transient Swap Device instance in the Apps list after the call (cleanup contract broken). Swapping via manual rule edits (`hub_set_rule`) instead of `hub_call_device_swap` is a routing failure for this scenario.
+
+---
+
+### T703 — hub_call_device_replace: re-point a device onto replacement hardware, preserving its id
+
+```json
+{
+  "setup_prompt": "Make sure the Write master is on and a hub backup exists (<24h). Through the Hubitat UI (Devices > Add Device > Virtual, driver 'Virtual Switch') — NOT the MCP virtual-device tool, since MCP child devices are ineligible — add two compatible free-standing virtual switches named 'BAT Replace Keep' and 'BAT Replace Donor', and note both device IDs. Then set up a Rule Machine rule named 'BAT Replace Rule' that does something when 'BAT Replace Keep' turns on, so a real automation references that device.",
+  "test_prompt": "The device 'BAT Replace Keep' has failed and you've paired a compatible replacement, 'BAT Replace Donor', to the hub. Replace the failed device's hardware with the new unit while keeping the original device's identity and all of its automations intact — the original device should keep working as the same device, with 'BAT Replace Rule' still attached to it afterward. Check what the hub considers a compatible replacement before you commit, then confirm afterward that the original device still exists and its rule still references it.",
+  "teardown_prompt": "Remove the 'BAT Replace Rule' rule and delete the surviving 'BAT Replace Keep' device (now running on the replacement's hardware). The donor device is consumed by the operation; delete it too if it still appears."
+}
+```
+
+**Expected**: AI calls `hub_call_device_replace(list_options=true)` first to read the compatible candidates, then `hub_call_device_replace` with `old_device_id`/`new_device_id`/`confirm=true`. The response is `success=true` with `replaced={oldDeviceId, newDeviceId}` and `preservedDeviceId=<old id>`. The KEY invariant: the OLD device id survives and keeps all its app/rule references — `hub_list_device_dependents` on the old id still lists 'BAT Replace Rule' (replace re-points hardware; it does NOT migrate references like swap does).
+
+**Failure modes**: the tool refuses without `confirm` or a recent backup (expected gate — create the backup, don't bypass). `list_options` returns an empty list even though a compatible donor exists (the hub did not offer it — usually a fixture is an MCP child device or not capability-compatible; this scenario requires free-standing same-driver devices). A structured `success=false` naming an incompatible `new_device_id` (the donor was not in the hub's compatible set — re-read `list_options`). `preservedDeviceId` is the NEW id instead of the old one, or the rule's dependents move to the donor (that would be swap behaviour, not replace — a wire-format regression). Routing the request to `hub_call_device_swap` instead of `hub_call_device_replace` (swap migrates references onto the new id; replace keeps the old id — different end states).
 
 ---
 
