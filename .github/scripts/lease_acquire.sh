@@ -66,16 +66,22 @@ mcp_call() {
 }
 
 get_lease_value() {
-  # Returns 0 + the lease value (which may legitimately be "" when released) ONLY for a
-  # well-formed tools/call result. A JSON-RPC ERROR envelope -- -32602 (the variable failed
-  # to resolve) or -32603 (internal error, which the main app emits while its class is being
-  # recompiled by ANOTHER run's deploy) -- carries `.error` and NO `.result.content`. The
-  # `jq -e` makes that case exit non-zero so the caller routes it to the read-fail/poll path
-  # and never claims. Without `-e`, a missing `.result.content[0].text` printed literal
-  # `null`, which `.value // ""` then collapsed to empty -> read as "released" -> a run
-  # claimed over a still-valid lease and double-booked the single hub. That is the bug.
-  local resp text
+  # Prints the lease value (may be "" when released) + exit 0 for a well-formed tools/call
+  # result OR a "variable not found" error -- a FRESH hub where _TEST_HUB_LEASED_BY was never
+  # created reads as released, so the first claim can bootstrap it (the claim write
+  # auto-creates the var). Any OTHER non-result response exits non-zero so the caller polls
+  # (read-fail path) and never falsely claims: a -32603 the main app emits mid-recompile during
+  # another run's deploy, a transport failure, a non-JSON body. `jq -e` distinguishes a real
+  # result from an error envelope; without it a missing .result.content collapsed to "" and
+  # read as "released", double-booking the single hub.
+  local resp
   resp="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"tool":"hub_get_variable","args":{"name":"_TEST_HUB_LEASED_BY"}}}}')" || return 1
+  # "Variable not found" -> the lease var was never created -> released/free. (A transient
+  # not-found can't false-claim: the empty-break still requires a confirming second read.)
+  if printf '%s' "$resp" | jq -e '(.error.message // "") | test("not found"; "i")' >/dev/null 2>&1; then
+    return 0
+  fi
+  local text
   text="$(printf '%s' "$resp" | jq -e -r '.result.content[0].text')" || return 1
   printf '%s' "$text" | jq -e -r '.value // ""' || return 1
 }
@@ -116,10 +122,10 @@ while :; do
   read_fail_since=""  # a successful read clears the unreachable streak
 
   if [ -z "$CURRENT" ]; then
-    # One empty read must NEVER claim on its own. Even with the strict parse in
-    # get_lease_value, confirm "released" with a SECOND read before treating the hub as
-    # free -- mirroring the defensiveness the BUSY path already has for a malformed
-    # non-empty value (a single degraded read must not be enough to claim).
+    # A single empty read is already trustworthy now that get_lease_value strict-parses (a
+    # degraded response returns non-zero and polls, never a false-empty). This confirming read
+    # closes the remaining race: a lease WRITTEN between read1 and our claim. If one appears,
+    # fall through to the BUSY parse below instead of claiming over it.
     sleep "$VERIFY_SLEEP_S"
     if ! CONFIRM="$(get_lease_value)"; then
       echo "::notice::Lease read empty once but the confirm read failed; polling instead of claiming."
@@ -184,11 +190,17 @@ CLAIM_AS_STRING="$(printf '%s' "$CLAIM_JSON" | jq -Rs .)"
 
 set_lease_value "$CLAIM_AS_STRING"
 
-# Post-write race-check: re-read after a short delay. If "by" isn't us,
-# someone else's claim landed last and stole the lease — abort.
+# Post-write race-check: re-read after a short delay. If "by" isn't us, someone else's claim
+# landed last and stole the lease — abort. Ride out a lone transient read failure here the way
+# the wait loop does (one retry) so a blip in this 2s window doesn't fail a claim that actually
+# landed; a sustained failure still aborts safely (the 30-min TTL bounds the lease we wrote).
 sleep "$VERIFY_SLEEP_S"
-AFTER="$(get_lease_value)"
-AFTER_BY="$(echo "$AFTER" | jq -r '.by // ""' 2>/dev/null || echo "")"
+if ! AFTER="$(get_lease_value)"; then
+  echo "::warning::Post-write verify read failed transiently; re-reading once."
+  sleep "$VERIFY_SLEEP_S"
+  AFTER="$(get_lease_value)" || { echo "::error::Could not re-read the lease to verify our claim after writing; aborting (the 30-min TTL bounds the lease we wrote)."; exit 1; }
+fi
+AFTER_BY="$(printf '%s' "$AFTER" | jq -r '.by // ""' 2>/dev/null || echo "")"
 
 if [ "$AFTER_BY" != "$BY" ]; then
   echo "::error::Lease stolen by '$AFTER_BY' before our verify check. Aborting."
