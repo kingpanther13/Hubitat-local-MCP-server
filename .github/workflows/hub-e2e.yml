@@ -88,7 +88,7 @@ permissions:
   # the POST 403s ("Resource not accessible by integration") and the gate can never report.
   statuses: write
 
-# New-commit-cancel, per branch: a fresh push / label add / dispatch on a branch cancels the older
+# New-commit-cancel, per branch: a fresh push / reopen / dispatch on a branch cancels the older
 # in-flight run for that SAME branch, and its replacement re-queues at the BACK of the e2e job's
 # FIFO group. Per-branch (head-repo + head_ref) so two forks reusing a branch name don't cancel
 # each other, and an unapproved fork PR only ever holds ITS OWN branch's group -- never the shared
@@ -97,15 +97,58 @@ permissions:
 # Cancelling mid-run is safe: the e2e job's disarm/restore + lease-release steps are `if: always()`
 # (so a cancel still frees the hub), and a hard kill is backstopped by the dead-man watchdog's
 # deadline restore plus the 30-min lease TTL.
+# cancel-in-progress is OFF for a LABEL event (labeled/unlabeled): a label must never cancel an
+# in-flight run, or a redundant full-run label (a 2nd release:*/e2e:full added while a full run is
+# live) would KILL that run and then skip (see the lane-gate job below) -- losing it. On a label the
+# replacement instead QUEUES in this per-branch group behind the in-flight run; the lane-gate then
+# decides whether it does anything. A real commit/reopen/dispatch still cancels-and-supersedes.
 concurrency:
   group: hub-e2e-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'pull_request_target' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') }}
 
 jobs:
   # The hub-less self-deploy recovery guard (issue #237) is NOT here: running untrusted
   # PR code in this privileged pull_request_target workflow is a cache-poisoning vector,
   # so it lives in the unprivileged self-deploy-recovery.yml (pull_request) instead --
   # it needs no secret and no hub, and runs on every PR there in a safe context.
+
+  # Lane-change gate. A LABEL event (labeled/unlabeled) re-runs e2e ONLY when it actually flips the
+  # lane (focused <-> full). Adding a 2nd full-run label (release:patch|minor|major|e2e:full) when
+  # the PR is ALREADY full, or removing one while another remains, leaves the lane unchanged -- the
+  # prior run's result still stands, so this run skips (no redundant re-deploy). The FIRST full-run
+  # label (focused->full) and removing the LAST one (full->focused) DO re-run, as does every
+  # non-label event (opened/synchronize/reopened/dispatch). `approve` (and thus `e2e`/`probe`) gate
+  # on this output; on a skip every job is skipped and the prior posted gate status is untouched.
+  lane-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - id: decide
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const FULL = ['release:patch', 'release:minor', 'release:major', 'e2e:full'];
+            const action = context.payload.action;
+            // Non-label events (opened/synchronize/reopened/dispatch) always run.
+            if (context.eventName !== 'pull_request_target' || (action !== 'labeled' && action !== 'unlabeled')) {
+              core.setOutput('run', 'true');
+              return;
+            }
+            // Normalize the label set so the decision doesn't hinge on whether the webhook's
+            // pull_request.labels already reflects this event: force the event label IN for
+            // `labeled`, OUT for `unlabeled`.
+            const evLabel = context.payload.label && context.payload.label.name;
+            let labels = (context.payload.pull_request.labels || []).map(l => l.name);
+            if (action === 'labeled' && evLabel && !labels.includes(evLabel)) labels.push(evLabel);
+            if (action === 'unlabeled') labels = labels.filter(l => l !== evLabel);
+            const fullCount = labels.filter(l => FULL.includes(l)).length;
+            const evIsFull = FULL.includes(evLabel);
+            // Lane flips only when this label is the FIRST full label (labeled -> fullCount 1) or
+            // the LAST one removed (unlabeled -> fullCount 0). Otherwise the lane is unchanged.
+            const run = evIsFull && fullCount === (action === 'labeled' ? 1 : 0);
+            core.info(`lane-gate: action=${action} evLabel=${evLabel} evIsFull=${evIsFull} fullCount=${fullCount} -> run=${run}`);
+            core.setOutput('run', run ? 'true' : 'false');
 
   # Approval gate. The environment NAME is chosen from the PR author's relationship to
   # the repo:
@@ -125,6 +168,8 @@ jobs:
   # hub for trusted runs -- it's only in the workflow-level per-branch group, which is isolated per
   # branch. e2e starts only once this job succeeds (`needs`).
   approve:
+    needs: [lane-gate]
+    if: needs.lane-gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     environment:
       name: ${{ (github.event_name == 'workflow_dispatch' || github.event.pull_request.author_association == 'OWNER' || github.event.pull_request.author_association == 'MEMBER' || github.event.pull_request.author_association == 'COLLABORATOR' || github.event.pull_request.user.login == 'level99' || github.event.pull_request.user.login == 'kingpanther13') && 'e2e-auto' || 'e2e-approval' }}
@@ -216,8 +261,8 @@ jobs:
     # SEPARATE posted commit status named "Full e2e (runs with label)" (see TWO-LANE FLOW at top + the
     # "Post e2e gate status" step). Branch protection requires "Full e2e (runs with label)", NOT "e2e (run)".
     name: e2e (run)
-    needs: [approve]
-    if: inputs.probe_only != 'true'
+    needs: [lane-gate, approve]
+    if: inputs.probe_only != 'true' && needs.lane-gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     # Bounds the EXECUTING job. Cross-PR queueing happens BEFORE this clock starts (a run waits its
     # turn in the hub-e2e-serialized concurrency group, and behind the approve gate, both in
