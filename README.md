@@ -1608,6 +1608,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.7.6** - chore: clarify the hub-var refresh-failure log message; build(deps): bump actions/checkout from 6 to 7 in the github-actions group ([#304](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/304), @app/dependabot); feat: comparator + stableForMs read-side convergence (hub_get_device_attribute + waitFor). PRs: [#302](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/302), [#304](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/304), [#303](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/303)
 - **v2.7.5** - perf: cut RM condition-build hub round-trips + two-lane e2e CI (closes #237). PRs: [#301](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/301)
 - **v2.7.4** - feat: hub_call_device_command: confirm the resulting device state (state snapshot + waitFor). PRs: [#300](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/300)
 - **v2.7.3** - fix: e2e-surfaced tool fixes (404 degrade, button-rule page, zigbee, watchdog jobs) + e2e runner/suite refactor. PRs: [#298](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/298)
