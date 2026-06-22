@@ -213,7 +213,31 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_get_device_attribute` (poll mode) with `attribute=temperature, comparator="gt", expectedValue="72", timeoutMs=3000`. The sensor reads 73 (> 72), so returns `success: true, timedOut: false` with `finalValue` of 73. (Using `comparator="between"` would instead require `expectedValues=[low, high]`; mixing a numeric comparator with `expectedValues` is rejected with an invalid-params error.)
+**Expected**: Calls `hub_get_device_attribute` (poll mode) with `attribute=temperature, comparator="gt", expectedValue="72", timeoutMs=3000`. The sensor reads 73 (> 72), so returns `success: true, timedOut: false` with `finalValue` of 73. (Using `comparator="between"` would instead require `expectedValues=[low, high]`; mixing a numeric comparator with `expectedValues` is rejected with an invalid-params error. A numeric comparator on a NON-numeric attribute, e.g. `gt` on a switch, times out with `nonNumericAttribute: true`.)
+
+### T07g — hub_get_device_attribute poll mode (between range)
+
+```json
+{
+  "setup_prompt": "Create a virtual temperature sensor called 'BAT Between Test' and set its temperature attribute to 70.",
+  "test_prompt": "Poll the temperature attribute of 'BAT Between Test' and wait until it is BETWEEN 68 and 72 degrees inclusive, with a 3-second timeout. Report whether it succeeded and the final value.",
+  "teardown_prompt": "Delete the virtual device 'BAT Between Test'."
+}
+```
+
+**Expected**: Calls `hub_get_device_attribute` (poll mode) with `attribute=temperature, comparator="between", expectedValues=["68","72"], timeoutMs=3000`. The sensor reads 70 (inside the inclusive range), so returns `success: true, timedOut: false` with `finalValue` of 70. (`between` takes exactly two numeric bounds via `expectedValues` and rejects `expectedValue`.)
+
+### T07h — hub_get_device_attribute poll mode (ne leaves a set)
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT NE Test' and turn it on.",
+  "test_prompt": "Poll the switch attribute of 'BAT NE Test' waiting for it to be NOT 'off' (use comparator ne, expectedValue 'off', a 3-second timeout). Report whether it succeeded and the final value.",
+  "teardown_prompt": "Delete the virtual device 'BAT NE Test'."
+}
+```
+
+**Expected**: Calls `hub_get_device_attribute` (poll mode) with `attribute=switch, comparator="ne", expectedValue="off", timeoutMs=3000`. The switch reads `on` (not in the set), so `ne` converges immediately: `success: true, timedOut: false` with `finalValue` of `on`. (A null/never-reported value does NOT satisfy `ne`.)
 
 ### T07f — hub_call_device_command waitFor with debounce (stableForMs)
 
@@ -2415,7 +2439,7 @@ All 105 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 253 test scenarios** (122 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 2 read-side convergence) plus 13 excluded destructive operations documented for manual testing
+**Total: 255 test scenarios** (122 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 4 read-side convergence) plus 13 excluded destructive operations documented for manual testing
 
 ---
 

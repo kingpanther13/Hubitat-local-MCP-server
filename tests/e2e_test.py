@@ -1698,6 +1698,20 @@ class TestRunner:
             except (McpToolError, McpError):
                 pass
 
+            # between: level is at 60 (driven above), so a [50,70] inclusive range converges.
+            bpoll = self.client.call_tool("hub_get_device_attribute", {
+                "deviceId": dim_id, "attribute": "level",
+                "comparator": "between", "expectedValues": ["50", "70"], "timeoutMs": 5000,
+            })
+            assert isinstance(bpoll, dict), f"between poll unexpected response: {bpoll!r}"
+            if bpoll.get("success") is not True and self._limiter_logged(dim_id, method="setLevel"):
+                self._soft_passes.append(
+                    "virtual_device_lifecycle/test_poll_comparator_and_stable: limiter-proven "
+                    "(between: setLevel dispatched; platform throttled event delivery)")
+            else:
+                assert bpoll.get("success") is True, f"between [50,70] should converge for level 60: {bpoll}"
+                assert bpoll.get("timedOut") is False, f"between should not time out: {bpoll}"
+
             # --- stableForMs debounce on a switch ---
             sw_id = self._create_virtual_switch_device(f"{PREFIX}StableSw")
             assert sw_id, "Failed to create the stableForMs switch"
@@ -1737,6 +1751,25 @@ class TestRunner:
                 raise AssertionError("stableForMs >= timeoutMs should have errored")
             except (McpToolError, McpError):
                 pass
+
+            # ne: the switch is at `target`; flip it back to `start` and ne-poll for "not target",
+            # which converges once the value leaves the set. Drive the flip with a command waitFor
+            # so the value has settled at `start` before the ne poll asserts.
+            other = "off" if target == "on" else "on"   # == start (the pre-flip value)
+            nepoll = self.client.call_tool("hub_call_device_command", {
+                "deviceId": sw_id, "command": other,
+                "waitFor": {"attribute": "switch", "comparator": "ne", "expectedValue": target, "timeoutMs": 5000},
+            })
+            assert isinstance(nepoll, dict), f"ne command unexpected response: {nepoll!r}"
+            nwf = nepoll.get("waitFor")
+            assert isinstance(nwf, dict), f"ne waitFor result block missing: {nepoll}"
+            if nwf.get("converged") is not True and self._limiter_logged(sw_id, method=other):
+                self._soft_passes.append(
+                    "virtual_device_lifecycle/test_poll_comparator_and_stable: limiter-proven "
+                    "(ne: command dispatched; platform throttled event delivery)")
+            else:
+                assert nwf.get("converged") is True, f"ne should converge once switch leaves '{target}': {nwf}"
+                assert nwf.get("finalValue") == other, f"ne finalValue should be the new value '{other}': {nwf}"
         finally:
             for dni in (dim_dni, sw_dni):
                 if dni:

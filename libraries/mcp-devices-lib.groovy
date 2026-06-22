@@ -525,6 +525,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null) {
             if (poll.timedOut == true)      waitForBlock.timedOut = true
             if (poll.interrupted == true)   waitForBlock.interrupted = true
             if (poll.neverReported == true) waitForBlock.neverReported = true
+            if (poll.nonNumericAttribute == true) waitForBlock.nonNumericAttribute = true
             // transitioning is present on the timeout path as true OR false (both meaningful),
             // so copy it whenever the engine emitted the key -- not only when true.
             if (poll.containsKey("transitioning")) waitForBlock.transitioning = poll.transitioning
@@ -952,6 +953,13 @@ def toolPollUntilAttribute(args) {
     }
     def hasExpectedValue  = (args.expectedValue  != null)
     def hasExpectedValues = (args.expectedValues != null)
+    // Exactly one of the two, matching _buildWaitForPollArgs (the waitFor pre-fire path): a
+    // numeric comparator takes only expectedValue, between takes only expectedValues, and
+    // eq/ne take one or the other (a single value, or a set) -- never both at once. The two
+    // validators are kept identical so a spec valid on one path is valid on the other.
+    if (hasExpectedValue && hasExpectedValues) {
+        throw new IllegalArgumentException("provide exactly one of expectedValue or expectedValues, not both")
+    }
     if (!hasExpectedValue && !hasExpectedValues) {
         throw new IllegalArgumentException("At least one of expectedValue or expectedValues must be provided")
     }
@@ -1070,7 +1078,9 @@ def toolPollUntilAttribute(args) {
         throw new IllegalArgumentException("stableForMs (${stableForMs}) must be less than timeoutMs (${timeoutMs}) -- the condition could never hold long enough to converge")
     }
 
-    // 6. Build the expected-value set for match checking (OR semantics, eq/ne comparators only)
+    // 6. Build the expected-value set for match checking (eq/ne comparators only). Exactly one
+    //    of the two is present (enforced above), so this populates from whichever was supplied;
+    //    a multi-element expectedValues set is OR (match any member).
     def matchSet = [] as Set
     if (hasExpectedValue)  matchSet << args.expectedValue
     if (hasExpectedValues) matchSet.addAll(args.expectedValues)
@@ -1098,10 +1108,17 @@ def toolPollUntilAttribute(args) {
     // intermediate reads transitioning:false even though the device is physically still settling.
     def sawChange      = false
     def lastNonNull    = null
+    // Track whether any poll under a NUMERIC comparator parsed the attribute to a number.
+    // If the attribute reported a value the whole window but it never parsed numeric, the
+    // comparator can NEVER match it (e.g. gt 5 on switch="on") -- a distinct timeout cause
+    // from "reported numbers but never crossed the threshold." Surfaced as nonNumericAttribute
+    // on the timeout return. Only meaningful for the numeric comparators.
+    def sawNumeric     = false
     // Debounce tracking: the poll-clock time the match condition first became true in the
     // current contiguous run. Reset to null on any poll where the condition is false, so a
-    // value that flaps out of range restarts the stability window. null when stableForMs==0
-    // (no debounce) or when the condition is not currently held.
+    // value that flaps out of range restarts the stability window. null while the condition is
+    // not currently held; once held it is set even when stableForMs==0 (it is set, then the
+    // >= stableForMs check is immediately satisfied on that same poll, so the engine converges).
     def conditionTrueSince = null
 
     while (true) {
@@ -1137,7 +1154,8 @@ def toolPollUntilAttribute(args) {
         if (comparator == "eq" || comparator == "ne") {
             // String match first; numeric fallback handles BigDecimal/Double "50.0" vs "50"
             // in both directions (Number attribute vs String expectedValue, and String "50.0"
-            // attribute that some drivers report for a numeric-typed value).
+            // attribute that some drivers report for a numeric-typed value). inSet feeds BOTH
+            // eq (matched when in-set) and ne (matched when a non-null value is NOT in-set).
             def inSet = matchSet.contains(finalValue?.toString()) ||
                 (finalValue instanceof Number && matchSet.any { it instanceof String && it.isNumber() && (it as BigDecimal) == (finalValue as BigDecimal) }) ||
                 (finalValue instanceof String && finalValue.isNumber() && matchSet.any { it instanceof String && it.isNumber() && (it as BigDecimal) == (finalValue as BigDecimal) })
@@ -1146,11 +1164,14 @@ def toolPollUntilAttribute(args) {
             def num = _parseBigDecimalOrNull(finalValue)
             if (num == null) {
                 condition = false   // null/non-numeric never satisfies a numeric comparator
-            } else if (comparator == "gt")      condition = num >  numericThreshold
-            else if (comparator == "gte")       condition = num >= numericThreshold
-            else if (comparator == "lt")        condition = num <  numericThreshold
-            else if (comparator == "lte")       condition = num <= numericThreshold
-            else /* between */                  condition = (num >= betweenLow && num <= betweenHigh)
+            } else {
+                sawNumeric = true   // the attribute parsed numeric at least once this window
+                if (comparator == "gt")        condition = num >  numericThreshold
+                else if (comparator == "gte")  condition = num >= numericThreshold
+                else if (comparator == "lt")   condition = num <  numericThreshold
+                else if (comparator == "lte")  condition = num <= numericThreshold
+                else /* between */             condition = (num >= betweenLow && num <= betweenHigh)
+            }
         }
 
         // Debounce: converge only once the condition has held continuously for stableForMs.
@@ -1188,6 +1209,14 @@ def toolPollUntilAttribute(args) {
             // Attribute exists in supportedAttributes but never reported a value during
             // the entire poll window -- driver has not yet emitted a reading.
             if (!everNonNull) response.neverReported = true
+            // Numeric comparator on an attribute that DID report but never parsed numeric:
+            // the comparator can never match it (e.g. gt 5 on switch="on"). Distinct from
+            // neverReported (a numeric comparator on a never-reported attribute is neverReported,
+            // not this) -- the everNonNull && !sawNumeric pair separates the two causes.
+            if (comparator != "eq" && comparator != "ne" && everNonNull && !sawNumeric) {
+                response.nonNumericAttribute = true
+                response.note = "comparator '${comparator}' can never match attribute '${args.attribute}' -- it reported a non-numeric value the whole window (use eq/ne for a string attribute)".toString()
+            }
             return response
         }
 
@@ -2255,8 +2284,8 @@ Only query devices the user has mentioned or that are relevant to their request.
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices"],
                     attribute: [type: "string", description: "Attribute name"],
-                    expectedValue: [type: "string", description: "If set, block-poll until currentValue matches per comparator. Enables poll mode.[[FLAT_TRIM]] For eq/ne it is one of the in-set values; for gt/gte/lt/lte it is the single numeric threshold (e.g. \"72\"). At least one of expectedValue/expectedValues enables polling.[[/FLAT_TRIM]]"],
-                    expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue matches per comparator. Enables poll mode.[[FLAT_TRIM]] For eq/ne it is the value set (OR semantics, combined with expectedValue); for between it is exactly two numeric bounds [low, high].[[/FLAT_TRIM]]"],
+                    expectedValue: [type: "string", description: "If set, block-poll until currentValue matches per comparator. Enables poll mode.[[FLAT_TRIM]] For eq/ne it is one of the in-set values; for gt/gte/lt/lte it is the single numeric threshold (e.g. \"72\"). Provide exactly ONE of expectedValue or expectedValues, not both.[[/FLAT_TRIM]]"],
+                    expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue matches per comparator. Enables poll mode.[[FLAT_TRIM]] For eq/ne it is the value set (OR semantics -- match any member); for between it is exactly two numeric bounds [low, high]. Provide exactly ONE of expectedValue or expectedValues, not both.[[/FLAT_TRIM]]"],
                     comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator. Default eq (value in the expected set).[[FLAT_TRIM]] ne = NOT in the set. gt/gte/lt/lte = numeric compare against expectedValue. between = numeric inclusive low<=value<=high from expectedValues (exactly 2). Numeric comparators never match a null/non-numeric value (keep polling).[[/FLAT_TRIM]]", default: "eq"],
                     stableForMs: [type: "integer", description: "Debounce: the match must hold continuously for this many MILLISECONDS before converging. Default 0 (first match).[[FLAT_TRIM]] Must be < timeoutMs. A value that flaps out of the condition restarts the window.[[/FLAT_TRIM]]", default: 0, minimum: 0],
                     timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
@@ -2276,6 +2305,7 @@ Only query devices the user has mentioned or that are relevant to their request.
                     polledCount: [type: "integer", description: "Poll mode: number of reads performed"],
                     timedOut: [type: "boolean", description: "Poll mode: true if the timeout elapsed without a match"],
                     neverReported: [type: "boolean", description: "Poll mode: present and true if the attribute never reported a value in the window"],
+                    nonNumericAttribute: [type: "boolean", description: "Poll mode, TIMEOUT only: present and true when a numeric comparator (gt/gte/lt/lte/between) was used on an attribute that reported a non-numeric value the whole window, so the comparator can never match it (e.g. gt on switch=\"on\"). Distinct from neverReported. Use eq/ne for a string attribute."],
                     interrupted: [type: "boolean", description: "Poll mode: present and true if the poll was interrupted (hub reload)"],
                     transitioning: [type: "boolean", description: "Poll mode, TIMEOUT only: true if the value was still changing across polls (>=2 distinct non-null values seen) -- the device is likely still settling -- vs false for a stable non-target (a real mismatch). Best-effort: only reliable when the timeout spans a reporting jump."]
                 ]
@@ -2326,6 +2356,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         timedOut   : [type: "boolean", description: "Present and true if the poll timed out without a match"],
                         interrupted: [type: "boolean", description: "Present and true if the poll was interrupted (hub reload)"],
                         neverReported: [type: "boolean", description: "Present and true if the attribute never reported a value during the poll window"],
+                        nonNumericAttribute: [type: "boolean", description: "Present and true on a TIMEOUT when a numeric comparator (gt/gte/lt/lte/between) was used on an attribute that reported a non-numeric value the whole window, so it can never match (use eq/ne for a string attribute). Distinct from neverReported."],
                         transitioning: [type: "boolean", description: "Present only on a TIMEOUT: true if the value was still changing across polls (>=2 distinct non-null values seen) so the device is likely still settling, vs false for a stable non-target (a real mismatch). Best-effort: only reliable when the timeout spans a reporting jump."],
                         error      : [type: "string", description: "Present only if the poll loop threw after the command fired; the command still succeeded"]
                     ]]

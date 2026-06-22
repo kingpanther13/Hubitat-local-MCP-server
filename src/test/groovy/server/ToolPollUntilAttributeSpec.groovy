@@ -12,7 +12,7 @@ import support.ToolSpecBase
  *  - Timeout path (value never matches)
  *  - expectedValues (list) match
  *  - expectedValues (list) no match -> timeout
- *  - Both expectedValue and expectedValues set (OR semantics)
+ *  - Both expectedValue and expectedValues set -> throws (exactly-one, matches the waitFor path)
  *  - Both null -> throws
  *  - Empty expectedValues list -> throws (B1)
  *  - Empty string expectedValue -> throws (W1)
@@ -202,55 +202,33 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     }
 
     // ---------------------------------------------------------------------------
-    // 6. Both expectedValue AND expectedValues set -- OR semantics
+    // 6. Both expectedValue AND expectedValues set -> rejected (exactly-one semantics,
+    //    matching the waitFor pre-fire path; the two validators are kept identical).
     // ---------------------------------------------------------------------------
 
-    def "succeeds when currentValue matches expectedValue even though expectedValues does not contain it"() {
+    def "throws when BOTH expectedValue and expectedValues are provided"() {
         given:
         def device = new TestDevice(
             id: 60,
-            label: 'OR Test',
+            label: 'Both Test',
             supportedAttributes: [[name: 'switch']],
             attributeValues: [switch: 'on']
         )
         childDevicesList << device
 
         when:
-        def result = script.toolPollUntilAttribute([
+        script.toolPollUntilAttribute([
             deviceId       : '60',
             attribute      : 'switch',
-            expectedValue  : 'on',      // matches this
-            expectedValues : ['off'],   // does NOT match this, but OR semantics
+            expectedValue  : 'on',
+            expectedValues : ['off'],
             timeoutMs      : 5000
         ])
 
         then:
-        result.success    == true
-        result.finalValue == 'on'
-    }
-
-    def "succeeds when currentValue matches expectedValues entry even though expectedValue does not match"() {
-        given:
-        def device = new TestDevice(
-            id: 61,
-            label: 'OR Test 2',
-            supportedAttributes: [[name: 'switch']],
-            attributeValues: [switch: 'off']
-        )
-        childDevicesList << device
-
-        when:
-        def result = script.toolPollUntilAttribute([
-            deviceId       : '61',
-            attribute      : 'switch',
-            expectedValue  : 'on',       // does NOT match
-            expectedValues : ['off'],    // matches this
-            timeoutMs      : 5000
-        ])
-
-        then:
-        result.success    == true
-        result.finalValue == 'off'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('exactly one of expectedValue or expectedValues')
+        ex.message.contains('not both')
     }
 
     // ---------------------------------------------------------------------------

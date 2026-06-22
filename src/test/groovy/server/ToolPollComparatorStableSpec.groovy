@@ -268,7 +268,7 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         r.neverReported == true
     }
 
-    // LOAD-BEARING GUARD (both-ways pending, orchestrator): ne must treat a value that
+    // LOAD-BEARING GUARD (both-ways VERIFIED RED on revert, orchestrator): ne must treat a value that
     // reverts to null AFTER reporting as NOT-matched, consistent with the numeric
     // comparators. The device reports an in-set value first (ne does not converge), then
     // the attribute disappears (currentStates empty -> finalValue null). With the
@@ -299,26 +299,54 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         r.finalValue == null
     }
 
+    def "ne against an expectedValues SET stays un-converged while the value is any set member, converges once it leaves them all"() {
+        given: 'thermostatMode cycles through set members (heat, cool) then leaves to auto'
+        def readCount = 0
+        def device = Spy(TestDevice)
+        device.id = 424
+        device.label = 'Thermostat'
+        device.supportedAttributes = [[name: 'thermostatMode']]
+        device.getCurrentStates() >> {
+            readCount++
+            // 1: heat (in set), 2: cool (in set) -> ne stays false; 3+: auto (NOT in set) -> ne matches
+            def v = (readCount == 1) ? 'heat' : (readCount == 2 ? 'cool' : 'auto')
+            return [[name: 'thermostatMode', value: v]]
+        }
+        childDevicesList << device
+
+        when: 'ne {heat, cool}: must not converge while reading heat or cool, converges on auto'
+        def r = script.toolPollUntilAttribute([deviceId: '424', attribute: 'thermostatMode', comparator: 'ne', expectedValues: ['heat', 'cool'], timeoutMs: 5000, pollIntervalMs: 50])
+
+        then: 'converged only after the value left every set member (poll 3 = auto)'
+        r.success == true
+        r.timedOut == false
+        r.finalValue == 'auto'
+        r.polledCount >= 3
+    }
+
     // -------------------------------------------------------------------------
     // numeric comparator + non-numeric finalValue -> never matches (timeout)
     // -------------------------------------------------------------------------
 
-    def "numeric comparator never matches a non-numeric value and times out"() {
-        given:
+    def "numeric comparator on a non-numeric attribute times out with nonNumericAttribute (not neverReported)"() {
+        given: 'switch reports "on" the whole window -- it parses non-numeric, so gt can never match'
         def device = new TestDevice(id: 430, label: 'Switch', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
         childDevicesList << device
 
         when:
         def r = script.toolPollUntilAttribute([deviceId: '430', attribute: 'switch', comparator: 'gt', expectedValue: '5', timeoutMs: 100, pollIntervalMs: 50])
 
-        then:
+        then: 'the honesty signal: the attribute WAS reported (so NOT neverReported) but never numeric'
         r.success == false
         r.timedOut == true
         r.finalValue == 'on'
+        r.nonNumericAttribute == true
+        !r.containsKey('neverReported')
+        r.note?.contains('can never match')
     }
 
-    def "numeric comparator never matches a never-reported (null) value and times out"() {
-        given:
+    def "numeric comparator on a never-reported attribute times out with neverReported (not nonNumericAttribute)"() {
+        given: 'attribute never reports -- this is neverReported, the distinct cause from nonNumericAttribute'
         def device = new TestDevice(id: 431, label: 'Temp', supportedAttributes: [[name: 'temperature']], attributeValues: [:])
         childDevicesList << device
 
@@ -328,6 +356,8 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         then:
         r.success == false
         r.timedOut == true
+        r.neverReported == true
+        !r.containsKey('nonNumericAttribute')
     }
 
     // -------------------------------------------------------------------------
@@ -445,7 +475,7 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
     // stableForMs (debounce)
     // -------------------------------------------------------------------------
 
-    // LOAD-BEARING GUARD (both-ways pending, orchestrator): asserts the debounce
+    // LOAD-BEARING GUARD (both-ways VERIFIED RED on revert, orchestrator): asserts the debounce
     // does NOT converge on the first matching poll -- it must hold for stableForMs
     // of virtual time first. If the debounce gate were removed (converge on first
     // match), polledCount would be 1 and elapsed < stableForMs.
@@ -469,7 +499,7 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         (clock[0] - 1_000_000L) >= 300
     }
 
-    // LOAD-BEARING GUARD (both-ways pending, orchestrator): a value that goes
+    // LOAD-BEARING GUARD (both-ways VERIFIED RED on revert, orchestrator): a value that goes
     // true -> false -> true must RESET the stability window. If the reset
     // (conditionTrueSince = null on a false poll) were dropped, the run would
     // converge using stale accumulated true-time and finalValue could differ.
@@ -589,20 +619,77 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
     }
 
     // -------------------------------------------------------------------------
-    // Backward-compat: an existing eq/OR call with neither new arg
+    // Engine rejects BOTH expectedValue + expectedValues (exactly-one, matching the
+    // waitFor pre-fire path -- the two validators are kept identical)
     // -------------------------------------------------------------------------
 
-    def "eq with OR (expectedValue + expectedValues) still matches when neither new arg is supplied"() {
+    def "engine rejects BOTH expectedValue and expectedValues (exactly-one semantics)"() {
         given:
         def device = new TestDevice(id: 470, label: 'Switch', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
         childDevicesList << device
 
         when:
-        def r = script.toolPollUntilAttribute([deviceId: '470', attribute: 'switch', expectedValue: 'on', expectedValues: ['off'], timeoutMs: 5000])
+        script.toolPollUntilAttribute([deviceId: '470', attribute: 'switch', expectedValue: 'on', expectedValues: ['off'], timeoutMs: 5000])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('exactly one of expectedValue or expectedValues')
+        ex.message.contains('not both')
+    }
+
+    // -------------------------------------------------------------------------
+    // numeric parsing + match-shape edge cases
+    // -------------------------------------------------------------------------
+
+    def "numeric comparator parses a GString-typed value (CharSequence path)"() {
+        given: 'a driver reports the value as a GString, not a plain String'
+        def device = Spy(TestDevice)
+        device.id = 480
+        device.label = 'GString Temp'
+        device.supportedAttributes = [[name: 'temperature']]
+        def reading = 73
+        device.getCurrentStates() >> [[name: 'temperature', value: "${reading}"]]   // GString value
+        childDevicesList << device
+
+        when: 'gt 50 -- _parseBigDecimalOrNull must accept the GString via its CharSequence branch'
+        def r = script.toolPollUntilAttribute([deviceId: '480', attribute: 'temperature', comparator: 'gt', expectedValue: '50', timeoutMs: 5000])
 
         then:
         r.success == true
-        r.finalValue == 'off'
+        r.timedOut == false
+    }
+
+    def "eq numeric-string fallback matches a Number-typed attribute (50.0 vs \"50\")"() {
+        given: 'attribute reports an actual Number 50.0; expectedValue is the string "50"'
+        def device = Spy(TestDevice)
+        device.id = 481
+        device.label = 'Numeric Level'
+        device.supportedAttributes = [[name: 'level']]
+        device.getCurrentStates() >> [[name: 'level', value: new BigDecimal('50.0')]]
+        childDevicesList << device
+
+        when: 'eq "50" -- the Number-vs-numeric-string fallback must match 50.0 == 50'
+        def r = script.toolPollUntilAttribute([deviceId: '481', attribute: 'level', comparator: 'eq', expectedValue: '50', timeoutMs: 5000])
+
+        then: 'the numeric-string fallback converges even though "50.0".toString() != "50"'
+        r.success == true
+        r.timedOut == false
+    }
+
+    def "a converged (success) response omits the timeout-only transitioning and neverReported fields"() {
+        given:
+        def device = new TestDevice(id: 482, label: 'Switch', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << device
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceId: '482', attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then: 'success shape is the lean one -- the honesty signals are TIMEOUT-only'
+        r.success == true
+        r.timedOut == false
+        !r.containsKey('transitioning')
+        !r.containsKey('neverReported')
+        !r.containsKey('nonNumericAttribute')
     }
 
     // =========================================================================
