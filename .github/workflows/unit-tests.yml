@@ -36,7 +36,7 @@ jobs:
         dispatch-mode: [gateway, flat]
     name: test (${{ matrix.mode }}, ${{ matrix.dispatch-mode }})
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v5
         with:
           distribution: temurin

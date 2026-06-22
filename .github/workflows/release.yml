@@ -176,7 +176,7 @@ jobs:
 
       - name: Checkout main via deploy key
         if: steps.skip_all.outputs.skip == 'false'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
