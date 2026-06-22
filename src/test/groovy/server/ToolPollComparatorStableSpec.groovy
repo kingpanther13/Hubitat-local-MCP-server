@@ -360,6 +360,54 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         !r.containsKey('nonNumericAttribute')
     }
 
+    def "numeric comparator that saw a numeric value at least once does NOT flag nonNumericAttribute on timeout"() {
+        given: 'value is numeric on poll 1 (40), then non-numeric (on) for the rest -- sawNumeric latches true'
+        def readCount = 0
+        def device = Spy(TestDevice)
+        device.id = 432
+        device.label = 'Mixed'
+        device.supportedAttributes = [[name: 'level']]
+        device.getCurrentStates() >> {
+            readCount++
+            // poll 1: "40" (numeric, but 40 > 50 is false so no converge); polls 2+: "on" (non-numeric)
+            def v = (readCount == 1) ? '40' : 'on'
+            return [[name: 'level', value: v]]
+        }
+        childDevicesList << device
+
+        when: 'gt 50: never converges, but it DID report a numeric value once'
+        def r = script.toolPollUntilAttribute([deviceId: '432', attribute: 'level', comparator: 'gt', expectedValue: '50', timeoutMs: 200, pollIntervalMs: 50])
+
+        then: 'the can-never-match signal must NOT fire -- the attribute is numeric-capable (sawNumeric)'
+        r.success == false
+        r.timedOut == true
+        !r.containsKey('nonNumericAttribute')
+    }
+
+    def "a flapping non-numeric value under a numeric comparator flags nonNumericAttribute and suppresses transitioning"() {
+        given: 'switch flaps on -> off -> on (all non-numeric) under gt -- sawChange would set transitioning=true'
+        def readCount = 0
+        def device = Spy(TestDevice)
+        device.id = 433
+        device.label = 'Flapping NonNumeric'
+        device.supportedAttributes = [[name: 'switch']]
+        device.getCurrentStates() >> {
+            readCount++
+            def v = (readCount == 1) ? 'on' : (readCount == 2 ? 'off' : 'on')
+            return [[name: 'switch', value: v]]
+        }
+        childDevicesList << device
+
+        when: 'gt 5 on the flapping non-numeric attribute'
+        def r = script.toolPollUntilAttribute([deviceId: '433', attribute: 'switch', comparator: 'gt', expectedValue: '5', timeoutMs: 200, pollIntervalMs: 50])
+
+        then: 'nonNumericAttribute fires and supersedes transitioning (can-never-match, not still-settling)'
+        r.success == false
+        r.timedOut == true
+        r.nonNumericAttribute == true
+        r.transitioning != true
+    }
+
     // -------------------------------------------------------------------------
     // comparator validation -> IAE
     // -------------------------------------------------------------------------

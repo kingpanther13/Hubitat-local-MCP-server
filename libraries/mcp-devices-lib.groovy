@@ -526,6 +526,9 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null) {
             if (poll.interrupted == true)   waitForBlock.interrupted = true
             if (poll.neverReported == true) waitForBlock.neverReported = true
             if (poll.nonNumericAttribute == true) waitForBlock.nonNumericAttribute = true
+            // nonNumericAttribute carries an actionable note (names the comparator/attribute,
+            // suggests eq/ne) -- propagate it so a waitFor caller gets the same guidance.
+            if (poll.note != null) waitForBlock.note = poll.note
             // transitioning is present on the timeout path as true OR false (both meaningful),
             // so copy it whenever the engine emitted the key -- not only when true.
             if (poll.containsKey("transitioning")) waitForBlock.transitioning = poll.transitioning
@@ -953,10 +956,13 @@ def toolPollUntilAttribute(args) {
     }
     def hasExpectedValue  = (args.expectedValue  != null)
     def hasExpectedValues = (args.expectedValues != null)
-    // Exactly one of the two, matching _buildWaitForPollArgs (the waitFor pre-fire path): a
-    // numeric comparator takes only expectedValue, between takes only expectedValues, and
-    // eq/ne take one or the other (a single value, or a set) -- never both at once. The two
-    // validators are kept identical so a spec valid on one path is valid on the other.
+    // Exactly-one, the same rule _buildWaitForPollArgs enforces on the waitFor pre-fire path: a
+    // numeric comparator takes only expectedValue, between takes only expectedValues, eq/ne take
+    // one or the other -- never both. The two checks share intent, not identical messages: the
+    // waitFor path prefixes "waitFor." and keys on containsKey (presence of the key), while this
+    // engine path keys on != null (a key present-but-null is rejected earlier above as "must not
+    // be null"), so {expectedValue:'x', expectedValues:null} reaches the both-set check on the
+    // waitFor path but the null-reject here. Aligned for valid specs; the edge messages differ.
     if (hasExpectedValue && hasExpectedValues) {
         throw new IllegalArgumentException("provide exactly one of expectedValue or expectedValues, not both")
     }
@@ -1216,6 +1222,10 @@ def toolPollUntilAttribute(args) {
             if (comparator != "eq" && comparator != "ne" && everNonNull && !sawNumeric) {
                 response.nonNumericAttribute = true
                 response.note = "comparator '${comparator}' can never match attribute '${args.attribute}' -- it reported a non-numeric value the whole window (use eq/ne for a string attribute)".toString()
+                // "can never match" supersedes "still settling": a flapping non-numeric value
+                // would set transitioning=true (sawChange), which reads as "retry/wait" and
+                // contradicts nonNumericAttribute. Force it false so the signals agree.
+                response.transitioning = false
             }
             return response
         }
@@ -2306,6 +2316,7 @@ Only query devices the user has mentioned or that are relevant to their request.
                     timedOut: [type: "boolean", description: "Poll mode: true if the timeout elapsed without a match"],
                     neverReported: [type: "boolean", description: "Poll mode: present and true if the attribute never reported a value in the window"],
                     nonNumericAttribute: [type: "boolean", description: "Poll mode, TIMEOUT only: present and true when a numeric comparator (gt/gte/lt/lte/between) was used on an attribute that reported a non-numeric value the whole window, so the comparator can never match it (e.g. gt on switch=\"on\"). Distinct from neverReported. Use eq/ne for a string attribute."],
+                    note: [type: "string", description: "Poll mode, TIMEOUT only: present with nonNumericAttribute -- human-readable recovery guidance (names the comparator/attribute, suggests eq/ne for a string attribute)."],
                     interrupted: [type: "boolean", description: "Poll mode: present and true if the poll was interrupted (hub reload)"],
                     transitioning: [type: "boolean", description: "Poll mode, TIMEOUT only: true if the value was still changing across polls (>=2 distinct non-null values seen) -- the device is likely still settling -- vs false for a stable non-target (a real mismatch). Best-effort: only reliable when the timeout spans a reporting jump."]
                 ]
@@ -2357,6 +2368,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         interrupted: [type: "boolean", description: "Present and true if the poll was interrupted (hub reload)"],
                         neverReported: [type: "boolean", description: "Present and true if the attribute never reported a value during the poll window"],
                         nonNumericAttribute: [type: "boolean", description: "Present and true on a TIMEOUT when a numeric comparator (gt/gte/lt/lte/between) was used on an attribute that reported a non-numeric value the whole window, so it can never match (use eq/ne for a string attribute). Distinct from neverReported."],
+                        note       : [type: "string", description: "Present with nonNumericAttribute -- human-readable recovery guidance (names the comparator/attribute, suggests eq/ne for a string attribute)."],
                         transitioning: [type: "boolean", description: "Present only on a TIMEOUT: true if the value was still changing across polls (>=2 distinct non-null values seen) so the device is likely still settling, vs false for a stable non-target (a real mismatch). Best-effort: only reliable when the timeout spans a reporting jump."],
                         error      : [type: "string", description: "Present only if the poll loop threw after the command fired; the command still succeeded"]
                     ]]
