@@ -92,6 +92,25 @@ set_lease_value() {
   mcp_call "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"hub_manage_variables\",\"arguments\":{\"tool\":\"hub_set_variable\",\"args\":{\"name\":\"_TEST_HUB_LEASED_BY\",\"value\":${value_json}}}}}" >/dev/null
 }
 
+fifo_my_turn() {
+  # FIFO across PRs, decided GitHub-side (the hub never schedules e2e -- GitHub does): a FREE
+  # lease is claimed only by the EARLIEST run still in line -- the lowest run_number among
+  # in-progress hub-e2e runs (GitHub run order == arrival order). So when one PR's run finishes,
+  # the next-oldest PR's run goes, then the next, and so on. `status=in_progress` excludes fork
+  # PRs still parked on the approve gate (those are status=waiting), so a pending approval never
+  # blocks the line; a run that pushes a new commit while waiting is cancelled by the per-branch
+  # concurrency and its replacement takes a fresh (higher) number at the back. On any GitHub-API
+  # hiccup this returns "my turn" -- the lease claim+verify still guarantees one-at-a-time, so a
+  # blip only degrades FIFO to first-come, never a double-book.
+  [ -n "${GITHUB_RUN_NUMBER:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ] || return 0
+  command -v gh >/dev/null 2>&1 || return 0
+  local min_rn
+  min_rn="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/hub-e2e.yml/runs?status=in_progress&per_page=100" \
+            --jq '[.workflow_runs[].run_number] | min // empty' 2>/dev/null)" || return 0
+  [ -z "$min_rn" ] && return 0
+  [ "$min_rn" -ge "$GITHUB_RUN_NUMBER" ]   # nobody earlier is still in-progress -> my turn
+}
+
 # Wait (polling) until the lease is free, expired, or already ours — or until the
 # wait budget runs out. The job's own timeout-minutes bounds the total, and because
 # we claim only AFTER this wait, the lease TTL below starts at acquisition.
@@ -133,7 +152,16 @@ while :; do
       continue
     fi
     if [ -z "$CONFIRM" ]; then
-      break  # released (confirmed empty by two consecutive reads)
+      # Released (confirmed empty) -- but only the FIFO-earliest run in line claims it; an
+      # earlier-queued run goes first. (The expired-lease reclaim further down is NOT gated:
+      # that path is crash recovery for a holder that never released, where the dead holder
+      # must not keep its place in line.)
+      if fifo_my_turn; then
+        break  # released + my turn
+      fi
+      echo "::notice::Lease is free but an earlier hub-e2e run is ahead in the queue; waiting my turn."
+      sleep "$LEASE_POLL_INTERVAL_S"
+      continue
     fi
     CURRENT="$CONFIRM"  # a lease appeared between the two reads -- fall through to the BUSY parse below
   fi

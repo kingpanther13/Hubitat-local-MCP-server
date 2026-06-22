@@ -44,6 +44,29 @@ check "-32602 not found"    '{"error":{"code":-32602,"message":"Variable not fou
 check "-32602 other"        '{"error":{"code":-32602,"message":"Invalid params"}}'                POLL
 check "non-JSON 504 body"   '<html>504 Gateway Timeout</html>'                                    POLL
 
+# --- fifo_my_turn: GitHub-side FIFO ordering (the lowest in-progress run_number claims a free lease) ---
+eval "$(sed -n '/^fifo_my_turn()/,/^}/p' "$SRC")"
+type fifo_my_turn >/dev/null 2>&1 || { echo "could not load fifo_my_turn from $SRC"; exit 1; }
+export GITHUB_REPOSITORY="owner/repo"
+fifo_check() {  # fifo_check <name> <my_run_number> <stub-min-run_number> <TURN|WAIT>
+  local name="$1" want="$4" got
+  export GITHUB_RUN_NUMBER="$2"
+  FIFO_MIN="$3"
+  gh() { printf '%s' "$FIFO_MIN"; }     # stub `gh api ... --jq` -> the min in-progress run_number
+  if fifo_my_turn; then got=TURN; else got=WAIT; fi
+  if [ "$got" = "$want" ]; then
+    printf '  ok    %-24s -> %s\n' "$name" "$got"
+  else
+    printf '  FAIL  %-24s -> got %s, want %s\n' "$name" "$got" "$want"
+    fail=1
+  fi
+}
+echo
+echo "fifo_my_turn (FIFO ordering):"
+fifo_check "earliest in line"      100 100 TURN
+fifo_check "earlier still running" 101 100 WAIT
+fifo_check "api empty -> proceed"  100 ""  TURN
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "lease parse guard: PASS"

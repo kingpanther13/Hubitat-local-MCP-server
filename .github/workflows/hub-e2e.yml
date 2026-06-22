@@ -83,6 +83,7 @@ on:
 
 permissions:
   contents: read
+  actions: read   # lease_acquire.sh lists in-progress hub-e2e runs (run_number order) for FIFO lease ordering
   # statuses: write lets the "Post e2e gate status" step POST the required commit status
   # "Full e2e (runs with label)" (pending while focused, success/failure when full). Without it
   # the POST 403s ("Resource not accessible by integration") and the gate can never report.
@@ -449,6 +450,8 @@ jobs:
 
       - name: Acquire test hub lease
         if: steps.gate.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}   # FIFO check lists in-progress hub-e2e runs via gh api
         run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
 
       - name: Pre-run hub status probe
