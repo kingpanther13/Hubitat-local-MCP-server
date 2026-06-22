@@ -44,8 +44,9 @@ name: Hub E2E (test hub)
 on:
   pull_request_target:
     branches: [main]
-    # `labeled`/`unlabeled` are included so toggling the full-run label (release:patch|minor|major
-    # or e2e:full) re-evaluates the lane immediately. See the "TWO-LANE FLOW" block below.
+    # `labeled`/`unlabeled` are included so the lane-gate job can re-evaluate on a full-run-label
+    # (release:patch|minor|major|e2e:full) toggle -- but e2e RE-RUNS only when the toggle FLIPS the
+    # lane (focused <-> full); a redundant toggle is a no-op. See the "TWO-LANE FLOW" block below.
     types: [opened, synchronize, reopened, labeled, unlabeled]
     # Deliberately NO `paths:` filter. `e2e` is a REQUIRED status check, and a paths-filtered
     # required check never reports on a PR that doesn't touch those paths -- it sits at
@@ -100,8 +101,15 @@ permissions:
 # cancel-in-progress is OFF for a LABEL event (labeled/unlabeled): a label must never cancel an
 # in-flight run, or a redundant full-run label (a 2nd release:*/e2e:full added while a full run is
 # live) would KILL that run and then skip (see the lane-gate job below) -- losing it. On a label the
-# replacement instead QUEUES in this per-branch group behind the in-flight run; the lane-gate then
+# replacement instead waits in this per-branch group behind the in-flight run; the lane-gate then
 # decides whether it does anything. A real commit/reopen/dispatch still cancels-and-supersedes.
+# NOTE this per-branch group is queue:single (one pending slot), DISTINCT from the e2e job's separate
+# queue:max FIFO group (queue:max can't go here -- it's invalid with a cancel-in-progress that can
+# evaluate true). One narrow FAIL-SAFE edge from the single slot: a focused run in-flight, then the
+# FIRST full label (a genuine flip, pending) quickly followed by a 2nd full label -- the redundant
+# 2nd run evicts the pending genuine one, so the requested full suite silently doesn't run. It fails
+# safe (the gate stays pending and HOLDS the merge, no green-wash); recovery is push a commit /
+# re-toggle the label / dispatch.
 concurrency:
   group: hub-e2e-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.event_name != 'pull_request_target' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') }}
@@ -117,8 +125,10 @@ jobs:
   # the PR is ALREADY full, or removing one while another remains, leaves the lane unchanged -- the
   # prior run's result still stands, so this run skips (no redundant re-deploy). The FIRST full-run
   # label (focused->full) and removing the LAST one (full->focused) DO re-run, as does every
-  # non-label event (opened/synchronize/reopened/dispatch). `approve` (and thus `e2e`/`probe`) gate
-  # on this output; on a skip every job is skipped and the prior posted gate status is untouched.
+  # non-label event (opened/synchronize/reopened/dispatch). `approve` (and thus `e2e`) gate on this
+  # output (probe is dispatch-only, where lane-gate is always true, so it is never label-gated in
+  # practice). lane-gate ITSELF always runs; on a skip every DOWNSTREAM job is skipped and posts
+  # nothing, so the prior posted gate status is untouched.
   lane-gate:
     runs-on: ubuntu-latest
     outputs:
