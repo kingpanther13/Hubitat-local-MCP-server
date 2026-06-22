@@ -1323,13 +1323,13 @@ def getGatewayConfig() {
             summaries: [
                 hub_list_devices: "List devices with current states. Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, format (summary/detailed/ids), fields?, limit?, cursor?",
                 hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
-                hub_get_device_attribute: "Read one attribute's value, or block-poll until it reaches expectedValue/expectedValues. Args: deviceId, attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
+                hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), per-app events (appId), or location events (mode/HSM/hub-variable; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, attribute?, limit?"
             ],
             searchHints: [
                 hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate",
                 hub_get_device: "device detail capabilities attributes commands info inspect one",
-                hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable",
+                hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
                 hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted"
             ]
         ],
@@ -1380,7 +1380,7 @@ def getGatewayConfig() {
                 hub_update_device: "Update a device's properties: label, name, room, deviceNetworkId, enabled (enable/disable), dataValues, preferences. Args: deviceId, label?, name?, room?, deviceNetworkId?, enabled?, dataValues?, preferences?",
                 hub_list_devices: "List devices with current states. Args: detailed?, filter, labelFilter?, capabilityFilter?, format, fields?, limit?, cursor?",
                 hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
-                hub_get_device_attribute: "Read one attribute's value, or block-poll until it reaches expectedValue/expectedValues. Args: deviceId, attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
+                hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history, per-app events (appId), or location events. Args: deviceId?, appId?, hoursBack?, attribute?, limit?"
             ],
             searchHints: [
@@ -1389,7 +1389,7 @@ def getGatewayConfig() {
                 hub_update_device: "rename relabel move room device edit",
                 hub_list_devices: "show all devices switches lights sensors locks state inventory",
                 hub_get_device: "device detail capabilities attributes commands info inspect one",
-                hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable",
+                hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
                 hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted"
             ]
         ],
@@ -2149,11 +2149,27 @@ def executeTool(toolName, args) {
                 return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
             return toolGetDeviceHistory(args)
         case "hub_get_device_attribute":
-            // Poll mode when ANY poll arg is supplied (expectedValue/expectedValues
-            // or timeoutMs/pollIntervalMs); otherwise a one-shot read. Routing on the
-            // timeout/interval too preserves the old contract where a timeout without
-            // an expected value is rejected rather than silently read once.
-            return (args.expectedValue != null || args.expectedValues != null || args.timeoutMs != null || args.pollIntervalMs != null || args.comparator != null || args.stableForMs != null) ? toolPollUntilAttribute(args) : toolGetAttribute(args.deviceId, args.attribute)
+            // Poll mode when ANY poll arg is supplied (expectedValue/expectedValues,
+            // timeoutMs/pollIntervalMs/comparator/stableForMs, or the multi-device
+            // deviceIds/mode); otherwise a one-shot read. Routing on the timeout/interval
+            // too preserves the old contract where a timeout without an expected value is
+            // rejected rather than silently read once. The new deviceIds/mode args route on
+            // KEY PRESENCE (containsKey), not != null: a present-but-null deviceIds/mode should
+            // reach the engine's actionable null-guard IAE rather than silently falling to a
+            // single-device one-shot read. (The pre-existing args keep their != null checks --
+            // the asymmetry is intentional; only the new args have null-guards worth reaching.)
+            if (args.expectedValue != null || args.expectedValues != null || args.timeoutMs != null || args.pollIntervalMs != null || args.comparator != null || args.stableForMs != null || args.containsKey("deviceIds") || args.containsKey("mode")) {
+                return toolPollUntilAttribute(args)
+            }
+            // One-shot read. deviceId is not in the schema's required array (deviceIds is the
+            // poll-only alternative), so guard the bare {attribute} call here for an actionable
+            // message instead of letting toolGetAttribute hit "Device not found: <blank>". Reject
+            // a null OR empty/blank deviceId -- an empty string would otherwise slip through to a
+            // "Device not found: " miss.
+            if (!(args.deviceId instanceof String) || !args.deviceId.trim()) {
+                throw new IllegalArgumentException("deviceId is required (or use deviceIds for multi-device polling)")
+            }
+            return toolGetAttribute(args.deviceId, args.attribute)
 
         // Rule Management - now using child apps
         case "hub_get_custom_rule":
