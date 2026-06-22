@@ -98,21 +98,27 @@ permissions:
 # Cancelling mid-run is safe: the e2e job's disarm/restore + lease-release steps are `if: always()`
 # (so a cancel still frees the hub), and a hard kill is backstopped by the dead-man watchdog's
 # deadline restore plus the 30-min lease TTL.
-# cancel-in-progress is OFF for a LABEL event (labeled/unlabeled): a label must never cancel an
-# in-flight run, or a redundant full-run label (a 2nd release:*/e2e:full added while a full run is
-# live) would KILL that run and then skip (see the lane-gate job below) -- losing it. On a label the
-# replacement instead waits in this per-branch group behind the in-flight run; the lane-gate then
-# decides whether it does anything. A real commit/reopen/dispatch still cancels-and-supersedes.
-# NOTE this per-branch group is queue:single (one pending slot), DISTINCT from the e2e job's separate
-# queue:max FIFO group (queue:max can't go here -- it's invalid with a cancel-in-progress that can
-# evaluate true). One narrow FAIL-SAFE edge from the single slot: a focused run in-flight, then the
-# FIRST full label (a genuine flip, pending) quickly followed by a 2nd full label -- the redundant
-# 2nd run evicts the pending genuine one, so the requested full suite silently doesn't run. It fails
-# safe (the gate stays pending and HOLDS the merge, no green-wash); recovery is push a commit /
-# re-toggle the label / dispatch.
+# cancel-in-progress supersedes an in-flight run. TRUE for a commit/reopen/dispatch, AND for the
+# FIRST full-run label (release:*/e2e:full added when the PR has NO other full-run label): applying
+# it while a FOCUSED run is live cancels that run and starts the full run. FALSE for a REDUNDANT
+# full-run label (a 2nd one while already full) and any non-lane label -- so applying a label while a
+# FULL run is already live does NOT cancel it; that run finishes and the redundant run skips (see the
+# lane-gate job below). GitHub expressions have NO arithmetic, so "first full-run label" is encoded
+# as: the added label is full AND none of the OTHER full-run labels are present (the 4 cases below).
+# This MUST stay in lockstep with the lane-gate job's run decision (both key on the same full-run
+# label set); cancel is a deliberate SUBSET of lane-gate.run (it only cancels a run that will then DO
+# work), so any drift degrades to "didn't cancel" (a slower lane change), never to cancelling a run
+# that then skips. cancel-in-progress is an expression (allowed) evaluated with the github context.
 concurrency:
   group: hub-e2e-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: ${{ github.event_name != 'pull_request_target' || (github.event.action != 'labeled' && github.event.action != 'unlabeled') }}
+  cancel-in-progress: >-
+    ${{ github.event_name != 'pull_request_target'
+    || (github.event.action != 'labeled' && github.event.action != 'unlabeled')
+    || (github.event.action == 'labeled' && (
+    (github.event.label.name == 'release:patch' && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
+    || (github.event.label.name == 'release:minor' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:major') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
+    || (github.event.label.name == 'release:major' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
+    || (github.event.label.name == 'e2e:full' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major')))) }}
 
 jobs:
   # The hub-less self-deploy recovery guard (issue #237) is NOT here: running untrusted
