@@ -2052,6 +2052,104 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.oauth.success == false
     }
 
+    def "hub_update_app oauth refuses to submit empty creds when the current-cred read fails (no clobber)"() {
+        given:
+        enableWrite()
+        // /app/list/single/data/42 is NOT registered -> the preserve-read throws -> the tool must
+        // refuse rather than send empty creds (which would blank an already-enabled app's live creds).
+        // updateOAuth IS registered but must never be reached.
+        def hitOAuth = false
+        hubGet.register('/app/updateOAuth?id=42&oauthEnabled=true&clientId=&clientSecret=&refreshSecret=false') { params ->
+            hitOAuth = true; '{"success":true,"clientId":"x","clientSecret":"y"}'
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', oauth: [enabled: true], confirm: true])
+
+        then:
+        hitOAuth == false                                   // never reached the write
+        result.success == false
+        result.oauth.success == false
+        result.oauth.error.contains('current OAuth credentials')
+    }
+
+    def "hub_update_app source saved but OAuth failed reports partial=true (a half-applied write)"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","version":3,"source":"old"}' }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true, id: 60] }
+        hubGet.register('/app/updateOAuth?id=60&oauthEnabled=true&clientId=c&clientSecret=s&refreshSecret=false') { params -> '{"success":false}' }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '60', source: 'new', oauth: [enabled: true, client_id: 'c', client_secret: 's'], confirm: true])
+
+        then:
+        result.sourceMode == 'source'   // source leg landed
+        result.success == false         // overall failed because the OAuth leg failed
+        result.partial == true          // half-applied: code saved, OAuth not
+        result.oauth.success == false
+    }
+
+    def "hub_update_app aborts before OAuth when the source update fails (OAuth never attempted)"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","version":3,"source":"old"}' }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: false, error: 'compile boom'] }
+        def hitOAuth = false
+        hubGet.register('/app/updateOAuth?id=60&oauthEnabled=true&clientId=c&clientSecret=s&refreshSecret=false') { params -> hitOAuth = true; '{"success":true}' }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '60', source: 'new', oauth: [enabled: true, client_id: 'c', client_secret: 's'], confirm: true])
+
+        then:
+        result.success == false
+        hitOAuth == false                 // OAuth is never attempted once the source leg fails
+        !result.containsKey('oauth')      // no oauth leg ran
+    }
+
+    def "hub_update_app oauth with only client_secret reads + preserves the current client_id"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/list/single/data/42') { params -> '[{"id":42,"oauthClientId":"kept-id","oauthClientSecret":"old-sec"}]' }
+        hubGet.register('/app/updateOAuth?id=42&oauthEnabled=true&clientId=kept-id&clientSecret=new-sec&refreshSecret=false') { params -> '{"success":true,"clientId":"kept-id","clientSecret":"new-sec"}' }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', oauth: [enabled: true, client_secret: 'new-sec'], confirm: true])
+
+        then:
+        result.success == true
+        result.oauth.clientId == 'kept-id'      // the omitted side preserved from the read
+        result.oauth.clientSecret == 'new-sec'  // the caller's override
+    }
+
+    def "hub_update_app oauth enabled=false sends oauthEnabled=false"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/updateOAuth?id=42&oauthEnabled=false&clientId=c&clientSecret=s&refreshSecret=false') { params -> '{"success":true}' }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', oauth: [enabled: false, client_id: 'c', client_secret: 's'], confirm: true])
+
+        then:
+        result.success == true
+        result.oauth.enabled == false
+    }
+
+    def "hub_update_app oauth treats a non-true 'success' value as failure (not greened)"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/updateOAuth?id=42&oauthEnabled=true&clientId=c&clientSecret=s&refreshSecret=false') { params -> '{"success":"true","clientId":"x"}' }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', oauth: [enabled: true, client_id: 'c', client_secret: 's'], confirm: true])
+
+        then:
+        result.success == false          // "true" (string) is not boolean true -> not greened
+        result.oauth.success == false
+    }
+
     @spock.lang.Unroll
     def "hub_update_app via dispatch enables OAuth (useGateways=#useGateways)"() {
         given:
