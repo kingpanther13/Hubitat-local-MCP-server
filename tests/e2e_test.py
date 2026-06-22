@@ -4719,19 +4719,17 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
             assert isinstance(oauth_res, dict) and "oauth" in oauth_res, \
                 "hub_update_app(oauth) returned no oauth block"
             ob = oauth_res["oauth"]
-            # Derive only non-sensitive booleans here; never log clientId/clientSecret or the raw
-            # oauth dict (they carry the OAuth client secret -- CodeQL clear-text-logging guard).
-            ob_success = bool(ob.get("success"))
-            ob_has_client_id = bool(ob.get("clientId"))
-            ob_has_error = bool(ob.get("error"))
-            if ob_success:
-                assert ob_has_client_id, "OAuth enabled but no clientId returned"
-                oauth_note = "OAuth enabled (clientId returned)"
+            # Validate the OAuth leg via ASSERTS only (assert is not a logging sink). Do NOT feed any
+            # ob-derived value -- not even a branch-chosen literal note -- into the print below: ob
+            # carries the client secret, and CodeQL's clear-text-logging guard taints anything whose
+            # value is control-dependent on it.
+            assert "success" in ob, "oauth block missing 'success'"
+            if ob.get("success") is True:
+                assert ob.get("clientId"), "OAuth enabled but no clientId returned"
             else:
-                assert ob_has_error, "OAuth leg failed without a structured error"
-                oauth_note = "OAuth leg dispatched, structured failure"
+                assert ob.get("error"), "OAuth leg failed without a structured error"
 
-            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write; restore brought V1 back (undo key {pre_restore_key}); {oauth_note}")
+            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write; restore brought V1 back (undo key {pre_restore_key}); OAuth leg checked")
         finally:
             if code_app_id:
                 try:
