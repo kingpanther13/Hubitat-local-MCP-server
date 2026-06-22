@@ -271,6 +271,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TESTS_INPUT: ${{ inputs.tests }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           if [ -z "$MCP_URL" ]; then
             echo "::notice::LEVEL99_TEST_HUB_MCP_URL secret not available — skipping E2E (expected on repos without the test hub configured)"
@@ -299,6 +300,24 @@ jobs:
             else
               echo "lane=full" >> "$GITHUB_OUTPUT"      # dispatch with no tests = the FULL lane
             fi
+            exit 0
+          fi
+          # Dependabot PRs skip EVERY e2e lane -- report the gate green WITHOUT running. Dependabot only
+          # bumps dependency versions and NONE reach the hub: the Gradle deps are test-harness only (the hub
+          # runs the raw .groovy; packageManifest.json ships only the two top-level files) and github-actions
+          # bumps touch CI YAML only, so e2e would redeploy unchanged main code for zero signal. The real
+          # validators (Spock, unit-tests, groovy24-parse, ruff) run as usual. available=false -> the
+          # "Post e2e gate status" step posts the required "Full e2e (runs with label)" status as SUCCESS.
+          # Dependabot is deliberately NOT auto-approved (absent from the `approve` job's e2e-auto list): a
+          # human still approves each run, because a CI-machinery bump can affect the e2e flow itself (e.g.
+          # actions/checkout v7 blocks the pull_request_target fork-PR checkout this job relies on) and must
+          # not be waved through. A maintainer can still force a real run via workflow_dispatch (handled
+          # above, before this gate). PR_AUTHOR comes from env (not inline) to keep the login out of the
+          # run-command string.
+          if [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+            echo "::notice::Dependabot PR — skipping all E2E lanes (force-green; a dependency bump reaches nothing on the hub, so e2e validates nothing here)."
+            echo "E2E NOT RUN — Dependabot PR (dependency bump; e2e validates nothing here). Skipped on purpose; the Spock / unit-tests / groovy24-parse / ruff checks cover it." >> "$GITHUB_STEP_SUMMARY"
+            echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Fetch the PR's changed-file list. Fail SAFE: if it can't be read, run the full suite
