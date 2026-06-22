@@ -4,9 +4,11 @@
 # Usage:  lease_acquire.sh <by-identifier>
 # Env:    MCP_URL — full cloud OAuth URL with access_token
 #         LEASE_WAIT_TIMEOUT_S        — max seconds to WAIT for a successfully-read but HELD
-#                                       lease to free before aborting (default 14400 = 4h: runs
-#                                       QUEUE on the lease, so several PRs can wait their turn
-#                                       on the single shared hub). Set 0 to fail fast.
+#                                       lease to free before aborting (default 14400 = 4h).
+#                                       Native concurrency (the hub-e2e-serialized group) already
+#                                       serializes CI runs, so at most one ever reaches the lease;
+#                                       this budget exists to wait out a HUMAN holding the hub by
+#                                       hand, which concurrency can't see. Set 0 to fail fast.
 #         LEASE_UNREACHABLE_TIMEOUT_S — max seconds to tolerate the endpoint being UNREADABLE
 #                                       (5xx on every read = hub/app down, not lease held)
 #                                       before fast-failing (default 120). Much shorter than the
@@ -14,14 +16,15 @@
 #                                       waiting it out just burns ~10min per run.
 #         LEASE_POLL_INTERVAL_S       — seconds between polls while waiting (default 30).
 #
-# Exits 0 on successful claim. While the lease is read as held by someone else and not
-# expired, this WAITS (polling) and claims it automatically the moment it frees or
-# the holder's TTL lapses — so a run queued behind another holder, or behind a manual
-# hub session that GitHub's `concurrency` group can't see, starts on its own instead
-# of needing a manual re-run. A brief read failure or a malformed/corrupt lease value
-# mid-wait is polled through, never treated as free. Exits 1 if the lease is STILL held
-# after LEASE_WAIT_TIMEOUT_S, if the endpoint stays UNREADABLE past LEASE_UNREACHABLE_TIMEOUT_S
-# (the fast-fail for a down hub/app), or if the post-write race-check shows another claim last.
+# Exits 0 on successful claim. While the lease is read as held and not expired, this WAITS
+# (polling) and claims it automatically the moment it frees or the holder's TTL lapses — so a
+# run blocked by a manual hub session that GitHub's `concurrency` group can't see (a human
+# holding the lease by hand) starts on its own instead of needing a re-run. Cross-PR CI queueing
+# is GitHub native concurrency's job now (the hub-e2e-serialized group), not the lease's. A brief
+# read failure or a malformed/corrupt lease value mid-wait is polled through, never treated as
+# free. Exits 1 if the lease is STILL held after LEASE_WAIT_TIMEOUT_S, if the endpoint stays
+# UNREADABLE past LEASE_UNREACHABLE_TIMEOUT_S (the fast-fail for a down hub/app), or if the
+# post-write race-check shows another claim last.
 #
 # Lease shape (JSON, written into Hubitat Hub Variable `_TEST_HUB_LEASED_BY`):
 #   {"by":"<who>","since":<epoch_ms>,"until":<epoch_ms>}

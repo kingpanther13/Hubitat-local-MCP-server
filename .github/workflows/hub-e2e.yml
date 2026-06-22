@@ -94,6 +94,9 @@ permissions:
 # each other, and an unapproved fork PR only ever holds ITS OWN branch's group -- never the shared
 # hub or another PR. Cross-PR FIFO serialization is the e2e job's SEPARATE `queue: max` group; the
 # two can't be one block (queue:max + cancel-in-progress:true is an invalid combination).
+# Cancelling mid-run is safe: the e2e job's disarm/restore + lease-release steps are `if: always()`
+# (so a cancel still frees the hub), and a hard kill is backstopped by the dead-man watchdog's
+# deadline restore plus the 30-min lease TTL.
 concurrency:
   group: hub-e2e-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
@@ -140,6 +143,11 @@ jobs:
     timeout-minutes: 15
     concurrency:
       group: hub-e2e-serialized
+      # queue:max (matching the e2e job) so a probe dispatch QUEUES behind a pending e2e run rather
+      # than evicting it -- the group's default queue:single would let a probe cancel a pending PR's
+      # e2e out of the FIFO line. queue:max + cancel-in-progress:false is valid (only queue:max +
+      # cancel-in-progress:true is rejected).
+      queue: max
       cancel-in-progress: false
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
@@ -211,25 +219,33 @@ jobs:
     needs: [approve]
     if: inputs.probe_only != 'true'
     runs-on: ubuntu-latest
-    # Bounds the whole job: up to a 4h lease-queue wait (LEASE_WAIT_TIMEOUT_S in
-    # lease_acquire.sh) + the ~30-min post-acquisition run window. The lease is claimed
-    # only AFTER the wait, so the run itself always stays within the 30-min lease TTL.
+    # Bounds the EXECUTING job. Cross-PR queueing happens BEFORE this clock starts (a run waits its
+    # turn in the hub-e2e-serialized concurrency group, and behind the approve gate, both in
+    # queued/waiting state -- neither counts against timeout-minutes). So this covers: up to a 4h
+    # wait for a HUMAN-held lease to free (LEASE_WAIT_TIMEOUT_S in lease_acquire.sh) + the ~30-min
+    # post-acquisition run window. The lease is claimed only AFTER that wait, so the run itself
+    # always stays within the 30-min lease TTL.
     timeout-minutes: 270
 
     # Serialization model: GitHub's NATIVE concurrency does the cross-PR FIFO QUEUE; the lease is
     # the hub-side lock (and the only thing that can see a HUMAN holding the hub by hand).
     #   * `queue: max` lets up to 100 e2e runs WAIT in this one global group and processes them ONE
     #     AT A TIME in first-in-first-out order (by when each STARTED WAITING on the group). This
-    #     job is `needs: [approve]`, so it enters the group only AFTER the approve gate clears --
-    #     an approved outside-contributor PR therefore takes its place at APPROVAL time (not its old
-    #     creation order), and a release:*/e2e:full label spawns a new run that enters at the BACK.
-    #     Both lanes (focused/full) are this same job in this same group, so they queue together.
+    #     job is `needs: [approve]`, so it enters the group only AFTER the approve gate clears
+    #     (GitHub's observed behavior: a needs-gated job doesn't start waiting on its own group
+    #     until it's eligible to run) -- an approved outside-contributor PR therefore takes its
+    #     place at APPROVAL time (not its old creation order), and a release:*/e2e:full label spawns
+    #     a new run that enters at the BACK. Both lanes (focused/full) are this same job in this
+    #     same group, so they queue together.
     #   * Cancelling a SUPERSEDED run (new commit on the same branch) is the WORKFLOW-level
     #     per-branch group near the top of this file. It can't live here: `queue: max` and
     #     `cancel-in-progress: true` cannot be combined in one concurrency block.
     #   * lease_acquire.sh still claims/releases _TEST_HUB_LEASED_BY, but it NO LONGER orders the
     #     queue (concurrency does). Its remaining job is to block when a HUMAN holds the lease by
-    #     hand to take the hub for manual use -- which GitHub concurrency can't see.
+    #     hand to take the hub for manual use -- which GitHub concurrency can't see. Because only the
+    #     head-of-line run is in_progress, a head run waiting out a human-held lease blocks the whole
+    #     queue for that wait (bounded by timeout-minutes above; the human hold is the only thing it
+    #     ever waits on now).
     concurrency:
       group: hub-e2e-serialized
       queue: max
