@@ -2002,6 +2002,22 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         ex.message.contains("own OAuth")
     }
 
+    def "hub_update_app self-OAuth guard catches the Apps Code CLASS id, not just the instance id"() {
+        // OAuth targets the Apps Code CLASS id (178 here), which differs from app.id (instance 1).
+        // The REAL _resolveSelfAppClassId resolves it from /hub2/userAppTypes -- an instance-id-only
+        // guard would miss this and let a self-OAuth (which would break the live /mcp token) through.
+        given:
+        enableWrite()
+        hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
+
+        when:
+        script.toolUpdateAppCode([appId: '178', oauth: [enabled: true], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("own OAuth")
+    }
+
     def "hub_update_app updates source AND enables OAuth in one call"() {
         given:
         enableWrite()

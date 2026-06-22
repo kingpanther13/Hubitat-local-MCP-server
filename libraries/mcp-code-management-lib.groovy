@@ -1507,9 +1507,18 @@ private Map _updateAppOAuth(appId, oauth) {
     }
     // Self-protection: never alter the MCP server's OWN app OAuth -- the clientId/secret back the
     // live /mcp access token, so changing them would break this very connection. Gated like the
-    // source self-update guard (Developer Mode required to override).
-    def selfAppId = app?.id?.toString()
-    if (selfAppId != null && appId?.toString() == selfAppId && !settings.enableDeveloperMode) {
+    // source self-update guard (Developer Mode required to override). Match BOTH the installed-INSTANCE
+    // id (app.id) AND the Apps Code CLASS id -- OAuth targets the class id, which differs from app.id,
+    // so an instance-id-only check would miss the real self-OAuth attempt.
+    boolean isSelf = false
+    def selfInstanceId = app?.id?.toString()
+    if (selfInstanceId != null && appId?.toString() == selfInstanceId) {
+        isSelf = true
+    } else {
+        def selfClassId = _resolveSelfAppClassId()
+        if (selfClassId != null && appId?.toString() == selfClassId.toString()) isSelf = true
+    }
+    if (isSelf && !settings.enableDeveloperMode) {
         mcpLog("warn", "hub-admin", "hub_update_app: OAuth change to the MCP server's own app (id=${appId}) BLOCKED -- Developer Mode is off")
         throw new IllegalArgumentException("hub_update_app refuses to change the MCP server's own OAuth (appId=${appId}) while Developer Mode is off -- its client id/secret back the live /mcp access token and changing them would break this connection. Enable Developer Mode to override.")
     }
@@ -1533,10 +1542,17 @@ private Map _updateAppOAuth(appId, oauth) {
         def respText = hubInternalGet("/app/updateOAuth?${q}", null, 30)
         def parsed = null
         try { parsed = respText ? new groovy.json.JsonSlurper().parseText(respText) : null } catch (Exception ignore) { }
-        if (parsed instanceof Map && parsed.success) {
-            return [success: true, enabled: enabled,
-                    clientId: parsed.clientId ?: (clientId ?: null),
-                    clientSecret: parsed.clientSecret ?: (clientSecret ?: null)]
+        if (parsed instanceof Map) {
+            if (parsed.success) {
+                return [success: true, enabled: enabled,
+                        clientId: parsed.clientId ?: (clientId ?: null),
+                        clientSecret: parsed.clientSecret ?: (clientSecret ?: null)]
+            }
+            // Surface the hub's own error text from a structured failure rather than a generic message.
+            if (parsed.error || parsed.message) {
+                return [success: false, error: (parsed.error ?: parsed.message)?.toString(), response: respText?.take(300),
+                        note: "The app's source must declare OAuth (an oauth block + mappings) before it can be enabled."]
+            }
         }
         return [success: false, error: "/app/updateOAuth did not report success", response: respText?.take(300),
                 note: "The app's source must declare OAuth (an oauth block + mappings) before it can be enabled."]
