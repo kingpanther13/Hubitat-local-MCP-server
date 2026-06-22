@@ -12,7 +12,7 @@ private void _refreshHubVarInUseRegistrations() {
         mcpLog("error", "hub-vars",
             "_refreshHubVarInUseRegistrations: getAllGlobalVars failed (${e.class.simpleName}: ${e.message}) -- " +
             "in-use safety registrations are STALE. hub_delete_variable's hub-side warning may not fire until " +
-            "this resolves and updated() runs again.")
+            "this transient failure resolves and updated() re-runs the refresh.")
         return
     }
     if (!hubVarNames) {
