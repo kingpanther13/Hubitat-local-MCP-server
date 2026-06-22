@@ -244,6 +244,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.pr_number && format('refs/pull/{0}/head', inputs.pr_number) || github.event.pull_request.head.sha || github.ref }}
+          # checkout v7 (#2454) blocks checking out a FORK PR head under pull_request_target by default;
+          # this job does exactly that on purpose (fork contributors run e2e against the shared test hub,
+          # gated by the `approve` environment), so opt back in. Without this the v6->v7 bump would break
+          # every fork-PR e2e run at the checkout step. The intentional-and-gated design is the mitigation.
+          allow-unsafe-pr-checkout: true
 
       - name: Gate — secret availability + hub-relevant change detection
         # Two independent reasons to report green WITHOUT running the hub suite. Both write a
